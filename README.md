@@ -31,7 +31,14 @@
 
 ## 当前状态
 
-当前稳定版为 `v1.0.8` Windows 桥接版，提供 Windows x86_64 GNU 完整 ZIP。已发布的 `v1.0.5` 客户端会先升级到该桥接版；从 `v1.0.8` 起，更新器才能继续识别并升级到后续 `release-v*` 版本。Windows 产物尚未经过 Authenticode 签名，首次运行可能触发 SmartScreen；请只从本仓库 [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases) 下载。
+统一稳定版为 `release-v1.0.13`，在同一个不可变 Release 中提供 Windows x86_64 GNU、
+Linux x86_64 GNU 与 macOS ARM64 六个归档及校验资产。`release-v1.0.12` 因 Linux
+发布二进制未移除调试信息、超过旧版更新器的解包安全上限，已保留为预发布历史记录，
+稳定通道不会再选择它。已发布的 Windows `v1.0.3`、`v1.0.5` 客户端会先自动升级到
+`v1.0.8` 桥接版，再继续升级到 `release-v1.0.13`；`v1.0.8` 可直接升级。更早写死旧仓库
+地址的 `v1.0.0-zh.preview.3` 仍需手工安装一次现代完整包。Windows 产物尚未经过
+Authenticode 签名，首次运行可能触发 SmartScreen；请只从本仓库
+[Releases](https://github.com/JoyElliot/grok-build-Chinese/releases) 下载。
 
 `zh-dev` 的统一 [CI 工作流](https://github.com/JoyElliot/grok-build-Chinese/actions/workflows/zh-dev-windows-preview.yml)
 同时构建 Windows x64 GNU、Linux x86_64 GNU 与 macOS ARM64 预览 Artifact。预览产物只用于
@@ -61,7 +68,7 @@
 
 正式 Tag 工作流会在 [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases)
 中发布完整 Windows ZIP；`CI` 工作流仍会上传短期 Actions Artifact。
-解压完整包后，所有 `release-v*` 包（包括 `release-v1.0.12-rc.1`）都会得到唯一的
+解压完整包后，所有 `release-v*` 包（例如 `release-v1.0.13`）都会得到唯一的
 `grok-zh-<version>-windows-x86_64-gnu` 目录；进入该目录再双击下列入口。
 旧版与 `v1.0.8` 桥接包仍是兼容所需的扁平结构，可在解压目录直接双击：
 
@@ -78,7 +85,7 @@
 ### 自动更新
 
 - 默认使用 `stable` 通道，只接受本仓库非 Draft、非 prerelease 的 Immutable Release；如需预览版，可显式运行 `grok-zh update --alpha`。
-- 更新器只接受完整 ZIP 及其 `.sha256`，并校验下载地址、大小、SHA-256、ZIP 布局、包内 `SHA256SUMS.txt` 和候选程序版本。
+- 发布工作流会核验完整 ZIP 及其 `.sha256` 内容；更新器要求二者的资产元数据齐全，并校验固定下载地址、大小、GitHub SHA-256、ZIP 布局、包内 `SHA256SUMS.txt` 和候选程序版本。
 - 后台自动更新默认关闭。按 `Ctrl+U` 才会下载并安装本次更新；也可以在设置中显式开启后台更新。
 - 激活失败时保留当前版本；需要同步 `agent-zh.cmd`、`rg.exe`、安装器或文档时，重新运行新 ZIP 中的安装器。
 
@@ -98,7 +105,7 @@ macOS 包只支持 Apple Silicon（M1 及后续机型）。先在归档旁完成
 `./Install-GrokZh.sh --with-compat-aliases`。安装器只写入 `${GROK_HOME:-$HOME/.grok}`，
 不会改 shell 配置、`/usr/local/bin` 或 macOS 安全设置。
 
-从同时包含 macOS 资产的正式 Release 起，内置更新器会校验本仓库的不可变 Release、
+从 `release-v1.0.13` 统一稳定版起，内置更新器会校验本仓库的不可变 Release、
 外层 GitHub SHA-256、严格 USTAR 布局、包内清单和候选程序版本，再把新的不可变目标原子
 切换到 `grok-zh`/`agent-zh`。这不要求本地拥有 Xcode 或 Apple Developer ID，但当前未签名、
 未公证的构建仍可能触发 Gatekeeper。完整步骤与安全边界见
@@ -119,10 +126,11 @@ Linux 包面向 `x86_64-unknown-linux-gnu`。先在归档旁完成外层 SHA-256
 `${GROK_HOME:-$HOME/.grok}`，不会使用 `sudo`、修改 shell 配置或写入
 `/usr/local/bin`。
 
-Linux 自动更新首先在 `release-v1.0.12-rc.1` 等发布候选版本中验收；后续稳定
-`release-v*` 继续使用三平台六资产契约。稳定 `v1.0.8` 是专供旧 `v1.0.5`
-Windows 客户端迁移的两资产桥接版本，不包含 macOS 或 Linux 资产。更新器会严格校验不可变 Release、GitHub digest、USTAR 结构、权限、包内清单和
-候选版本，再把新的不可变目标原子切换到入口。WSL 应安装到发行版 ext4 的 `$HOME`，
+Linux 自动更新从 `release-v1.0.13` 起进入统一稳定通道；该版本会在打包前移除 Linux
+二进制的调试信息，并按旧版更新器的 512 MiB 单文件、768 MiB 总解包上限执行 CI
+门禁。稳定 `v1.0.8` 是专供旧 Windows 客户端迁移的两资产桥接版本，不包含 macOS 或
+Linux 资产。更新器会严格校验不可变 Release、GitHub digest、USTAR 结构、权限、包内
+清单和候选版本，再把新的不可变目标原子切换到入口。WSL 应安装到发行版 ext4 的 `$HOME`，
 不要把受管目录放到无法落实所有者或 `0700` 权限的 DrvFS 挂载。完整说明见
 [Linux x86_64 GNU 安装说明](packaging/linux/INSTALL-LINUX.md)。
 
@@ -209,6 +217,7 @@ Releases 中通过这些门禁的平台资产。
 - 英文上游用户指南：[`crates/codegen/xai-grok-pager/docs/user-guide/README.md`](crates/codegen/xai-grok-pager/docs/user-guide/README.md)
 - 贡献说明：[`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)
 - 安全策略：[`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)
+- 1.0.13 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.13.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.13.zh-CN.md)
 - 1.0.12 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.12.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.12.zh-CN.md)
 - 1.0.11 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.11.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.11.zh-CN.md)
 - 1.0.10 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.10.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.10.zh-CN.md)
@@ -258,8 +267,9 @@ cargo fmt --all
 
 - `main`：尽量保持官方上游镜像，只用于同步和审查。
 - `zh-dev`：汉化开发、上游合并、构建和测试。
-- 计划中的 `zh-stable`：只有在中文验证通过后才建立；`v1.0.8` 是最后一个旧通道桥接
-  Tag，后续稳定版使用 `release-vA.B.C`，程序自身仍保持与上游一致的严格三段 SemVer。
+- 稳定版不另建长期 `zh-stable` 分支；只从已经审核并通过 CI 的 `zh-dev` 精确提交创建
+  受保护 Tag。`v1.0.8` 是最后一个旧通道桥接 Tag，后续稳定版使用
+  `release-vA.B.C`，程序自身仍保持与上游一致的严格三段 SemVer。
 - 仓库 Ruleset 必须同时限制 `v*` 与 `release-v*` Tag 的创建、更新和删除权限，只允许维护者给已审核分支提交
   打 Tag；工作流内的 SHA 复核不能替代 GitHub 服务端的 Tag 保护。
 - 上游 `main` 更新只能触发审查和测试，不能直接进入用户更新源。

@@ -16,7 +16,7 @@ Agent Client Protocol（ACP）集成到编辑器中。
 
 社区 Windows 包由本仓库 Releases 和 `CI` 工作流生成。
 Release ZIP 下载后只需解压一次；所有 `release-v*` 包（包括
-`release-v1.0.12-rc.1`）需先打开唯一的
+`release-v1.0.13`）需先打开唯一的
 `grok-zh-<version>-windows-x86_64-gnu` 目录，旧版与 `v1.0.8` 桥接包则直接使用
 解压目录。包内的 `Install-GrokZh.ps1` 可自动加入用户 `Path`，默认提供
 `grok-zh`、`agent-zh`，并支持由用户显式接管 `grok`、`agent`。完整说明也会
@@ -39,8 +39,9 @@ grok-zh --version
 带更新器的版本只读取本仓库的 Immutable GitHub Releases，只接受当前平台的完整归档及其
 `.sha256` sidecar 元数据，并核对 GitHub SHA-256、安全归档布局和包内
 `SHA256SUMS.txt`；绝不会回退到 xAI 官方发布渠道。所有 `release-v*` 包均使用单一
-顶层目录；单独的 `v1.0.8` 是 Windows-only 扁平 ZIP 桥接版。更早的裸 EXE 更新版本
-仍需先手工安装该 ZIP-only 桥接版。
+顶层目录；单独的 `v1.0.8` 是 Windows-only 扁平 ZIP 桥接版。Windows `v1.0.3`、
+`v1.0.5` 会自动经过该桥接版再选择现代 `release-v*`；写死旧仓库地址的
+`v1.0.0-zh.preview.3` 仍需手工安装一次现代完整包。
 
 社区版默认关闭后台自动更新：程序启动时只检查版本并显示提示，不下载文件。欢迎页按
 `Ctrl+U` 才会退出旧 TUI、下载并安装；显式开启设置中的“自动更新”后才允许后台预下载。

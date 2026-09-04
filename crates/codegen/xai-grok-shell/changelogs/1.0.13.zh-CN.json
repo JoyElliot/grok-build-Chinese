@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Linux 自动更新**现在使用移除调试信息后的发布二进制，修复下载完成后因解包体积超过旧版更新器安全上限而失败的问题。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Linux 发布流程现在会在打包前和解包后检查单文件与总解包大小，防止再次发布旧版更新器无法安装的产物。",
+    "breaking_change": false
+  }
+]

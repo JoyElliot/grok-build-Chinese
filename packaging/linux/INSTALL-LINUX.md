@@ -14,7 +14,7 @@ binutils、`file` 与 `sha256sum`；Ubuntu/WSL 可先运行：
 
     sudo apt-get install coreutils findutils grep sed gawk util-linux binutils file
 
-    archive='grok-zh-1.0.12-rc.1-linux-x86_64-gnu.tar.gz'
+    archive='grok-zh-1.0.13-linux-x86_64-gnu.tar.gz'
     package=${archive%.tar.gz}
     test -f "$archive" && test -f "$archive.sha256"
     sha256sum -c "$archive.sha256"
@@ -41,10 +41,14 @@ binutils、`file` 与 `sha256sum`；Ubuntu/WSL 可先运行：
 ## 自动更新与发布通道
 
 - CI 预览包可用于安装验收，但 Actions Artifact 本身不是自动更新目标。
-- 更新器只接受本仓库不可变 GitHub Release 中名称、数量、URL、GitHub digest、
-  外层 SHA-256、USTAR 结构、权限和内层 `SHA256SUMS.txt` 全部匹配的 Linux 包。
-- Linux 首先通过 `release-v1.0.12-rc.1` 等发布候选版本验收；稳定版 `v1.0.8` 是旧
-  Windows 客户端专用的两资产桥接版本。后续稳定 `release-v*` 继续使用三平台六资产契约。
+- 发布工作流会核验外层 `.sha256` 内容；更新器只接受本仓库不可变 GitHub Release 中
+  名称、数量、URL、sidecar 元数据、GitHub digest、USTAR 结构、权限和内层
+  `SHA256SUMS.txt` 全部匹配的 Linux 包。
+- `release-v1.0.13` 是首个 Linux 统一稳定版。其发布二进制会移除调试信息，并在 CI 中
+  同时检查旧版更新器的 512 MiB 单文件和 768 MiB 总解包上限。`release-v1.0.12` 因
+  Linux 归档超过该上限而保留为预发布历史记录；稳定通道会跳过它。
+- 稳定版 `v1.0.8` 是旧 Windows 客户端专用的两资产桥接版本。现代稳定
+  `release-v*` 使用三平台六资产契约。
 - 社区版默认不自动下载；可在明确接受相应通道后使用更新命令启用或执行更新。
 
 ## 安全与 WSL 边界

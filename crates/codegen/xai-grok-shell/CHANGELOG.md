@@ -1,6 +1,13 @@
 # Changelog
 
-[1.0.12 简体中文更新说明](changelogs/1.0.12.zh-CN.md) · [1.0.11 简体中文更新说明](changelogs/1.0.11.zh-CN.md) · [1.0.10 简体中文更新说明](changelogs/1.0.10.zh-CN.md) · [1.0.9 简体中文更新说明](changelogs/1.0.9.zh-CN.md) · [1.0.8 简体中文更新说明](changelogs/1.0.8.zh-CN.md) · [1.0.7 简体中文更新说明](changelogs/1.0.7.zh-CN.md) · [1.0.6 简体中文更新说明](changelogs/1.0.6.zh-CN.md) · [1.0.5 简体中文更新说明](changelogs/1.0.5.zh-CN.md) · [1.0.3 简体中文更新说明](changelogs/1.0.3.zh-CN.md)
+[1.0.13 简体中文更新说明](changelogs/1.0.13.zh-CN.md) · [1.0.12 简体中文更新说明](changelogs/1.0.12.zh-CN.md) · [1.0.11 简体中文更新说明](changelogs/1.0.11.zh-CN.md) · [1.0.10 简体中文更新说明](changelogs/1.0.10.zh-CN.md) · [1.0.9 简体中文更新说明](changelogs/1.0.9.zh-CN.md) · [1.0.8 简体中文更新说明](changelogs/1.0.8.zh-CN.md) · [1.0.7 简体中文更新说明](changelogs/1.0.7.zh-CN.md) · [1.0.6 简体中文更新说明](changelogs/1.0.6.zh-CN.md) · [1.0.5 简体中文更新说明](changelogs/1.0.5.zh-CN.md) · [1.0.3 简体中文更新说明](changelogs/1.0.3.zh-CN.md)
+
+# 1.0.13 — 2026-09-04
+
+## Bug Fixes
+
+- **Linux automatic updates** now ship a binary with debug information removed, fixing post-download failures caused by exceeding the legacy updater's extraction safety limits.
+- The Linux release pipeline now checks per-file and total extracted sizes before packaging and again after extraction, preventing incompatible artifacts from being published.
 
 # 1.0.12 — 2026-08-27
 

@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Linux automatic updates** now ship a binary with debug information removed, fixing post-download failures caused by exceeding the legacy updater's extraction safety limits.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "The Linux release pipeline now checks per-file and total extracted sizes before packaging and again after extraction, preventing incompatible artifacts from being published.",
+    "breaking_change": false
+  }
+]

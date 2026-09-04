@@ -172,6 +172,9 @@ runs:
           fi
           cp "$built_bin" "$package/grok-zh"
           chmod 0755 "$package/grok-zh"
+          # release-dist 构建产物保留 DWARF；发布包副本必须在这里移除这些调试段，
+          # 否则单个 ELF 会超过旧版社区更新器的 512 MiB 解包安全上限。
+          strip --strip-debug -- "$package/grok-zh"
           cp LICENSE "$package/LICENSE-grok-build.txt"
           cp SOURCE_REV "$package/SOURCE_REV"
           cp THIRD-PARTY-NOTICES "$package/THIRD-PARTY-NOTICES.txt"
@@ -215,7 +218,7 @@ runs:
             echo "Upstream source revision: $source_rev"
             echo "Repository: $GITHUB_REPOSITORY"
             echo "Target: $TARGET"
-            echo "Profile: release-dist (Thin LTO, codegen-units=1, split-debuginfo=off)"
+            echo "Profile: release-dist (Thin LTO, codegen-units=1, packaged binary strip --strip-debug)"
             echo "Rust: $rustc_info"
             echo "Cargo: $cargo_info"
             echo "DotSlash: $dotslash_info"
@@ -260,6 +263,33 @@ runs:
             sha256sum -c SHA256SUMS.txt
           )
 
+          # 与已部署社区更新器保持同一解包安全契约。这里在上传前失败，避免再次
+          # 发布出能够下载、却会被旧客户端拒绝的压缩包。
+          max_entry_bytes=$((512 * 1024 * 1024))
+          max_uncompressed_bytes=$((768 * 1024 * 1024))
+          max_asset_bytes=$((512 * 1024 * 1024))
+          max_sidecar_bytes=$((4 * 1024))
+          assert_updater_size_contract() {
+            local root="$1"
+            local total_bytes=0
+            local entry_bytes
+            local path
+            while IFS= read -r -d '' path; do
+              entry_bytes="$(stat -c '%s' "$path")"
+              if (( entry_bytes > max_entry_bytes )); then
+                echo "::error::Linux 软件包文件超过社区更新器单文件上限（${entry_bytes} > ${max_entry_bytes}）：$path"
+                exit 1
+              fi
+              total_bytes=$((total_bytes + entry_bytes))
+            done < <(find "$root" -mindepth 1 -maxdepth 1 -type f -print0)
+            if (( total_bytes > max_uncompressed_bytes )); then
+              echo "::error::Linux 软件包总文件大小超过社区更新器解包上限（${total_bytes} > ${max_uncompressed_bytes}）：$root"
+              exit 1
+            fi
+            echo "Linux 社区更新器体积契约通过：总文件 ${total_bytes} bytes。"
+          }
+          assert_updater_size_contract "$package"
+
           archive="$dist/$ARCHIVE_NAME"
           tar --format=ustar -C "$dist" -czf "$archive" "$PACKAGE_NAME"
           (
@@ -267,6 +297,16 @@ runs:
             sha256sum "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
             sha256sum -c "$ARCHIVE_NAME.sha256"
           )
+          archive_bytes="$(stat -c '%s' "$archive")"
+          sidecar_bytes="$(stat -c '%s' "$archive.sha256")"
+          if (( archive_bytes > max_asset_bytes )); then
+            echo "::error::Linux 压缩资产超过社区更新器下载上限（${archive_bytes} > ${max_asset_bytes}）：$archive"
+            exit 1
+          fi
+          if (( sidecar_bytes > max_sidecar_bytes )); then
+            echo "::error::Linux 校验侧车超过社区更新器上限（${sidecar_bytes} > ${max_sidecar_bytes}）：$archive.sha256"
+            exit 1
+          fi
           tar -tzf "$archive"
           verify_root="$RUNNER_TEMP/grok-zh-linux-verify-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           if [[ -e "$verify_root" ]]; then
@@ -315,6 +355,7 @@ runs:
             echo "::error::Linux 软件包根目录含有非普通文件。"
             exit 1
           fi
+          assert_updater_size_contract "$package_root"
           for name in grok-zh Install-GrokZh.sh; do
             [[ "$(stat -c '%a' "$package_root/$name")" == "755" ]] || {
               echo "::error::$name 权限不是 0755。"

@@ -19,7 +19,7 @@ preview build pipeline. The upstream `install.sh`,
 `install.ps1`, and `@xai-official/grok` package are intentionally not valid
 installers for this distribution.
 
-Every `release-v*` archive, including `release-v1.0.12-rc.1`, has one top-level
+Every `release-v*` archive, including `release-v1.0.13`, has one top-level
 directory named after the archive without its `.zip` or `.tar.gz` suffix. Enter
 that directory before running the bundled checksum verification and installer.
 The plain `v1.0.8` bridge is Windows-only and keeps the legacy flat ZIP layout.
@@ -35,8 +35,11 @@ sidecar metadata from immutable Releases in this repository. They verify the
 GitHub SHA-256, safe archive layout, and the package's inner `SHA256SUMS.txt`,
 and never fall back to official xAI release channels. Background downloads are
 off by default: startup checks metadata and shows a notice, while `Ctrl+U`
-authorizes that one download and install. Existing raw-asset Windows builds
-require one manual ZIP installation to cross the ZIP-only bridge.
+authorizes that one download and install. Windows `v1.0.3` and `v1.0.5`
+builds update automatically through the Windows-only `v1.0.8` bridge before
+selecting a modern `release-v*` version. The much older
+`v1.0.0-zh.preview.3`, which hardcoded the former repository, requires one
+manual complete-package installation.
 
 To fetch a repository through Grove (NFS on macOS, FUSE on Linux) after
 `[clone] enabled = true` in Grove config:

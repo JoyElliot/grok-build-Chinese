@@ -45,12 +45,12 @@
 
 正式 Tag 工作流会为 ZIP 与 `.sha256` 自动生成 GitHub Actions 构建来源证明。下载后可用
 GitHub CLI 核对不可变 Release、资产和构建工作流；以下命令已使用当前仓库
-`JoyElliot/grok-build-Chinese`；以下命令以后续现代预发布 `1.0.12-rc.1` 为例，发布后执行。
+`JoyElliot/grok-build-Chinese`；以下命令以现代稳定版 `1.0.13` 为例，发布后执行。
 旧桥接版 `1.0.8` 使用 `v1.0.8` Tag，其余命令结构相同：
 
 ```powershell
 $repo = 'JoyElliot/grok-build-Chinese'
-$version = '1.0.12-rc.1'
+$version = '1.0.13'
 $tag = "release-v$version"
 $zip = ".\grok-zh-$version-windows-x86_64-gnu.zip"
 $assets = @($zip, "$zip.sha256")
@@ -251,7 +251,7 @@ npm uninstall -g @xai-official/grok
   替换当前 `grok-zh.exe`；不会强制结束其他会话；完成后重新运行 `grok-zh`；
 - `v1.0.0-zh.preview.3` 的旧更新器只认识裸 EXE，需要手工下载完整 ZIP 迁移；已撤回的
   `v1.0.0.1` 使用了不兼容代理版本门禁的四段版本号，不应继续安装或分发。
-- 已发布的 `v1.0.5` 会先更新到仅含 Windows 两个资产、扁平 ZIP 和 7 项兼容清单的
+- 已发布的 `v1.0.3`、`v1.0.5` 会先更新到仅含 Windows 两个资产、扁平 ZIP 和 7 项兼容清单的
   `v1.0.8`。从首个 `release-v*` 版本起，Windows、macOS、Linux 共用六资产 Release；旧客户端
   无法识别 `release-v*`，因此不会跳过桥接版本。
 
