@@ -14,27 +14,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  windows-x64-gnu:
-    name: Windows x64 GNU 构建
+  release-plan:
+    name: 验证发布计划
     runs-on: windows-2022
-    timeout-minutes: 180
+    timeout-minutes: 15
     outputs:
       release_tag: ${{ steps.release_meta.outputs.release_tag }}
       grok_version: ${{ steps.release_meta.outputs.grok_version }}
+      source_commit: ${{ steps.release_meta.outputs.source_commit }}
+      package_name: ${{ steps.release_meta.outputs.package_name }}
       zip_name: ${{ steps.release_meta.outputs.zip_name }}
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
+      legacy_release: ${{ steps.release_meta.outputs.legacy_release }}
       include_macos: ${{ steps.release_meta.outputs.include_macos }}
       include_linux: ${{ steps.release_meta.outputs.include_linux }}
       windows_artifact_name: ${{ steps.release_meta.outputs.windows_artifact_name }}
       notes_artifact_name: ${{ steps.release_meta.outputs.notes_artifact_name }}
     env:
-      CARGO_BUILD_JOBS: "4"
-      CARGO_INCREMENTAL: "0"
-      CARGO_NET_RETRY: "10"
-      CARGO_HTTP_TIMEOUT: "120"
       GH_TOKEN: ${{ github.token }}
-      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-gnu
-      TARGET: x86_64-pc-windows-gnu
 
     steps:
       - name: 检出发布标签
@@ -153,8 +150,11 @@ jobs:
           @{
             release_tag = $tag
             grok_version = $version
+            source_commit = $env:GITHUB_SHA
+            package_name = $packageName
             zip_name = $zipName
             is_prerelease = $isPrerelease
+            legacy_release = $legacyRelease.ToString().ToLowerInvariant()
             include_macos = $includeMacos.ToString().ToLowerInvariant()
             include_linux = $includeLinux.ToString().ToLowerInvariant()
             windows_artifact_name = $windowsArtifactName
@@ -188,6 +188,30 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  windows-x64-gnu:
+    name: Windows x64 GNU 构建
+    needs: release-plan
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      RELEASE_TAG: ${{ needs.release-plan.outputs.release_tag }}
+      GROK_VERSION: ${{ needs.release-plan.outputs.grok_version }}
+      PACKAGE_NAME: ${{ needs.release-plan.outputs.package_name }}
+      ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      LEGACY_RELEASE: ${{ needs.release-plan.outputs.legacy_release }}
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-gnu
+      TARGET: x86_64-pc-windows-gnu
+    steps:
+      - name: 检出已验证的发布提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-plan.outputs.source_commit }}
 
       - name: 配置固定版本的 Rust、MinGW 和 protoc
         shell: pwsh
@@ -571,20 +595,20 @@ jobs:
       - name: 上传 Windows Release 资产
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.release_meta.outputs.windows_artifact_name }}
+          name: ${{ needs.release-plan.outputs.windows_artifact_name }}
           path: |
-            dist/${{ steps.release_meta.outputs.zip_name }}
-            dist/${{ steps.release_meta.outputs.zip_name }}.sha256
+            dist/${{ needs.release-plan.outputs.zip_name }}
+            dist/${{ needs.release-plan.outputs.zip_name }}.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
 
   macos-arm-release:
     name: macOS ARM64 构建
-    needs: windows-x64-gnu
-    if: ${{ needs.windows-x64-gnu.outputs.include_macos == 'true' }}
+    needs: release-plan
+    if: ${{ needs.release-plan.outputs.include_macos == 'true' }}
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 240
     outputs:
       package_name: ${{ steps.build.outputs.package_name }}
       archive_name: ${{ steps.build.outputs.archive_name }}
@@ -602,18 +626,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          ref: ${{ needs.release-plan.outputs.source_commit }}
 
       - name: 构建并验证 macOS ARM64
         id: build
         uses: ./.github/actions/build-macos-arm
         with:
-          version: ${{ needs.windows-x64-gnu.outputs.grok_version }}
+          version: ${{ needs.release-plan.outputs.grok_version }}
           release_build: 'true'
 
   linux-x64-gnu-release:
     name: Linux x64 GNU 构建
-    needs: windows-x64-gnu
-    if: ${{ needs.windows-x64-gnu.outputs.include_linux == 'true' }}
+    needs: release-plan
+    if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     outputs:
@@ -635,36 +660,39 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          ref: ${{ needs.release-plan.outputs.source_commit }}
 
       - name: 构建并验证 Linux x64 GNU
         id: build
         uses: ./.github/actions/build-linux-x64
         with:
-          version: ${{ needs.windows-x64-gnu.outputs.grok_version }}
+          version: ${{ needs.release-plan.outputs.grok_version }}
           release_build: 'true'
 
   release-attestations:
     name: 生成 Release 资产构建来源证明
     needs:
+      - release-plan
       - windows-x64-gnu
       - macos-arm-release
       - linux-x64-gnu-release
     if: >-
       ${{
         !cancelled() &&
+        needs.release-plan.result == 'success' &&
         needs.windows-x64-gnu.result == 'success' &&
         (
           needs.macos-arm-release.result == 'success' ||
           (
             needs.macos-arm-release.result == 'skipped' &&
-            needs.windows-x64-gnu.outputs.include_macos == 'false'
+            needs.release-plan.outputs.include_macos == 'false'
           )
         ) &&
         (
           needs.linux-x64-gnu-release.result == 'success' ||
           (
             needs.linux-x64-gnu-release.result == 'skipped' &&
-            needs.windows-x64-gnu.outputs.include_linux == 'false'
+            needs.release-plan.outputs.include_linux == 'false'
           )
         )
       }}
@@ -675,25 +703,25 @@ jobs:
       id-token: write
       attestations: write
     env:
-      ZIP_NAME: ${{ needs.windows-x64-gnu.outputs.zip_name }}
+      ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
       MAC_ARCHIVE_NAME: ${{ needs.macos-arm-release.outputs.archive_name }}
       LINUX_ARCHIVE_NAME: ${{ needs.linux-x64-gnu-release.outputs.archive_name }}
     steps:
       - name: 下载 Windows Release 资产
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ needs.windows-x64-gnu.outputs.windows_artifact_name }}
+          name: ${{ needs.release-plan.outputs.windows_artifact_name }}
           path: dist
 
       - name: 下载 macOS Release 资产
-        if: ${{ needs.windows-x64-gnu.outputs.include_macos == 'true' }}
+        if: ${{ needs.release-plan.outputs.include_macos == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.macos-arm-release.outputs.artifact_name }}
           path: dist
 
       - name: 下载 Linux Release 资产
-        if: ${{ needs.windows-x64-gnu.outputs.include_linux == 'true' }}
+        if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.linux-x64-gnu-release.outputs.artifact_name }}
@@ -707,7 +735,7 @@ jobs:
             ${{ github.workspace }}/dist/${{ env.ZIP_NAME }}.sha256
 
       - name: 为 macOS Release 资产生成构建来源证明
-        if: ${{ needs.windows-x64-gnu.outputs.include_macos == 'true' }}
+        if: ${{ needs.release-plan.outputs.include_macos == 'true' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
@@ -715,7 +743,7 @@ jobs:
             ${{ github.workspace }}/dist/${{ env.MAC_ARCHIVE_NAME }}.sha256
 
       - name: 为 Linux Release 资产生成构建来源证明
-        if: ${{ needs.windows-x64-gnu.outputs.include_linux == 'true' }}
+        if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
@@ -725,6 +753,7 @@ jobs:
   release-publisher:
     name: 核验并发布唯一 Release
     needs:
+      - release-plan
       - windows-x64-gnu
       - macos-arm-release
       - linux-x64-gnu-release
@@ -732,20 +761,21 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
+        needs.release-plan.result == 'success' &&
         needs.windows-x64-gnu.result == 'success' &&
         needs.release-attestations.result == 'success' &&
         (
           needs.macos-arm-release.result == 'success' ||
           (
             needs.macos-arm-release.result == 'skipped' &&
-            needs.windows-x64-gnu.outputs.include_macos == 'false'
+            needs.release-plan.outputs.include_macos == 'false'
           )
         ) &&
         (
           needs.linux-x64-gnu-release.result == 'success' ||
           (
             needs.linux-x64-gnu-release.result == 'skipped' &&
-            needs.windows-x64-gnu.outputs.include_linux == 'false'
+            needs.release-plan.outputs.include_linux == 'false'
           )
         )
       }}
@@ -756,38 +786,38 @@ jobs:
       attestations: read
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ needs.windows-x64-gnu.outputs.release_tag }}
-      GROK_VERSION: ${{ needs.windows-x64-gnu.outputs.grok_version }}
-      ZIP_NAME: ${{ needs.windows-x64-gnu.outputs.zip_name }}
+      RELEASE_TAG: ${{ needs.release-plan.outputs.release_tag }}
+      GROK_VERSION: ${{ needs.release-plan.outputs.grok_version }}
+      ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
       MAC_ARCHIVE_NAME: ${{ needs.macos-arm-release.outputs.archive_name }}
       LINUX_ARCHIVE_NAME: ${{ needs.linux-x64-gnu-release.outputs.archive_name }}
-      INCLUDE_MACOS: ${{ needs.windows-x64-gnu.outputs.include_macos }}
-      INCLUDE_LINUX: ${{ needs.windows-x64-gnu.outputs.include_linux }}
-      IS_PRERELEASE: ${{ needs.windows-x64-gnu.outputs.is_prerelease }}
+      INCLUDE_MACOS: ${{ needs.release-plan.outputs.include_macos }}
+      INCLUDE_LINUX: ${{ needs.release-plan.outputs.include_linux }}
+      IS_PRERELEASE: ${{ needs.release-plan.outputs.is_prerelease }}
       DIST_DIR: ${{ github.workspace }}\dist
       RELEASE_NOTES_PATH: ${{ github.workspace }}\release-notes\release-notes.md
     steps:
       - name: 下载 Windows Release 资产
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ needs.windows-x64-gnu.outputs.windows_artifact_name }}
+          name: ${{ needs.release-plan.outputs.windows_artifact_name }}
           path: dist
 
       - name: 下载 Release 更新日志
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ needs.windows-x64-gnu.outputs.notes_artifact_name }}
+          name: ${{ needs.release-plan.outputs.notes_artifact_name }}
           path: release-notes
 
       - name: 下载 macOS Release 资产
-        if: ${{ needs.windows-x64-gnu.outputs.include_macos == 'true' }}
+        if: ${{ needs.release-plan.outputs.include_macos == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.macos-arm-release.outputs.artifact_name }}
           path: dist
 
       - name: 下载 Linux Release 资产
-        if: ${{ needs.windows-x64-gnu.outputs.include_linux == 'true' }}
+        if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.linux-x64-gnu-release.outputs.artifact_name }}

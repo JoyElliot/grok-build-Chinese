@@ -604,7 +604,7 @@ jobs:
   macos-arm-preview:
     name: macOS ARM64 预览版
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 240
     outputs:
       package_name: ${{ steps.build.outputs.package_name }}
       archive_name: ${{ steps.build.outputs.archive_name }}
