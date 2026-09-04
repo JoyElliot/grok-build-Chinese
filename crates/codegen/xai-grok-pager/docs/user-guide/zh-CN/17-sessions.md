@@ -43,7 +43,7 @@ Grok 为每个会话使用单独的目录，并按工作目录分组。它会对
 ```
 
 `summary.json` 是索引条目。它记录会话摘要和生成的标题、模型 ID、创建和更新时间
-戳、消息计数，以及分叉或恢复会话的父会话引用。它还会记录最近一轮摘要和会话回顾，供列表界面展示。`updates.jsonl` 是驱动 `/resume` 和会话恢复的权威对话日志。
+戳、消息计数，以及分叉或恢复会话的父会话引用。它还会记录最近一轮摘要和会话回顾，供列表界面展示。`updates.jsonl` 是驱动 `/resume` 和会话恢复的权威对话日志。逐轮令牌与费用总计可通过 `grok-zh usage` 查看。
 
 ### 会话标题
 
@@ -270,9 +270,17 @@ await connection.request("session/load", {
   cwd: "/path/to/project",
   mcpServers: [],
 });
+
+// 修改实时选项（model 或 reasoning_effort）。
+// session/new 和 session/load 已返回带类型的 configOptions 列表。
+await connection.request("session/set_config_option", {
+  sessionId,
+  configId: "model",
+  value: { value: "grok-4.6" },
+});
 ```
 
-智能体会自动持久化所有会话更新。客户端可以重新连接，并按 ID 加载以前的会话。
+智能体会自动持久化所有会话更新。客户端可以重新连接，并按 ID 加载以前的会话。选项 ID、值结构和主导模式监听机制详见 [Agent 模式](15-agent-mode.md#session-config-options)。
 
 ---
 
@@ -294,6 +302,23 @@ grok-zh sessions search "rate limit"
 `grok-zh sessions list` 显示当前工作目录的会话，并按 worktree 标签分组。每行列出
 会话 ID、创建和更新时间、来源状态以及摘要。`grok-zh sessions search` 会将本地
 SQLite 索引与远程结果合并。
+
+---
+
+<a id="the-grok-usage-subcommand"></a>
+## `grok-zh usage` 子命令
+
+打印某个会话持久保存的令牌与费用用量。请使用该命令，不要直接读取会话文件：
+
+```bash
+# 会话总计和每个已记录轮次
+grok-zh usage <session-id>
+
+# 指定一个轮次
+grok-zh usage <session-id> 3
+```
+
+输出为 JSON，包含 `sessionId`、`updatedAt`、`session` 和 `turns`。指定轮次时使用同一封装结构，但 `turns` 只有一个元素。会话总计覆盖完整对话，包括恢复或分叉继承的历史。`costUsdTicks` 以每美元 10¹⁰ tick 计（除以 `1e10` 即美元）；不存在的轮次号会报错。TUI 中的交互式额度与计费入口仍是 `/usage`。
 
 ---
 

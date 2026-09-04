@@ -416,6 +416,8 @@ Shell 还支持子命令（`/plugins list`、`/plugins install <source>`、`/plu
 /usage manage
 ```
 
+若要查看任一本地会话持久保存的逐轮令牌与费用总计，请在 shell 中运行 `grok-zh usage <session-id> [turn]`。详见[会话管理](17-sessions.md#the-grok-usage-subcommand)。
+
 ### `/privacy`
 
 在设置中打开**编码数据、保留期限和训练**，在此选择**选择加入**或**选择退出**。不接受参数。
@@ -424,7 +426,7 @@ Shell 还支持子命令（`/plugins list`、`/plugins install <source>`、`/plu
 /privacy
 ```
 
-此设置不会影响 `[features] telemetry`、`trace_upload` 或外部 OTEL 设置——参见[监控用量](24-monitoring-usage.md#related-settings)。在团队账户中，只有团队管理员可以更改它；管理员还可以为团队启用或禁用零数据保留（ZDR）（[如何启用 ZDR](https://docs.x.ai/developers/faq/security#how-to-enable-zdr)）。当选择权不在你手中时，该行会显示 `ZDR` 或 `· Admin Managed`，而不是打开选择器。
+此设置不会影响 `[features] telemetry`、`trace_upload` 或外部 OTEL 设置——参见[监控用量](24-monitoring-usage.md#related-settings)。在团队账户中，只有团队管理员可以更改它；管理员还可以为团队启用或禁用零数据保留（ZDR）（[如何启用 ZDR](https://docs.x.ai/developers/faq/security#how-to-enable-zdr)）。当选择权不在你手中时，该行会显示 `ZDR` 或 `· Admin Managed`，而不是打开选择器。ZDR 会锁定编码数据共享，但不会关闭外部 OTEL 或 `user.email`；详见[此数据流与 ZDR](24-monitoring-usage.md#zdr-and-this-stream)。
 
 ---
 

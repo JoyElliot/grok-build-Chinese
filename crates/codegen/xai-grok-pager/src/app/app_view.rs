@@ -1020,6 +1020,8 @@ pub struct AppView {
     /// Passed to `show_ephemeral_tip`, which increments the matching key in place.
     /// In-memory only and per-session: never persisted to disk, so each pager run starts fresh (count 0).
     pub tip_seen_counts: std::collections::HashMap<&'static str, u32>,
+    /// Session-wide: /copy or /export ran. Suppresses the export-copy tip on every view.
+    pub export_copy_slash_used: bool,
     /// Terminal height (rows) from startup / the last `Event::Resize`.
     /// Feeds the auto-compact derivation (`views::agent::effective_compact`).
     /// The render-value compact flag is forced on while the terminal is `AUTO_COMPACT_MAX_ROWS` or shorter.
@@ -1588,6 +1590,7 @@ impl AppView {
             contextual_hints: Default::default(),
             remote_contextual_hints: None,
             tip_seen_counts: Default::default(),
+            export_copy_slash_used: false,
             last_known_terminal_rows: 0,
             small_screen_tip_evaluated: false,
             ssh_wrap_tip_evaluated: false,
@@ -4300,7 +4303,7 @@ impl AppView {
         agents: &mut IndexMap<AgentId, AgentView>,
         drawn_agent: Option<AgentId>,
     ) -> Option<crate::terminal::overlay::PostFlush> {
-        if crate::terminal::image::detect_graphics_protocol()
+        if crate::terminal::image::prompt_preview_graphics_protocol()
             == crate::terminal::image::GraphicsProtocol::None
         {
             return None;
@@ -4316,8 +4319,11 @@ impl AppView {
                 has_escapes = true;
             }
         }
-        if drawn_agent.is_none() {
-            clears.append(crate::terminal::overlay::clear_kitty().into());
+        if drawn_agent.is_none()
+            && let Some(clear) = crate::terminal::overlay::clear()
+            && (!clear.as_str().is_empty() || crate::terminal::overlay::has_committed_owner())
+        {
+            clears.append(clear.into());
             has_escapes = true;
         }
         has_escapes.then_some(clears)
@@ -5484,6 +5490,7 @@ impl AppView {
             needs_redraw |= agent.scrollback.tick();
             needs_redraw |= agent.todo.list_state.tick();
             needs_redraw |= agent.tasks.tick();
+            needs_redraw |= agent.resize_preview_needs_tick();
             for child_view in agent.subagent_views.values_mut() {
                 needs_redraw |= child_view.scrollback.tick();
                 needs_redraw |= child_view.tick_toast();
@@ -5524,6 +5531,11 @@ impl AppView {
                     lanes,
                 )
             ) && spinner_frame_tick;
+            needs_redraw |= agent
+                .extensions_modal
+                .as_ref()
+                .is_some_and(|m| m.needs_spinner_tick())
+                && spinner_frame_tick;
             needs_redraw |= agent.drain_blocked();
             agent.prompt.slash_controller.set_workflows_available(
                 agent
@@ -5558,6 +5570,26 @@ impl AppView {
             needs_redraw |= agent.prompt.history_search.poll();
             needs_redraw |= agent.poll_scrollback_search();
             needs_redraw |= agent.tick_toast();
+            if !self.export_copy_slash_used
+                && let Some(child_sid) = agent.active_subagent.clone()
+                && let Some(child_view) = agent.subagent_views.get_mut(&child_sid)
+            {
+                if child_view.tick_export_copy_detector() {
+                    needs_redraw |= super::dispatch::present_export_copy_tip(
+                        child_view,
+                        &mut self.tip_seen_counts,
+                        self.contextual_hints.export_copy,
+                        Some(self.locale.as_ref()),
+                    );
+                }
+            } else if !self.export_copy_slash_used && agent.tick_export_copy_detector() {
+                needs_redraw |= super::dispatch::present_export_copy_tip(
+                    agent,
+                    &mut self.tip_seen_counts,
+                    self.contextual_hints.export_copy,
+                    Some(self.locale.as_ref()),
+                );
+            }
             needs_redraw |= agent.tick_extensions_result_notice();
             needs_redraw |= agent.tick_ephemeral_tip();
             needs_redraw |= agent.tick_mode_banner();
@@ -5822,6 +5854,7 @@ impl AppView {
                 let fast = agent.scrollback.needs_animation()
                     || agent.todo.list_state.needs_tick()
                     || agent.tasks.needs_tick()
+                    || agent.resize_preview_needs_tick()
                     || agent.acp_synced_generation != agent.session.available_commands_generation
                     || !agent.session.state.is_idle()
                     || agent.wake_turn_active()
@@ -5844,7 +5877,7 @@ impl AppView {
                     || agent
                         .extensions_modal
                         .as_ref()
-                        .is_some_and(|m| m.result_notice.is_some())
+                        .is_some_and(|m| m.result_notice.is_some() || m.needs_spinner_tick())
                     || agent.ephemeral_tip_needs_tick()
                     || agent.mode_switch_banner.is_some()
                     || agent.has_drag_autoscroll()
@@ -6157,6 +6190,7 @@ pub(crate) mod legacy_tests {
             contextual_hints: Default::default(),
             remote_contextual_hints: None,
             tip_seen_counts: Default::default(),
+            export_copy_slash_used: false,
             last_known_terminal_rows: 0,
             small_screen_tip_evaluated: false,
             ssh_wrap_tip_evaluated: false,

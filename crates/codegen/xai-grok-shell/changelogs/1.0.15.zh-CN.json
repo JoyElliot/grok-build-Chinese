@@ -1,0 +1,37 @@
+[
+  {
+    "category": "performance",
+    "description": "会话启动时会在后台建立模型连接，从而降低**首次回复延迟**。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**关闭会话**现在更快，因为记忆整理会在下次启动时运行，不再阻塞退出。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "多次拖拽复制回滚区内容后，现在会显示建议使用 `/copy` 和 `/export` 命令的**提示**。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "智能体创建时会在后台开始刷新过期令牌，因此**已登录状态下的启动**更快。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**新建会话**返回得更快；MCP 工具和其他启动工作会在后台进行。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "分页器启动期间输入的内容（包括 Enter）现在会被保留，并正确解释为提交或换行。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dock 面板**的输入与显示现在会遵循远程功能灰度设置，并在面板隐藏或为空时正确处理键盘焦点。",
+    "breaking_change": false
+  }
+]

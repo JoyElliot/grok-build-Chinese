@@ -17,7 +17,7 @@ grok-zh --sandbox workspace
 # 只读模式（到处可读，仅可写 ~/.grok/ + 临时目录）
 grok-zh --sandbox read-only
 
-# 限制最严格的配置（可读 CWD + 系统路径，可写 CWD + 临时目录 + ~/.grok/，不允许子进程联网）
+# 限制最严格的配置（可读 CWD + 系统路径 + ~/.grok，可写 CWD + ~/.grok/sessions + 临时目录，不允许子进程联网）
 grok-zh --sandbox strict
 ```
 
@@ -31,7 +31,7 @@ grok-zh --sandbox strict
 | `workspace`           | Everywhere         | CWD + `~/.grok/` + `/tmp` + `/var/tmp`         | Allowed       | 常规开发                          |
 | `devbox`              | Everywhere         | 除 `/data` 外的所有顶层目录                    | Allowed       | 一次性开发 VM                     |
 | `read-only`           | Everywhere         | `~/.grok/` + `/tmp` + `/var/tmp`               | Blocked¹      | 探索、代码审查                    |
-| `strict`              | CWD + system paths | CWD + `~/.grok/` + `/tmp` + `/var/tmp`         | Blocked¹      | 不受信任的代码                    |
+| `strict`              | CWD + system paths + `~/.grok` | CWD + `~/.grok/sessions` + `/tmp` + `/var/tmp` | Blocked¹      | 不受信任的代码                    |
 
 ¹ 仅 **Linux** 通过 seccomp 强制阻止子进程网络。在 macOS 上这是空操作——这些配置不
 会限制子进程网络。
@@ -56,15 +56,16 @@ grok-zh --sandbox strict
 内容，但只能写入 `~/.grok/`（会话持久化所需）和临时目录。Linux 上会阻止子进程网络
 （macOS 上为空操作）。
 
-**strict** —— 用于审查不受信任代码的最严格配置。智能体只能读取当前工作目录和
-必要的系统路径。写入范围限制为 CWD、`~/.grok/` 和临时目录。Linux 上会阻止子进程
-网络（macOS 上为空操作）。
+**strict** —— 用于审查不受信任代码的最严格配置。智能体可以读取当前工作目录、
+必要的系统路径和 `~/.grok`。写入范围限制为 CWD、`~/.grok/sessions` 和临时目录，
+而不是整个 `~/.grok` 树。Linux 上会阻止子进程网络（macOS 上为空操作）。
 
 ### 全局 hook 的直接写入保护
 
 在 `workspace`、`read-only` 和 `strict`（以及扩展这些基础配置的自定义配置）下，
-Grok 状态目录仍可写入会话/运行时文件，但内核会**拒绝写入** Grok 用作用户全局
-hook 源的直接磁盘路径（这些路径仍可读）：
+内核会**拒绝写入** Grok 用作用户全局 hook 源的直接磁盘路径（在已授予读取权限时
+仍可读取）。内置 `strict` 可以读取 `~/.grok`，但只能写入 CWD、
+`~/.grok/sessions` 和临时目录；即使配置原本授予写入，下列路径仍受拒绝写入保护：
 
 - `~/.grok/hooks/`（hook 目录）
 - `~/.grok/hooks-paths`（注册表文件；不会作为 hook JSON 加载，只加载其中的绝对目标）
@@ -277,7 +278,7 @@ macOS、Linux 和 Windows 上的 bash 工具及终端。
 
 ## 事件日志
 
-沙箱事件会记录到 `~/.grok/sandbox-events.jsonl`，以便调试。事件包括：
+沙箱事件会记录到 `~/.grok/sessions`，以便调试。事件包括：
 
 - 已应用的配置（配置名称、时间戳）
 - 违规行为（尝试访问被拒绝的路径）

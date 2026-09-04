@@ -1004,18 +1004,16 @@ pub(crate) fn format_activity_label_with_locale(
         TurnActivity::Retrying {
             attempt,
             max_retries,
-            ..
-        } => locale
-            .map(|locale| {
-                locale
-                    .named_text(
-                        "turn.activity.retrying",
-                        "Retrying ({attempt}/{max_retries})",
-                    )
-                    .replace("{attempt}", &attempt.to_string())
-                    .replace("{max_retries}", &max_retries.to_string())
-            })
-            .unwrap_or_else(|| format!("Retrying ({attempt}/{max_retries})")),
+            reason,
+            error_type,
+        } => crate::app::error_display::format_retry_activity_label_with_locale(
+            *attempt,
+            *max_retries,
+            reason,
+            error_type.as_deref(),
+            crate::app::error_display::RetryLabelStyle::Compact,
+            locale,
+        ),
         TurnActivity::WritingToolCall(writing) => writing.label_with_locale(locale),
         TurnActivity::Waiting(reason) => reason.label_with_locale(locale),
     }

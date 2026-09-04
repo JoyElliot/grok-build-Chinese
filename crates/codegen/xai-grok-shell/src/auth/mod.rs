@@ -53,7 +53,7 @@ pub use pre_tui::{PreTuiLoginOutcome, maybe_run_pre_tui_external_login};
 mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::{AuthManager, shared_api_key_provider};
-pub(crate) use manager::{AuthRemedy, SilentRefresh};
+pub(crate) use manager::{AuthRemedy, CachedTokenState, SilentRefresh};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub(crate) use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};

@@ -1,28 +1,25 @@
-//! `grok update` is a recovery command: a config failure must not block it.
+//! `grok-zh update` is a recovery command: a config failure must not block it.
 //!
-//! Hermetic: a local server serves the binary's own version as the channel
-//! pointer, so a healthy run exits 0 ("already up to date") and a corrupt
-//! config must too — reintroducing a config `?` fails exactly that run.
-//! The pointer must equal the current version: the installer converges in
-//! both directions, so an older pointer triggers a downgrade attempt.
+//! A local server serves the binary's own version as the channel pointer, so a healthy run exits 0 ("already up to date").
+//! A run with a corrupt config must exit 0 too; reintroducing a config `?` fails exactly that run.
+//! The pointer must equal the current version: the installer converges in both directions, so an older pointer triggers a downgrade attempt.
 
 use std::io::{Read, Write};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-/// Resolve the pager binary like the PTY harness: `PAGER_BINARY` under
-/// Bazel (runfiles-relative), else cargo's compile-time constant.
+/// Resolve the pager binary like the PTY harness: `PAGER_BINARY` under Bazel (runfiles-relative), else cargo's compile-time constant.
 fn pager_binary() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("PAGER_BINARY") {
         return std::path::absolute(&p)
             .unwrap_or_else(|e| panic!("failed to absolutize PAGER_BINARY {p}: {e}"));
     }
-    option_env!("CARGO_BIN_EXE_xai-grok-pager")
+    option_env!("CARGO_BIN_EXE_grok-zh")
         .map(std::path::PathBuf::from)
         .expect("PAGER_BINARY is unset and this build is not `cargo test`")
 }
 
-/// Local base answering every request with the channel pointer body.
+/// Spawn a local server that answers every request with the channel pointer body.
 fn spawn_pointer_server(body: Arc<Mutex<String>>) -> (std::net::TcpListener, String) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -46,7 +43,7 @@ fn spawn_pointer_server(body: Arc<Mutex<String>>) -> (std::net::TcpListener, Str
     (listener, base)
 }
 
-/// Run `grok update` in an isolated home against the local pointer base.
+/// Run `grok-zh update` in an isolated home against the local pointer base.
 fn run_update(base: &str, config_toml: &str, extra_args: &[&str]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(home.path().join("config.toml"), config_toml).unwrap();
@@ -62,8 +59,7 @@ fn run_update(base: &str, config_toml: &str, extra_args: &[&str]) -> std::proces
         .expect("spawn grok update")
 }
 
-/// The valid run proves the environment resolves to success, so a nonzero
-/// corrupt run can only mean a config failure aborted the update.
+/// The valid run proves the environment resolves to success, so a nonzero corrupt run can only mean a config failure aborted the update.
 #[test]
 fn corrupt_config_never_changes_update_outcome() {
     let body = Arc::new(Mutex::new("0.0.1".to_owned()));
@@ -82,7 +78,7 @@ fn corrupt_config_never_changes_update_outcome() {
     let valid = run_update(&base, "[cli]\n", &[]);
     assert!(
         valid.status.success(),
-        "healthy grok update against the local base must exit 0\nstdout:\n{}\nstderr:\n{}",
+        "healthy grok-zh update against the local base must exit 0\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&valid.stdout),
         String::from_utf8_lossy(&valid.stderr)
     );
@@ -90,7 +86,7 @@ fn corrupt_config_never_changes_update_outcome() {
     let corrupt = run_update(&base, "this is not toml {{{[[[", &[]);
     assert!(
         corrupt.status.success(),
-        "a corrupt config.toml must not block grok update\nstdout:\n{}\nstderr:\n{}",
+        "a corrupt config.toml must not block grok-zh update\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&corrupt.stdout),
         String::from_utf8_lossy(&corrupt.stderr)
     );

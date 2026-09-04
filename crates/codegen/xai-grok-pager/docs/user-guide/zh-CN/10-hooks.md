@@ -12,6 +12,7 @@
 - **阻止操作**——`PreToolUse` 钩子可以在危险命令运行前拒绝它。
 - **让智能体继续工作**——`Stop` 钩子可以在某个条件满足前阻止智能体结束本轮（例如测试套件通过），并将原因反馈给模型。
 - **响应事件**——`PostToolUse` 钩子可以将每次工具执行记录到文件中。
+- **在调用后纠正结果**——`PostToolUse` 钩子可以向模型解释工具结果，或替换模型将读取的输出（例如隐藏密钥或裁剪超长日志）；真实结果仍保留在记录中。
 - **设置上下文**——`SessionStart` 钩子可以导出环境变量或运行设置脚本。
 
 ---
@@ -91,10 +92,10 @@
 | 事件 | 触发时机 | 阻塞？ |
 |-------|---------------|-----------|
 | `SessionStart` | 会话开始。 | 否 |
-| `UserPromptSubmit` | 你提交提示。 | 否 |
+| `UserPromptSubmit` | 你提交提示。 | 是——可以阻止提示 |
 | `PreToolUse` | 工具即将运行。 | 是——可以拒绝 |
-| `PostToolUse` | 工具成功完成。 | 否 |
-| `PostToolUseFailure` | 工具失败。 | 否 |
+| `PostToolUse` | 工具已经运行完毕，包括内置工具返回的逻辑错误（例如 `run_terminal_command` 非零退出）；分发失败或 MCP 错误结果改触发 `PostToolUseFailure`。 | 不阻止调用，但可向模型提供反馈并替换模型看到的输出 |
+| `PostToolUseFailure` | 工具分发失败，或 MCP 工具返回错误结果。 | 否，但可通过 `additionalContext` 向模型提供上下文 |
 | `PermissionDenied` | 权限系统拒绝工具调用。 | 否 |
 | `Stop` | 智能体在真正完成时结束一轮（不是用户中断）。 | 是——可以阻止停止 |
 | `StopFailure` | 由于 API 错误而结束一轮。 | 否 |
@@ -105,7 +106,7 @@
 | `PostCompact` | 会话压缩完成。 | 否 |
 | `SessionEnd` | 会话结束。 | 否 |
 
-`SubagentEnd` 被接受为 `SubagentStop` 的别名。`PreToolUse` 可以阻止工具调用，`Stop`/`SubagentStop` 可以阻止智能体停止（请参阅[停止决策控制](#stop-decision-control)）；其他每个事件都是被动事件。
+`SubagentEnd` 被接受为 `SubagentStop` 的别名。`PreToolUse` 可以阻止工具调用，`Stop`/`SubagentStop` 可以阻止智能体停止（请参阅[停止决策控制](#stop-decision-control)）。`PostToolUse` 触发时工具已经运行，不能阻止调用，但会读取 stdout，并可向模型提供反馈或替换模型看到的工具输出（请参阅 [PostToolUse 输出](#posttooluse-output)）。其他事件都是被动事件。
 
 <a id="cursor-hook-compatibility"></a>
 ### Cursor 钩子兼容性
@@ -161,7 +162,7 @@ Cursor 的按操作钩子（`beforeShellExecution`、`afterFileEdit` 等）会�
 - **matcher**（可选）：选择哪些调用会触发钩子的正则表达式。它测试的内容取决于事件：工具事件（`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`PermissionDenied`）测试工具名称，`Notification` 测试通知类型，`SubagentStart`/`SubagentStop` 测试子智能体类型（例如 `explore`），`SessionStart` 测试启动来源（`startup`、`resume`、……），`SessionEnd` 测试结束原因，`PreCompact`/`PostCompact` 测试压缩触发方式（`manual` 或 `auto`），`StopFailure` 测试错误类型（`rate_limit`、`authentication_failed`、`invalid_request`、`server_error`、`max_output_tokens` 或 `unknown`）。`Stop` 或 `UserPromptSubmit` 上的 matcher 会被忽略并给出警告（这些事件始终触发）。matcher 为空或省略时匹配所有内容。matcher 测试真实工具名称；经内部 `use_tool` 分发器路由的 MCP 调用显示为限定名称 `server__tool`（例如 `linear__save_issue`），因此应匹配该名称，而不是分发器名称。
 - **type**：`"command"`（运行脚本或 Shell 单行命令）或 `"http"`（将事件 POST 到 URL）。
 - **command**：可执行文件路径（相对于 JSON 文件）或内联 Shell 命令。
-- **timeout**：终止钩子前的秒数（默认 5 秒；`Stop`/`SubagentStop` 门禁默认 600 秒，与 Claude Code 一致）。所有钩子失败（超时、崩溃、输出格式错误、缺少必需环境变量）都采用故障开放：失败会记录到 UI 回滚区，但不会阻止工具调用。只有钩子返回的显式 `deny` 决策会阻止工具调用。
+- **timeout**：终止钩子前的秒数（默认 5 秒；`Stop`/`SubagentStop`/`PostToolUse` 门禁默认 600 秒）。所有钩子失败（超时、崩溃、输出格式错误、缺少必需环境变量）都采用故障开放：失败会记录到 UI 回滚区，但不会阻止工具调用。只有钩子返回的显式 `deny` 决策会阻止工具调用。
 
 <a id="tool-name-aliases"></a>
 ### 工具名称别名
@@ -233,6 +234,7 @@ timeout = 10
 ```json
 {
   "hookEventName": "pre_tool_use",
+  "hook_event_name": "PreToolUse",
   "sessionId": "abc-123",
   "cwd": "/Users/you/project",
   "workspaceRoot": "/Users/you/project",
@@ -243,7 +245,7 @@ timeout = 10
 }
 ```
 
-每个事件都携带相同的公共字段：`hookEventName`、`sessionId`、`cwd`、`workspaceRoot`、`timestamp` 和 `permissionMode`（`default`、`auto`、`plan` 或 `bypassPermissions`），以及上面 `toolName` 等事件专用字段。
+每个事件都携带相同的公共字段：`hookEventName`、`sessionId`、`cwd`、`workspaceRoot`、`timestamp`、`permissionMode`（`default`、`auto`、`plan` 或 `bypassPermissions`）以及 `promptId`（事件所属轮次；会话级事件可缺省），另有上面 `toolName` 等事件专用字段。snake_case 键 `hook_event_name` 使用 Claude 的 PascalCase 值；camelCase 键 `hookEventName` 使用 grok 的 snake_case 值。
 
 <a id="output-blocking-hooks"></a>
 ### 输出（阻塞钩子）
@@ -253,14 +255,48 @@ timeout = 10
 - **允许**：`{"decision": "allow"}`
 - **拒绝**：`{"decision": "deny", "reason": "检测到不安全命令"}`
 
+<a id="posttooluse-output"></a>
+### PostToolUse 输出
+
+`PostToolUse` 在工具运行后触发，因此不会阻止调用；但它的 stdout 会决定模型接下来看到什么。将 JSON 写入 **stdout**：
+
+```json
+{
+  "decision": "block",
+  "reason": "差异中仍有调试输出",
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "这是生成文件，请改模板",
+    "updatedToolOutput": { "type": "Bash", "command": "…", "exit_code": 0, "output_for_prompt": "[已隐藏]" }
+  }
+}
+```
+
+| 字段 | 效果 |
+|------|------|
+| `decision: "block"` + `reason` | 将原因连同工具结果交给模型；这里的“block”表示告诉模型结果有问题，不会停止已经完成的调用。 |
+| `additionalContext` | 在工具结果旁附加给模型的说明。 |
+| `updatedToolOutput` | 替换模型看到的结果，适用于所有工具。 |
+| `updatedMCPToolOutput` | 仅用于 MCP 的 `updatedToolOutput` 别名；用于内置工具时会被忽略。 |
+
+- 多个钩子的原因和 `additionalContext` 会按运行顺序，在工具结果之后用当前 harness 的 reminder 标签封装并注明钩子名；输出替换采用最后写入者优先，被覆盖的替换会记入日志。
+- 对内置工具，`updatedToolOutput` 必须保持该工具在事件 `toolResult` 中的原始输出结构，否则替换会被忽略并记录失败；拼错 `decision`（仅接受 `"block"`）也按失败记录。应先检查 `toolResultTruncated`：超大负载会以普通字符串交给钩子，无法按原结构回传。
+- MCP 输出不做结构校验；JSON 字符串直接成为模型可见文本，其他值会被序列化。`updatedToolOutput` 和 `updatedMCPToolOutput` 两个键之间同样由最后一个钩子写入者获胜。
+- 原因和 `additionalContext` 上限为 10,000 字符，替换后的模型可见文本在渲染后限制为 64K 字符；只有结构不匹配才会丢弃。非零退出（包括退出 2）会保留 block 原因，但丢弃 `additionalContext` 和替换内容。
+- 替换只影响模型的副本；回滚区、会话记录和遥测仍保留真实输出。替换后的截图或 PDF 读取不会再向模型传递原图。钩子发送的说明、原因和替换内容都会转义，不能闭合 reminder 标签并伪装成 harness 或用户指令。
+- 命令和 HTTP 配置钩子可替换输出；通过 grok-agent-sdk 注册的 `PostToolUse` 只能提供 block 原因和 `additionalContext`，不能替换工具输出。
+- 实际运行过的工具（包括内置逻辑错误）触发 `PostToolUse`；分发失败和 MCP 错误结果触发仅支持上下文的 `PostToolUseFailure`。默认超时为 600 秒。
+
 <a id="exit-codes"></a>
 ### 退出代码
 
 | 退出代码 | 含义 |
 |-----------|---------|
 | `0` | 成功/允许（针对阻塞钩子） |
-| `2` | 显式拒绝（`PreToolUse`），或使用 stderr 作为反馈阻止停止（`Stop`/`SubagentStop`） |
-| 其他 | 故障开放——会记录失败但不会阻止任何操作。对于 `PreToolUse`，无论退出代码如何，stdout JSON 中的 `deny` 决策都会生效。对于 `Stop`/`SubagentStop`，stdout 上的有效决策 JSON 优先于退出代码（与 Claude Code 一致）；只有 stdout 没有可用 JSON 时，退出代码才生效，此时退出 2 会阻止并将 stderr 作为反馈。 |
+| `2` | 显式拒绝（`PreToolUse`）、使用 stderr 作为反馈阻止停止（`Stop`/`SubagentStop`），或向模型反馈（`PostToolUse`）。JSON 中的 `reason` 优先于 stderr。 |
+| 其他 | 故障开放——会记录失败但不会阻止任何操作。对于 `PreToolUse`，无论退出代码如何，stdout JSON 中的 `deny` 决策都会生效。对于 `Stop`/`SubagentStop`，stdout 上的有效决策 JSON 优先；没有可用 JSON 时退出 2 才会阻止并使用 stderr。对于 `PostToolUse`，任何退出代码都不会阻止已经完成的调用；失败会被记录，block 原因保留，而 `additionalContext` 与输出替换会被丢弃。 |
+
+**`PostToolUse` 的退出 2 语义已经变化。** 它现在会把 stderr 反馈给模型。若日志钩子写成 `run_checker; exit $?`，而 `mypy`、`grep`、`pytest` 或 `argparse` 以 2 退出，输出也会交给模型；希望保持静默时请显式 `exit 0`。
 
 <a id="stop-decision-control"></a>
 ### 停止决策控制
@@ -276,7 +312,9 @@ timeout = 10
 
 钩子输入包含 `stopHookActive` 和 `lastAssistantMessage`。当智能体因本轮先前的停止钩子阻止而正在继续时，`stopHookActive` 为 true；请检查它或 transcript，避免在永远无法解决的条件上继续阻止。`lastAssistantMessage` 携带智能体本轮最终响应的文本，因此钩子无需解析 transcript。单轮中经过 **8 次继续**（阻止或非错误反馈）后，门禁会被覆盖，本轮结束；最后一次强制停止不会咨询钩子。计数器按轮次计算：下一个用户提示会重新开始，因此长时间运行的目标可以跨轮。钩子失败采用故障开放：智能体正常停止。
 
-`Stop` 和 `SubagentStop` 钩子默认超时 600 秒（与 Claude Code 一致），因为门禁通常会运行构建或测试套件；超时的钩子采用故障开放，智能体仍会停止。其他事件仍使用 5 秒默认值。门禁需要更长时间时显式设置 `timeout`：`{ "type": "command", "command": "bin/verify.sh", "timeout": 1200 }`。
+`Stop`、`SubagentStop` 和 `PostToolUse` 钩子默认超时 600 秒，因为这些门禁通常会运行构建或测试套件；超时采用故障开放，不会阻止完成。其他事件仍使用 5 秒默认值。门禁需要更长时间时显式设置 `timeout`：`{ "type": "command", "command": "bin/verify.sh", "timeout": 1200 }`。
+
+会话关闭时，排队的轮次结束钩子最多等待半秒；随后每个 `SessionEnd` 钩子默认最多运行 1.5 秒。可用 `GROK_SESSION_END_HOOKS_TIMEOUT_MS`（毫秒，最大 60 秒）调整后者。
 
 门禁只在真正完成时运行。被中断（Esc / Ctrl+C）、被拒绝和达到最大轮数的轮次会完全跳过 Stop 钩子，API 错误轮次则触发 `StopFailure`。会话结束时还会单独触发 Stop（`reason: "channel_closed"` 或 `"shutdown"`）；其决策输出会被解析但忽略，因为已经没有可继续的轮次。统计或门控 Stop 触发次数的脚本应检查 `reason == "end_turn"`，以免会话结束触发影响统计。
 
@@ -290,8 +328,9 @@ timeout = 10
 
 **移植 Claude Code 停止钩子**：输出词汇（`decision`、`reason`、`continue`、`stopReason`、`additionalContext`）可以原样使用。以下事项与 Claude 不同：
 
-- **camelCase 输入**：grok 的 stdin 外壳各处使用 camelCase 键，而 Claude 使用 snake_case。读取 `.stop_hook_active`、`.hook_event_name` 或 `.background_tasks[].agent_type` 的脚本必须切换为 `.stopHookActive`、`.hookEventName` 和 `.backgroundTasks[].agentType`（事件值为 `"stop"`）。通过 grok-agent-sdk 注册的钩子会将顶层键以及 `backgroundTasks`/`sessionCrons` 条目键都转换为 snake_case，因此 SDK 中 wire 的 `.backgroundTasks[].agentType` 读取为 `.background_tasks[].agent_type`。
-- **`toolResult` 字段**：`PostToolUse` 工具输出是 `toolResult`（SDK：`tool_result`），不是 Claude 的 `tool_response`；读取 `.tool_response` 的钩子必须切换为 `.toolResult`。
+- **camelCase 输入**：grok 的 stdin 外壳各处使用 camelCase 键，而 Claude 使用 snake_case。读取 `.stop_hook_active` 或 `.background_tasks[].agent_type` 的脚本必须切换为 `.stopHookActive` 和 `.backgroundTasks[].agentType`。snake_case 的 `hook_event_name` 携带 Claude 的 PascalCase 值（如 `"Stop"`），camelCase 的 `hookEventName` 携带 grok 的 snake_case 值（如 `"stop"`）。通过 grok-agent-sdk 注册的钩子仍会把顶层键及数组条目键转换为 snake_case。
+- **`toolResult` 字段**：`PostToolUse` 工具输出是 `toolResult`（SDK：`tool_result`）；grok 同时发出复制该值的 `tool_response` snake_case 别名，因此读取 Claude `.tool_response` 的钩子无需修改。
+- **`updatedToolOutput` 使用 grok 自己的输出结构**：内置工具的替换会按事件中 `toolResult` 的结构验证；沿用其他运行时字段名会被忽略。MCP 工具没有固定结构，因此 `updatedToolOutput` 与 `updatedMCPToolOutput` 都会原样通过。
 - **会话结束触发**：会话结束时会额外触发仅观察的 Stop；按 `reason == "end_turn"` 过滤（见上文）。
 - **间隔调度**：`sessionCrons[].schedule` 是人类可读的间隔，永远不是 cron 表达式。
 - **任务类型**：`backgroundTasks[].type` 只有 `shell`、`monitor` 或 `subagent`；不会发出 Claude 的其他标签（`workflow`、`teammate` 等）。
@@ -317,7 +356,7 @@ fi
 <a id="passive-hooks"></a>
 ### 被动钩子
 
-对于 `SessionStart` 或 `PostToolUse` 等事件，stdout 会被忽略。成功时只需退出 0。
+对于 `SessionStart` 或 `Notification` 等事件，stdout 会被忽略。例外是 `PreToolUse`、`Stop`/`SubagentStop`，以及虽不阻止调用但会读取 stdout 的 `PostToolUse`（见 [PostToolUse 输出](#posttooluse-output)）。
 
 <a id="environment-variables"></a>
 ### 环境变量
@@ -489,6 +528,7 @@ echo '{"decision": "allow"}'
 - 全局钩子（`~/.grok/hooks/`）以你的用户权限运行——请像对待 Shell 脚本一样对待它们。
 - 项目钩子需要文件夹信任（`/hooks-trust` 或 `--trust`，与仓库本地 MCP/LSP 使用同一门禁），以防止恶意仓库发起供应链攻击。
 - HTTP 钩子会发送会话数据——只使用可信端点。
+- `PostToolUse` 钩子可以向模型加入指令或替换模型看到的工具输出，因此应像信任 `PreToolUse` 门禁一样信任它。真实输出仍保留在回滚区和会话记录中。
 
 ---
 

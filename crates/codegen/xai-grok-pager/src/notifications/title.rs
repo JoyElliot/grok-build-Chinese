@@ -275,17 +275,18 @@ fn write_activity(
         TurnActivity::Retrying {
             attempt,
             max_retries,
-            ..
+            reason,
+            error_type,
         } => {
-            let template = title_text(
-                locale,
-                "notifications.title.retrying",
-                "Retrying ({attempt}/{max_retries})",
-            );
             buf.push_str(
-                &template
-                    .replace("{attempt}", &attempt.to_string())
-                    .replace("{max_retries}", &max_retries.to_string()),
+                &crate::app::error_display::format_retry_activity_label_with_locale(
+                    *attempt,
+                    *max_retries,
+                    reason,
+                    error_type.as_deref(),
+                    crate::app::error_display::RetryLabelStyle::Compact,
+                    locale,
+                ),
             );
         }
         TurnActivity::WritingToolCall(writing) => buf.push_str(&writing.label_with_locale(locale)),
@@ -559,14 +560,15 @@ mod tests {
         let activity = TurnActivity::Retrying {
             attempt: 2,
             max_retries: 5,
-            reason: "timeout".to_owned(),
+            reason: "API error (status 504 Gateway Timeout): upstream timeout".to_owned(),
+            error_type: None,
         };
         let state = TitleState {
             activity: Some(&activity),
             ..idle_state()
         };
         mgr.update(&state);
-        assert_eq!(mgr.last_title, "Retrying (2/5)");
+        assert_eq!(mgr.last_title, "Request timed out (504) | Retrying (2/5)");
     }
 
     #[test]
@@ -601,6 +603,7 @@ mod tests {
             attempt: 2,
             max_retries: 5,
             reason: "timeout".to_owned(),
+            error_type: None,
         };
         mgr.update(&TitleState {
             locale: Some(&locale),

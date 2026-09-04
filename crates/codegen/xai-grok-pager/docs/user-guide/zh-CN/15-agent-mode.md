@@ -182,6 +182,28 @@ ACP 会流式传输结构化事件。每条 `session/update` 通知都带有 `se
 
 ---
 
+<a id="session-config-options"></a>
+## 会话配置选项
+
+`session/new` 和 `session/load` 的响应包含一个带类型的 `configOptions` 列表（这是标准 ACP，而不是 `x.ai/` 扩展）。使用 `session/set_config_option` 可修改实时会话选项。
+
+| `configId` | 类别 | 效果 |
+|------------|------|------|
+| `model` | `model` | 切换会话模型（受 `allowed_models` 与聊天网关路由约束）。值必须是字符串 ID。 |
+| `reasoning_effort` | `thought_level` | 在不切换模型的情况下调整当前模型的推理强度（不重写提示词，也不经过 `allowed_models`）。值必须是字符串 ID（`minimal`、`low`、`medium`、`high`、`xhigh`）。若模型未声明 `supportsReasoningEffort`，则会发出警告并忽略。 |
+
+```json
+{
+  "sessionId": "…",
+  "configId": "reasoning_effort",
+  "value": { "value": "high" }
+}
+```
+
+响应会返回**完整且已更新的**选项列表；`config_option_update` 会话通知也会将其同步给所有订阅客户端。在主导模式下，代理会监听 `configId: model`，以保持每个客户端的 `default_model` 同步。布尔值会被拒绝；目前尚未实现布尔选项。
+
+---
+
 <a id="session-meta-options"></a>
 ## 会话 `_meta` 选项
 

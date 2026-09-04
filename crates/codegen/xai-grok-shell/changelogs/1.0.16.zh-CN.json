@@ -1,0 +1,42 @@
+[
+  {
+    "category": "breaking",
+    "description": "**企业策略**现在可以通过已签名的 `requirements.toml` 限制用户可选择的模型。",
+    "breaking_change": true
+  },
+  {
+    "category": "features",
+    "description": "**MCP 服务器**现在可以在会话绑定时提供，以支持工作区集成。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**长时间运行的会话**在网络问题期间因令牌过期而中断时，不再丢失工作。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**长时间运行的子智能体和任务输出等待**默认上限从十分钟延长到一小时。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**名称很长的斜杠命令建议**不再在下拉菜单中显示空白标签。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**创建子智能体后立即发送消息**时，不再因子智能体仍在启动而失败。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**扩展弹窗**（`/mcps` 和其他标签页）内的加载动画现在可以正常播放。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "从 `/mcps` 触发的 **MCP 服务器 OAuth 身份验证**不再导致会话死锁。",
+    "breaking_change": false
+  }
+]

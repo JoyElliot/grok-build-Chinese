@@ -8,6 +8,7 @@ edition.workspace = true
 community-build = ["dep:sha2", "dep:tar", "dep:zip"]
 
 [dependencies]
+dunce = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 flate2 = { workspace = true }
@@ -44,4 +45,3 @@ tempfile = { workspace = true }
 time = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "test-util"] }
 wiremock = { workspace = true }
-dunce = { workspace = true }

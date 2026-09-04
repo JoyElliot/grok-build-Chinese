@@ -1,0 +1,132 @@
+[
+  {
+    "category": "fixes",
+    "description": "**`grok-zh inspect`** 现在会正确地将 Claude 绕过锁显示为提示性限制，而不是强制限制。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "父会话繁忙时，**子智能体会话**不再泄漏线程或文件描述符。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**启动**现在每次只获取一次远程设置，不再可能获取两次。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**OIDC 令牌刷新**现在默认主动进行，提高了可靠性。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**PostToolUse 钩子**现在可以在工具执行后向模型提供反馈和上下文。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**通过 SDK 注册的 PostToolUse 钩子**现在可以提供面向模型的反馈。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**冷启动**不再重复获取远程设置。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "在大型仓库中发送**第一条消息**时，不再等待仓库状态扫描。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "因上下文大小导致的**压缩失败**现在会缩减输入，而不是原样重试。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`grok-zh usage <session-id>`** 现在会显示已持久化的逐轮 token 和费用数据。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "输入区和标题中的**重试状态**现在会显示简短的重试原因。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`--sandbox strict`** 现在只允许写入 `~/.grok/sessions`。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**较大的会话记忆**不再在轮次结束或创建子智能体期间阻塞智能体。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**创建子智能体**现在会为繁忙的协调器等待更长时间，并显示更清晰的重试指引，而不是“无法访问”。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "失败的**任务和待办事项工具调用**现在会出现在会话记录中，不再无迹可寻。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "使用双击 Enter 立即发送时，**输入区状态行**不再折叠或闪烁。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**关闭会话**不再被单个缓慢钩子拖延；每个 SessionEnd 钩子现在都有独立的超时。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**模型现在可以为每种推理强度声明不同的标识符**，不必始终发送同一个 ID。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "在扩展弹窗中**移除钩子**时，不再提供处理程序会拒绝的操作。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "轮次运行期间的**插入消息**现在要么原子地全部送达，要么完全不送达。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "父会话等待完成时，**子智能体任务**不再被错误取消。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**工作流详情视图**现在会在按 X 或点击外部时关闭浮层，而不是返回运行列表。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**恢复子智能体**现在可处理仍能在预留余量后装入模型上下文的较大会话记录。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**提示词建议**现在会遵循远程配置，并默认使用当前会话模型。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**已登录的 CLI** 在热启动时会从本地缓存提供远程设置，因此启动更快。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Windows CLI 下载包**现在采用与 macOS 和 Linux 相同的压缩侧车文件，体积缩小约 70%。",
+    "breaking_change": false
+  }
+]

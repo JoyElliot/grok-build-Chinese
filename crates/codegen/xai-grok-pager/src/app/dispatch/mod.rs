@@ -36,7 +36,9 @@ mod voice;
 
 pub(crate) use auth::scrollback_has_recent_disk_full;
 pub(in crate::app) use auth::scrollback_has_recent_error_banner;
-pub(crate) use billing::{UPSELL_URL_PAYG, UPSELL_URL_UPGRADE, is_credit_limit_error};
+pub(crate) use billing::{
+    CREDIT_LIMIT_RETRY_OPTION_ID, UPSELL_URL_PAYG, UPSELL_URL_UPGRADE, is_credit_limit_error,
+};
 pub(crate) use modes::{downgrade_displayed_auto_if_gated, effective_auto};
 pub(crate) use notes::FEEDBACK_QUESTION_LABEL;
 pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
@@ -45,7 +47,9 @@ pub(crate) use notes::recap_unavailable_toast;
 pub(crate) use notes::{recap_unavailable_toast_with_locale, scrollback_has_user_messages};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;
-pub(in crate::app) use prompt::{show_small_screen_tip, show_ssh_wrap_tip};
+pub(in crate::app) use prompt::{
+    present_export_copy_tip, show_small_screen_tip, show_ssh_wrap_tip,
+};
 pub(super) use queue::{
     apply_turn_start_shim, arm_send_now_and_paint, maybe_drain_queue_and_note_peek,
     note_peek_page_flip, shim_renders_own_user_block,

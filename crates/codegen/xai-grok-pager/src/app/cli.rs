@@ -53,6 +53,8 @@ pub enum Command {
     Models,
     /// 列出、搜索或恢复会话
     Sessions(crate::sessions_cmd::SessionsArgs),
+    /// 输出指定会话中持久化的 token 与费用用量
+    Usage(crate::usage_cmd::UsageArgs),
     /// 获取并安装托管配置
     Setup {
         /// 将获取的配置作为 JSON 输出而不安装；不会写入 ~/.grok。
@@ -649,6 +651,9 @@ pub struct PagerArgs {
         hide = true
     )]
     pub no_memory: bool,
+    /// 在无头回合后刷新跨会话记忆；无提示词时须配合恢复或继续参数。
+    #[arg(long = "memory-flush", hide = true)]
+    pub memory_flush: bool,
     /// agent 名称或定义文件路径。
     #[arg(long = "agent", value_name = "NAME")]
     pub agent: Option<String>,
@@ -809,7 +814,7 @@ fn strip_cur_dir(path: PathBuf) -> PathBuf {
         .collect()
 }
 impl PagerArgs {
-    pub(crate) fn memory_enabled_override(&self) -> Option<bool> {
+    pub fn memory_enabled_override(&self) -> Option<bool> {
         if self.experimental_memory {
             Some(true)
         } else if self.no_memory {
@@ -925,12 +930,15 @@ impl PagerArgs {
         &self,
     ) -> xai_grok_shell::session::persistence::RecentSessionSelection {
         use xai_grok_shell::session::unified_list::HeadlessPolicy;
-        let policy =
-            if self.single.is_some() || self.prompt_json.is_some() || self.prompt_file.is_some() {
-                HeadlessPolicy::Include
-            } else {
-                HeadlessPolicy::Exclude
-            };
+        let policy = if self.single.is_some()
+            || self.prompt_json.is_some()
+            || self.prompt_file.is_some()
+            || self.memory_flush
+        {
+            HeadlessPolicy::Include
+        } else {
+            HeadlessPolicy::Exclude
+        };
         xai_grok_shell::session::persistence::RecentSessionSelection::from_headless_policy(policy)
     }
     /// Classify flags for sandbox profile lookup on an existing session.
@@ -1462,6 +1470,27 @@ mod tests {
         let args = PagerArgs::try_parse_from(["grok", "logout"]).expect("subcommand parses");
         assert!(matches!(args.command, Some(Command::Logout)));
         assert!(args.prompt.is_none());
+    }
+    #[test]
+    fn usage_command_parses_session_and_optional_turn() {
+        let session_only = PagerArgs::try_parse_from(["grok", "usage", "sess-1"])
+            .expect("grok usage <session-id>");
+        assert!(matches!(
+            session_only.command,
+            Some(Command::Usage(crate::usage_cmd::UsageArgs {
+                ref session_id,
+                turn: None,
+            })) if session_id == "sess-1"
+        ));
+        let with_turn = PagerArgs::try_parse_from(["grok", "usage", "sess-1", "3"])
+            .expect("grok usage <session-id> <turn>");
+        assert!(matches!(
+            with_turn.command,
+            Some(Command::Usage(crate::usage_cmd::UsageArgs {
+                ref session_id,
+                turn: Some(3),
+            })) if session_id == "sess-1"
+        ));
     }
     #[test]
     fn positional_prompt_conflicts_with_headless_single() {

@@ -432,15 +432,17 @@ impl SessionEvent {
                 reason,
                 ..
             } => {
+                let reason = localized_model_unavailable_reason(locale, reason);
                 if new_model_id.is_empty() {
-                    reason.clone()
+                    reason
                 } else {
-                    text(
-                        "scrollback.session_event.model_switched",
-                        "{reason} Switched to \"{model}\".",
+                    replace_placeholders_once(
+                        &text(
+                            "scrollback.session_event.model_switched",
+                            "{reason} Switched to \"{model}\".",
+                        ),
+                        &[("{reason}", &reason), ("{model}", new_model_id)],
                     )
-                    .replace("{reason}", reason)
-                    .replace("{model}", new_model_id)
                 }
             }
             SessionEvent::MemorySaved { path, trigger } => text(
@@ -502,6 +504,89 @@ impl SessionEvent {
                 | SessionEvent::TurnFailed { .. }
         )
     }
+}
+
+fn localized_model_unavailable_reason(
+    locale: &crate::locale::LocaleContext,
+    reason: &str,
+) -> String {
+    let text = |id: &str, english: &str| locale.named_text(id, english).into_owned();
+    const ORG_DENIAL: &str =
+        "This model isn't allowed by your organization's policy. Contact your administrator.";
+    const USER_DENIAL: &str = "This model isn't allowed by your allowed_models setting.";
+
+    if let Some((requested, rest)) = reason
+        .strip_prefix('"')
+        .and_then(|rest| rest.split_once("\": "))
+        && !requested.is_empty()
+    {
+        for (denial, id, english) in [
+            (
+                ORG_DENIAL,
+                "scrollback.session_event.model_unavailable.allowlist_org",
+                "\"{requested}\": This model isn't allowed by your organization's policy. Contact your administrator. This session is using \"{current}\".",
+            ),
+            (
+                USER_DENIAL,
+                "scrollback.session_event.model_unavailable.allowlist_user",
+                "\"{requested}\": This model isn't allowed by your allowed_models setting. This session is using \"{current}\".",
+            ),
+        ] {
+            if let Some(current) = rest
+                .strip_prefix(denial)
+                .and_then(|rest| rest.strip_prefix(" This session is using \""))
+                .and_then(|rest| rest.strip_suffix("\"."))
+                .filter(|current| !current.is_empty())
+            {
+                return replace_placeholders_once(
+                    &text(id, english),
+                    &[("{requested}", requested), ("{current}", current)],
+                );
+            }
+        }
+    }
+
+    if let Some((requested, current)) = reason
+        .strip_prefix('"')
+        .and_then(|rest| {
+            rest.split_once(
+                "\" isn't allowed by your allowed_models setting, so this session is using \"",
+            )
+        })
+        .and_then(|(requested, rest)| rest.strip_suffix("\".").map(|current| (requested, current)))
+        .filter(|(requested, current)| !requested.is_empty() && !current.is_empty())
+    {
+        return replace_placeholders_once(
+            &text(
+                "scrollback.session_event.model_unavailable.allowlist_user",
+                "\"{requested}\": This model isn't allowed by your allowed_models setting. This session is using \"{current}\".",
+            ),
+            &[("{requested}", requested), ("{current}", current)],
+        );
+    }
+
+    for (suffix, id, english) in [
+        (
+            "\" is no longer available for your account.",
+            "scrollback.session_event.model_unavailable.account",
+            "Model \"{model}\" is no longer available for your account.",
+        ),
+        (
+            "\" is no longer available. Please start a new session.",
+            "scrollback.session_event.model_unavailable.new_session",
+            "Model \"{model}\" is no longer available. Please start a new session.",
+        ),
+    ] {
+        if let Some(model) = reason
+            .strip_prefix("Model \"")
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .filter(|model| !model.is_empty())
+        {
+            return text(id, english).replace("{model}", model);
+        }
+    }
+
+    reason.to_owned()
 }
 
 fn localized_hook_annotation(
@@ -1120,6 +1205,65 @@ mod tests {
         assert_eq!(
             event.message(),
             "Your previous model is no longer available. Please start a new session."
+        );
+    }
+
+    #[test]
+    fn zh_localization_model_unavailable_known_templates_preserve_model_ids() {
+        let org = SessionEvent::ModelUnavailable {
+            previous_model_id: "custom-preview".into(),
+            new_model_id: "grok-4.6".into(),
+            reason: "\"custom-preview\": This model isn't allowed by your organization's policy. Contact your administrator. This session is using \"grok-4.6\".".into(),
+        };
+        assert_eq!(
+            org.message_with_locale(&zh_locale()),
+            "“custom-preview”：组织策略不允许使用此模型。请联系管理员。当前会话正使用“grok-4.6”。 已切换到“grok-4.6”。"
+        );
+
+        let account = SessionEvent::ModelUnavailable {
+            previous_model_id: "grok-enterprise".into(),
+            new_model_id: String::new(),
+            reason: "Model \"grok-enterprise\" is no longer available for your account.".into(),
+        };
+        assert_eq!(
+            account.message_with_locale(&zh_locale()),
+            "你的账户已无法使用模型“grok-enterprise”。"
+        );
+
+        let legacy = SessionEvent::ModelUnavailable {
+            previous_model_id: "preview".into(),
+            new_model_id: "grok-4.6".into(),
+            reason: "\"preview\" isn't allowed by your allowed_models setting, so this session is using \"grok-4.6\".".into(),
+        };
+        assert!(
+            legacy
+                .message_with_locale(&zh_locale())
+                .starts_with("“preview”：此模型不在 allowed_models 设置的允许范围内。")
+        );
+    }
+
+    #[test]
+    fn zh_localization_model_unavailable_unknown_reason_is_not_rewritten() {
+        let reason = "Provider said: Model \"x\" is unavailable?!";
+        let event = SessionEvent::ModelUnavailable {
+            previous_model_id: "x".into(),
+            new_model_id: String::new(),
+            reason: reason.into(),
+        };
+        assert_eq!(event.message_with_locale(&zh_locale()), reason);
+    }
+
+    #[test]
+    fn zh_localization_model_unavailable_unknown_reason_placeholders_are_not_rewritten() {
+        let reason = "Provider returned the literal token {model}.";
+        let event = SessionEvent::ModelUnavailable {
+            previous_model_id: "x".into(),
+            new_model_id: "grok-4.6".into(),
+            reason: reason.into(),
+        };
+        assert_eq!(
+            event.message_with_locale(&zh_locale()),
+            "Provider returned the literal token {model}. 已切换到“grok-4.6”。"
         );
     }
 

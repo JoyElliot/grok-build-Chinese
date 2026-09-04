@@ -23,9 +23,26 @@ Grok CLI 可以将使用情况的**指标**和**事件**导出到你组织自己
 外部流具有以下特性：
 
 - **默认关闭**，并且需要*双重选择加入*（主开关**和**明确的 exporter 选择）。
-- **默认不含内容**：不包含提示、代码、文件路径（仅扩展名）、工具参数、bash 命令；MCP/skill/plugin 名称会折叠为类别。可选的内容开关可以重新启用其中一部分。
+- **默认不含内容**：不包含提示、助手正文、代码、文件路径（仅扩展名）、工具参数、bash 命令；MCP/skill/plugin 名称会折叠为类别。可选的内容开关可以重新启用其中一部分。
 - 与 SpaceXAI 内部 telemetry **在结构上分离**：其 exporter 只携带你配置的标头，从不携带 SpaceXAI 凭据。
 - **独立于 SpaceXAI 数据保留退出设置**：即使 telemetry 已禁用，以及对 ZDR（zero-data-retention）团队也能工作。这些设置只控制 SpaceXAI 一侧的保留；外部流完全由你自己的 OTEL 配置控制。
+
+<a id="zdr-and-this-stream"></a>
+### ZDR 与此数据流
+
+`/privacy` 和零数据保留（ZDR）**不会**禁用此数据流。ZDR 关闭的是 SpaceXAI 一侧的
+保留（产品分析、会话跟踪上传和编码数据共享），不会静音 `GROK_EXTERNAL_OTEL`。
+
+启用此数据流后：
+
+- `user.id`、`session.id` 以及组织/团队/部署 ID 始终导出。
+- OAuth 或网关身份验证提供非空地址时，日志和指标都会附加 `user.email`。它属于身份，
+  不受内容开关控制；除非关闭整个数据流，否则不能单独固定关闭。
+- 提示文本、助手 `response` 和工具正文只会在对应开关开启时导出。第一方产品分析永远
+  不会收到这些正文。
+
+要让 ZDR 机器完全不连接 collector，请固定 `otel_enabled = false`（或不要启用此流）。
+只采集指标的 SIEM 应把四个 `otel_log_*` 键全部固定为 `false`。
 
 ## 快速开始
 
@@ -48,11 +65,13 @@ grok-zh
 | GROK_EXTERNAL_OTEL | 0 | 主开关。与控制 SpaceXAI 内部产品分析的 GROK_TELEMETRY_ENABLED 不同；两者控制方向相反的数据流。 |
 | OTEL_METRICS_EXPORTER | none | otlp \| console \| none。 |
 | OTEL_LOGS_EXPORTER | none | otlp \| console \| none。控制事件流。 |
-| OTEL_EXPORTER_OTLP_PROTOCOL | http/protobuf | http/protobuf \| grpc。 |
-| OTEL_EXPORTER_OTLP_ENDPOINT | HTTP 为 http://localhost:4318，gRPC 为 http://localhost:4317 | 基础端点。对于 http/protobuf，按 OTLP 规范追加 /v1/logs 和 /v1/metrics；对于 grpc，按原样使用 collector 端点。 |
+| OTEL_EXPORTER_OTLP_PROTOCOL | http/protobuf | http/protobuf \| grpc。两个信号共用的基础协议。 |
+| OTEL_EXPORTER_OTLP_LOGS_PROTOCOL / ..._METRICS_PROTOCOL | — | 各信号的协议覆盖（取值同基础协议）；无法识别的值会禁用数据流。 |
+| OTEL_EXPORTER_OTLP_ENDPOINT | HTTP 为 http://localhost:4318，gRPC 为 http://localhost:4317 | 基础端点。对于 http/protobuf，按 OTLP 规范追加 /v1/logs 和 /v1/metrics；对于 grpc，按原样使用 collector 端点。路径是否追加取决于**该信号自己的**协议。 |
 | OTEL_EXPORTER_OTLP_LOGS_ENDPOINT / ..._METRICS_ENDPOINT | — | 信号专用覆盖，按原样使用。对于 gRPC，通常应为不含 /v1/... 路径的 collector 端点。 |
 | OTEL_EXPORTER_OTLP_HEADERS（及信号专用变体） | — | Collector 身份验证（k=v,k2=v2）。外部 exporter 发送的**唯一**标头，也是唯一支持的 collector 身份验证机制（没有配置文件 headers 键——token 从不存储在磁盘上）。 |
 | OTEL_EXPORTER_OTLP_CERTIFICATE（及信号专用变体） | — | PEM bundle 路径，用于验证 collector 的额外受信任 CA 证书（适用于位于私有/企业 CA 后的 collector）。它会叠加在默认信任根（系统存储和内嵌 Mozilla 根）之上。 |
+| OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE / OTEL_EXPORTER_OTLP_CLIENT_KEY（及信号专用 ..._LOGS_... / ..._METRICS_... 变体） | — | mTLS 客户端身份的 PEM **路径**。证书和密钥必须成对设置（基础级或同一信号级）；只配置一半会忽略并警告。仅支持未加密 PEM 密钥。也可通过 `[telemetry] otel_client_certificate` / `otel_client_key` 设置。 |
 | OTEL_EXPORTER_OTLP_TIMEOUT | 10000（ms） | 导出超时。 |
 | OTEL_METRIC_EXPORT_INTERVAL | 60000（ms） | 指标导出间隔。 |
 | OTEL_BLRP_SCHEDULE_DELAY（或别名 OTEL_LOGS_EXPORT_INTERVAL） | 5000（ms） | 日志批次间隔。 |
@@ -60,7 +79,25 @@ grok-zh
 | OTEL_METRICS_INCLUDE_SESSION_ID | 1 | 为指标附加 session.id（基数退出）。 |
 | OTEL_METRICS_INCLUDE_VERSION | 0 | 为指标附加 app.version。 |
 | OTEL_LOG_USER_PROMPTS | 0 | 内容开关：grok_code.user_prompt 中的提示文本（上限 60 KB，并清除 secret）。 |
-| OTEL_LOG_TOOL_DETAILS | 0 | 内容开关：工具参数（上限 4 KB）、完整文件路径、原样 MCP/skill/plugin 名称。即使启用此开关，v1 也**绝不**导出 Bash 命令文本。 |
+| OTEL_LOG_ASSISTANT_RESPONSES | 未设置时跟随 prompts | 内容开关：grok_code.assistant_response 的 `response`（上限 60 KB，并清除 secret）。未设置时跟随 OTEL_LOG_USER_PROMPTS；显式设为 0 可在保留提示的同时关闭回复。`response_length` 始终导出。仅使用环境变量且设置 OTEL_LOG_USER_PROMPTS=1 的机群若要只采集提示，还必须设置 OTEL_LOG_ASSISTANT_RESPONSES=0（或在 requirements 中固定关闭）。 |
+| OTEL_LOG_TOOL_DETAILS | 0 | 元数据开关：4 KB `tool_parameters` 预览、完整文件路径、原样 MCP/skill/plugin 名称；**不**包含完整正文。企业推荐默认开启 DETAILS、关闭 CONTENT。 |
+| OTEL_LOG_TOOL_CONTENT | 0 | 正文开关：`tool_input`、`tool_output`、`full_command` 和失败时的 `error_message`（清除 secret；输入/输出/命令上限 60 KB，错误消息上限 4 KB）。它与 DETAILS 相互独立，CONTENT **不会**隐含 DETAILS；默认关闭。 |
+
+### 推荐的机群开关组合
+
+企业推荐默认**开启 DETAILS、关闭 CONTENT**：保留路径、4 KB `tool_parameters` 预览和
+原样 MCP/skill/plugin 名称等元数据，但不采集 Read、bash 或 MCP 结果正文。只有
+collector 确实需要存储这些正文时才开启 CONTENT。CONTENT 不会隐含 DETAILS；只开
+CONTENT 时，即使存在 60 KB `tool_output`，`tool_name` / `mcp_tool.name` 仍会折叠成
+`mcp_tool`。
+
+```toml
+[telemetry]
+otel_log_user_prompts = false
+otel_log_assistant_responses = false   # 未设置时会跟随 prompts；此处固定关闭
+otel_log_tool_details = true           # 用于 SIEM 关联的元数据
+otel_log_tool_content = false          # 正文，与 details 相互独立
+```
 
 OTEL_RESOURCE_ATTRIBUTES 会被有意忽略：resource 从固定且经过审计的属性集合构建。
 
@@ -77,15 +114,36 @@ otel_metrics_exporter = "otlp"
 otel_logs_exporter = "otlp"
 otel_endpoint = "https://collector.corp.example:4318"
 otel_protocol = "http/protobuf"  # or "grpc"
+# 私有 CA 信任和 mTLS 的可选 PEM 路径（绝不是 PEM 内容）：
+otel_certificate = "/etc/ssl/corp-ca.pem"
+otel_client_certificate = "/etc/ssl/client.crt"
+otel_client_key = "/etc/ssl/client.key"
 otel_log_user_prompts = false   # admins can pin these via requirements
-otel_log_tool_details = false
+otel_log_assistant_responses = false
+otel_log_tool_details = false   # 代码默认值；SIEM 机群通常开启，见上文推荐组合
+otel_log_tool_content = false
 ```
 
 配置键是 [telemetry] 下的 otel_*；为了生态互操作，**环境变量保留标准 OTEL 名称**（GROK_EXTERNAL_OTEL、OTEL_*），因此两层有意使用不同的命名空间。otel_protocol 配置键映射到 OTEL_EXPORTER_OTLP_PROTOCOL。
 
-有意不提供 headers 键：请通过 OTEL_EXPORTER_OTLP_HEADERS 提供 collector 身份验证，以便 token 永不存储在磁盘上。
+有意不提供 headers 键：请通过 OTEL_EXPORTER_OTLP_HEADERS 提供 collector 身份验证，
+以便 token 永不存储在磁盘上。证书和密钥配置键都只能填写**路径**，切勿把私钥内容
+嵌入 TOML。CA 和客户端身份路径均以环境变量优先。
 
-受管部署还可以通过 grok-zh setup 受管配置/requirements 固定值分发 [telemetry] otel_* 键来启用组织范围 telemetry，或使用相同的本地配置层（external_otel_disabled、内容开关锁定）在全机群强制禁用。
+签名 `requirements.toml` 中每个**实际出现**的 `[telemetry] otel_*` 键都是固定值，
+环境变量无法覆盖；`managed_config.toml` 则不是锁，环境变量仍然优先。固定
+`otel_endpoint` 会移除开发者的通用/信号专用端点环境变量和未列出的用户/托管文件
+同级项（显式列出的端点除外）；固定客户端证书/密钥也会移除开发者端点和未列出的
+文件同级项。固定 CA（`otel_certificate`）**不会**移除端点。若 requirements 列出
+`otel_log_user_prompts`、`otel_log_tool_details`、`otel_log_assistant_responses` 或
+`otel_log_tool_content` 中任意一项而遗漏同级开关，遗漏项默认关闭；不要跨越这一层
+依赖 prompts→responses 的回退。
+
+外部流只导出**日志和指标**，没有面向客户的 trace exporter。
+
+机群启用应通过一份签名 `requirements.toml` 同时固定目的地、exporter 和内容开关。
+`user.email` 不是可固定键，而是随 OAuth/网关身份提供。headers 在过滤后仍由启动器
+通过进程环境提供，绝不会写入该 TOML。
 
 ## 启动抑制（最初几秒没有数据的原因）
 
@@ -110,7 +168,7 @@ otel_log_tool_details = false
 | terminal.type | 终端模拟器品牌 |
 | grok_code.schema.version | v1 |
 
-身份属性（user.id，以及已知时的 organization.id / team.id / deployment.id）会在身份验证完成后附加到每个指标数据点和每个事件。prompt.id（每个提示一个 UUID）只出现在事件中，从不出现在指标中。
+身份属性（user.id，以及已知时的 organization.id / team.id / deployment.id）会在身份验证完成后附加到每个指标数据点和每个事件。使用 OAuth 或网关账户登录且存在非空地址时，日志和指标还会附加 `user.email`；它属于身份而非内容开关，也不会从 git、API Key 或部署密钥中获取。prompt.id（每个提示一个 UUID）只出现在事件中，从不出现在指标中。
 
 ## 指标（meter scope ai.xai.grok_code）
 
@@ -136,20 +194,21 @@ tool_name 值：内置工具名称原样传递；除非设置 OTEL_LOG_TOOL_DETA
 
 ## 事件（OTLP 日志记录）
 
-每个事件都带有 event.sequence、session.id、turn_number（回合内）、prompt.id 以及身份属性。开关图例：**details** = 需要 OTEL_LOG_TOOL_DETAILS，**prompts** = 需要 OTEL_LOG_USER_PROMPTS；流活动时其他内容始终导出。
+每个事件都带有 event.sequence、session.id、turn_number（回合内）、prompt.id 以及身份属性。开关图例：**details** = 需要 OTEL_LOG_TOOL_DETAILS，**prompts** = 需要 OTEL_LOG_USER_PROMPTS，**responses** = 需要 OTEL_LOG_ASSISTANT_RESPONSES（未设置时跟随 prompts），**content** = 需要 OTEL_LOG_TOOL_CONTENT（与 details 相互独立，默认关闭）；流活动时其他内容始终导出。
 
 | event.name | 属性 |
 |---|---|
 | grok_code.session_start | model、permission_mode、mcp_server_count、plugin_count、skill_count、hook_count、memory_enabled、is_git_repo、client_identifier |
 | grok_code.session_end | duration_secs、turn_count、tool_call_count、compaction_count、model |
-| grok_code.user_prompt | prompt_length、model、screen_mode?（fullscreen \| inline \| minimal \| headless \| other）；prompt（**prompts**） |
+| grok_code.user_prompt | prompt_length、model、screen_mode?（fullscreen \| inline \| minimal \| headless \| other）、command_name?（斜杠命令/技能名，始终导出的元数据）；prompt（**prompts**） |
+| grok_code.assistant_response | response_length；response（**responses**；纯工具回合省略） |
 | grok_code.turn_completed | outcome、duration_ms、tool_call_count、model、error_category?、cancellation_category? |
 | grok_code.api_request | model、duration_ms、stop_reason?、input_tokens、output_tokens、reasoning_tokens、cache_read_tokens |
 | grok_code.api_error | error_category、model、status_code?、duration_ms? |
-| grok_code.tool_result | tool_name、outcome、success、duration_ms、file_extension；tool_parameters、file_path（**details**） |
-| grok_code.tool_decision | tool_name、decision、access_kind、permission_mode、source |
-| grok_code.mcp_server_connection | status、transport_type、duration_ms、tool_count?、error_type?；mcp_server.name（**details**；否则折叠为 mcp_server） |
-| grok_code.permission_mode_changed | to_mode、trigger |
+| grok_code.tool_result | tool_name、outcome、success、duration_ms、file_extension、tool_use_id；始终提供缩减后的 mcp_tool.name / mcp_server.name（**details** 开启时为原名）；tool_parameters 预览和 file_path（**details**）；tool_input、tool_output、full_command、error_message（**content**） |
+| grok_code.tool_decision | tool_name、decision、access_kind、permission_mode、source、tool_use_id；始终提供缩减后的 MCP 名称（**details** 开启时为原名）；tool_parameters 预览（**details**）；tool_input、full_command（**content**） |
+| grok_code.mcp_server_connection | status、transport_type、duration_ms、tool_count?、error_type?；始终提供缩减后的 mcp_server.name（**details** 开启时为原名）；error_message（**content**） |
+| grok_code.permission_mode_changed | from_mode、to_mode、trigger |
 | grok_code.skill_activated | skill_source、trigger = slash_command \| skill_md_read \| skill_tool；skill.name（**details**） |
 | grok_code.plugin_loaded | install_kind?、success、error_category?；plugin_name（**details**） |
 | grok_code.compaction | duration_ms、tokens_before、tokens_after、model? |
@@ -163,10 +222,10 @@ tool_name 值：内置工具名称原样传递；除非设置 OTEL_LOG_TOOL_DETA
 三种独立的故障关闭机制保护线路格式：
 
 1. **类型化 schema：**属性键是封闭枚举；无法附加枚举之外的内容。
-2. **发射时清理：**每个字符串都经过 secret 形状清理和主目录清理，并进行截断（每个值 512→128 字符，工具参数 4 KB，提示上限 60 KB）。
+2. **发射时清理：**每个字符串都经过 secret 形状清理和主目录清理，并进行截断（嵌套工具参数中的每个字符串 512→128 字符；DETAILS 的 `tool_parameters` 预览和 CONTENT 的 `error_message` 上限 4 KB；`prompt`、`response`、`tool_input`、`tool_output`、`full_command` 上限 60 KB）。
 3. **导出时验证器：**任何包含非 schema 键、已关闭开关键或未清理 secret 形状的记录，都会在离开进程前被丢弃；带有超出 schema 属性键的指标导出会整体丢弃。
 
-永不导出：bash 命令文本、错误消息正文、提示文本（未启用开关时）、文件路径（未启用开关时）、api_key.id、机器指纹、电子邮件地址、订阅层级。
+永不导出：思考/推理文本、原始 API 请求正文、api_key.id、机器指纹和订阅层级。提示文本、助手 `response`、文件路径、工具参数预览以及 CONTENT 正文（`tool_input`、`tool_output`、`full_command`、`error_message`）只会在对应开关开启时导出；第一方产品分析永远不会收到这些正文。OAuth/网关身份存在地址时，`user.email` 会随身份导出，不受内容开关控制。
 
 ## Collector 配置示例
 

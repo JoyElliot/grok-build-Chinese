@@ -164,6 +164,13 @@ description = "Path to write review notes"
 
 后台运行子智能体时，稍后使用 `get_command_or_subagent_output` 获取其结果。
 
+### 向活动中的子智能体发送消息
+
+`send_subagent_message` 工具目前仅根会话可用，而且只能向该会话拥有的活动子智能体发送消息。可选参数 `queue` 控制投递方式：
+
+- 省略或设为 `false` 时使用 **Steer**。若子智能体空闲，该消息会成为一个受保护的排队轮次；若其正在运行，消息会在下一个安全点注入当前轮次。
+- 设为 `true` 时使用 **Queue**，保留排队轮次行为：消息会作为受保护轮次等待，而不会进入活动轮次。
+
 ---
 
 <a id="capability-modes"></a>

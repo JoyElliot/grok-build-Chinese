@@ -33,7 +33,9 @@ impl WireErrorType {
         match s {
             "auth_transient" => Self::AuthTransient,
             "legacy_auth" => Self::LegacyAuth,
-            "context_length" => Self::ContextLength,
+            s if s == xai_grok_shell::extensions::notification::CONTEXT_LENGTH_ERROR_TYPE => {
+                Self::ContextLength
+            }
             "encrypted_content_mismatch" => Self::EncryptedContentMismatch,
             s if s == xai_grok_shell::extensions::notification::DISK_FULL_ERROR_TYPE => {
                 Self::DiskFull
@@ -76,6 +78,7 @@ pub(crate) struct FormattedRequestFailure {
     pub status: Option<u16>,
     pub headline: String,
     pub detail: String,
+    pub(crate) wire: WireErrorType,
 }
 
 /// `Headline: detail` (headline alone when there is no detail).
@@ -99,6 +102,81 @@ impl FormattedRequestFailure {
             headline: self.headline,
             detail: self.detail,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RetryLabelStyle {
+    /// Composer / turn-status: `Retrying (attempt N)...`
+    Status,
+    /// Title bar and subagent activity: `Retrying (N/M)`
+    Compact,
+}
+
+/// `{headline} | Retrying …` using [`format_request_failure`] headlines, else the bare retry clause.
+pub(crate) fn format_retry_activity_label(
+    attempt: u32,
+    max_retries: u32,
+    reason: &str,
+    error_type: Option<&str>,
+    style: RetryLabelStyle,
+) -> String {
+    format_retry_activity_label_with_locale(attempt, max_retries, reason, error_type, style, None)
+}
+
+pub(crate) fn format_retry_activity_label_with_locale(
+    attempt: u32,
+    max_retries: u32,
+    reason: &str,
+    error_type: Option<&str>,
+    style: RetryLabelStyle,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
+    let base = retry_clause_with_locale(attempt, max_retries, style, locale);
+    match classified_retry_headline(reason, error_type, locale) {
+        Some(headline) => format!("{headline} | {base}"),
+        None => base,
+    }
+}
+
+pub(crate) fn retry_clause(attempt: u32, max_retries: u32, style: RetryLabelStyle) -> String {
+    retry_clause_with_locale(attempt, max_retries, style, None)
+}
+
+pub(crate) fn retry_clause_with_locale(
+    attempt: u32,
+    max_retries: u32,
+    style: RetryLabelStyle,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
+    // Longer headline plus U+2026 wraps this status row into the prompt.
+    let (key, english) = match style {
+        RetryLabelStyle::Status => ("error.retry.status", "Retrying (attempt {attempt})..."),
+        RetryLabelStyle::Compact => ("error.retry.compact", "Retrying ({attempt}/{max_retries})"),
+    };
+    locale
+        .map(|locale| locale.named_text(key, english).into_owned())
+        .unwrap_or_else(|| english.to_string())
+        .replace("{attempt}", &attempt.to_string())
+        .replace("{max_retries}", &max_retries.to_string())
+}
+
+fn classified_retry_headline(
+    reason: &str,
+    error_type: Option<&str>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Option<String> {
+    let reason = reason.trim();
+    let kind = wire_error_kind(error_type);
+    if reason.is_empty() && kind.is_none() {
+        return None;
+    }
+    let formatted = format_request_failure_with_locale(None, kind, reason, locale);
+    let generic = formatted.status.is_none() && matches!(formatted.wire, WireErrorType::Other);
+    if generic {
+        None
+    } else {
+        Some(formatted.headline)
     }
 }
 
@@ -127,6 +205,7 @@ pub(crate) fn format_request_failure_with_locale(
     raw: &str,
     locale: Option<&crate::locale::LocaleContext>,
 ) -> FormattedRequestFailure {
+    let untyped = error_type.is_none();
     let wire = if truncation_recovered_from_untyped_raw(error_type, raw) {
         WireErrorType::MaxTokensTruncation
     } else {
@@ -140,6 +219,7 @@ pub(crate) fn format_request_failure_with_locale(
             .then(|| parse_http_status(raw))
             .flatten()
     });
+    let wire = refine_untyped_wire(wire, untyped, status, raw);
     let extracted = extract_error_detail(raw);
     let class = classify(status, wire);
     let localized_headline = class.headline.render(locale);
@@ -160,6 +240,7 @@ pub(crate) fn format_request_failure_with_locale(
         status,
         headline,
         detail,
+        wire,
     }
 }
 
@@ -187,6 +268,27 @@ impl FixedCopy {
 
 const fn fixed(id: &'static str, english: &'static str) -> FixedCopy {
     FixedCopy { id, english }
+}
+
+fn refine_untyped_wire(
+    wire: WireErrorType,
+    untyped: bool,
+    status: Option<u16>,
+    raw: &str,
+) -> WireErrorType {
+    match wire {
+        WireErrorType::Other if untyped && status.is_none() => {
+            http_wire_from_dump(raw).unwrap_or(wire)
+        }
+        typed => typed,
+    }
+}
+
+fn http_wire_from_dump(raw: &str) -> Option<WireErrorType> {
+    // SamplingError::Http Display is `request error: {source}`.
+    raw.trim()
+        .starts_with("request error:")
+        .then_some(WireErrorType::Http)
 }
 
 struct Classified {
@@ -1085,5 +1187,69 @@ mod tests {
         );
         assert_eq!(parse_http_status("Server error (500): boom"), Some(500));
         assert_eq!(parse_http_status("connection reset"), None);
+    }
+
+    #[test]
+    fn retry_activity_label_uses_request_failure_headline() {
+        let dns = "request error: error sending request for url (https://api.x.ai/v1/responses): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution";
+        assert_eq!(
+            format_retry_activity_label(8, 10, dns, None, RetryLabelStyle::Status),
+            "Connection failed | Retrying (attempt 8)..."
+        );
+        assert!(
+            !format_retry_activity_label(8, 10, dns, None, RetryLabelStyle::Status)
+                .contains("http")
+        );
+        assert_eq!(
+            format_retry_activity_label(
+                2,
+                5,
+                "API error (status 429 Too Many Requests): rate limit exceeded",
+                None,
+                RetryLabelStyle::Compact
+            ),
+            "Rate limited (429) | Retrying (2/5)"
+        );
+        assert_eq!(
+            format_retry_activity_label(2, 5, "", None, RetryLabelStyle::Status),
+            "Retrying (attempt 2)..."
+        );
+        assert_eq!(
+            format_retry_activity_label(
+                1,
+                3,
+                "Re-authenticated after 401; retrying request",
+                None,
+                RetryLabelStyle::Status
+            ),
+            "Retrying (attempt 1)..."
+        );
+        assert_eq!(
+            format_retry_activity_label(3, 5, "weird dump", Some("http"), RetryLabelStyle::Status),
+            "Connection failed | Retrying (attempt 3)..."
+        );
+        assert_eq!(
+            format_retry_activity_label(
+                2,
+                5,
+                "slow down",
+                Some("rate_limited"),
+                RetryLabelStyle::Compact
+            ),
+            "Rate limited | Retrying (2/5)"
+        );
+        assert_eq!(
+            format_retry_activity_label(1, 3, dns, Some("a_future_kind"), RetryLabelStyle::Status),
+            "Retrying (attempt 1)..."
+        );
+        assert_eq!(
+            format_request_failure(
+                None,
+                Some(WireErrorType::Other),
+                "error sending request for url (https://api.x.ai)"
+            )
+            .headline,
+            "Request failed"
+        );
     }
 }

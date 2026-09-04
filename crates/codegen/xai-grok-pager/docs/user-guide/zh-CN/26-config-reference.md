@@ -192,6 +192,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
+| `features.active_agent_messages` | `boolean` | `pin` | `user` | 启用或禁用 `active_agent_messages`；默认 false。也对应 `GROK_ACTIVE_AGENT_MESSAGES`。 |
 | `features.ask_user_question` | `boolean` | `pin` | `user` | 启用或禁用 `ask_user_question`；默认 true。也对应 `GROK_ASK_USER_QUESTION`。 |
 | `features.auto_wake` | `boolean` | `pin` | `user` | 启用或禁用 `auto_wake`；默认 true。也对应 `GROK_AUTO_WAKE`。 |
 | `features.backend_tools` | `boolean` | `pin` | `user` | 启用或禁用 `backend_tools`；默认 true。也对应 `GROK_BACKEND_SEARCH`。 |
@@ -202,6 +203,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `features.compaction_mode` | `summary / transcript / segments` | `yes` | `user` | 压缩策略。也对应 `GROK_COMPACTION_MODE`。 |
 | `features.compaction_tool_choice` | `string` | `yes` | `user` | 压缩期间使用的 tool-choice 提示。 |
 | `features.compaction_verbatim_input` | `boolean` | `pin` | `user` | 启用或禁用 `compaction_verbatim_input`；默认 true。也对应 `GROK_COMPACTION_VERBATIM_INPUT`。 |
+| `features.dock` | `boolean` | `pin` | `user` | 启用或禁用 `dock`；默认 false。也对应 `GROK_DOCK`。 |
 | `features.feedback` | `boolean` | `pin` | `user` | 启用或禁用反馈；默认 true。也对应 `GROK_FEEDBACK_ENABLED`。 |
 | `features.feedback_trace_card` | `boolean` | `pin` | `user` | `/feedback` 后显示跟踪上传同意问题；默认 false。也对应 `GROK_FEEDBACK_TRACE_CARD`。 |
 | `features.image_edit_model_override` | `string` | `yes` | `user` | `image_edit` 使用的 Imagine 模型 ID。 |
@@ -216,6 +218,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `features.non_git_warning` | `boolean` | `yes` | `user` | Grok 在非 Git 仓库中启动时显示阻塞警告。 |
 | `features.remember_mode` | `boolean` | `—` | `—` | 跨会话记住上次权限模式；仅从用户 `config.toml` 读取。 |
 | `features.remote_fetch` | `boolean` | `pin` | `fleet` | 固定远程模型目录和资源获取；托管值与用户值同时存在时，托管值优先。 |
+| `features.repo_status_in_system_prompt` | `boolean` | `pin` | `user` | 启用或禁用 `repo_status_in_system_prompt`；默认 true。也对应 `GROK_REPO_STATUS_IN_SYSTEM_PROMPT`。 |
 | `features.session_recap` | `boolean` | `pin` | `user` | 启用或禁用 `session_recap`；默认 true。也对应 `GROK_SESSION_RECAP`。 |
 | `features.session_search` | `boolean` | `pin` | `user` | 启用或禁用 `session_search`；默认 true。也对应 `GROK_SESSION_SEARCH`。 |
 | `features.subagent_worktree_snapshot` | `boolean` | `pin` | `user` | 启用或禁用 `subagent_worktree_snapshot`；默认 false。也对应 `GROK_SUBAGENT_WORKTREE_SNAPSHOT`。 |
@@ -223,7 +226,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | 产品遥测模式；企业默认关闭。 |
 | `features.title_refresh` | `boolean` | `pin` | `user` | 会话早期自动刷新标题；在 requirements 中固定可压过 `GROK_TITLE_REFRESH`。 |
 | `features.turn_summary` | `boolean` | `pin` | `user` | 启用或禁用 `turn_summary`；默认 true。也对应 `GROK_TURN_SUMMARY`。 |
-| `features.two_pass_compaction` | `boolean` | `pin` | `user` | 启用或禁用 `two_pass_compaction`；默认 false。也对应 `GROK_TWO_PASS_COMPACTION`。 |
+| `features.two_pass_compaction` | `boolean` | `pin` | `user` | 启用或禁用 `two_pass_compaction`；默认 true。也对应 `GROK_TWO_PASS_COMPACTION`。 |
 | `features.video_gen` | `boolean` | `pin` | `user` | 启用视频工具／`/imagine-video`。 |
 | `features.voice_mode` | `boolean` | `pin` | `user` | 启用或禁用 `voice_mode`；默认 true。也对应 `GROK_VOICE_MODE`。 |
 | `features.web_fetch` | `boolean` | `pin` | `user` | 启用或禁用 `web_fetch`；默认 false。也对应 `GROK_WEB_FETCH`。 |
@@ -403,7 +406,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `models.inference_idle_timeout_secs` | `number` | `yes` | `user` | 模型未设置时使用的全局流式推理空闲超时。 |
 | `models.max_completion_tokens` | `number` | `yes` | `user` | 模型未设置时使用的全局最大补全 token 默认值。 |
 | `models.max_retries` | `number` | `yes` | `user` | 模型未设置时使用的全局推理重试默认值。 |
-| `models.prompt_suggestion` | `string` | `yes` | `user` | 下一提示幽灵文本所用模型；未设置时依次回退到远程值和客户端默认值。 |
+| `models.prompt_suggestion` | `string` | `yes` | `user` | 下一提示幽灵文本所用模型；未设置时依次回退到远程值和当前会话模型。 |
 | `models.session_summary` | `string` | `yes` | `user` | 生成会话标题和摘要的模型。 |
 | `models.stream_tool_calls` | `boolean` | `yes` | `user` | 全局工具调用流式请求形状；某些 BYOK 端点需要 false。 |
 | `models.temperature` | `number` | `yes` | `user` | 模型未设置时使用的全局采样 temperature。 |
@@ -504,7 +507,31 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
-| `telemetry.otel_enabled` | `boolean` | `yes` | `user` | 外部 OTEL 总开关。也对应 `GROK_EXTERNAL_OTEL`。 |
+| `telemetry.otel_enabled` | `boolean` | `pin` | `user` | 外部 OTEL 总开关。也对应 `GROK_EXTERNAL_OTEL`。 |
+| `telemetry.otel_metrics_exporter` | `otlp / console / none` | `pin` | `user` | 外部 OTEL 指标 exporter。也对应 `OTEL_METRICS_EXPORTER`。 |
+| `telemetry.otel_logs_exporter` | `otlp / console / none` | `pin` | `user` | 外部 OTEL 日志 exporter。也对应 `OTEL_LOGS_EXPORTER`。 |
+| `telemetry.otel_endpoint` | `string` | `pin` | `user` | 外部 OTLP 基础端点。也对应 `OTEL_EXPORTER_OTLP_ENDPOINT`。固定后会移除开发者环境变量及未列出的用户/托管文件同级项，显式列出的端点除外。 |
+| `telemetry.otel_logs_endpoint` | `string` | `pin` | `user` | 日志信号 OTLP 端点（按原样使用）。也对应 `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`。 |
+| `telemetry.otel_metrics_endpoint` | `string` | `pin` | `user` | 指标信号 OTLP 端点（按原样使用）。也对应 `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`。 |
+| `telemetry.otel_protocol` | `http/protobuf / grpc` | `pin` | `user` | 外部 OTLP 传输协议。也对应 `OTEL_EXPORTER_OTLP_PROTOCOL`。固定后会移除信号专用协议环境变量及未列出的文件同级项。 |
+| `telemetry.otel_logs_protocol` | `http/protobuf / grpc` | `pin` | `user` | 日志信号 OTLP 协议。也对应 `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`。 |
+| `telemetry.otel_metrics_protocol` | `http/protobuf / grpc` | `pin` | `user` | 指标信号 OTLP 协议。也对应 `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`。 |
+| `telemetry.otel_timeout` | `number` | `pin` | `user` | 导出超时毫秒数。也对应 `OTEL_EXPORTER_OTLP_TIMEOUT`。 |
+| `telemetry.otel_metric_export_interval` | `number` | `pin` | `user` | 指标导出间隔毫秒数。也对应 `OTEL_METRIC_EXPORT_INTERVAL`。 |
+| `telemetry.otel_certificate` | `string` | `pin` | `user` | collector 额外 CA 证书的 PEM 路径。也对应 `OTEL_EXPORTER_OTLP_CERTIFICATE`；固定 CA **不会**移除端点。 |
+| `telemetry.otel_logs_certificate` | `string` | `pin` | `user` | 日志信号 CA PEM 路径。也对应 `OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE`。 |
+| `telemetry.otel_metrics_certificate` | `string` | `pin` | `user` | 指标信号 CA PEM 路径。也对应 `OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE`。 |
+| `telemetry.otel_client_certificate` | `string` | `pin` | `user` | mTLS 客户端证书的 PEM 路径。也对应 `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`；固定后会移除凭据副本、开发者端点和未列出的文件同级项。 |
+| `telemetry.otel_client_key` | `string` | `pin` | `user` | mTLS 客户端密钥的 PEM 路径；token 不会写入此文件。也对应 `OTEL_EXPORTER_OTLP_CLIENT_KEY`。 |
+| `telemetry.otel_logs_client_certificate` | `string` | `pin` | `user` | 日志信号 mTLS 客户端证书 PEM 路径。也对应 `OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE`。 |
+| `telemetry.otel_logs_client_key` | `string` | `pin` | `user` | 日志信号 mTLS 客户端密钥 PEM 路径。也对应 `OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY`。 |
+| `telemetry.otel_metrics_client_certificate` | `string` | `pin` | `user` | 指标信号 mTLS 客户端证书 PEM 路径。也对应 `OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE`。 |
+| `telemetry.otel_metrics_client_key` | `string` | `pin` | `user` | 指标信号 mTLS 客户端密钥 PEM 路径。也对应 `OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY`。 |
+| `telemetry.otel_metrics_include_session_id` | `boolean` | `pin` | `user` | 为指标附加 session.id。也对应 `OTEL_METRICS_INCLUDE_SESSION_ID`。 |
+| `telemetry.otel_log_user_prompts` | `boolean` | `pin` | `user` | grok_code.user_prompt 提示文本的内容开关。也对应 `OTEL_LOG_USER_PROMPTS`。固定任一内容开关而未列出同级项时，遗漏项默认关闭。 |
+| `telemetry.otel_log_tool_details` | `boolean` | `pin` | `user` | 工具参数预览、路径和原样名称的元数据开关；SIEM 关联建议开启，不包含完整正文。也对应 `OTEL_LOG_TOOL_DETAILS`。 |
+| `telemetry.otel_log_assistant_responses` | `boolean` | `pin` | `user` | grok_code.assistant_response 文本的内容开关。未设置时跟随 otel_log_user_prompts，但 requirements 固定任一同级开关时除外。仅用环境变量并设置 OTEL_LOG_USER_PROMPTS=1 的机群若要只采集提示，必须将本项设为 0（或固定为 false）。也对应 `OTEL_LOG_ASSISTANT_RESPONSES`。 |
+| `telemetry.otel_log_tool_content` | `boolean` | `pin` | `user` | tool_input、tool_output、full_command 和 error_message 的正文开关；与 details 相互独立，默认关闭。只开 CONTENT 不会保留原样 MCP 名称和路径。也对应 `OTEL_LOG_TOOL_CONTENT`。 |
 | `telemetry.trace_upload` | `boolean` | `pin` | `user` | 上传会话跟踪数据；requirements 固定值优先于用户配置。 |
 
 ### `tools`
@@ -565,7 +592,10 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `ui.mouse_reporting_toggle` | `boolean` | `yes` | `user` | 回滚区中的 Ctrl+R 切换终端鼠标捕获。也对应 `GROK_MOUSE_REPORTING_TOGGLE`。 |
 | `ui.page_flip_on_send` | `boolean` | `yes` | `user` | 将已发送提示吸附到视口顶部。 |
 | `ui.permission_mode` | `default / ask / auto / always-approve` | `yes` | `user` | 默认工具权限行为；企业锁定通过 `requirements.toml` 设置。 |
-| `ui.prompt_suggestions` | `boolean` | `yes` | `user` | 每轮结束后显示下一提示幽灵文本。也对应 `GROK_PROMPT_SUGGESTIONS`。 |
+| `ui.prompt_suggestions` | `boolean` | `yes` | `user` | 每轮结束后显示下一提示幽灵文本。也对应 `GROK_PROMPT_SUGGESTIONS`；远程紧急开关可以在整个机群禁用。 |
+| `prompt_suggestions.max_output_tokens` | `number` | `yes` | `user` | 建议请求的可见输出 token 数；限制为 16–256，默认 64，另为推理保留空间。可由远程配置覆盖。 |
+| `prompt_suggestions.temperature` | `number` | `yes` | `user` | 建议请求的采样 temperature（默认 0.2）。可由远程配置覆盖。 |
+| `prompt_suggestions.reasoning_effort` | `none / minimal / low / medium / high` | `yes` | `user` | 建议请求的推理强度；默认值和 `none` 禁用推理，其余值使用模型支持的强度。可由远程配置覆盖。 |
 | `ui.remember_tool_approvals` | `boolean` | `yes` | `user` | 显示按工具“始终允许”选项。也对应 `GROK_REMEMBER_TOOL_APPROVALS`。 |
 | `ui.render_mermaid` | `auto / on / off` | `yes` | `user` | Mermaid 代码围栏显示方式：可点击打开行或原始源文本。 |
 | `ui.screen_mode` | `fullscreen / minimal` | `yes` | `user` | 普通 `grok-zh` 的默认渲染模式；需要重启。 |

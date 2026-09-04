@@ -256,15 +256,14 @@ Dream 会把各个会话日志和记忆条目重组为连贯、去重的知识�
 <a id="auto-dream"></a>
 ### 自动 Dream
 
-Dream 也会自动运行。默认情况下，Grok 在会话结束时检查整理条件，在经过足够时间且积累足够会话后运行一次 Dream：
+Dream 也会自动运行。默认情况下，Grok 会在启动时以及会话期间定期检查整理条件，并在经过足够时间且积累足够会话后运行一次 Dream：
 
 ```toml
 [memory.dream]
 enabled = true     # 运行自动整理（默认：true）
-min_hours = 4      # 整理之间的最少小时数
-min_sessions = 3   # 上次整理以来的最少会话数
-# check_interval_secs 默认未设置，因此 Dream 只在会话结束时运行。
-# 设置为正数秒数，也可以按周期检查。
+min_hours = 24     # 整理之间的最少小时数
+min_sessions = 5   # 上次整理以来的最少会话数
+# check_interval_secs 默认为 3600，因此每小时检查一次。
 ```
 
 ---
@@ -431,10 +430,10 @@ grok-zh memory clear --yes
 | 键 | 默认值 | 说明 |
 |-----|---------|-------------|
 | `enabled` | `true` | 启用自动 Dream 整理 |
-| `min_hours` | `4` | 整理之间的最少小时数 |
-| `min_sessions` | `3` | 上次整理以来的最少会话数 |
+| `min_hours` | `24` | 整理之间的最少小时数 |
+| `min_sessions` | `5` | 上次整理以来的最少会话数 |
 | `stale_lock_secs` | `3600` | 回收陈旧整理锁之前等待的秒数 |
-| `check_interval_secs` | unset | 周期检查间隔（秒）。未设置时，Dream 只在会话结束时运行。 |
+| `check_interval_secs` | `3600` | 周期检查间隔（秒）。 |
 
 <a id="flush-settings-compaction-memory-flush"></a>
 ### Flush 设置（`[compaction.memory_flush]`）

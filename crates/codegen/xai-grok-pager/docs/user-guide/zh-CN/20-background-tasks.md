@@ -21,21 +21,17 @@ Grok 可以运行长时间进程而不会阻塞对话。本文介绍后台命令
 <a id="getting-output"></a>
 ### 获取输出
 
-使用 `get_command_or_subagent_output` 工具检查后台命令或子代理：
+使用 `get_command_or_subagent_output` 检查后台命令或子代理。`task_ids` 必须是列表；
+单个 ID 也要放在仅含一项的数组中，最多可传 20 个：
 
-- `get_command_or_subagent_output(task_id)` ——无需等待即可获取当前输出和状态
-- `get_command_or_subagent_output(task_id, timeout_ms=30000)` ——最多等待给定毫秒数以完成
+- 省略 `timeout_ms` 或传入 `0`，会立即返回非阻塞快照。
+- 传入正数会等待任务完成；多个 ID 会等到**全部**完成。
 
-<a id="waiting-for-multiple-tasks"></a>
-### 等待多个任务
+正数 `timeout_ms` 最长限制为 **1 小时**（`3600000` 毫秒）。传输层超时时间更短的
+宿主可以设置 `GROK_MAX_WAIT_BLOCK_MS`（纯毫秒数；无法解析时保留默认值）。
 
-使用 `wait_commands_or_subagents` 一次阻塞等待多个任务：
-
-- `task_ids` ——要等待的任务 ID 列表（最多 20 个）
-- `mode` ——`wait_any` 在第一个任务完成时返回；`wait_all` 等待所有任务
-- `timeout_ms` ——最长等待时间（毫秒，默认：30 秒）
-
-工具会返回你列出的每个任务的状态和输出。
+等待返回时如果子任务仍在运行，请让它继续，不要终止它或要求它停止。任务完成后会
+自动唤醒父代理；只有需要新快照时才再次查询。
 
 <a id="killing-background-tasks"></a>
 ### 终止后台任务
@@ -220,7 +216,7 @@ done
 
 它会统计正在运行的后台命令、监控、已调度的 `/loop` 任务和后台子代理，并在各项完成时实时更新。任何一项都可能唤醒代理开始新的回合（命令和子代理在完成时，监控在事件发生时，循环在计时器到点时），因此只要仍有未完成项，提示就会保留。运行计数只存在于这条状态行：完成会以一枚单独的 “Task completed” 芯片出现在转录中，而 “Worked for” 标记保持普通样式——转录不会重复或再次陈述运行计数。
 
-当回合正在等待后台工作（阻塞在 `get_task_output` 或 `wait_tasks` 调用中）时，状态行会添加提示，说明输入会立即接管：
+当回合正在等待后台工作（阻塞在 `get_command_or_subagent_output` 调用中）时，状态行会添加提示，说明输入会立即接管：
 
 ```
 ◎ 1 command still running · send a message to interrupt

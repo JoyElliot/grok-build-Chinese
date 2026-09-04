@@ -34,6 +34,9 @@ channel = "stable"                    # stable（默认）| alpha（预发布）
 [models]
 default = "grok-4.5"                   # 新会话使用的模型
 web_search = "grok-4.5"                # web_search 工具使用的模型
+# 可选的模型选择器允许列表（匹配目录键或模型 ID 的 glob）；空列表表示不限制。
+# 签名策略中的固定值会替换此列表（仅按模型 ID），本地配置无法放宽它。
+# allowed_models = ["grok-4.5", "grok-4*"]
 
 # 应用于每个模型的默认值；每模型的 [model.<id>] 值始终优先。
 # 详见“自定义模型”中的每模型覆盖项和完整说明。
@@ -558,9 +561,16 @@ otel_metrics_exporter = "otlp"                            # otlp | console | non
 otel_logs_exporter = "otlp"                               # otlp | console | none
 otel_endpoint = "https://collector.corp.example:4318"     # OTLP 基础端点
 otel_protocol = "http/protobuf"                           # http/protobuf | grpc
-otel_log_user_prompts = false                             # 内容开关（管理员可通过 requirements 固定）
-otel_log_tool_details = false                             # 内容开关（管理员可通过 requirements 固定）
+otel_certificate = "/etc/ssl/corp-ca.pem"                 # 可选：信任私有 CA（只接受路径）
+otel_client_certificate = "/etc/ssl/client.crt"           # 可选：mTLS 客户端证书（只接受路径）
+otel_client_key = "/etc/ssl/client.key"                   # 可选：mTLS 客户端私钥（只接受路径）
+otel_log_user_prompts = false                             # 内容开关（管理员通过 requirements 固定）
+otel_log_assistant_responses = false                      # 未设置时跟随 prompts；设为 false 可仅记录提示词
+otel_log_tool_details = true                              # 元数据/预览；企业默认开启，便于关联 SIEM
+otel_log_tool_content = false                             # 完整正文开关；与 details 独立，不代表名称/路径
 ```
+
+签名 `requirements.toml` 中列出的 `[telemetry] otel_*` 键会固定其值，并覆盖进程环境变量（锁定目标）；`managed_config.toml` 不会这样做。这里没有 `headers` 键——收集器令牌仍应放在 `OTEL_EXPORTER_OTLP_HEADERS` 中。详见[监控与使用情况](24-monitoring-usage.md)。
 
 <a id="version-pinning"></a>
 ### 固定版本

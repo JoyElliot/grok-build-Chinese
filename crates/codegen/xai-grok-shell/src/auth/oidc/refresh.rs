@@ -1,5 +1,4 @@
-//! Pure-data OIDC refresh. Talks to the IdP and returns
-//! [`OidcRefreshResult`] without touching [`AuthManager`].
+//! Pure-data OIDC refresh: talks to the IdP and returns [`OidcRefreshResult`] without touching [`AuthManager`].
 
 use super::super::GrokAuth;
 use super::protocol::{OidcError, OidcUserInfo, build_grok_auth, discover, refresh_tokens};
@@ -13,17 +12,14 @@ pub(crate) enum OidcRefreshResult {
     TerminalError { reason: RefreshTokenFailedReason },
     /// Non-terminal failure (discovery failed, network error, etc.)
     ///
-    /// `network_unreachable` is `true` when the failure never reached the IdP
-    /// (DNS resolution, TCP connect, request timeout) — the canonical shape
-    /// of the first seconds after wake-from-sleep. Such failures prove
-    /// nothing about the credential, so `OidcRefresher`'s transient →
-    /// permanent escalation budget must not count them.
+    /// `network_unreachable` is `true` when the failure never reached the IdP (DNS resolution, TCP connect, request timeout).
+    /// That is the canonical shape of the first seconds after wake-from-sleep.
+    /// Such failures prove nothing about the credential, so `OidcRefresher`'s transient-to-permanent escalation budget must not count them.
     Failed { network_unreachable: bool },
 }
 
-/// Classify an OAuth2 `error` code as a terminal refresh failure. `None` means
-/// non-terminal (retryable). Single source of truth for which codes are fatal;
-/// the retry gate (`protocol::is_transient_refresh_error`) defers to this too.
+/// Classify an OAuth2 `error` code as a terminal refresh failure; `None` means non-terminal (retryable).
+/// Single source of truth for which codes are fatal; the retry gate (`protocol::is_transient_refresh_error`) defers to this too.
 pub(super) fn classify_terminal(error_code: &str) -> Option<RefreshTokenFailedReason> {
     match error_code {
         "invalid_grant" => Some(RefreshTokenFailedReason::RefreshTokenRejected),
@@ -32,18 +28,15 @@ pub(super) fn classify_terminal(error_code: &str) -> Option<RefreshTokenFailedRe
     }
 }
 
-/// Conservative client-side bound (ms) on how long an IdP may still accept a
-/// refresh token it has already rotated. A clock divergence past this bound
-/// means the exchange straddled a suspend long enough that a lost response can
-/// no longer be recovered by re-presenting the old RT.
+/// Conservative client-side bound (ms) on how long an IdP may still accept a refresh token it has already rotated.
+/// A clock divergence past this bound means the exchange straddled a suspend too long.
+/// A lost response then can no longer be recovered by re-presenting the old RT.
 const ROTATION_GRACE_MS: u64 = 60_000;
 
-/// Dual-clock suspend probe around an IdP exchange: the monotonic clock
-/// pauses during suspend and the wall clock does not, so their divergence
-/// measures time suspended since [`Self::start`]. Feeds `suspended_ms`
-/// telemetry and stops in-call retries once a straddle exceeds the rotation
-/// grace — re-sending the RT then trips the IdP's reuse detection and
-/// revokes a successor a sibling may hold.
+/// Dual-clock suspend probe around an IdP exchange.
+/// The monotonic clock pauses during suspend and the wall clock does not, so their divergence measures time suspended since [`Self::start`].
+/// Feeds `suspended_ms` telemetry and stops in-call retries once a straddle exceeds the rotation grace.
+/// Re-sending the RT then trips the IdP's reuse detection and revokes a successor a sibling may hold.
 pub(super) struct SuspendProbe {
     mono: std::time::Instant,
     wall: chrono::DateTime<chrono::Utc>,
@@ -70,16 +63,14 @@ impl SuspendProbe {
         wall_ms.saturating_sub(mono_ms)
     }
 
-    /// `true` once the exchange has straddled a suspend past the rotation
-    /// grace.
+    /// `true` once the exchange has straddled a suspend past the rotation grace.
     pub(super) fn straddled_past_grace(&self) -> bool {
         self.suspended_ms() > ROTATION_GRACE_MS
     }
 }
 
-/// `true` when `err`'s chain shows the request never reached the server:
-/// DNS failure, TCP connect failure, or timeout. Used to mark
-/// [`OidcRefreshResult::Failed::network_unreachable`].
+/// `true` when `err`'s chain shows the request never reached the server: DNS failure, TCP connect failure, or timeout.
+/// Used to mark [`OidcRefreshResult::Failed::network_unreachable`].
 fn is_network_unreachable(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         cause
@@ -88,9 +79,8 @@ fn is_network_unreachable(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Exchange a refresh_token for fresh tokens at the IdP. Pure data return, no
-/// `AuthManager` mutations; the caller (`OidcRefresher`) routes the result
-/// through `refresh_chain`.
+/// Exchange a refresh_token for fresh tokens at the IdP.
+/// Pure data return, no `AuthManager` mutations; the caller (`OidcRefresher`) routes the result through `refresh_chain`.
 pub(crate) async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
     let has_rt = auth.refresh_token.is_some();
     let has_issuer = auth.oidc_issuer.is_some();
@@ -135,9 +125,8 @@ pub(crate) async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
         Some(serde_json::json!({ "issuer": issuer, "client_id": client_id })),
     );
 
-    // A large mono/wall divergence around the IdP call means the process was
-    // suspended mid-refresh — the condition that can revoke the refresh token
-    // (response lost across sleep). See [`SuspendProbe`].
+    // A large mono/wall divergence around the IdP call means the process was suspended mid-refresh
+    // That is the condition that can revoke the refresh token (response lost across sleep). See [`SuspendProbe`].
     let probe = SuspendProbe::start();
     let timing = || {
         let (mono_ms, wall_ms) = probe.elapsed_ms();
@@ -299,9 +288,8 @@ pub(crate) async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
     OidcRefreshResult::Success(Box::new(new_auth))
 }
 
-/// Alertable event: an OIDC refresh's network call spanned a suspend (wall
-/// clock ran far ahead of the monotonic clock) — the precondition for a
-/// lost-response refresh-token revocation.
+/// Alertable event: an OIDC refresh's network call spanned a suspend (wall clock ran far ahead of the monotonic clock).
+/// That is the precondition for a refresh-token revocation caused by a lost response.
 fn emit_suspend_spanned(outcome: &str, suspended_ms: u64) {
     crate::unified_log::warn(
         "auth.refresh.suspend_spanned",

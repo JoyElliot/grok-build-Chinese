@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use xai_grok_markdown::style::test_style::STYLE;
-use xai_grok_markdown::{render_markdown_ratatui_full, StreamingMarkdownRenderer};
+use xai_grok_markdown::{StreamingMarkdownRenderer, render_markdown_ratatui_full};
 
 const CHUNK_SIZES: [usize; 3] = [1, 16, 32];
 

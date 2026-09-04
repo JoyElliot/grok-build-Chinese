@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
-/// Test refresher that returns a fresh token and records that it
-/// was invoked. Used to drive the auth-arm success path.
+/// Test refresher that returns a fresh token and records that it was invoked.
+/// Used to drive the auth-arm success path.
 struct AlwaysSucceedRefresher {
     called: Arc<AtomicBool>,
 }
@@ -27,8 +27,7 @@ impl crate::auth::refresh::TokenRefresher for AlwaysSucceedRefresher {
     }
 }
 
-/// `(tempdir, manager)` with an expired OIDC token loaded so
-/// `unauthorized_recovery()` actually dispatches to the refresher.
+/// `(tempdir, manager)` with an expired OIDC token loaded so `unauthorized_recovery()` actually dispatches to the refresher.
 /// Tempdir must outlive the manager (auth.json path).
 fn auth_manager_with_refresher(
     refresher: Arc<dyn crate::auth::refresh::TokenRefresher>,
@@ -46,9 +45,7 @@ fn auth_manager_with_refresher(
     (dir, am)
 }
 
-/// Build a `SamplingErrorInfo` of kind Auth - the same shape the
-/// inner `OaiCompatClient` emit surfaces after recording its own
-/// attribution.
+/// Build a `SamplingErrorInfo` of kind Auth, the same shape the inner `OaiCompatClient` reports after recording its own attribution.
 fn auth_error() -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
         kind: xai_grok_sampler::SamplingErrorKind::Auth,
@@ -66,9 +63,8 @@ fn auth_error() -> xai_grok_sampler::SamplingErrorInfo {
     }
 }
 
-/// Construct a test actor with the supplied `auth_manager` and
-/// session-token credentials wired in. Wraps the actor in `Arc`
-/// ready for `handle_sampling_failure`.
+/// Construct a test actor with the supplied `auth_manager` and session-token credentials wired in.
+/// Wraps the actor in `Arc` ready for `handle_sampling_failure`.
 async fn make_actor_with_auth_manager(
     auth_manager: Option<Arc<AuthManager>>,
 ) -> (Arc<SessionActor>, mpsc::UnboundedReceiver<PersistenceMsg>) {
@@ -80,9 +76,8 @@ async fn make_actor_with_auth_manager(
     .await
 }
 
-/// Variant that pins the credential `auth_type`; the `auth_method_id` is
-/// derived from it. Use [`make_actor_with_method_and_credentials`] to pin the
-/// two independently.
+/// Variant that pins the credential `auth_type`; the `auth_method_id` is derived from it.
+/// Use [`make_actor_with_method_and_credentials`] to pin the two independently.
 async fn make_actor_with_auth_and_credentials(
     auth_manager: Option<Arc<AuthManager>>,
     auth_type: xai_chat_state::AuthType,
@@ -95,10 +90,9 @@ async fn make_actor_with_auth_and_credentials(
     make_actor_with_method_and_credentials(auth_manager, method_id, auth_type, api_key).await
 }
 
-/// Pin the ACP `auth_method_id` and credential `auth_type` independently. The
-/// gate keys off the stable `auth_method_id`, so this reproduces the regression:
-/// a session method whose `creds.auth_type` has transiently collapsed to
-/// `ApiKey` (session-token cache miss + `XAI_API_KEY`).
+/// Pin the ACP `auth_method_id` and credential `auth_type` independently.
+/// The gate keys off the stable `auth_method_id`, so this reproduces the regression.
+/// In the regression, a session-token cache miss with `XAI_API_KEY` set transiently collapsed a session method's `creds.auth_type` to `ApiKey`.
 async fn make_actor_with_method_and_credentials(
     auth_manager: Option<Arc<AuthManager>>,
     auth_method_id: &str,
@@ -120,8 +114,8 @@ async fn make_actor_with_method_and_credentials(
     (Arc::new(actor), persistence_rx)
 }
 
-/// `(tempdir, manager)` holding a valid OIDC token (so `get_valid_token()` is a
-/// cache hit). The tempdir must outlive the manager (auth.json path).
+/// `(tempdir, manager)` holding a valid OIDC token (so `get_valid_token()` is a cache hit).
+/// The tempdir must outlive the manager (auth.json path).
 fn auth_manager_with_valid_token(key: &str) -> (tempfile::TempDir, Arc<AuthManager>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
@@ -135,7 +129,7 @@ fn auth_manager_with_valid_token(key: &str) -> (tempfile::TempDir, Arc<AuthManag
     (dir, am)
 }
 
-/// Sub-case 1: no auth_manager -> falls through, no emit.
+/// Sub-case 1: with no auth_manager the handler falls through and emits no attribution.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn no_emit_when_auth_manager_is_none() {
@@ -145,7 +139,7 @@ async fn no_emit_when_auth_manager_is_none() {
             let (actor, _rx) = make_actor_with_auth_manager(None).await;
             crate::auth::attribution::reset_test_emit_count();
             let _ = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert_eq!(
                 crate::auth::attribution::test_emit_count(),
@@ -156,9 +150,8 @@ async fn no_emit_when_auth_manager_is_none() {
         .await;
 }
 
-/// Sub-case 2: no AuthManager → auth recovery is skipped entirely,
-/// falls through to terminal error. Covers BYOK / API-key users
-/// where no OIDC refresh is possible.
+/// Sub-case 2: with no AuthManager, auth recovery is skipped entirely and the 401 falls through to a terminal error.
+/// Covers BYOK / API-key users where no OIDC refresh is possible.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn no_recovery_without_auth_manager() {
@@ -173,7 +166,7 @@ async fn no_recovery_without_auth_manager() {
             .await;
             crate::auth::attribution::reset_test_emit_count();
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert!(
                 result.is_err(),
@@ -188,7 +181,7 @@ async fn no_recovery_without_auth_manager() {
         .await;
 }
 
-/// Session-based auth + working refresher → RefreshAuthAndResubmit.
+/// Session-based auth with a working refresher returns RefreshAuthAndResubmit.
 #[tokio::test(flavor = "current_thread")]
 async fn sampler_401_recovery_returns_refresh_and_retry() {
     let local = tokio::task::LocalSet::new();
@@ -202,7 +195,7 @@ async fn sampler_401_recovery_returns_refresh_and_retry() {
             let (_dir, am) = auth_manager_with_refresher(refresher);
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert!(
                 matches!(
@@ -219,12 +212,10 @@ async fn sampler_401_recovery_returns_refresh_and_retry() {
         .await;
 }
 
-/// Regression: sampler 401 with API-key auth (BYOK `env_key` /
-/// `XAI_API_KEY`) must NOT attempt an OIDC session-token refresh. The
-/// bearer on the wire is the static API key, so refreshing the session
-/// token reports success but the retry re-sends the same rejected key —
-/// an invisible 401 loop that hangs the turn. Recovery is skipped and
-/// the 401 surfaces as a terminal error.
+/// Regression: sampler 401 with API-key auth (BYOK `env_key` / `XAI_API_KEY`) must NOT attempt an OIDC session-token refresh.
+/// The bearer on the wire is the static API key, so refreshing the session token reports success but the retry re-sends the same rejected key.
+/// That makes an invisible 401 loop that hangs the turn.
+/// Recovery is skipped and the 401 surfaces as a terminal error.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
@@ -245,7 +236,7 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
             .await;
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
 
             assert!(
@@ -260,9 +251,8 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
         .await;
 }
 
-/// Per-turn pre-flight refresh must not fire when `creds.auth_type` is
-/// `ApiKey` (a BYOK model): the model's own API key must not be overwritten
-/// by the session JWT.
+/// Per-turn pre-flight refresh must not fire when `creds.auth_type` is `ApiKey` (a BYOK model).
+/// The model's own API key must not be overwritten by the session JWT.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_refresh_skips_api_key_auth_type() {
@@ -300,8 +290,7 @@ async fn pre_flight_refresh_skips_api_key_auth_type() {
         .await;
 }
 
-/// Hard-expired session token: pre-flight must call the refresher and must
-/// not leave credentials stuck while pretending the JWT/config path applies.
+/// Hard-expired session token: pre-flight must call the refresher and must not leave credentials stuck while pretending the JWT/config path applies.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_refreshes_hard_expired_session_token() {
@@ -341,8 +330,8 @@ async fn pre_flight_refreshes_hard_expired_session_token() {
         .await;
 }
 
-/// Hard-expired + failed refresh: do not fall through to JWT/config.toml;
-/// strip the chat-state seed so default headers cannot carry a dead AT.
+/// Hard-expired token and a failed refresh: do not fall through to JWT/config.toml.
+/// Strip the chat-state seed so default headers cannot carry a dead access token.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_hard_expired_refresh_failure_skips_jwt_fallthrough() {
@@ -395,8 +384,8 @@ async fn pre_flight_hard_expired_refresh_failure_skips_jwt_fallthrough() {
         .await;
 }
 
-/// Soft-expired (early-invalidation buffer) + transient fail: retain the seed
-/// so a still-accepted wire AT can continue until 401 recovery.
+/// Soft-expired (inside the early-invalidation buffer) and a transient refresh failure: retain the seed.
+/// The access token on the wire is still accepted, so it can continue until 401 recovery.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_soft_expired_transient_fail_retains_seed() {
@@ -460,10 +449,8 @@ async fn pre_flight_soft_expired_transient_fail_retains_seed() {
         .await;
 }
 
-/// Proactive refresh keeps the cache hot so `refresh_token_if_expired`
-/// (per-turn pre-flight) is a cache hit — the refresher fires once
-/// (proactive), then the per-turn call sees the fresh token without
-/// hitting the IdP again.
+/// Proactive refresh keeps the cache hot so `refresh_token_if_expired` (per-turn pre-flight) is a cache hit.
+/// The refresher fires once (proactive), then the per-turn call sees the fresh token without hitting the identity provider again.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
@@ -496,8 +483,7 @@ async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
             let cancel = tokio_util::sync::CancellationToken::new();
             am.start_proactive_refresh(cancel.clone());
 
-            // Wait for the proactive task to fire; its first pass runs after
-            // PROACTIVE_MIN_SLEEP, so the window must exceed the floor.
+            // Wait for the proactive task to fire; its first pass runs after PROACTIVE_MIN_SLEEP, so the window must exceed the floor
             tokio::time::sleep(
                 crate::auth::manager::PROACTIVE_MIN_SLEEP + std::time::Duration::from_millis(1000),
             )
@@ -509,8 +495,6 @@ async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
             let count_after_proactive = call_count.load(Ordering::SeqCst);
 
             // Now run refresh_token_if_expired (the per-turn pre-flight).
-            // It should see the proactively-refreshed token and NOT invoke
-            // the refresher again.
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             actor.refresh_token_if_expired().await;
 
@@ -552,8 +536,7 @@ fn model_not_found_error() -> xai_grok_sampler::SamplingErrorInfo {
         }
 }
 
-/// 404 model-not-found with a legacy WebLogin token appends a
-/// "Legacy auth detected" hint to the error message.
+/// 404 model-not-found with a legacy WebLogin token appends a "Legacy auth detected" hint to the error message.
 #[tokio::test(flavor = "current_thread")]
 async fn legacy_auth_hint_on_404_model_not_found() {
     let local = tokio::task::LocalSet::new();
@@ -569,7 +552,12 @@ async fn legacy_auth_hint_on_404_model_not_found() {
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(model_not_found_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(
+                    model_not_found_error(),
+                    0,
+                    transient_state(0, true),
+                    false,
+                )
                 .await;
             let err = match result {
                 Err(e) => e,
@@ -609,14 +597,12 @@ async fn legacy_auth_hint_on_404_model_not_found() {
 
 /// Build a 401-shaped error that bypasses step 4b's auth recovery.
 ///
-/// In production, 401s arrive as `SamplingErrorKind::Auth` with
-/// `status_code: None`. Step 4b intercepts `Auth`-kind errors and
-/// runs the full recovery chain — which succeeds on devbox/CI
-/// environments via SA-token mint, masking the hint.
+/// In production, 401s arrive as `SamplingErrorKind::Auth` with `status_code: None`.
+/// Step 4b intercepts `Auth`-kind errors and runs the full recovery chain.
+/// On devbox/CI that chain succeeds by minting a service-account token, masking the hint.
 ///
-/// Using `Api` kind + `status_code: Some(401)` exercises the hint
-/// condition (`status_code == Some(401)`) without triggering
-/// recovery, making the test environment-independent.
+/// Using `Api` kind with `status_code: Some(401)` exercises the hint condition (`status_code == Some(401)`) without triggering recovery.
+/// This makes the test environment-independent.
 fn unauthorized_401_error() -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
             kind: xai_grok_sampler::SamplingErrorKind::Api,
@@ -634,8 +620,7 @@ fn unauthorized_401_error() -> xai_grok_sampler::SamplingErrorInfo {
         }
 }
 
-/// 401 Unauthorized with a legacy WebLogin token appends a
-/// "Legacy auth detected" hint to the error message.
+/// 401 Unauthorized with a legacy WebLogin token appends a "Legacy auth detected" hint to the error message.
 #[tokio::test(flavor = "current_thread")]
 async fn legacy_auth_hint_on_401_unauthorized() {
     let local = tokio::task::LocalSet::new();
@@ -651,7 +636,12 @@ async fn legacy_auth_hint_on_401_unauthorized() {
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(unauthorized_401_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(
+                    unauthorized_401_error(),
+                    0,
+                    transient_state(0, true),
+                    false,
+                )
                 .await;
             let err = match result {
                 Err(e) => e,
@@ -703,7 +693,12 @@ async fn no_legacy_hint_on_401_for_oidc_auth() {
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(unauthorized_401_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(
+                    unauthorized_401_error(),
+                    0,
+                    transient_state(0, true),
+                    false,
+                )
                 .await;
             let err = match result {
                 Err(e) => e,
@@ -745,7 +740,12 @@ async fn no_legacy_hint_for_oidc_auth() {
 
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor
-                .handle_sampling_failure(model_not_found_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(
+                    model_not_found_error(),
+                    0,
+                    transient_state(0, true),
+                    false,
+                )
                 .await;
             let err = match result {
                 Err(e) => e,
@@ -773,8 +773,8 @@ async fn no_legacy_hint_for_oidc_auth() {
         .await;
 }
 
-// Regression group: a live session whose `auth_type` transiently reads `ApiKey`
-// must still recover, because the gate keys off the stable `auth_method_id`.
+// Regression group: a live session whose `auth_type` transiently reads `ApiKey` must still recover
+// The gate keys off the stable `auth_method_id`
 #[test]
 fn session_token_auth_gate_truth_table() {
     use crate::agent::auth_method::{ModelByok, session_token_auth_gate as gate};
@@ -783,22 +783,20 @@ fn session_token_auth_gate_truth_table() {
         assert!(!gate(false, ModelByok::NotByok, fp));
         assert!(!gate(false, ModelByok::Byok, fp));
         assert!(!gate(false, ModelByok::Unknown, fp));
-        // Session method: a definite classification ignores the endpoint —
-        // NotByok always refreshes (only ever routes to the session endpoint),
-        // a genuine per-model Byok never does.
+        // Session method: a definite classification ignores the endpoint
+        // NotByok always refreshes (it only ever routes to the session endpoint); a genuine per-model Byok never does
         assert!(gate(true, ModelByok::NotByok, fp));
         assert!(!gate(true, ModelByok::Byok, fp));
     }
-    // Session method + Unknown BYOK: refresh only against a first-party xAI
-    // host, so a transiently-unclassifiable config can't demote a live session
-    // (the stale-token 401 regression) yet the session token never leaks to a
-    // third-party BYOK endpoint. This arm was unconditionally `false` pre-fix.
+    // Session method and Unknown BYOK: refresh only against a first-party xAI host
+    // That way a transiently-unclassifiable config can't demote a live session (the stale-token 401 regression)
+    // The session token still never leaks to a third-party BYOK endpoint
+    // This arm was unconditionally `false` before the fix
     assert!(gate(true, ModelByok::Unknown, true));
     assert!(!gate(true, ModelByok::Unknown, false));
 }
 
-/// Pre-fix, the gate read `auth_type` and skipped recovery here, 401'ing every
-/// turn until restart.
+/// Pre-fix, the gate read `auth_type` and skipped recovery here, 401'ing every turn until restart.
 #[tokio::test(flavor = "current_thread")]
 async fn sampler_401_session_method_with_stale_api_key_auth_type_still_recovers() {
     let local = tokio::task::LocalSet::new();
@@ -819,7 +817,7 @@ async fn sampler_401_session_method_with_stale_api_key_auth_type_still_recovers(
             .await;
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
 
             assert!(
@@ -858,7 +856,7 @@ async fn sampler_401_oidc_method_with_stale_api_key_auth_type_still_recovers() {
             .await;
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
 
             assert!(
@@ -876,8 +874,7 @@ async fn sampler_401_oidc_method_with_stale_api_key_auth_type_still_recovers() {
         .await;
 }
 
-/// Without the live bearer resolver here the sampler would sign requests with
-/// the stale buffered token.
+/// Without the live bearer resolver here the sampler would sign requests with the stale buffered token.
 #[tokio::test(flavor = "current_thread")]
 async fn reconstruct_full_config_wires_bearer_resolver_for_session_method_despite_api_key_auth_type()
  {
@@ -903,8 +900,7 @@ async fn reconstruct_full_config_wires_bearer_resolver_for_session_method_despit
         .await;
 }
 
-/// Negative: a genuine `xai.api_key` method keeps its configured key on the
-/// wire (no live resolver).
+/// Negative: a genuine `xai.api_key` method keeps its configured key on the wire (no live resolver).
 #[tokio::test(flavor = "current_thread")]
 async fn reconstruct_full_config_no_bearer_resolver_for_api_key_method() {
     let local = tokio::task::LocalSet::new();
@@ -929,8 +925,7 @@ async fn reconstruct_full_config_no_bearer_resolver_for_api_key_method() {
         .await;
 }
 
-/// The pre-flight refresh heals a transiently-`ApiKey` session by writing the
-/// fresh session token back into `creds.api_key`.
+/// The pre-flight refresh heals a transiently-`ApiKey` session by writing the fresh session token back into `creds.api_key`.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_refresh_heals_session_method_with_stale_api_key_auth_type() {
@@ -962,10 +957,8 @@ async fn pre_flight_refresh_heals_session_method_with_stale_api_key_auth_type() 
         .await;
 }
 
-/// End-to-end for the frozen-gate bug: a session born on `xai.api_key` (gate
-/// inactive) must adopt a later OIDC `/login` on the SAME actor -- the shared
-/// `auth_method_id` handle is flipped in place (no re-spawn), so the next turn
-/// wires the live bearer resolver and heals the stale key.
+/// End-to-end regression: a session born on `xai.api_key` (the gate inactive) must adopt a later OIDC `/login` on the SAME actor.
+/// The shared `auth_method_id` handle is flipped in place (no re-spawn), so the next turn wires the live bearer resolver and heals the stale key.
 #[tokio::test(flavor = "current_thread")]
 async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
     let local = tokio::task::LocalSet::new();
@@ -990,15 +983,13 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
                 "api-key session must not use the live resolver before login"
             );
 
-            // Simulate the agent's `authenticate` publishing an OIDC method into
-            // the shared handle this running actor already holds (no re-spawn).
+            // Simulate the agent's `authenticate` publishing an OIDC method into the shared handle this running actor already holds (no re-spawn)
             actor
                 .auth_method_id
                 .store(Some(std::sync::Arc::new(acp::AuthMethodId::new("oidc"))));
 
-            // The gate is recomputed each turn from the shared handle, so the
-            // flip alone activates the live resolver on the very next turn --
-            // no re-spawn, before any token refresh runs.
+            // The gate is recomputed each turn from the shared handle, so the flip alone activates the live resolver on the very next turn
+            // That happens with no re-spawn and before any token refresh runs
             assert!(
                 actor
                     .reconstruct_full_config()
@@ -1024,11 +1015,9 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
         .await;
 }
 
-// Per-model BYOK memo (`SessionActor::model_auth_memo`): a definite cached
-// status is served without recomputing, and the memo keys on `model_id`.
+// Per-model BYOK memo (`SessionActor::model_auth_memo`): a definite cached status is served without recomputing, and the memo keys on `model_id`
 
-/// The cache-hit branch is what lets a later config parse failure (`Unknown`)
-/// fall back to the last-known-good status.
+/// The cache-hit branch is what lets a later config parse failure (`Unknown`) fall back to the last-known-good status.
 #[tokio::test(flavor = "current_thread")]
 async fn model_auth_memo_serves_cached_status_and_keys_on_model() {
     use crate::agent::auth_method::ModelByok;
@@ -1064,8 +1053,7 @@ async fn model_auth_memo_serves_cached_status_and_keys_on_model() {
         .await;
 }
 
-/// A session method whose active model is a genuine per-model BYOK model keeps
-/// the model's own key on the wire (no live resolver).
+/// A session method whose active model is a genuine per-model BYOK model keeps the model's own key on the wire (no live resolver).
 #[tokio::test(flavor = "current_thread")]
 async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_method() {
     use crate::agent::auth_method::ModelByok;
@@ -1109,11 +1097,9 @@ async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_me
         .await;
 }
 
-/// Regression: a model-switch chokepoint must invalidate
-/// the memo even when `model_id` is unchanged. Otherwise a config edit that
-/// turns the current model into a per-model BYOK model on a third-party
-/// `base_url` keeps serving the stale `NotByok`, leaving the gate active and
-/// leaking the OIDC token cross-host.
+/// Regression: `handle_set_session_model` must invalidate the memo even when `model_id` is unchanged.
+/// Otherwise a config edit that turns the current model into a per-model BYOK model on a third-party `base_url` keeps serving the stale `NotByok`.
+/// That leaves the gate active and leaks the OIDC token to the third-party host.
 #[tokio::test(flavor = "current_thread")]
 async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
     use crate::agent::auth_method::ModelByok;
@@ -1147,8 +1133,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                     provider: None,
                 }));
 
-            // Switch to the same model_id, now a per-model BYOK model on a
-            // third-party endpoint.
+            // Switch to the same model_id, now a per-model BYOK model on a third-party endpoint
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("byok-key".to_string()),
                 base_url: "https://third-party.example/v1".to_string(),
@@ -1196,8 +1181,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
 
 use crate::auth::test_counting_provider as counting_provider;
 
-/// Seed the per-model memo so `model_auth_provider` resolves without a
-/// config load.
+/// Seed the per-model memo so `model_auth_provider` resolves without a config load.
 async fn seed_provider_memo(actor: &Arc<SessionActor>, provider: crate::auth::AuthProviderRef) {
     let model = actor
         .chat_state_handle
@@ -1217,10 +1201,9 @@ async fn seed_provider_memo(actor: &Arc<SessionActor>, provider: crate::auth::Au
         }));
 }
 
-/// Regression: switching from a provider-backed model to a first-party model
-/// must drop the minted provider token from the chat credentials, so it can
-/// never ride a later request to `api.x.ai`. Mirrors the forward direction in
-/// `set_session_model_invalidates_byok_memo_for_same_model_id`.
+/// Regression: switching from a provider-backed model to a first-party model must drop the minted provider token from the chat credentials.
+/// The token must never go out on a later request to `api.x.ai`.
+/// Mirrors the forward direction in `set_session_model_invalidates_byok_memo_for_same_model_id`.
 #[tokio::test(flavor = "current_thread")]
 async fn switch_to_first_party_model_drops_minted_provider_token() {
     let local = tokio::task::LocalSet::new();
@@ -1311,7 +1294,7 @@ async fn sampler_401_on_provider_model_remints_and_resubmits() {
             );
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert!(
                 matches!(
@@ -1355,7 +1338,7 @@ async fn sampler_non_auth_kind_401_on_provider_model_still_recovers() {
             let mut error = auth_error();
             error.kind = xai_grok_sampler::SamplingErrorKind::Api;
             let result = actor
-                .handle_sampling_failure(error, 0, transient_state(0, true))
+                .handle_sampling_failure(error, 0, transient_state(0, true), false)
                 .await;
             assert!(
                 matches!(
@@ -1370,8 +1353,7 @@ async fn sampler_non_auth_kind_401_on_provider_model_still_recovers() {
         .await;
 }
 
-/// A 401 on a request that went out with no key mints instead of
-/// recovering.
+/// A 401 on a request that went out with no key mints instead of recovering.
 #[tokio::test(flavor = "current_thread")]
 async fn sampler_401_with_no_key_on_provider_model_mints_and_resubmits() {
     let local = tokio::task::LocalSet::new();
@@ -1392,7 +1374,7 @@ async fn sampler_401_with_no_key_on_provider_model_mints_and_resubmits() {
             seed_provider_memo(&actor, provider).await;
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert!(
                 matches!(
@@ -1407,10 +1389,9 @@ async fn sampler_401_with_no_key_on_provider_model_mints_and_resubmits() {
         .await;
 }
 
-/// A provider model's 401 goes through the provider, never the session
-/// refresher (4a/4b vs 4c exclusivity). The actor uses a session-based method,
-/// so the gate would be active for a non-BYOK model; the BYOK memo is what
-/// shadows it, which is the invariant under test.
+/// A provider model's 401 goes through the provider, never the session refresher (4a/4b vs 4c exclusivity).
+/// The actor uses a session-based method, so the gate would be active for a non-BYOK model.
+/// The BYOK memo overrides it; that override is the invariant under test.
 #[tokio::test(flavor = "current_thread")]
 async fn sampler_401_on_provider_model_never_refreshes_session() {
     let local = tokio::task::LocalSet::new();
@@ -1440,7 +1421,7 @@ async fn sampler_401_on_provider_model_never_refreshes_session() {
             );
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert!(
                 matches!(
@@ -1459,10 +1440,8 @@ async fn sampler_401_on_provider_model_never_refreshes_session() {
         .await;
 }
 
-/// The pre-turn mirror of the exclusivity test: a cold cache mints the
-/// provider token into chat-state, and the session refresher never fires. The
-/// actor uses a session-based method, so the gate would be active for a
-/// non-BYOK model; the BYOK memo is what keeps the refresher silent.
+/// The pre-turn mirror of the exclusivity test: a cold cache mints the provider token into chat-state, and the session refresher never fires.
+/// The actor uses a session-based method, so the gate would be active for a non-BYOK model; the BYOK memo is what keeps the refresher silent.
 #[tokio::test(flavor = "current_thread")]
 async fn pre_turn_on_provider_model_never_installs_session_token() {
     let local = tokio::task::LocalSet::new();
@@ -1506,8 +1485,7 @@ async fn pre_turn_on_provider_model_never_installs_session_token() {
         .await;
 }
 
-/// A token rejected moments after mint surfaces the 401 (fresh-mint
-/// guard).
+/// A token rejected moments after mint surfaces the 401 (fresh-mint guard).
 #[tokio::test(flavor = "current_thread")]
 async fn sampler_401_on_fresh_provider_token_surfaces_error() {
     let local = tokio::task::LocalSet::new();
@@ -1526,7 +1504,7 @@ async fn sampler_401_on_fresh_provider_token_surfaces_error() {
             seed_provider_memo(&actor, provider).await;
 
             let result = actor
-                .handle_sampling_failure(auth_error(), 0, transient_state(0, true))
+                .handle_sampling_failure(auth_error(), 0, transient_state(0, true), false)
                 .await;
             assert!(
                 result.is_err(),

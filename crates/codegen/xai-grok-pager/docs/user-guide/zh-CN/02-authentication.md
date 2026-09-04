@@ -292,7 +292,7 @@ Grok 按以下顺序（从高到低）为每个请求解析凭据：
 | 外部 OpenTelemetry | `GROK_EXTERNAL_OTEL` / `[telemetry] otel_*`。参见[监控用量](24-monitoring-usage.md)。 |
 
 在团队账户中，只有团队管理员可以更改编码数据共享。团队管理员还可以为团队启用或禁用零数据保留（ZDR）。参见[如何启用 ZDR](https://docs.x.ai/developers/faq/security#how-to-enable-zdr)。
-启用 ZDR 后，编码数据共享完全无法更改——设置行会显示 `ZDR`，而不是具体值。
+启用 ZDR 后，编码数据共享完全无法更改——设置行会显示 `ZDR`，而不是具体值。ZDR 不会关闭外部 OTEL 或 `user.email`；详见[此数据流与 ZDR](24-monitoring-usage.md#zdr-and-this-stream)。
 
 另请参见[监控用量](24-monitoring-usage.md#related-settings)和[配置](05-configuration.md#telemetry)。
 

@@ -152,7 +152,7 @@ Grok 仍可从受管设置加载 Claude 风格的权限**规则**；always-appro
 - grep（内容搜索）
 - web_search
 - todo_write
-- get_command_or_subagent_output / wait_commands_or_subagents / kill_command_or_subagent（子代理控制）
+- get_command_or_subagent_output / kill_command_or_subagent（子代理控制）
 - 调用技能
 
 ### 只读 Shell 命令
@@ -362,8 +362,10 @@ Bash 规则末尾的 :* 后缀会被去掉，转为普通前缀：Bash(git commi
 - 没有锚点前缀：模式开头的 // 或 ~/ 会被视为字面 glob 文本。请改写为绝对路径模式或 **/ 模式。
 - 由于匹配前会折叠 ./..，根定模式无法通过遍历逃逸：Read(./**) 限定于工作目录（裸相对路径如 src/main.rs 会匹配；./../../etc/passwd 不会），Read(src/**) 始终停留在 src/ 下。无根模式（*，或以 ** 开头的 **/*.rs）按设计在任意深度、任意位置匹配。
 - Read 规则也控制 grep 搜索；Grep(...) 规则只匹配 grep。
+- 原生 Read/Edit/Grep 检查会沿路径中的符号链接解析最终目标，并在该目标命中 deny 或 ask 规则时分别拒绝或提示。只对解析后目标命中的 allow 规则，不会反过来授予原始工具参数。
+- 如果路径中的符号链接无法解析，而该工具存在任何 deny 或 ask 文件规则，则会提示确认。
 
-Read 和 Edit 的 deny 规则还会应用于 shell 命令操作的文件路径（例如在被拒绝路径上执行 cat 或 sed），包括通过 -c 传给 bash、sh、dash、zsh 或 ksh 的字面内联脚本；该 shell 层检查使用同样考虑工作目录的规范化（工作目录下的绝对操作数也会匹配 Read(src/**) 等根定规则），并且还会解析符号链接。直接的 read_file/search_replace 工具检查不会解析符号链接。若要在操作系统层面覆盖每个进程，请将 deny 规则与沙箱组合（见[18-sandbox.md](18-sandbox.md)）。
+Read 和 Edit 的 deny 规则还会应用于 shell 命令操作的文件路径（例如在被拒绝路径上执行 cat 或 sed），包括通过 -c 传给 bash、sh、dash、zsh 或 ksh 的字面内联脚本；该 shell 层检查使用同样考虑工作目录的规范化和 deny/ask 符号链接解析（工作目录下的绝对操作数也会匹配 Read(src/**) 等根定规则）。若要在操作系统层面覆盖每个进程，请将 deny 规则与沙箱组合（见[18-sandbox.md](18-sandbox.md)）。
 
 <a id="mcp-rules"></a>
 ### MCP 规则

@@ -36,6 +36,8 @@ async fn create_test_actor(
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
     let state = TokioMutex::new(State {
         running_task: None,
+        finalization_gate: Default::default(),
+        message_delivery: Default::default(),
         pending_inputs: VecDeque::new(),
         edit_holds: HashMap::new(),
         pending_notifications: Vec::new(),
@@ -69,10 +71,13 @@ async fn create_test_actor(
     );
     chat_state_handle.record_token_usage(total_tokens);
     SessionActor {
+        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
+        ),
         transient_retry_enabled: true,
         transient_retries_prompt_total: std::cell::Cell::new(0),
         transient_episode_start: std::cell::Cell::new(None),
         status_wake: Default::default(),
+        active_work: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         session_info: SessionInfo {
             id: acp::SessionId::new("test-auto-compact"),
             cwd: cwd.as_str().to_string(),
@@ -149,6 +154,7 @@ async fn create_test_actor(
             injection_count: std::sync::atomic::AtomicU64::new(0),
             compaction_recovery_count: std::sync::atomic::AtomicU64::new(0),
             chunks_added: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            init_reindex_handle: std::cell::RefCell::new(None),
             dream_config: Default::default(),
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
@@ -207,6 +213,7 @@ async fn create_test_actor(
         goal_classifier_enabled: false,
         goal_planner_enabled: false,
         goal_summary_enabled: false,
+        length_salvage_remote_budget: None,
         goal_verifier_skeptic_count: 1,
         goal_role_models: Default::default(),
         goal_use_current_model_only: false,
@@ -270,7 +277,6 @@ async fn create_test_actor(
         trace_config_template: std::cell::RefCell::new(None),
     }
 }
-/// Test that should_auto_compact returns correct trigger info.
 #[tokio::test(flavor = "current_thread")]
 async fn test_should_auto_compact_triggers_at_threshold() {
     let local = tokio::task::LocalSet::new();
@@ -290,7 +296,6 @@ async fn test_should_auto_compact_triggers_at_threshold() {
         })
         .await;
 }
-/// Test that should_auto_compact does NOT trigger below threshold.
 #[tokio::test(flavor = "current_thread")]
 async fn test_should_auto_compact_below_threshold() {
     let local = tokio::task::LocalSet::new();
@@ -306,7 +311,6 @@ async fn test_should_auto_compact_below_threshold() {
         })
         .await;
 }
-/// Test check_auto_compact_needed uses state values.
 #[tokio::test(flavor = "current_thread")]
 async fn test_check_auto_compact_needed_uses_state() {
     let local = tokio::task::LocalSet::new();
@@ -323,10 +327,8 @@ async fn test_check_auto_compact_needed_uses_state() {
         })
         .await;
 }
-/// Test that overriding context_window on the sampling config changes
-/// auto-compact behavior. This validates the A/B fork fix: forked sessions
-/// must use the new model's context window, not the source session's.
-/// Without this, auto-compact fires at the wrong threshold.
+/// Overriding context_window on the sampling config changes auto-compact behavior.
+/// A forked session must use the new model's context window, not the source session's, or auto-compact fires at the wrong threshold.
 #[tokio::test(flavor = "current_thread")]
 async fn test_context_window_override_affects_auto_compact() {
     let local = tokio::task::LocalSet::new();
@@ -351,8 +353,7 @@ async fn test_context_window_override_affects_auto_compact() {
         })
         .await;
 }
-/// Test the reverse direction: overriding to a smaller context window
-/// should make auto-compact trigger sooner.
+/// Test the reverse direction: overriding to a smaller context window should make auto-compact trigger sooner.
 #[tokio::test(flavor = "current_thread")]
 async fn test_context_window_override_to_smaller_triggers_compact() {
     let local = tokio::task::LocalSet::new();
@@ -377,9 +378,7 @@ async fn test_context_window_override_to_smaller_triggers_compact() {
         })
         .await;
 }
-/// Response-header downgrade guard: `handle_model_metadata_update`
-/// must reject a smaller context_window from response headers but
-/// accept a larger one.
+/// `handle_model_metadata_update` must reject a smaller context_window from a response header and accept a larger one.
 #[tokio::test(flavor = "current_thread")]
 async fn test_response_header_context_window_downgrade_rejected() {
     let local = tokio::task::LocalSet::new();
@@ -449,6 +448,8 @@ async fn create_test_actor_with_memory(
         .map(|_| crate::session::memory::MemoryStorage::new(&cwd_path, None));
     let state = TokioMutex::new(State {
         running_task: None,
+        finalization_gate: Default::default(),
+        message_delivery: Default::default(),
         pending_inputs: VecDeque::new(),
         edit_holds: HashMap::new(),
         pending_notifications: Vec::new(),
@@ -486,10 +487,13 @@ async fn create_test_actor_with_memory(
         .as_ref()
         .map_or_else(Default::default, |mc| mc.initial_injection.clone());
     SessionActor {
+        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
+        ),
         transient_retry_enabled: true,
         transient_retries_prompt_total: std::cell::Cell::new(0),
         transient_episode_start: std::cell::Cell::new(None),
         status_wake: Default::default(),
+        active_work: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         session_info: SessionInfo {
             id: acp::SessionId::new("test-memory"),
             cwd: cwd.as_str().to_string(),
@@ -565,6 +569,7 @@ async fn create_test_actor_with_memory(
             injection_count: std::sync::atomic::AtomicU64::new(0),
             compaction_recovery_count: std::sync::atomic::AtomicU64::new(0),
             chunks_added: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            init_reindex_handle: std::cell::RefCell::new(None),
             dream_config: Default::default(),
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
@@ -634,6 +639,7 @@ async fn create_test_actor_with_memory(
         goal_classifier_enabled: false,
         goal_planner_enabled: false,
         goal_summary_enabled: false,
+        length_salvage_remote_budget: None,
         goal_verifier_skeptic_count: 1,
         goal_role_models: Default::default(),
         goal_use_current_model_only: false,
@@ -697,11 +703,9 @@ async fn create_test_actor_with_memory(
         trace_config_template: std::cell::RefCell::new(None),
     }
 }
-/// Unit test of the `compare_exchange` atomic pattern used in
-/// `run_memory_flush` to prevent concurrent flushes. Tests the
-/// acquire/reject/release/re-acquire cycle on a standalone `AtomicBool`
-/// (not a full `SessionActor` integration test — constructing one
-/// requires a sampling client, persistence channel, etc.).
+/// Unit test of the `compare_exchange` pattern `run_memory_flush` uses to prevent concurrent flushes.
+/// Exercises the acquire/reject/release/re-acquire cycle on a standalone `AtomicBool`.
+/// A full `SessionActor` would need a sampling client and a persistence channel.
 #[test]
 fn test_is_flushing_compare_exchange_prevents_double_entry() {
     let is_flushing = std::sync::atomic::AtomicBool::new(false);
@@ -813,11 +817,9 @@ async fn test_dream_check_timeout_from_config() {
         })
         .await;
 }
-/// Verify that `last_idle_flush_conversation_len` is reset after
-/// compaction shrinks the conversation. Without this reset the
-/// interval flush guard (`current_len > last_len`) stays false
-/// because the compacted conversation is shorter than the stored
-/// pre-compaction length.
+/// Verify that `last_idle_flush_conversation_len` is reset after compaction shrinks the conversation.
+/// Without the reset the interval flush guard (`current_len > last_len`) stays false.
+/// The compacted conversation is shorter than the stored pre-compaction length.
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_idle_flush_conversation_len_reset_after_compaction() {
@@ -909,8 +911,7 @@ fn api_error_with_context_window(context_window: u64) -> xai_grok_sampler::Sampl
     }
 }
 /// Primary scenario: remote settings shrinks the context window mid-session.
-/// The shell's last-known token count (214K) exceeds the new limit (200K) —
-/// should_compact_on_error must return true so the session can recover.
+/// The shell's last-known token count (214K) exceeds the new limit (200K), so should_compact_on_error must return true and the session can recover.
 #[tokio::test(flavor = "current_thread")]
 async fn test_compact_on_error_triggers_when_tokens_exceed_new_window() {
     let local = tokio::task::LocalSet::new();
@@ -924,8 +925,7 @@ async fn test_compact_on_error_triggers_when_tokens_exceed_new_window() {
         })
         .await;
 }
-/// When tracked tokens are within the new limit, the error was not a context
-/// overflow — do not compact.
+/// When tracked tokens are within the new limit, the error was not a context overflow, so do not compact.
 #[tokio::test(flavor = "current_thread")]
 async fn test_compact_on_error_no_trigger_when_tokens_within_new_window() {
     let local = tokio::task::LocalSet::new();
@@ -939,8 +939,7 @@ async fn test_compact_on_error_no_trigger_when_tokens_within_new_window() {
         })
         .await;
 }
-/// If the proxy hasn't been updated yet, model_metadata is None — must be
-/// a no-op for backwards compatibility.
+/// If the proxy hasn't been updated yet, model_metadata is None, and the check must be a no-op for backwards compatibility.
 #[tokio::test(flavor = "current_thread")]
 async fn test_compact_on_error_noop_without_model_metadata() {
     let local = tokio::task::LocalSet::new();
@@ -967,8 +966,7 @@ async fn test_compact_on_error_noop_without_model_metadata() {
         })
         .await;
 }
-/// A fresh session emits `x-compactions-remaining: 1`; once the chat-state
-/// reflects a compaction, the next reconstructed config emits `0`.
+/// A fresh session emits `x-compactions-remaining: 1`; once the chat-state reflects a compaction, the next reconstructed config emits `0`.
 #[tokio::test(flavor = "current_thread")]
 async fn compactions_remaining_header_flips_after_compaction() {
     use xai_grok_sampling_types::CompactionsRemaining;
@@ -1007,8 +1005,7 @@ async fn compactions_remaining_header_flips_after_compaction() {
         })
         .await;
 }
-/// `Fixed(n)` sends the constant `n` and never flips: the header stays put
-/// across a compaction, unlike the dynamic 1->0 variant.
+/// `Fixed(n)` sends the constant `n` and never flips: the header stays the same across a compaction, unlike the dynamic variant's 1 to 0.
 #[tokio::test(flavor = "current_thread")]
 async fn compactions_remaining_fixed_does_not_flip_after_compaction() {
     use xai_grok_sampling_types::CompactionsRemaining;
@@ -1047,9 +1044,8 @@ async fn compactions_remaining_fixed_does_not_flip_after_compaction() {
         })
         .await;
 }
-/// With the calculated form enabled, a fresh session emits
-/// `x-compaction-at = context_window * threshold_percent / 100`; once the
-/// chat-state reflects a compaction, the next reconstructed config drops it.
+/// With the calculated form enabled, a fresh session emits `x-compaction-at = context_window * threshold_percent / 100`.
+/// Once the chat-state reflects a compaction, the next reconstructed config drops the header.
 #[tokio::test(flavor = "current_thread")]
 async fn compaction_at_tokens_header_flips_after_compaction() {
     use xai_grok_sampling_types::CompactionAtTokens;
