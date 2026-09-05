@@ -32,6 +32,8 @@ const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_TAR_ZERO_PADDING_BYTES: u64 = 1024 * 1024;
 const DOWNLOAD_PROGRESS_TEMPLATE: &str =
     "  下载更新 {bar:30.cyan/dim} {bytes}/{total_bytes} {percent}% ({bytes_per_sec}，剩余 {eta})";
+const DOWNLOAD_COMPLETED_TEMPLATE: &str =
+    "  下载更新 {bar:30.cyan/dim} {bytes}/{total_bytes} {percent}% {msg}";
 const ONE_CLICK_INSTALLER: &str = "一键安装.cmd";
 const COMMAND_SETUP_INSTALLER: &str = "[可选]替换原始启动方式.cmd";
 const WINDOWS_REQUIRED_PACKAGE_FILES: [&str; 15] = [
@@ -624,7 +626,13 @@ pub(crate) async fn download_verified(asset: &VerifiedAsset, destination: &Path)
 
 fn finish_download_progress(progress: &ProgressBar, succeeded: bool) {
     if succeeded {
-        progress.finish();
+        let elapsed_seconds = progress.elapsed().as_secs();
+        progress.set_style(
+            ProgressStyle::default_bar()
+                .template(DOWNLOAD_COMPLETED_TEMPLATE)
+                .expect("valid community download completion template"),
+        );
+        progress.finish_with_message(format!("已完成，用时 {elapsed_seconds} 秒"));
     } else {
         progress.finish_and_clear();
     }
@@ -2033,7 +2041,13 @@ mod tests {
 
         finish_download_progress(&progress, true);
 
-        assert!(terminal.contents().contains("100%"));
+        let output = terminal.contents();
+        assert!(output.contains("100%"));
+        assert!(output.contains('█'));
+        assert!(output.contains("已完成，用时 "));
+        assert!(output.contains(" 秒"));
+        assert!(!output.contains("剩余"));
+        assert!(!output.contains("/s"));
     }
 
     #[test]
