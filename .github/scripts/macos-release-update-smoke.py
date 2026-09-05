@@ -59,15 +59,25 @@ def api(endpoint):
 
 def check_runner_api_budget():
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "grok-build-zh-updater",
-               "X-GitHub-Api-Version": "2022-11-28"}
-    request = urllib.request.Request("https://api.github.com/rate_limit", headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        core = json.load(response)["resources"]["core"]
-    (EVIDENCE / "runner-api-budget.json").write_text(json.dumps(core, indent=2), encoding="utf-8")
-    print(f"Runner anonymous GitHub API budget: {json.dumps(core)}", flush=True)
-    require(core["remaining"] >= 25,
-            f"Runner shared IP has only {core['remaining']} anonymous API requests left; "
-            f"retry after Unix time {core['reset']}. This is an environment prerequisite failure.")
+               "X-GitHub-Api-Version": "2026-03-10"}
+    deadline = time.monotonic() + 65 * 60
+    history = []
+    while True:
+        request = urllib.request.Request("https://api.github.com/rate_limit", headers=headers)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            core = json.load(response)["resources"]["core"]
+        history.append({"observed_at": time.time(), **core})
+        (EVIDENCE / "runner-api-budget.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
+        print(f"Runner anonymous GitHub API budget: {json.dumps(core)}", flush=True)
+        if core["remaining"] >= 25:
+            break
+        delay = max(60, core["reset"] - time.time() + 5)
+        require(time.monotonic() + delay < deadline,
+                "Runner API budget did not recover within 65 minutes; environment prerequisite failed")
+        print(f"Respecting GitHub rate-limit reset; waiting {round(delay)} seconds before retry", flush=True)
+        resume = time.monotonic() + delay
+        while time.monotonic() < resume:
+            time.sleep(min(60, resume - time.monotonic()))
     request = urllib.request.Request(
         f"https://api.github.com/repos/{REPO}/releases?per_page=100&page=1", headers=headers)
     try:
@@ -306,6 +316,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except Exception as error:
+        if not RESULTS:
+            RESULTS.append({"case": "environment-prerequisites", "passed": False, "error": str(error)})
+        raise
     finally:
         (EVIDENCE / "results.json").write_text(json.dumps(RESULTS, indent=2), encoding="utf-8")
         summary = ["## macOS published-release update test", f"Transition: {OLD} → {NEW}",

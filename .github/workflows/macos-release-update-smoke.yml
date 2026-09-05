@@ -20,7 +20,9 @@ jobs:
   update:
     name: macOS ARM64 1.0.12-rc.1 to 1.0.13
     runs-on: macos-15
-    timeout-minutes: 15
+    # Old published binaries cannot authenticate GitHub API calls. Shared runner
+    # egress may need one anonymous rate-limit reset before the short smoke test.
+    timeout-minutes: 80
     steps:
       - name: Check out test harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
