@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time
 import traceback
+import urllib.error
 import urllib.request
 
 
@@ -54,6 +55,30 @@ def command(args, *, env=None, cwd=None, timeout=180, log=None):
 
 def api(endpoint):
     return json.loads(command(["gh", "api", f"repos/{REPO}/{endpoint}"]))
+
+
+def check_runner_api_budget():
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "grok-build-zh-updater",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    request = urllib.request.Request("https://api.github.com/rate_limit", headers=headers)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        core = json.load(response)["resources"]["core"]
+    (EVIDENCE / "runner-api-budget.json").write_text(json.dumps(core, indent=2), encoding="utf-8")
+    print(f"Runner anonymous GitHub API budget: {json.dumps(core)}", flush=True)
+    require(core["remaining"] >= 25,
+            f"Runner shared IP has only {core['remaining']} anonymous API requests left; "
+            f"retry after Unix time {core['reset']}. This is an environment prerequisite failure.")
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{REPO}/releases?per_page=100&page=1", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+    except urllib.error.HTTPError as error:
+        evidence = {"status": error.code, "body": error.read().decode("utf-8", errors="replace"),
+                    "rate_limit_headers": {key: value for key, value in error.headers.items()
+                                           if key.lower().startswith(("x-ratelimit-", "retry-after"))}}
+        (EVIDENCE / "runner-api-error.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+        raise RuntimeError(f"Unauthenticated update feed is unavailable: {evidence}") from error
 
 
 def assert_stable():
@@ -259,6 +284,7 @@ def cli_case(old_package, expected_hash):
 
 def main():
     require(platform.system() == "Darwin" and platform.machine() == "arm64", "Requires native macOS ARM64")
+    check_runner_api_budget()
     assert_stable()
     old_package = package(OLD)
     new_package = package(NEW)
