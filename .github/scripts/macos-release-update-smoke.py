@@ -149,6 +149,9 @@ def install(old_package, name, auto_update=None):
     config = '[features]\nremote_fetch = false\n[cli]\nchannel = "stable"\n'
     if auto_update is not None:
         config += f"auto_update = {str(auto_update).lower()}\n"
+    # XAI_API_KEY alone does not select the TUI's authentication method. Pin it
+    # to avoid browser OAuth and the first-party API-key eligibility probe.
+    config += '[auth]\npreferred_method = "api_key"\n'
     (home / "config.toml").write_text(config, encoding="utf-8")
     binary = home / "bin" / "grok-zh"
     require(command([str(binary), "--version"], env=env).startswith(f"grok-zh {OLD} ("),
@@ -168,7 +171,9 @@ def verify_upgrade(home, binary, env, before, expected_hash):
     require(command([str(binary), "--version"], env=env).startswith(f"grok-zh {NEW} ("), "New version did not launch")
     alias = home / "bin" / "agent-zh"
     require(alias.is_symlink() and alias.resolve() == binary.resolve(), "agent-zh alias did not follow update")
-    require(command([str(alias), "--version"], env=env).startswith(f"grok-zh {NEW} ("), "Alias version mismatch")
+    # argv[0]=agent-zh selects the agent subcommand, which has no --version.
+    # The resolved target/hash proves its version; --help checks its real entry mode.
+    require("agent [OPTIONS]" in command([str(alias), "--help"], env=env), "Agent entry did not launch")
     require(digest((binary.parent / before).resolve()) != expected_hash, "Old target was overwritten")
     for name in ("grok", "agent"):
         require(not (home / "bin" / name).exists(), "Unexpected compatibility alias")
@@ -256,6 +261,8 @@ def tui_case(old_package, expected_hash, automatic):
                 return {"case": name, "passed": True, **details}
             if not automatic:
                 plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", terminal.output).lower()
+                require(b"approve in your browser to finish signing in" not in plain,
+                        "The account-free TUI fixture entered browser login instead of the welcome screen")
                 if prompt_at is None and b"1.0.13" in plain and b"ctrl+u" in plain:
                     prompt_at = time.monotonic()
                 if not submitted:
