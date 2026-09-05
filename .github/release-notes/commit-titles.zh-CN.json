@@ -42,6 +42,12 @@
       "first_parent": "dfcf92b37854f5b2c0dacc66a9e4195f3881dcae",
       "upstream_tip": "bc7f02eddd3d84085849dc19ed216f11c23b0571",
       "upstream_base": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8"
+    },
+    {
+      "merge_sha": "c233a36fdf6e4c8add0e7fe4dd8c4e9bbb07eb50",
+      "first_parent": "1008d23615fc7b125b506ef46ec33c14ca529e3e",
+      "upstream_tip": "72a61251fcffb464bcc687aeb5a998e5a98ec0c9",
+      "upstream_base": "bc7f02eddd3d84085849dc19ed216f11c23b0571"
     }
   ],
   "local_merges": [
@@ -224,6 +230,16 @@
       "sha": "bc7f02eddd3d84085849dc19ed216f11c23b0571",
       "source_subject": "Synced from monorepo",
       "title_zh": "优化工作树、MCP 重试、上下文统计与后台任务"
+    },
+    {
+      "sha": "bb7f39d5858cbf5e00de639367f59debbdcb0138",
+      "source_subject": "Synced from monorepo",
+      "title_zh": "增强会话、钩子与子智能体并优化启动性能"
+    },
+    {
+      "sha": "72a61251fcffb464bcc687aeb5a998e5a98ec0c9",
+      "source_subject": "Synced from monorepo",
+      "title_zh": "完善 MCP、企业策略与会话工作流"
     },
     {
       "sha": "a99e7daf7f97f61c805c8b121e11505ad9477e16",

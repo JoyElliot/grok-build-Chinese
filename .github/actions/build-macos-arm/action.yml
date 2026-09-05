@@ -138,6 +138,16 @@ runs:
             grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
             grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
 
+      - name: 恢复 Cargo macOS 宿主构建缓存
+        id: cargo_host_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/release-dist
+          key: grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
+
       - name: 验证格式与基础本地化
         shell: bash
         run: |
@@ -409,6 +419,13 @@ runs:
         with:
           path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
           key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
+
+      - name: 保存 Cargo macOS 宿主构建缓存
+        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/release-dist
+          key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo 依赖缓存
         if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}

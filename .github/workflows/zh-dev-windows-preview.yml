@@ -157,6 +157,19 @@ jobs:
             grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
             grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
 
+      # Explicit --target builds keep proc macros and build scripts outside the
+      # target triple directory. Cache them separately to retain old cache hits.
+      - name: 恢复 Cargo GNU 宿主构建缓存
+        id: cargo_host_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/release
+          key: grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
+
       - name: 验证 Windows 安装程序
         shell: pwsh
         run: |
@@ -562,6 +575,13 @@ jobs:
         with:
           path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release
           key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
+
+      - name: 保存 Cargo GNU 宿主构建缓存
+        if: ${{ success() && github.ref == 'refs/heads/zh-dev' && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/release
+          key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo 依赖缓存
         if: ${{ success() && github.ref_name == 'zh-dev' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}

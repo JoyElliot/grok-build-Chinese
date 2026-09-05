@@ -278,6 +278,14 @@ jobs:
           restore-keys: |
             grok-zh-target-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
 
+      - name: 恢复 GNU Release 宿主构建缓存
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/release
+          key: grok-zh-release-host-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs') }}
+          restore-keys: |
+            grok-zh-host-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
+
       - name: 运行离线发布门
         shell: pwsh
         run: |
