@@ -119,19 +119,23 @@ agent-zh
 [可选]替换原始启动方式.cmd
 ```
 
-菜单提供以下选择：
+安装器先检查官方版。中文版的 `grok-zh.exe`、`agent-zh.cmd` 和兼容命令不会被
+当作官方版；没有检测到已验证的官方版时，直接安装中文版并接管命令，无需选择。
+检测到官方版后才显示菜单：
 
-1. **保留官方版（推荐）**：只在中文版安装目录创建 `grok.cmd`、`agent.cmd`，
+1. **保留官方版，只接管 grok、agent 命令**：在中文版安装目录创建 `grok.cmd`、`agent.cmd`，
    并把该目录置于当前用户 `Path` 首位；官方程序文件保持原样。
-2. **备份并停用官方程序入口**：只处理 `%GROK_HOME%\bin` 中通过
-   X.AI LLC Authenticode 签名验证的 `grok.exe`、`agent.exe`，先备份再移动，
-   然后创建中文版兼容命令。来源无法验证的文件会被拒绝自动移动。
+2. **卸载官方版本 grok.exe，并接管 grok、agent 命令**：删除通过 X.AI LLC
+   Authenticode 签名验证的官方程序及其版本化文件，同时卸载已识别的
+   `@xai-official/grok` 全局 npm 包，然后启用中文版兼容命令。不创建官方版备份。
 3. **取消**：不修改程序、Path 或用户数据。
 
-两个安装方案都不会覆盖官方 `grok.exe` 或 `agent.exe`。如果使用方案 1，删除中文版
+如果使用方案 1，删除中文版
 安装目录中的两个 shim，或重新运行不带接管选项的高级安装命令，即可停止命令接管。
-如果使用方案 2，官方程序入口已经移入可恢复备份；停止命令接管后，还需按下方
-“恢复官方命令”步骤手工移回，安装器不会擅自覆盖后来安装的官方版本。
+如果使用方案 2，需要官方版时可按下方“重新安装官方版”步骤通过 npm 安装。
+卸载前会列出处理范围并要求再次输入 `2`。安装器先检查官方程序是否可卸载，完成
+中文版安装和命令配置后再执行删除。若删除时发生占用或 npm 错误，会保留已安装的
+中文版并报告卸载未完成；关闭官方程序、处理报错后，可重新运行可选入口重试。
 
 这里只调整用户级 `Path`。如果同名程序来自更靠前的 Machine 级 `Path`，Windows
 仍可能优先解析该程序；安装后必须用下面的命令核对实际结果。此时可卸载对应的
@@ -156,55 +160,52 @@ Set-ExecutionPolicy -Scope Process Bypass
 & .\Install-GrokZh.ps1 -OverrideOfficialCommands
 ```
 
-### 高级：备份并移走官方命令
+### 高级：卸载官方程序并接管命令
 
-如果除接管命令名外，还希望移除官方安装器放在共享目录中的两个入口，运行：
+如果除接管命令名外，还希望卸载已验证的官方程序，运行：
 
 ```powershell
 & .\Install-GrokZh.ps1 -UninstallOfficial
 ```
 
-`-UninstallOfficial` 会自动启用 `-OverrideOfficialCommands`，并且只检查：
+`-UninstallOfficial` 会自动启用 `-OverrideOfficialCommands`。默认检查：
 
 ```text
-%GROK_HOME%\bin\grok.exe
-%GROK_HOME%\bin\agent.exe
+%GROK_HOME%\bin
+%GROK_BIN_DIR%（已设置时）
+Path 中 grok.exe、agent.exe 所在的目录
+npm root --global 下的 @xai-official/grok
 ```
 
-未设置 `GROK_HOME` 时，`%GROK_HOME%` 按 `%USERPROFILE%\.grok` 处理。找到的文件
-不会直接删除，而会连同 SHA-256 记录一起移动到：
-
-```text
-%LOCALAPPDATA%\Programs\grok-zh\bin\official-backup\<timestamp>\
-```
+未设置 `GROK_HOME` 时，按 `%USERPROFILE%\.grok` 处理。只有官方名称且通过有效
+X.AI LLC 签名验证的程序才会删除；来源无法验证的同名文件保持原样。npm 包通过
+精确包名和实际全局安装前缀识别，并由 npm 卸载。显式传入 `-GrokHome` 时，处理范围
+限定为该目录的 `bin`，不会检查全局命令或 npm 包。
 
 这项操作不会删除或修改共享的 `auth.json`、`config.toml`、会话、第三方 API、
 MCP、插件、缓存或其他 `~/.grok` 数据。若文件正被占用，安装器会保留原文件并
 提示关闭相关进程后重试，不会强行结束进程。
 
-> `-UninstallOfficial` 是供高级用户使用的低级兼容参数：它按指定路径备份并移动
-> 两个命令文件，不等同于 Windows“应用和功能”中的完整卸载。双击可选入口会额外
-> 验证 X.AI LLC 签名，安全性更高，普通用户应优先使用菜单。
-
-如果官方版由 npm 或其他包管理器安装，它们在其他目录中的 shim/包记录不会被
-这个开关猜测性删除。可先检查：
+菜单和命令行使用相同的身份验证与卸载逻辑，均不创建备份。其他包管理器安装的
+包记录不会被猜测性删除；可用以下命令检查当前安装：
 
 ```powershell
 npm list -g --depth=0
 Get-Command grok, agent -All
 ```
 
-确认确实通过 npm 安装后，才单独执行：
+## 重新安装官方版
+
+需要恢复官方命令时，先重新运行不带接管选项的安装命令，移除中文版的 `grok.cmd`、
+`agent.cmd`，然后安装官方 npm 包：
 
 ```powershell
-npm uninstall -g @xai-official/grok
+& .\Install-GrokZh.ps1
+npm install -g @xai-official/grok
 ```
 
-## 恢复官方命令
-
-备份目录中的 `official-backup.json` 记录了原路径和哈希。关闭相关进程后，可将
-对应的 `grok.exe`、`agent.exe` 移回记录的 `original_path`。恢复前请先用
-`Get-Command grok, agent -All` 检查是否已有同名文件，避免覆盖后来安装的版本。
+重新打开终端后，用 `Get-Command grok, agent -All` 检查解析结果。旧版安装器已经
+创建的 `official-backup` 目录会保留，升级不会擅自删除这些已有文件。
 
 ## 自定义选项
 

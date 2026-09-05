@@ -3,7 +3,7 @@
 安装或升级 Grok Build 中文社区版的 Windows 完整安装包。
 
 .DESCRIPTION
-安装前校验 SHA256SUMS.txt 及必需文件，将程序部署到独立安装目录，并可选择更新用户 Path、提供 grok/agent 兼容命令，或备份现有官方命令。共享的 GROK_HOME 用户数据不会被删除。
+安装前校验 SHA256SUMS.txt 及必需文件，将程序部署到独立安装目录，并可选择更新用户 Path、提供 grok/agent 兼容命令，或卸载已验证的官方程序。共享的 GROK_HOME 用户数据不会被删除。
 
 .PARAMETER PackageDir
 已解压安装包的根目录。默认使用本脚本所在目录。
@@ -18,10 +18,10 @@
 额外创建 grok 和 agent 兼容命令，但不移动已有官方可执行文件。
 
 .PARAMETER UninstallOfficial
-先备份再移走 GROK_HOME\bin 中现有的官方 grok.exe/agent.exe，并创建对应兼容命令。不会删除共享用户数据。
+删除已验证的官方 grok.exe/agent.exe，不创建备份，并创建对应兼容命令。默认路径安装还会卸载已识别的官方 npm 包。不会删除共享用户数据。
 
 .PARAMETER InteractiveCommandSetup
-显示适合双击入口的数字菜单，让用户选择保留官方版，或备份并停用已验证的官方命令入口。
+先检查官方版；没有官方版时直接接管命令，有官方版时显示保留或卸载官方版的数字菜单。
 
 .PARAMETER ScriptedCommandSetupAnswers
 仅供安装器自动化验证使用。以分号分隔菜单答案；正常安装和双击入口不要设置。
@@ -324,6 +324,100 @@ function Test-XaiSignedExecutable {
     }
 }
 
+function Get-OfficialNpmPackage {
+    $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $npm) {
+        return $null
+    }
+    try {
+        $rootOutput = @(& $npm.Path root --global 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $rootOutput.Count -ne 1) {
+            return $null
+        }
+        $root = ([string]$rootOutput[0]).Trim()
+        if (![IO.Path]::IsPathRooted($root)) {
+            return $null
+        }
+        $root = Resolve-FullPath $root
+        if ((Split-Path -Leaf $root) -ine 'node_modules') {
+            return $null
+        }
+        $packageRoot = Join-Path $root '@xai-official\grok'
+        $manifestPath = Join-Path $packageRoot 'package.json'
+        if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            return $null
+        }
+        Assert-NoReparsePointInPath -Path $manifestPath -Label '官方 npm 包'
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($null -eq $manifest.PSObject.Properties['name'] -or
+            $manifest.name -cne '@xai-official/grok') {
+            return $null
+        }
+        return [pscustomobject]@{
+            NpmPath = $npm.Path
+            Prefix = Split-Path -Parent $root
+            PackageRoot = $packageRoot
+        }
+    } catch {
+        Write-Warning "无法确认官方 npm 包，未将其列入自动卸载范围：$($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-OfficialInstallation {
+    param(
+        [Parameter(Mandatory = $true)][string]$OfficialBin,
+        [Parameter(Mandatory = $true)][string]$CommunityInstallDir,
+        [switch]$IncludeGlobalCommands
+    )
+
+    $directories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    [void]$directories.Add($OfficialBin)
+    if ($IncludeGlobalCommands.IsPresent) {
+        if (![string]::IsNullOrWhiteSpace($env:GROK_BIN_DIR)) {
+            $customBin = [Environment]::ExpandEnvironmentVariables($env:GROK_BIN_DIR)
+            if ([IO.Path]::IsPathRooted($customBin)) {
+                [void]$directories.Add((Resolve-FullPath $customBin))
+            }
+        }
+        foreach ($name in @('grok.exe', 'agent.exe')) {
+            foreach ($command in @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                [void]$directories.Add((Split-Path -Parent $command.Path))
+            }
+        }
+    }
+    $files = [Collections.Generic.List[object]]::new()
+    foreach ($directory in $directories) {
+        if ((Test-PathsOverlap $directory $CommunityInstallDir) -or
+            !(Test-Path -LiteralPath $directory -PathType Container)) {
+            continue
+        }
+        Assert-NoReparsePointInPath -Path $directory -Label '官方程序目录'
+        # Match official executable names only. In particular, neither grok-zh
+        # nor the community grok.cmd/agent.cmd shims are official installations.
+        foreach ($file in @(Get-ChildItem -LiteralPath $directory -File)) {
+            if ($file.Name -notmatch '^(?:grok|agent)(?:-\d+\.\d+\.\d+(?:[.-][0-9A-Za-z-]+)*)?\.exe$') {
+                continue
+            }
+            if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                !(Test-XaiSignedExecutable $file.FullName)) {
+                continue
+            }
+            $files.Add([pscustomobject]@{
+                Path = $file.FullName
+                Sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            })
+        }
+    }
+    $npmPackage = if ($IncludeGlobalCommands.IsPresent) { Get-OfficialNpmPackage } else { $null }
+    return [pscustomobject]@{
+        Files = $files.ToArray()
+        NpmPackage = $npmPackage
+        Installed = $files.Count -gt 0 -or $null -ne $npmPackage
+    }
+}
+
 function Read-InstallerInput {
     param(
         [Parameter(Mandatory = $true)][string]$Prompt,
@@ -354,17 +448,25 @@ function Read-InstallerInput {
 
 function Read-InteractiveCommandSetup {
     param(
-        [Parameter(Mandatory = $true)][string]$OfficialBin,
+        [Parameter(Mandatory = $true)]$OfficialInstallation,
         [AllowNull()][Collections.Generic.Queue[string]]$ScriptedAnswers
     )
 
+    if (!$OfficialInstallation.Installed) {
+        Write-Host '未检测到已验证的官方版本，将直接安装中文版并接管 grok、agent 命令。' -ForegroundColor Cyan
+        return [pscustomobject]@{
+            Cancelled = $false
+            OverrideOfficial = $true
+            RemoveOfficial = $false
+        }
+    }
     Write-Host ''
     Write-Host '=== 可选：替换原始启动方式 ===' -ForegroundColor Cyan
     Write-Host '此步骤会安装或升级中文版，并让 grok、agent 优先启动中文版。'
     Write-Host '无论选择哪种方案，都不会删除 ~/.grok 中的聊天记录、登录信息、配置、插件或 MCP 数据。'
     Write-Host ''
-    Write-Host '[1] 保留官方版，只接管 grok、agent 命令（推荐，可随时恢复）'
-    Write-Host '[2] 备份并停用已验证的官方 grok.exe、agent.exe，再接管命令'
+    Write-Host '[1] 保留官方版，只接管 grok、agent 命令'
+    Write-Host '[2] 卸载官方版本 grok.exe，并接管 grok、agent 命令'
     Write-Host '[3] 取消'
 
     while ($true) {
@@ -374,7 +476,7 @@ function Read-InteractiveCommandSetup {
             return [pscustomobject]@{
                 Cancelled = $true
                 OverrideOfficial = $false
-                MoveOfficial = $false
+                RemoveOfficial = $false
             }
         }
         switch ($choice) {
@@ -382,38 +484,19 @@ function Read-InteractiveCommandSetup {
                 return [pscustomobject]@{
                     Cancelled = $false
                     OverrideOfficial = $true
-                    MoveOfficial = $false
+                    RemoveOfficial = $false
                 }
             }
             '2' {
-                $existing = @(@('grok.exe', 'agent.exe') | ForEach-Object {
-                    Join-Path $OfficialBin $_
-                } | Where-Object {
-                    Test-Path -LiteralPath $_ -PathType Leaf
-                })
-                $unverified = @($existing | Where-Object { !(Test-XaiSignedExecutable $_) })
-                if ($unverified.Count -gt 0) {
-                    Write-Warning '以下文件未能验证为 X.AI LLC 签名的官方程序，为避免移动来源不明文件，自动停用已取消：'
-                    foreach ($path in $unverified) {
-                        Write-Host "  $path"
-                    }
-                    Write-Host '请选择 1 保留它们并仅接管命令，或选择 3 退出后自行检查。'
-                    continue
-                }
-                if ($existing.Count -eq 0) {
-                    Write-Host "在 $OfficialBin 中未找到官方程序入口；将只创建 grok、agent 兼容命令。"
-                    return [pscustomobject]@{
-                        Cancelled = $false
-                        OverrideOfficial = $true
-                        MoveOfficial = $false
-                    }
-                }
                 Write-Host ''
-                Write-Host '将移动以下已验证程序到可恢复备份：' -ForegroundColor Yellow
-                foreach ($path in $existing) {
-                    Write-Host "  $path"
+                Write-Host '将卸载以下官方程序，不创建备份：' -ForegroundColor Yellow
+                foreach ($file in $OfficialInstallation.Files) {
+                    Write-Host "  $($file.Path)"
                 }
-                Write-Host '不会运行官方卸载器，也不会删除 GROK_HOME 内的任何用户数据。'
+                if ($null -ne $OfficialInstallation.NpmPackage) {
+                    Write-Host '  npm 全局包 @xai-official/grok'
+                }
+                Write-Host '聊天记录、登录信息、配置、插件和 MCP 数据会保留。'
                 $confirm = Read-InstallerInput `
                     '如确认继续，请再次输入 2；输入其他内容返回菜单' `
                     -ScriptedAnswers $ScriptedAnswers
@@ -422,24 +505,24 @@ function Read-InteractiveCommandSetup {
                     return [pscustomobject]@{
                         Cancelled = $true
                         OverrideOfficial = $false
-                        MoveOfficial = $false
+                        RemoveOfficial = $false
                     }
                 }
                 if ($confirm -ne '2') {
-                    Write-Host '未执行停用操作。'
+                    Write-Host '未执行卸载操作。'
                     continue
                 }
                 return [pscustomobject]@{
                     Cancelled = $false
                     OverrideOfficial = $true
-                    MoveOfficial = $true
+                    RemoveOfficial = $true
                 }
             }
             '3' {
                 return [pscustomobject]@{
                     Cancelled = $true
                     OverrideOfficial = $false
-                    MoveOfficial = $false
+                    RemoveOfficial = $false
                 }
             }
             default {
@@ -656,86 +739,68 @@ function Add-UserPathEntry {
     }
 }
 
-function Move-OfficialCommandsToBackup {
+function Assert-OfficialInstallationRemovable {
     param(
-        [Parameter(Mandatory = $true)][string]$OfficialBin,
-        [Parameter(Mandatory = $true)][string]$CommunityInstallDir,
-        [switch]$RequireXaiSignature
+        [Parameter(Mandatory = $true)]$OfficialInstallation
     )
 
-    $candidates = @('grok.exe', 'agent.exe')
-    $existing = @($candidates | Where-Object {
-        Test-Path -LiteralPath (Join-Path $OfficialBin $_) -PathType Leaf
-    })
-    if ($existing.Count -eq 0) {
-        Write-Host "在 $OfficialBin 中未找到官方 grok.exe 或 agent.exe。"
-        return @()
-    }
-
-    if ($RequireXaiSignature.IsPresent) {
-        $unverified = @($existing | ForEach-Object {
-            Join-Path $OfficialBin $_
-        } | Where-Object { !(Test-XaiSignedExecutable $_) })
-        if ($unverified.Count -gt 0) {
-            throw "待移动的程序已发生变化，或无法验证为 X.AI LLC 签名的官方程序：$($unverified -join ', ')。为保护来源不明文件，操作已停止。"
+    # Validate every planned file before removing any of them. Do not let the
+    # non-interactive switch bypass the same identity checks used by the menu.
+    foreach ($file in $OfficialInstallation.Files) {
+        Assert-NoReparsePointInPath -Path $file.Path -Label '待卸载官方程序'
+        if (!(Test-Path -LiteralPath $file.Path -PathType Leaf) -or
+            !(Test-XaiSignedExecutable $file.Path) -or
+            (Get-FileHash -LiteralPath $file.Path -Algorithm SHA256).Hash -cne $file.Sha256) {
+            throw "待卸载的官方程序已发生变化，操作已停止：$($file.Path)"
+        }
+        try {
+            $stream = [IO.File]::Open($file.Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            $stream.Dispose()
+        } catch {
+            throw "官方程序正在使用中或无法访问，请关闭后重试：$($file.Path)。$($_.Exception.Message)"
         }
     }
-
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $token = [Guid]::NewGuid().ToString('N').Substring(0, 8)
-    $backupDir = Join-Path $CommunityInstallDir "official-backup\$stamp-$token"
-    $records = [Collections.Generic.List[object]]::new()
-
-    foreach ($name in $existing) {
-        $source = Join-Path $OfficialBin $name
-        $destination = Join-Path $backupDir $name
-        $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-        $records.Add([ordered]@{
-            name = $name
-            original_path = $source
-            backup_path = $destination
-            sha256 = $hash
-        })
-    }
-
-    $moved = [Collections.Generic.List[object]]::new()
-    try {
-        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-        foreach ($record in $records) {
-            $source = $record.original_path
-            $destination = $record.backup_path
-            Move-Item -LiteralPath $source -Destination $destination
-            $moved.Add($record)
+    $npmPackage = $OfficialInstallation.NpmPackage
+    if ($null -ne $npmPackage) {
+        $manifestPath = Join-Path $npmPackage.PackageRoot 'package.json'
+        Assert-NoReparsePointInPath -Path $manifestPath -Label '待卸载官方 npm 包'
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($null -eq $manifest.PSObject.Properties['name'] -or
+            $manifest.name -cne '@xai-official/grok') {
+            throw '官方 npm 包身份已发生变化，卸载已停止。'
         }
+    }
+}
 
-        $manifestTemp = Join-Path $backupDir 'official-backup.json.tmp'
-        [ordered]@{
-            moved_at = (Get-Date).ToString('o')
-            note = '仅移动了命令可执行文件；共享的 GROK_HOME 数据未更改。'
-            files = @($records)
-        } | ConvertTo-Json -Depth 5 | Set-Content `
-            -LiteralPath $manifestTemp -Encoding UTF8
-        Move-Item -LiteralPath $manifestTemp `
-            -Destination (Join-Path $backupDir 'official-backup.json')
-    } catch {
-        for ($index = $moved.Count - 1; $index -ge 0; $index--) {
-            $record = $moved[$index]
-            if ((Test-Path -LiteralPath $record.backup_path) -and
-                !(Test-Path -LiteralPath $record.original_path)) {
-                try {
-                    Move-Item -LiteralPath $record.backup_path -Destination $record.original_path
-                } catch {
-                    Write-Warning "恢复 $($record.original_path) 失败：$($_.Exception.Message)"
-                }
-            }
+function Remove-OfficialInstallation {
+    param([Parameter(Mandatory = $true)]$OfficialInstallation)
+
+    Assert-OfficialInstallationRemovable -OfficialInstallation $OfficialInstallation
+    $npmPackage = $OfficialInstallation.NpmPackage
+    if ($null -ne $npmPackage) {
+        $manifestPath = Join-Path $npmPackage.PackageRoot 'package.json'
+        & $npmPackage.NpmPath uninstall --global --prefix $npmPackage.Prefix `
+            --ignore-scripts --no-audit --no-fund '@xai-official/grok' | Out-Host
+        if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $manifestPath)) {
+            throw '官方 npm 包未能卸载，已停止后续删除；请检查 npm 输出后重试。'
         }
-        throw "无法备份官方命令；现有文件已保留或恢复。请关闭正在使用 grok.exe/agent.exe 的进程后重试。详细信息：$($_.Exception.Message)"
+        Write-Host '已卸载 npm 全局包 @xai-official/grok。'
     }
-
-    foreach ($record in $records) {
-        Write-Host "已备份并从 PATH 所在目录移除官方命令：$($record.original_path)"
+    $removed = [Collections.Generic.List[string]]::new()
+    foreach ($file in $OfficialInstallation.Files) {
+        if (!(Test-Path -LiteralPath $file.Path -PathType Leaf)) {
+            continue
+        }
+        Assert-NoReparsePointInPath -Path $file.Path -Label '待卸载官方程序'
+        if (!(Test-XaiSignedExecutable $file.Path) -or
+            (Get-FileHash -LiteralPath $file.Path -Algorithm SHA256).Hash -cne $file.Sha256) {
+            throw "待卸载的官方程序已发生变化，未删除该文件：$($file.Path)"
+        }
+        Remove-Item -LiteralPath $file.Path
+        $removed.Add($file.Path)
+        Write-Host "已卸载官方程序：$($file.Path)"
     }
-    return @($records)
+    return $removed.ToArray()
 }
 
 if ([string]::IsNullOrWhiteSpace($PackageDir)) {
@@ -746,7 +811,8 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Get-DefaultInstallDir
 }
 $InstallDir = Resolve-FullPath $InstallDir
-if ([string]::IsNullOrWhiteSpace($GrokHome)) {
+$useDefaultGrokHome = [string]::IsNullOrWhiteSpace($GrokHome)
+if ($useDefaultGrokHome) {
     $GrokHome = Get-DefaultGrokHome
 }
 if ($GrokHome -match '(?i)\$env:') {
@@ -767,6 +833,11 @@ Assert-NoReparsePointInPath -Path $GrokHome -Label 'GrokHome'
 Assert-NoReparsePointInPath -Path $officialBin -Label 'GrokHome\bin'
 $requestedOverrideOfficialCommands = $OverrideOfficialCommands.IsPresent
 $requestedUninstallOfficial = $UninstallOfficial.IsPresent
+$officialInstallation = $null
+if ($InteractiveCommandSetup.IsPresent -or $requestedUninstallOfficial) {
+    $officialInstallation = Get-OfficialInstallation -OfficialBin $officialBin `
+        -CommunityInstallDir $InstallDir -IncludeGlobalCommands:$useDefaultGrokHome
+}
 if ($InteractiveCommandSetup.IsPresent) {
     $scriptedAnswers = $null
     if ($PSBoundParameters.ContainsKey('ScriptedCommandSetupAnswers')) {
@@ -778,14 +849,14 @@ if ($InteractiveCommandSetup.IsPresent) {
         }
     }
     $interactiveChoice = Read-InteractiveCommandSetup `
-        -OfficialBin $officialBin `
+        -OfficialInstallation $officialInstallation `
         -ScriptedAnswers $scriptedAnswers
     if ($interactiveChoice.Cancelled) {
         Write-Host '已取消，没有修改程序、Path 或共享用户数据。'
         return
     }
     $requestedOverrideOfficialCommands = $interactiveChoice.OverrideOfficial
-    $requestedUninstallOfficial = $interactiveChoice.MoveOfficial
+    $requestedUninstallOfficial = $interactiveChoice.RemoveOfficial
 }
 $provideOfficialNames = $requestedOverrideOfficialCommands -or $requestedUninstallOfficial
 
@@ -815,7 +886,7 @@ if (!$NoPathUpdate.IsPresent) {
     $operationParts.Add('将安装目录置于用户 Path 首位')
 }
 if ($requestedUninstallOfficial) {
-    $operationParts.Add('备份并移除指定的官方 grok.exe/agent.exe 命令')
+    $operationParts.Add('卸载已验证的官方程序，不创建备份')
 }
 $operation = ($operationParts -join ', ')
 if (!$PSCmdlet.ShouldProcess($InstallDir, $operation)) {
@@ -827,6 +898,7 @@ New-Item -ItemType Directory -Path $parent -Force | Out-Null
 $token = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $stage = "$InstallDir.stage.$PID-$token"
 $previous = $null
+$removedOfficial = @()
 
 try {
     Write-Host '[2/4] 正在复制并安装程序文件...' -ForegroundColor Cyan
@@ -910,6 +982,10 @@ try {
         }
     }
 
+    if ($requestedUninstallOfficial) {
+        Assert-OfficialInstallationRemovable -OfficialInstallation $officialInstallation
+    }
+
     if (Test-Path -LiteralPath $InstallDir) {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $previous = "$InstallDir.previous.$stamp-$token"
@@ -950,13 +1026,15 @@ if (!$NoPathUpdate.IsPresent) {
     Add-UserPathEntry $InstallDir
 }
 
-$movedOfficial = @()
 Write-Host '[4/4] 正在完成启动命令配置...' -ForegroundColor Cyan
 if ($requestedUninstallOfficial) {
-    $movedOfficial = @(Move-OfficialCommandsToBackup `
-        -OfficialBin $officialBin `
-        -CommunityInstallDir $InstallDir `
-        -RequireXaiSignature:$InteractiveCommandSetup.IsPresent)
+    try {
+        # Only remove official programs after the replacement and its Path are
+        # ready. Keep the working community install if removal later fails.
+        $removedOfficial = @(Remove-OfficialInstallation -OfficialInstallation $officialInstallation)
+    } catch {
+        throw "中文版已安装到 $InstallDir，但官方版卸载未完成。请关闭官方程序并检查错误后，重新运行可选入口重试。$($_.Exception.Message)"
+    }
 }
 
 Write-Host ''
@@ -993,7 +1071,7 @@ if ($provideOfficialNames) {
     Write-Host '默认命令：grok-zh、agent-zh'
 }
 if ($requestedUninstallOfficial) {
-    Write-Host "官方命令处理结果：已将 $($movedOfficial.Count) 个文件移入备份；共享数据目录 $GrokHome 未更改。"
+    Write-Host "官方命令处理结果：已删除 $($removedOfficial.Count) 个官方程序文件，未创建备份；共享数据目录 $GrokHome 未更改。"
 }
 if ($NoPathUpdate.IsPresent) {
     Write-Host '未修改用户 Path（-NoPathUpdate）。'
