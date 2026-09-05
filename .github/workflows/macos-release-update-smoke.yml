@@ -1,0 +1,42 @@
+name: macOS Release update smoke
+
+on:
+  push:
+    branches:
+      - codex/macos-release-update-smoke
+    paths:
+      - .github/workflows/macos-release-update-smoke.yml
+      - .github/scripts/macos-release-update-smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-update-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: macOS ARM64 1.0.12-rc.1 to 1.0.13
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Check out test harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Exercise published binaries and real stable update source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/macos-release-update-smoke.py
+
+      - name: Upload update evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-release-update-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/macos-release-update-evidence
+          if-no-files-found: error
+          retention-days: 14
