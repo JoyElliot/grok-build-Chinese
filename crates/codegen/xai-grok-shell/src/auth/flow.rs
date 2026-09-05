@@ -826,19 +826,30 @@ pub async fn run_cli_login(
     device_auth: bool,
     devbox: bool,
 ) -> anyhow::Result<()> {
+    let locale = xai_grok_locale::LocaleContext::default();
+    run_cli_login_with_locale(config, oauth, device_auth, devbox, &locale).await
+}
+
+pub async fn run_cli_login_with_locale(
+    config: &crate::agent::config::Config,
+    oauth: bool,
+    device_auth: bool,
+    devbox: bool,
+    locale: &xai_grok_locale::LocaleContext,
+) -> anyhow::Result<()> {
     if devbox {
         if !ActiveAuthBackend::default().is_xai_authority() {
             anyhow::bail!("--devbox mints an xAI credential, which this build cannot use");
         }
         let auth = super::devbox_login::run_devbox_login(config).await?;
-        return apply_post_login_config(auth).await;
+        return apply_post_login_config_with_locale(auth, locale).await;
     }
     let auth_manager = Arc::new(AuthManager::new(
         &grok_home::grok_home(),
         config.grok_com_config.clone(),
     ));
     crate::agent::init::update_telemetry_config(config, &auth_manager);
-    let result = run_cli_login_steps(config, &auth_manager, oauth, device_auth).await;
+    let result = run_cli_login_steps(config, &auth_manager, oauth, device_auth, locale).await;
     xai_grok_telemetry::session_ctx::drain_pending(xai_grok_telemetry::session_ctx::CLI_DRAIN)
         .await;
     result
@@ -848,6 +859,7 @@ async fn run_cli_login_steps(
     auth_manager: &Arc<AuthManager>,
     oauth: bool,
     device_auth: bool,
+    locale: &xai_grok_locale::LocaleContext,
 ) -> anyhow::Result<()> {
     let login_override = LoginTransportOverride::from_flags(oauth, device_auth);
     let authenticated = if cli_should_use_device(&config.grok_com_config, login_override).await {
@@ -888,28 +900,42 @@ async fn run_cli_login_steps(
         }
         auth
     };
-    apply_post_login_config(authenticated).await
+    apply_post_login_config_with_locale(authenticated, locale).await
 }
 /// Sync this principal's config now rather than waiting for the background tick.
 /// Stay quiet about absence or failure during login; confirm only when config was actually applied.
 /// `grok setup` reports the no-config case.
-pub(crate) async fn apply_post_login_config(authenticated: GrokAuth) -> anyhow::Result<()> {
+pub(crate) async fn apply_post_login_config_with_locale(
+    authenticated: GrokAuth,
+    locale: &xai_grok_locale::LocaleContext,
+) -> anyhow::Result<()> {
     let outcome = crate::managed_config::post_login_sync(Some(authenticated)).await;
-    match outcome {
-        crate::managed_config::ManagedConfigSync::Updated { is_team: true } => {
-            eprintln!("Applied your team's managed configuration.");
-        }
-        crate::managed_config::ManagedConfigSync::Updated { is_team: false } => {
-            eprintln!("Applied your deployment's managed configuration.");
-        }
-        crate::managed_config::ManagedConfigSync::Staged => {
-            eprintln!(
-                "Managed configuration update verified; it takes effect the next time Grok starts."
-            );
-        }
-        _ => {}
+    if let Some(message) = post_login_config_notice(locale, outcome) {
+        eprintln!("{message}");
     }
     Ok(())
+}
+
+fn post_login_config_notice(
+    locale: &xai_grok_locale::LocaleContext,
+    outcome: crate::managed_config::ManagedConfigSync,
+) -> Option<String> {
+    let (id, english) = match outcome {
+        crate::managed_config::ManagedConfigSync::Updated { is_team: true } => (
+            "auth.post_login.team_applied",
+            "Applied your team's managed configuration.",
+        ),
+        crate::managed_config::ManagedConfigSync::Updated { is_team: false } => (
+            "auth.post_login.deployment_applied",
+            "Applied your deployment's managed configuration.",
+        ),
+        crate::managed_config::ManagedConfigSync::Staged => (
+            "auth.post_login.staged",
+            "Managed configuration update verified; it takes effect the next time Grok starts.",
+        ),
+        _ => return None,
+    };
+    Some(locale.named_text(id, english).into_owned())
 }
 /// Result of a logout operation.
 /// Both the CLI subcommand and the ACP `/logout` slash command use it, so the presentation layer formats the outcome without duplicating auth logic.
@@ -989,6 +1015,38 @@ mod tests {
     use crate::env::EnvVarGuard;
     use chrono::Utc;
     use std::path::Path;
+    #[test]
+    fn post_login_config_notices_use_locale_without_changing_sync_outcomes() {
+        let zh = xai_grok_locale::LocaleContext::new(xai_grok_locale::ResolvedLocale {
+            locale: xai_grok_locale::UiLocale::ZhCn,
+            source: xai_grok_locale::LocaleSource::Cli,
+        });
+        assert_eq!(
+            post_login_config_notice(
+                &zh,
+                crate::managed_config::ManagedConfigSync::Updated { is_team: true }
+            )
+            .as_deref(),
+            Some("已应用团队托管配置。")
+        );
+        assert_eq!(
+            post_login_config_notice(&zh, crate::managed_config::ManagedConfigSync::Staged)
+                .as_deref(),
+            Some("托管配置更新已验证；将在下次启动 Grok 时生效。")
+        );
+        assert!(
+            post_login_config_notice(&zh, crate::managed_config::ManagedConfigSync::NoChange)
+                .is_none()
+        );
+        assert_eq!(
+            post_login_config_notice(
+                &xai_grok_locale::LocaleContext::default(),
+                crate::managed_config::ManagedConfigSync::Updated { is_team: false }
+            )
+            .as_deref(),
+            Some("Applied your deployment's managed configuration.")
+        );
+    }
     /// `os_error` and the reqwest classification are covered in `xai-grok-http`.
     /// What's local is which `LoginFailureKind` each maps to, and that a decode failure never reads as a transport one.
     #[test]

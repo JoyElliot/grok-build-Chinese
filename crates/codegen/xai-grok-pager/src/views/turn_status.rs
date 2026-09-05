@@ -605,8 +605,8 @@ pub fn render_turn_status(
                 // delimiter form. Non-MCP titles (bash commands etc.) are
                 // returned untouched by `mcp_pretty_name_if_qualified`.
                 let prefix = turn_static_text(locale, "turn.prefix.run", "Run ");
-                let pretty = mcp_pretty_name_if_qualified(title.as_str());
-                let detail = pretty.as_str();
+                let detail = mcp_pretty_name_if_qualified(title.as_str());
+                let detail = detail.as_str();
                 let prefix_width = prefix.width();
                 let max_cmd = available_for_label.saturating_sub(prefix_width).max(5);
                 let first_line = detail.lines().next().unwrap_or(detail);

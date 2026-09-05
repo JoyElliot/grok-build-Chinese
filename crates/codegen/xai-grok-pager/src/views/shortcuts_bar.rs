@@ -237,7 +237,7 @@ impl Widget for ShortcutsBar<'_> {
         // If pending confirmation, show only "press again to {label}"
         if let Some(pending) = &self.pending_confirmation {
             let key_text = pending.shortcut.display();
-            let action = localized_shortcut_label(self.locale, pending.label);
+            let action = localized_shortcut_label_for_display(self.locale, pending.label);
             let label = if let Some(locale) = self.locale {
                 locale
                     .named_text("shortcut.press_again", "press again to {action}")
@@ -298,7 +298,7 @@ impl Widget for ShortcutsBar<'_> {
             buf.set_span(x, area.y, &colon, 1);
             x += 1;
 
-            let label = localized_shortcut_label(self.locale, hint.label.as_ref());
+            let label = localized_shortcut_label_for_display(self.locale, hint.label.as_ref());
             let action_span = Span::styled(label.as_ref(), action_style);
             let action_width = label.width() as u16;
             if x + action_width > area.x + area.width {
@@ -324,7 +324,11 @@ impl Widget for ShortcutsBar<'_> {
     }
 }
 
-fn localized_shortcut_label<'a>(
+/// Translate a known client-owned shortcut action at the display boundary.
+/// Unknown labels remain byte-for-byte unchanged because callers may supply
+/// dynamic content. The underlying action and confirmation state are never
+/// rewritten.
+pub fn localized_shortcut_label_for_display<'a>(
     locale: Option<&crate::locale::LocaleContext>,
     english: &'a str,
 ) -> Cow<'a, str> {
@@ -423,9 +427,30 @@ pub fn compute_effective_hints<'a>(
 mod tests {
     use super::*;
     use crate::key;
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
 
     fn h(label: &'static str, k: crate::input::key::KeyShortcut) -> HintItem {
         HintItem::new(k, label)
+    }
+
+    #[test]
+    fn simplified_chinese_localizes_close_session_confirmation_only_for_display() {
+        let locale = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        assert_eq!(
+            localized_shortcut_label_for_display(Some(&locale), "close this session"),
+            "关闭此会话"
+        );
+        assert_eq!(
+            localized_shortcut_label_for_display(None, "close this session"),
+            "close this session"
+        );
+        assert_eq!(
+            localized_shortcut_label_for_display(Some(&locale), "close this workspace"),
+            "close this workspace"
+        );
     }
 
     #[test]

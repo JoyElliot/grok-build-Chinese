@@ -11,6 +11,7 @@ fn make_snapshot_with_servers(
     Arc::new(Mutex::new(ToolMetadataSnapshot {
         tools,
         servers,
+        managed_gateway_tools: Default::default(),
         mcp_initialized: true,
     }))
 }
@@ -283,6 +284,41 @@ fn local_mcp_tool_indexing_still_uses_qualified_name() {
     assert_eq!(snap.results.len(), 1);
     assert_eq!(snap.results[0].tool_name, "linear__save_issue");
     assert_eq!(snap.results[0].server_name, "linear");
+    assert!(snap.results[0].managed_gateway_tool.is_none());
+}
+
+#[test]
+fn managed_gateway_identity_follows_the_same_search_snapshot() {
+    let identity = xai_grok_tools::types::resources::ManagedGatewayToolIdentity {
+        qualified_name: "tasks__list".into(),
+        connector_id: "tasks".into(),
+        tool_id: "list".into(),
+        display_name: "List".into(),
+        description_sha256: "fixture-tasks-list".into(),
+    };
+    let index = Bm25ToolSearchIndex::new(Arc::new(Mutex::new(ToolMetadataSnapshot {
+        tools: vec![ToolMetadata {
+            qualified_name: "tasks__list".into(),
+            server_name: "tasks".into(),
+            tool_name: "list".into(),
+            description: "List automations".into(),
+            parameters: vec![],
+            input_schema: serde_json::json!({}),
+        }],
+        servers: vec![],
+        managed_gateway_tools: std::collections::HashMap::from([(
+            "tasks__list".to_owned(),
+            identity.clone(),
+        )]),
+        mcp_initialized: true,
+    })));
+
+    let snap = index.search_snapshot("tasks__list", 5);
+    assert_eq!(snap.results.len(), 1);
+    assert_eq!(
+        snap.results[0].managed_gateway_tool.as_ref(),
+        Some(&identity)
+    );
 }
 
 #[test]
@@ -297,6 +333,7 @@ fn gateway_only_snapshot_can_stay_partial() {
             input_schema: serde_json::json!({}),
         }],
         servers: vec![],
+        managed_gateway_tools: Default::default(),
         mcp_initialized: false,
     })));
 

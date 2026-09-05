@@ -62,7 +62,8 @@ use super::session::lifecycle::{
     clear_startup_actions, dispatch_accept_consent, dispatch_agent_type_mismatch_answered,
     dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
     dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
-    dispatch_trust_folder, open_delete_current_session_question, open_new_session_question,
+    dispatch_trust_folder, localized_welcome_workspace_error, open_delete_current_session_question,
+    open_new_session_question,
 };
 use super::session::load::{
     dispatch_cycle_session_source_filter, dispatch_load_session, dispatch_pick_content_session,
@@ -244,10 +245,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 }
                 Err(err) => {
                     tracing::warn!("welcome local-workspace ack: {err}");
+                    let raw_error = err.to_string();
+                    let display_error =
+                        localized_welcome_workspace_error(app.locale.as_ref(), &raw_error);
                     let message = app
                         .locale
                         .named_text("local_workspace.error", "Local workspace: {error}")
-                        .replace("{error}", &err.to_string());
+                        .replace("{error}", &display_error);
                     app.show_toast(&message);
                     vec![]
                 }

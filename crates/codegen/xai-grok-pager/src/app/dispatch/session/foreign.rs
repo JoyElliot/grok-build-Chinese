@@ -145,9 +145,14 @@ pub(in crate::app::dispatch) fn handle_session_list_loaded(
                 )
                 .into_owned()
         },
-        |partial| partial.picker_notice().to_owned(),
+        |partial| {
+            partial
+                .picker_notice_with_locale(Some(&app.locale))
+                .to_owned()
+        },
     );
-    let partial_notice = partial.map(ConversationsPartial::picker_notice);
+    let partial_notice =
+        partial.map(|partial| partial.picker_notice_with_locale(Some(&app.locale)));
     let chat_mode = app.chat_mode;
     let is_browse = query.is_none();
     let notice;

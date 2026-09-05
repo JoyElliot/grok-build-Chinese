@@ -630,6 +630,7 @@ impl BlockViewerPane {
                 crate::scrollback::blocks::tool::localized_known_search_mcp_tool_name(
                     &tool.name,
                     &tool.server,
+                    tool.managed_gateway_tool.as_ref(),
                     entry.locale(),
                 )
             {
@@ -1749,14 +1750,26 @@ mod localization_tests {
             DiscoveredTool {
                 name: "tasks__list".to_string(),
                 server: "tasks".to_string(),
-                description: r"Keep API_KEY and C:\repo unchanged".to_string(),
+                description: "List the user's active automations — time-based schedules and event triggers (Gmail, Outlook, GitHub, Finance, …). Use this when the user asks to see their automations, tasks, reminders, scheduled jobs, or event-triggered automations. Each entry includes `taskId`, `isActive`, `schedules[*].scheduleId` / `schedules[*].isEnabled`, and `triggers` (provider, trigger_type, dimensions, from/to/subject_contains, enabled) for use with the other automation tools.".to_string(),
                 score: 1.0,
+                managed_gateway_tool: Some(
+                    xai_grok_tools::types::resources::ManagedGatewayToolIdentity {
+                        qualified_name: "tasks__list".into(),
+                        connector_id: "tasks".into(),
+                        tool_id: "list".into(),
+                        display_name: "List".into(),
+                        description_sha256:
+                            "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc"
+                                .into(),
+                    },
+                ),
             },
             DiscoveredTool {
                 name: "tasks__list_custom".to_string(),
                 server: "tasks".to_string(),
                 description: String::new(),
                 score: 0.5,
+                managed_gateway_tool: None,
             },
         ];
         assert_eq!(search.results[0].name, "tasks__list");
@@ -1771,9 +1784,9 @@ mod localization_tests {
         let pane = BlockViewerPane::for_integration_search(EntryId::new(1), &entry)
             .expect("integration search viewer");
 
-        assert_eq!(pane.items[2].plain_text, "1. 列出任务");
+        assert_eq!(pane.items[2].plain_text, "1. 列出自动化");
         assert_eq!(pane.items[2].copy_text(), "1. List  Tasks");
-        let display_width = unicode_width::UnicodeWidthStr::width("1. 列出任务") as u16;
+        let display_width = unicode_width::UnicodeWidthStr::width("1. 列出自动化") as u16;
         let dragged = pane.text_for_drag(
             TextDrag {
                 anchor: TextEndpoint {
@@ -1788,10 +1801,10 @@ mod localization_tests {
             },
             &pane.items,
         );
-        assert_eq!(dragged.as_deref(), Some("1. 列出任务"));
+        assert_eq!(dragged.as_deref(), Some("1. 列出自动化"));
         assert_eq!(
             pane.items[3].copy_text(),
-            r"   Keep API_KEY and C:\repo unchanged"
+            "   List the user's active automations — time-based schedules and event triggers (Gmail, Outlook, GitHub, Finance, …). Use this when the user asks to see their automations, tasks, reminders, scheduled jobs, or event-triggered automations. Each entry includes `taskId`, `isActive`, `schedules[*].scheduleId` / `schedules[*].isEnabled`, and `triggers` (provider, trigger_type, dimensions, from/to/subject_contains, enabled) for use with the other automation tools."
         );
         assert_eq!(pane.items[5].plain_text, "2. List Custom  Tasks");
         assert_eq!(pane.items[5].copy_text(), "2. List Custom  Tasks");

@@ -24,6 +24,8 @@ pub struct ToolSearchResult {
     /// Full JSON Schema for the tool's input — included so the model can
     /// construct `use_tool` calls with the correct argument structure.
     pub input_schema: serde_json::Value,
+    /// Managed-gateway identity captured from the same search snapshot.
+    pub managed_gateway_tool: Option<crate::types::resources::ManagedGatewayToolIdentity>,
 }
 
 /// Result of a composite search — results + index metadata from a single

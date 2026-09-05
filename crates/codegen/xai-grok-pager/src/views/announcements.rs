@@ -43,6 +43,22 @@ const TITLE_PREFIX: &str = "! ";
 /// Columns between title/message text and the right-hand button/CTA.
 const GAP: usize = 2;
 
+fn localized_hide_cta(
+    locale: Option<&crate::locale::LocaleContext>,
+) -> std::borrow::Cow<'static, str> {
+    locale
+        .map(|locale| locale.named_text("announcement.hide_cta", HIDE_CTA))
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed(HIDE_CTA))
+}
+
+fn localized_hide_button(
+    locale: Option<&crate::locale::LocaleContext>,
+) -> std::borrow::Cow<'static, str> {
+    locale
+        .map(|locale| locale.named_text("announcement.hide_button", HIDE_BUTTON))
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed(HIDE_BUTTON))
+}
+
 /// Columns the `[label]` button (and the optional ` {caption}`) wants.
 /// This is the reservation every surface subtracts from its own budget so the adjacent text (message/path/location) truncates first.
 /// Excludes any surface-specific lead space (callers add their own).
@@ -367,11 +383,13 @@ fn paint_hide_button(
     row: u16,
     hovered: bool,
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> Option<Rect> {
     use unicode_width::UnicodeWidthStr;
 
     let max_w = area.width as usize;
-    let button_w = UnicodeWidthStr::width(HIDE_BUTTON);
+    let button = localized_hide_button(locale);
+    let button_w = UnicodeWidthStr::width(button.as_ref());
     if max_w < button_w {
         return None;
     }
@@ -384,7 +402,7 @@ fn paint_hide_button(
     buf.set_span(
         hide_x,
         row,
-        &Span::styled(HIDE_BUTTON, button_style),
+        &Span::styled(button.into_owned(), button_style),
         button_w as u16,
     );
     Some(Rect::new(hide_x, row, button_w as u16, 1))
@@ -406,12 +424,47 @@ pub fn render_banner(
     cta_hovered: bool,
     caption_allowed: bool,
 ) -> BannerHits {
+    render_banner_with_locale(
+        area,
+        buf,
+        announcements,
+        hidden_ids,
+        hide_hovered,
+        cta_hovered,
+        caption_allowed,
+        None,
+    )
+}
+
+/// Locale-aware banner renderer used by the live pager. The remote
+/// announcement payload is already localized separately; this function only
+/// translates the client-owned hide controls and keeps the slash command
+/// literal intact.
+#[allow(clippy::too_many_arguments)]
+pub fn render_banner_with_locale(
+    area: Rect,
+    buf: &mut Buffer,
+    announcements: &[xai_grok_announcements::RemoteAnnouncement],
+    hidden_ids: &BTreeSet<String>,
+    hide_hovered: bool,
+    cta_hovered: bool,
+    caption_allowed: bool,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> BannerHits {
     if area.height == 0 || area.width == 0 {
         return BannerHits::default();
     }
     match first_session_announcement(announcements, hidden_ids) {
-        Some(a) if is_critical(a) => render_critical_rows(area, buf, a, hide_hovered),
-        Some(a) => render_promo_row(area, buf, a, hide_hovered, cta_hovered, caption_allowed),
+        Some(a) if is_critical(a) => render_critical_rows(area, buf, a, hide_hovered, locale),
+        Some(a) => render_promo_row(
+            area,
+            buf,
+            a,
+            hide_hovered,
+            cta_hovered,
+            caption_allowed,
+            locale,
+        ),
         None => BannerHits::default(),
     }
 }
@@ -427,6 +480,7 @@ fn render_critical_rows(
     buf: &mut Buffer,
     ann: &xai_grok_announcements::RemoteAnnouncement,
     hide_hovered: bool,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> BannerHits {
     use unicode_width::UnicodeWidthStr;
 
@@ -457,7 +511,8 @@ fn render_critical_rows(
     let dim_style = dim_hide_style(&theme);
     let max_w = area.width as usize;
     let prefix_w = UnicodeWidthStr::width(TITLE_PREFIX);
-    let button_w = UnicodeWidthStr::width(HIDE_BUTTON);
+    let hide_button = localized_hide_button(locale);
+    let button_w = UnicodeWidthStr::width(hide_button.as_ref());
     let row0 = area.y;
     let row1 = area.y.saturating_add(1);
     let max_y = area.y.saturating_add(area.height);
@@ -477,7 +532,7 @@ fn render_critical_rows(
 
         // Non-dismissible: no [hide] button; the budget branch below hands its columns back to the title
         if dismissible {
-            hide_rect = paint_hide_button(buf, area, row0, hide_hovered, &theme);
+            hide_rect = paint_hide_button(buf, area, row0, hide_hovered, &theme, locale);
         }
 
         let title_budget = if hide_rect.is_some() {
@@ -502,7 +557,8 @@ fn render_critical_rows(
         // Message column matches the title column: indent past the `! ` prefix
         let mut x = area.x.saturating_add(prefix_w as u16);
         let mut remaining = max_w.saturating_sub(prefix_w);
-        let cta_w = UnicodeWidthStr::width(HIDE_CTA);
+        let hide_cta = localized_hide_cta(locale);
+        let cta_w = UnicodeWidthStr::width(hide_cta.as_ref());
 
         // Reserve the CTA (plus gap) up front: the message truncates, never the CTA
         // Non-dismissible reserves nothing; the message reclaims the full row past the prefix (`W−2`)
@@ -526,7 +582,7 @@ fn render_critical_rows(
         }
         if dismissible && remaining > 0 {
             // Degenerate widths still truncate the CTA itself rather than panic.
-            let cta_disp = truncate_str(HIDE_CTA, remaining);
+            let cta_disp = truncate_str(hide_cta.as_ref(), remaining);
             buf.set_span(
                 x,
                 row1,
@@ -556,6 +612,7 @@ fn render_promo_row(
     hide_hovered: bool,
     cta_hovered: bool,
     caption_allowed: bool,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> BannerHits {
     use unicode_width::UnicodeWidthStr;
 
@@ -574,15 +631,17 @@ fn render_promo_row(
 
     let dim_style = dim_hide_style(&theme);
     let max_w = area.width as usize;
-    let button_w = UnicodeWidthStr::width(HIDE_BUTTON);
-    let hide_cta_w = UnicodeWidthStr::width(HIDE_CTA);
+    let hide_button = localized_hide_button(locale);
+    let hide_cta = localized_hide_cta(locale);
+    let button_w = UnicodeWidthStr::width(hide_button.as_ref());
+    let hide_cta_w = UnicodeWidthStr::width(hide_cta.as_ref());
     let row = area.y;
     let mut hits = BannerHits::default();
 
     // Non-dismissible: neither hide affordance paints and `right_reserved` stays 0, so the button reclaims the right-hand columns
     let mut right_reserved = 0usize;
     if is_dismissible(ann) {
-        hits.hide = paint_hide_button(buf, area, row, hide_hovered, &theme);
+        hits.hide = paint_hide_button(buf, area, row, hide_hovered, &theme, locale);
     }
     if hits.hide.is_some() {
         right_reserved = button_w;
@@ -593,7 +652,7 @@ fn render_promo_row(
             buf.set_span(
                 hide_cta_x,
                 row,
-                &Span::styled(HIDE_CTA, dim_style),
+                &Span::styled(hide_cta.into_owned(), dim_style),
                 hide_cta_w as u16,
             );
             right_reserved = button_w + GAP + hide_cta_w;
@@ -632,6 +691,7 @@ fn render_promo_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
     use xai_grok_announcements::RemoteAnnouncement;
 
     fn ann(severity: Option<&str>, message: Option<&str>) -> RemoteAnnouncement {
@@ -838,6 +898,43 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    #[test]
+    fn simplified_chinese_banner_localizes_hide_controls_but_not_the_command() {
+        let locale = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let anns = [RemoteAnnouncement {
+            severity: Some("critical".into()),
+            title: Some("Outage".into()),
+            message: Some("Do not deploy".into()),
+            ..Default::default()
+        }];
+        let area = Rect::new(0, 0, 60, 2);
+        let mut buf = Buffer::empty(area);
+        let hits = render_banner_with_locale(
+            area,
+            &mut buf,
+            &anns,
+            &no_hidden(),
+            false,
+            false,
+            true,
+            Some(&locale),
+        );
+
+        let row0 = buf_row(&buf, area, 0);
+        let row1 = buf_row(&buf, area, 1);
+        // Ratatui stores the trailing cell of each full-width CJK glyph as a
+        // space, so the flattened test buffer is not the visual string.
+        assert!(row0.contains('隐') && row0.contains('藏'), "row0={row0:?}");
+        assert!(
+            row1.contains('隐') && row1.contains('藏') && row1.contains("/announcements hide"),
+            "row1={row1:?}"
+        );
+        assert_eq!(hits.hide, Some(Rect::new(54, 0, 6, 1)));
     }
 
     #[test]

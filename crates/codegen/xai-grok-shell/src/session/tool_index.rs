@@ -114,6 +114,11 @@ pub(crate) struct ServerMetadata {
 pub(crate) struct ToolMetadataSnapshot {
     pub tools: Vec<ToolMetadata>,
     pub servers: Vec<ServerMetadata>,
+    /// Managed identities admitted alongside `tools` in this exact snapshot.
+    pub managed_gateway_tools: std::collections::HashMap<
+        String,
+        xai_grok_tools::types::resources::ManagedGatewayToolIdentity,
+    >,
     pub mcp_initialized: bool,
 }
 
@@ -162,6 +167,10 @@ impl ToolSearchIndex for Bm25ToolSearchIndex {
                     score: 1.0,
                     parameters: exact.parameters.clone(),
                     input_schema: exact.input_schema.clone(),
+                    managed_gateway_tool: snapshot
+                        .managed_gateway_tools
+                        .get(&exact.qualified_name)
+                        .cloned(),
                 }],
                 total_hidden_tools,
                 is_ready,
@@ -187,6 +196,10 @@ impl ToolSearchIndex for Bm25ToolSearchIndex {
                     score: sr.score,
                     parameters: meta.parameters.clone(),
                     input_schema: meta.input_schema.clone(),
+                    managed_gateway_tool: snapshot
+                        .managed_gateway_tools
+                        .get(&meta.qualified_name)
+                        .cloned(),
                 })
             })
             .collect();

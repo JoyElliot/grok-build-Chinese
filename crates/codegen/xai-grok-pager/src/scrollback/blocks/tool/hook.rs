@@ -447,7 +447,8 @@ fn render_hooks_expanded_inner_with_locale(
                 let cleaned = error
                     .strip_prefix(&format!("hook '{}' ", run.name))
                     .unwrap_or(error);
-                let err_text = crate::render::line_utils::truncate_str(cleaned, 120);
+                let localized = localized_fixed_hook_error(cleaned, locale);
+                let err_text = crate::render::line_utils::truncate_str(&localized, 120);
                 for err_line in err_text.lines().take(3) {
                     lines.push(
                         Line::from(vec![
@@ -476,6 +477,45 @@ fn render_hooks_expanded_inner_with_locale(
     }
 
     lines
+}
+
+fn localized_fixed_hook_error(
+    error: &str,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
+    let Some(locale) = locale else {
+        return error.to_owned();
+    };
+    let exact = match error {
+        "client hook timed out" => Some((
+            "scrollback.hooks.error.client_timeout",
+            "client hook timed out",
+        )),
+        "client hook transport error" => Some((
+            "scrollback.hooks.error.client_transport",
+            "client hook transport error",
+        )),
+        "updatedMCPToolOutput does not match the tool's kind" => Some((
+            "scrollback.hooks.error.mcp_output_kind",
+            "updatedMCPToolOutput does not match the tool's kind",
+        )),
+        "updatedToolOutput does not match the tool's output shape" => Some((
+            "scrollback.hooks.error.output_shape",
+            "updatedToolOutput does not match the tool's output shape",
+        )),
+        _ => None,
+    };
+    if let Some((key, english)) = exact {
+        return locale.named_static_text(key, english).to_owned();
+    }
+    if let Some(detail) = error.strip_prefix("updatedToolOutput failed to parse: ") {
+        let prefix = locale.named_static_text(
+            "scrollback.hooks.error.output_parse_prefix",
+            "updatedToolOutput failed to parse: ",
+        );
+        return format!("{prefix}{detail}");
+    }
+    error.to_owned()
 }
 
 pub fn render_hooks_for_mode(

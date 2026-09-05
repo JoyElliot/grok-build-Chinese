@@ -506,7 +506,7 @@ impl SessionEvent {
     }
 }
 
-fn localized_model_unavailable_reason(
+pub(crate) fn localized_model_unavailable_reason(
     locale: &crate::locale::LocaleContext,
     reason: &str,
 ) -> String {
@@ -514,6 +514,47 @@ fn localized_model_unavailable_reason(
     const ORG_DENIAL: &str =
         "This model isn't allowed by your organization's policy. Contact your administrator.";
     const USER_DENIAL: &str = "This model isn't allowed by your allowed_models setting.";
+    const PREVIOUS_UNAVAILABLE: &str =
+        "Your previous model is no longer available. Please start a new session.";
+    const PREVIOUS_NO_COMPATIBLE: &str = "Your previous model is no longer available and could not be switched to a compatible model. Please start a new session.";
+
+    if let Some((id, english)) = match reason {
+        ORG_DENIAL => Some((
+            "scrollback.session_event.model_unavailable.denied_org",
+            ORG_DENIAL,
+        )),
+        USER_DENIAL => Some((
+            "scrollback.session_event.model_unavailable.denied_user",
+            USER_DENIAL,
+        )),
+        PREVIOUS_UNAVAILABLE => Some((
+            "scrollback.session_event.model_unavailable.previous_new_session",
+            PREVIOUS_UNAVAILABLE,
+        )),
+        PREVIOUS_NO_COMPATIBLE => Some((
+            "scrollback.session_event.model_unavailable.previous_no_compatible",
+            PREVIOUS_NO_COMPATIBLE,
+        )),
+        "The organization model policy is invalid. Contact your administrator." => Some((
+            "scrollback.session_event.model_unavailable.policy_invalid",
+            "The organization model policy is invalid. Contact your administrator.",
+        )),
+        "None of your models are allowed by your organization's policy. Contact your administrator." => {
+            Some((
+                "scrollback.session_event.model_unavailable.none_allowed_org",
+                "None of your models are allowed by your organization's policy. Contact your administrator.",
+            ))
+        }
+        "None of your models are allowed by allowed_models. Broaden it or remove it from your config, then restart." => {
+            Some((
+                "scrollback.session_event.model_unavailable.none_allowed_user",
+                "None of your models are allowed by allowed_models. Broaden it or remove it from your config, then restart.",
+            ))
+        }
+        _ => None,
+    } {
+        return text(id, english);
+    }
 
     if let Some((requested, rest)) = reason
         .strip_prefix('"')
@@ -1240,6 +1281,16 @@ mod tests {
                 .message_with_locale(&zh_locale())
                 .starts_with("“preview”：此模型不在 allowed_models 设置的允许范围内。")
         );
+
+        let blocked = SessionEvent::ModelUnavailable {
+            previous_model_id: String::new(),
+            new_model_id: String::new(),
+            reason: "Your previous model is no longer available and could not be switched to a compatible model. Please start a new session.".into(),
+        };
+        assert_eq!(
+            blocked.message_with_locale(&zh_locale()),
+            "你之前使用的模型已不可用，且无法切换到兼容模型。请启动新会话。"
+        );
     }
 
     #[test]
@@ -1247,6 +1298,42 @@ mod tests {
         let reason = "Provider said: Model \"x\" is unavailable?!";
         let event = SessionEvent::ModelUnavailable {
             previous_model_id: "x".into(),
+            new_model_id: String::new(),
+            reason: reason.into(),
+        };
+        assert_eq!(event.message_with_locale(&zh_locale()), reason);
+    }
+
+    #[test]
+    fn zh_localization_model_unavailable_exact_policy_failures() {
+        for (reason, expected) in [
+            (
+                "The organization model policy is invalid. Contact your administrator.",
+                "组织模型策略无效。请联系管理员。",
+            ),
+            (
+                "None of your models are allowed by your organization's policy. Contact your administrator.",
+                "组织策略未允许你的任何模型。请联系管理员。",
+            ),
+            (
+                "None of your models are allowed by allowed_models. Broaden it or remove it from your config, then restart.",
+                "allowed_models 未允许任何模型。请扩大匹配范围或从配置中移除该项，然后重启。",
+            ),
+        ] {
+            let event = SessionEvent::ModelUnavailable {
+                previous_model_id: String::new(),
+                new_model_id: String::new(),
+                reason: reason.into(),
+            };
+            assert_eq!(event.message_with_locale(&zh_locale()), expected);
+        }
+    }
+
+    #[test]
+    fn zh_localization_model_unavailable_policy_near_miss_is_not_rewritten() {
+        let reason = "None of your models are allowed by allowed_models. Broaden it or remove it from your config, then restart!";
+        let event = SessionEvent::ModelUnavailable {
+            previous_model_id: String::new(),
             new_model_id: String::new(),
             reason: reason.into(),
         };

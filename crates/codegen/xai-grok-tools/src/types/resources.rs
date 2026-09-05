@@ -551,6 +551,27 @@ pub struct ManagedGatewayToolSource {
     pub tool_id: String,
     pub tool_name: String,
     pub call_id: String,
+    /// SHA-256 of the authoritative, untruncated gateway description.
+    pub description_sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManagedGatewayToolIdentity {
+    pub qualified_name: String,
+    pub connector_id: String,
+    pub tool_id: String,
+    pub display_name: String,
+    pub description_sha256: String,
+}
+impl ManagedGatewayToolSource {
+    pub fn identity(&self, qualified_name: impl Into<String>) -> ManagedGatewayToolIdentity {
+        ManagedGatewayToolIdentity {
+            qualified_name: qualified_name.into(),
+            connector_id: self.connector_id.clone(),
+            tool_id: self.tool_id.clone(),
+            display_name: self.tool_name.clone(),
+            description_sha256: self.description_sha256.clone(),
+        }
+    }
 }
 #[derive(Debug, Clone, Default)]
 pub struct ManagedGatewayToolCatalog(pub HashMap<String, ManagedGatewayToolSource>);

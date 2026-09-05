@@ -2613,7 +2613,10 @@ async fn async_main(
             Command::Usage(usage_args) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                return xai_grok_pager::usage_cmd::run(usage_args);
+                return xai_grok_pager::usage_cmd::run_with_locale(
+                    usage_args,
+                    startup_locale.as_ref(),
+                );
             }
             Command::Share(ref share_args) => {
                 init_tracing_simple("cli");
@@ -2681,8 +2684,14 @@ async fn async_main(
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                if let Err(error) =
-                    xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox).await
+                if let Err(error) = xai_grok_shell::auth::run_cli_login_with_locale(
+                    &config,
+                    oauth,
+                    device_auth,
+                    devbox,
+                    startup_locale.as_ref(),
+                )
+                .await
                 {
                     const DEVBOX_AUTHORITY_ERROR: &str =
                         "--devbox mints an xAI credential, which this build cannot use";

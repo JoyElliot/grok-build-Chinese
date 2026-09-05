@@ -847,6 +847,7 @@ pub(crate) fn localized_announcement_for_display<'a>(
             "Grok 4.6 is here, try it out for free for a limited time! Upgrade for more usage." => {
                 "welcome.announcement.grok_4_6.free_trial_message"
             }
+            "Degraded performance" => "welcome.announcement.degraded_performance.title",
             _ => return None,
         };
         Some(locale.named_text(id, title).into_owned())
@@ -858,6 +859,9 @@ pub(crate) fn localized_announcement_for_display<'a>(
             "Select 'Grok 4.6' under /model." => "welcome.announcement.grok_4_6.message",
             "Grok 4.6 is here, try it out for free for a limited time! Upgrade for more usage." => {
                 "welcome.announcement.grok_4_6.free_trial_message"
+            }
+            "Elevated latency on some requests. Follow status.x.ai for updates." => {
+                "welcome.announcement.degraded_performance.message"
             }
             _ => return None,
         };
@@ -3671,6 +3675,37 @@ mod tests {
             assert!(matches!(untouched, std::borrow::Cow::Borrowed(_)));
             assert_eq!(untouched.as_ref(), &near_miss);
         }
+    }
+
+    #[test]
+    fn known_degraded_performance_notice_is_localized_but_near_misses_are_opaque() {
+        let announcement = xai_grok_announcements::RemoteAnnouncement {
+            title: Some("Degraded performance".to_string()),
+            message: Some(
+                "Elevated latency on some requests. Follow status.x.ai for updates.".to_string(),
+            ),
+            severity: Some("warning".to_string()),
+            ..Default::default()
+        };
+        let localized = localized_announcement_for_display(&ZH_TEST_LOCALE, &announcement);
+        assert_eq!(localized.title.as_deref(), Some("性能下降"));
+        assert_eq!(
+            localized.message.as_deref(),
+            Some("部分请求的延迟升高。请关注 status.x.ai 获取最新信息。")
+        );
+        assert_eq!(localized.severity, announcement.severity);
+
+        let near_miss = xai_grok_announcements::RemoteAnnouncement {
+            title: Some("Degraded performance!".to_string()),
+            message: Some(
+                "Elevated latency on requests. Follow status.x.ai for updates.".to_string(),
+            ),
+            severity: Some("warning".to_string()),
+            ..Default::default()
+        };
+        let untouched = localized_announcement_for_display(&ZH_TEST_LOCALE, &near_miss);
+        assert!(matches!(untouched, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(untouched.as_ref(), &near_miss);
     }
 
     #[test]

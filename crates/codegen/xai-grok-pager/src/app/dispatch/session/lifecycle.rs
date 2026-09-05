@@ -402,17 +402,67 @@ fn apply_welcome_workspace_on_new_session(app: &mut AppView) -> Result<(), Vec<E
         }
         Err(err) => {
             tracing::warn!("welcome workspace mode: {err}");
+            let raw_error = err.to_string();
+            let display_error = localized_welcome_workspace_error(app.locale.as_ref(), &raw_error);
             let message = localized_template(
                 app.locale.as_ref(),
                 "session.workspace.local_unavailable",
                 "Local workspace unavailable ({error}); using sandbox",
-                &[("{error}", &err.to_string())],
+                &[("{error}", &display_error)],
             );
             app.show_toast(&message);
             app.welcome_session_local_workspace = Some(None);
             app.welcome_workspace_mode = WelcomeWorkspaceMode::Sandbox;
             Ok(())
         }
+    }
+}
+
+pub(in crate::app::dispatch) fn localized_welcome_workspace_error(
+    locale: &crate::locale::LocaleContext,
+    error: &str,
+) -> String {
+    match error {
+        "local-workspace resolve returned no config after own-mode request"
+        | "local-workspace resolve returned no config after ack" => locale
+            .named_text("session.workspace.local_resolve_missing", error)
+            .into_owned(),
+        _ => error.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod workspace_error_localization_tests {
+    use super::localized_welcome_workspace_error;
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+
+    #[test]
+    fn local_workspace_missing_config_localizes_exact_internal_errors_only() {
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &zh,
+                "local-workspace resolve returned no config after ack"
+            ),
+            "本地工作区解析未返回配置"
+        );
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &zh,
+                "local-workspace resolve returned no config after ack: future detail"
+            ),
+            "local-workspace resolve returned no config after ack: future detail"
+        );
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &LocaleContext::default(),
+                "local-workspace resolve returned no config after ack"
+            ),
+            "local-workspace resolve returned no config after ack"
+        );
     }
 }
 /// Factored out of [`dispatch_new_session`] so the worktree-question "No" path can call it directly without re-opening the modal.

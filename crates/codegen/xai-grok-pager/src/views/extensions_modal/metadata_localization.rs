@@ -6,6 +6,11 @@
 //! value must all match before a translated string is returned.
 
 use super::{LocaleContext, extension_text};
+use crate::views::managed_mcp_localization::{
+    KNOWN_MANAGED_MCP_TOOLS, KnownManagedMcpTool, known_managed_mcp_tool,
+    localized_managed_mcp_tool_description, localized_managed_mcp_tool_label,
+    managed_connector_display_name,
+};
 use crate::views::mcps_modal::{McpServerInfo, McpToolDetail, McpWireSource};
 use xai_grok_tools::implementations::skills::types::{SkillInfo, SkillScope};
 use xai_grok_tools::util::grok_home;
@@ -123,7 +128,22 @@ const OFFICIAL_MARKETPLACE_ENTRIES: &[ExactCopy] = &[
         english: "Give Grok a real browser — the user's own Chrome, with their logins, or an isolated Browser Use Cloud browser. Use it whenever a task involves a website or web app: browsing, scraping and data extraction, filling forms, testing sites, taking screenshots, automating web workflows. Runs locally via uvx; no API key needed for local Chrome.",
         key: "extensions.catalog.marketplace.browser_use.description",
     },
+    ExactCopy {
+        canonical: "quo",
+        english: "Official Quo MCP for Grok Build. Send individual, group, or bulk SMS; manage contacts and tasks; review message history and call transcripts; and follow up on missed calls through Quo's hosted OAuth MCP server.",
+        key: "extensions.catalog.marketplace.quo.description",
+    },
 ];
+
+// The indexed official catalog supplies one Neon description, while the
+// marketplace-local plugin manifest supplies another. The scanner intentionally
+// gives the manifest precedence, so accept both exact, official copies at the
+// display boundary without changing the canonical marketplace metadata.
+const OFFICIAL_MARKETPLACE_DESCRIPTION_ALIASES: &[ExactCopy] = &[ExactCopy {
+    canonical: "neon",
+    english: "Manage your Neon Serverless Postgres projects, databases, and branches with the Neon agent skills and the Neon MCP Server.",
+    key: "extensions.catalog.marketplace.neon.manifest_description",
+}];
 
 const BUNDLED_SKILL_ENTRIES: &[ExactCopy] = &[
     ExactCopy {
@@ -203,7 +223,7 @@ const BUNDLED_SKILL_ENTRIES: &[ExactCopy] = &[
     },
     ExactCopy {
         canonical: "pptx",
-        english: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions 'deck', 'slides', 'presentation', or references a .pptx filename, regardless of what they plan to do with the content afterward.",
+        english: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions 'deck', 'slides', 'presentation', or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill.",
         key: "extensions.catalog.skill.pptx.description",
     },
     ExactCopy {
@@ -236,97 +256,15 @@ const BUNDLED_SKILL_ENTRIES: &[ExactCopy] = &[
         english: "Concise, high-signal principles for writing and editing skills well. Use whenever authoring or editing a skill.",
         key: "extensions.catalog.skill.skill_design_principles.description",
     },
-];
-
-struct TaskToolCopy {
-    canonical: &'static str,
-    display_name: &'static str,
-    alias_key: &'static str,
-    alias_english: &'static str,
-    description: Option<(&'static str, &'static str)>,
-}
-
-const TASK_TOOL_ENTRIES: &[TaskToolCopy] = &[
-    TaskToolCopy {
-        canonical: "tasks__list",
-        display_name: "List",
-        alias_key: "scrollback.tool.mcp.tasks.list",
-        alias_english: "Tasks List",
-        description: Some((
-            "List the user's active automations (scheduled tasks) with their schedules and recent results. Use this when the user asks to see their automations, tasks, reminders, or scheduled jobs.Each entry includes `task.task_id`, `task.is_active` (whether the automation is active or archived), `schedules[*].schedule_id`, and `schedules[*].is_enabled` (false means the schedule is paused) for use with the other automation tools.",
-            "extensions.catalog.mcp.tasks.list.description",
-        )),
+    ExactCopy {
+        canonical: "long-running-background-tasks",
+        english: "Required reading before you start, watch, or wait on anything that keeps running after you launch it — background jobs, watchers, scheduled loops, CI, pull requests, training runs, dev servers, long builds. Read it before you launch such work and before you report on its state. Saying where a running job stands counts as working on it. Use when: about to launch, supervise, inspect, diagnose, or report on work that keeps running after it is started.",
+        key: "extensions.catalog.skill.long_running_background_tasks.description",
     },
-    TaskToolCopy {
-        canonical: "tasks__create",
-        display_name: "Create",
-        alias_key: "scrollback.tool.mcp.tasks.create",
-        alias_english: "Tasks Create",
-        description: Some((
-            "Create a new automation (also called a scheduled task): Grok runs the prompt on the schedule you set and optionally notifies the user. Use this when the user asks to create an automation, reminder, scheduled task, or recurring check — or asks for something every morning, daily, weekly, or at a specific future time.",
-            "extensions.catalog.mcp.tasks.create.description",
-        )),
-    },
-    TaskToolCopy {
-        canonical: "tasks__update",
-        display_name: "Update",
-        alias_key: "scrollback.tool.mcp.tasks.update",
-        alias_english: "Tasks Update",
-        description: Some((
-            "Update an existing automation (scheduled task). Use this when the user asks to change, edit, or modify an automation's name, prompt, schedule, or notification settings. Requires `task_id` and `schedule_id` from `automation_list`.",
-            "extensions.catalog.mcp.tasks.update.description",
-        )),
-    },
-    TaskToolCopy {
-        canonical: "tasks__get_results",
-        display_name: "Get Results",
-        alias_key: "scrollback.tool.mcp.tasks.get_results",
-        alias_english: "Tasks Get Results",
-        description: Some((
-            "Get recent execution results for an automation (by `task_id` from `automation_create` / `automation_list`). Use this when the user asks about automation or task results, what a task found, or wants to check its output.",
-            "extensions.catalog.mcp.tasks.get_results.description",
-        )),
-    },
-    TaskToolCopy {
-        canonical: "tasks__run_now",
-        display_name: "Run Now",
-        alias_key: "scrollback.tool.mcp.tasks.run_now",
-        alias_english: "Tasks Run Now",
-        description: None,
-    },
-    TaskToolCopy {
-        canonical: "tasks__pause",
-        display_name: "Pause",
-        alias_key: "scrollback.tool.mcp.tasks.pause",
-        alias_english: "Tasks Pause",
-        description: Some((
-            "Pause or resume an automation's schedule (by `schedule_id` from `automation_list`). Use this when the user asks to pause, unpause, resume, stop, or cancel an automation or task.",
-            "extensions.catalog.mcp.tasks.pause.description",
-        )),
-    },
-    TaskToolCopy {
-        canonical: "tasks__delete",
-        display_name: "Delete",
-        alias_key: "scrollback.tool.mcp.tasks.delete",
-        alias_english: "Tasks Delete",
-        description: Some((
-            "Archive/deactivate an automation (by `task_id` from `automation_create` / `automation_list`) so it stops running. Use this when the user explicitly asks to delete, remove, or archive an automation or task. If the user says 'stop' or 'cancel', prefer `automation_pause` instead.",
-            "extensions.catalog.mcp.tasks.delete.description",
-        )),
-    },
-    TaskToolCopy {
-        canonical: "tasks__list_trigger_catalog",
-        display_name: "List Trigger Catalog",
-        alias_key: "scrollback.tool.mcp.tasks.list_trigger_catalog",
-        alias_english: "Tasks List Trigger Catalog",
-        description: None,
-    },
-    TaskToolCopy {
-        canonical: "tasks__list_trigger_resources",
-        display_name: "List Trigger Resources",
-        alias_key: "scrollback.tool.mcp.tasks.list_trigger_resources",
-        alias_english: "Tasks List Trigger Resources",
-        description: None,
+    ExactCopy {
+        canonical: "statusline",
+        english: "Configure the Grok Build status line.",
+        key: "extensions.catalog.skill.statusline.description",
     },
 ];
 
@@ -368,6 +306,7 @@ fn official_marketplace_category(name: &str) -> Option<&'static str> {
         "sentry" => Some("monitoring"),
         "mongodb" | "mongodb-atlas" | "neon" => Some("database"),
         "axiom" => Some("observability"),
+        "quo" => Some("productivity"),
         "chrome-devtools" | "cloudflare" | "superpowers" | "base44" | "wix" | "firecrawl"
         | "figma" | "exa" | "tavily" | "stripe" | "tinyfish" | "pstack" | "browser-use" => {
             Some("development")
@@ -396,7 +335,13 @@ fn trusted_marketplace_entry(
         return None;
     }
     let description = plugin.description.as_deref()?;
-    exact_entry(OFFICIAL_MARKETPLACE_ENTRIES, &plugin.name, description)
+    exact_entry(OFFICIAL_MARKETPLACE_ENTRIES, &plugin.name, description).or_else(|| {
+        exact_entry(
+            OFFICIAL_MARKETPLACE_DESCRIPTION_ALIASES,
+            &plugin.name,
+            description,
+        )
+    })
 }
 
 pub(super) fn localized_marketplace_description(
@@ -425,6 +370,7 @@ pub(super) fn localized_marketplace_category(
         "development" => "extensions.catalog.marketplace.category.development",
         "database" => "extensions.catalog.marketplace.category.database",
         "observability" => "extensions.catalog.marketplace.category.observability",
+        "productivity" => "extensions.catalog.marketplace.category.productivity",
         _ => return Some(category.to_owned()),
     };
     Some(extension_text(locale, key, category))
@@ -469,13 +415,23 @@ pub(super) fn localized_bundled_skill_description(
         .unwrap_or_else(|| raw.to_owned())
 }
 
-fn trusted_tasks_server(server: &McpServerInfo) -> bool {
-    server.is_managed_gateway
-        && server.wire_source == McpWireSource::Managed
-        && server.name == "managed_gateway:tasks"
-        && server.display_name.as_deref() == Some("Automations")
-        && server.source == "managed"
-        && server.plugin_name.is_none()
+fn trusted_managed_connector(server: &McpServerInfo) -> Option<&'static str> {
+    if !server.is_managed_gateway
+        || server.wire_source != McpWireSource::Managed
+        || server.source != "managed"
+        || server.plugin_name.is_some()
+    {
+        return None;
+    }
+    let connector = match server.name.strip_prefix("managed_gateway:")? {
+        "github" => "github",
+        "gmail" => "gmail",
+        "outlook" => "outlook",
+        "tasks" => "tasks",
+        _ => return None,
+    };
+    (server.display_name.as_deref() == managed_connector_display_name(connector))
+        .then_some(connector)
 }
 
 pub(super) fn localized_mcp_server_label(
@@ -483,7 +439,10 @@ pub(super) fn localized_mcp_server_label(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = server.display_name.as_deref().unwrap_or(&server.name);
-    if !trusted_tasks_server(server) || raw != "Automations" {
+    let Some(connector) = trusted_managed_connector(server) else {
+        return raw.to_owned();
+    };
+    if connector != "tasks" || raw != "Automations" {
         return raw.to_owned();
     }
     let localized = extension_text(locale, "extensions.catalog.mcp.tasks.server", raw);
@@ -494,17 +453,13 @@ pub(super) fn localized_mcp_server_label(
     }
 }
 
-fn trusted_task_tool(
+fn trusted_managed_tool(
     server: &McpServerInfo,
     tool: &McpToolDetail,
-) -> Option<&'static TaskToolCopy> {
-    if !trusted_tasks_server(server) {
-        return None;
-    }
+) -> Option<&'static KnownManagedMcpTool> {
+    let connector = trusted_managed_connector(server)?;
     let display = tool.display_name.as_deref()?;
-    TASK_TOOL_ENTRIES
-        .iter()
-        .find(|entry| entry.canonical == tool.name && entry.display_name == display)
+    known_managed_mcp_tool(connector, &tool.name, display)
 }
 
 pub(super) fn localized_mcp_tool_label(
@@ -513,15 +468,14 @@ pub(super) fn localized_mcp_tool_label(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = tool.display_name.as_deref().unwrap_or(&tool.name);
-    let Some(entry) = trusted_task_tool(server, tool) else {
+    let Some(entry) = trusted_managed_tool(server, tool) else {
         return raw.to_owned();
     };
-    let localized = extension_text(locale, entry.alias_key, entry.alias_english);
-    if localized == entry.alias_english {
-        raw.to_owned()
-    } else {
-        format!("{localized}（{raw}）")
-    }
+    let Some(localized) = locale.and_then(|locale| localized_managed_mcp_tool_label(entry, locale))
+    else {
+        return raw.to_owned();
+    };
+    format!("{localized}（{raw}）")
 }
 
 pub(super) fn localized_mcp_tool_description(
@@ -530,16 +484,12 @@ pub(super) fn localized_mcp_tool_description(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = tool.description.as_deref().unwrap_or("");
-    let Some(entry) = trusted_task_tool(server, tool) else {
+    let Some(entry) = trusted_managed_tool(server, tool) else {
         return raw.to_owned();
     };
-    let Some((english, key)) = entry.description else {
-        return raw.to_owned();
-    };
-    if raw != english {
-        return raw.to_owned();
-    }
-    extension_text(locale, key, raw)
+    locale
+        .and_then(|locale| localized_managed_mcp_tool_description(entry, raw, locale))
+        .unwrap_or_else(|| raw.to_owned())
 }
 
 #[cfg(test)]
@@ -657,13 +607,33 @@ mod tests {
             localized_marketplace_category(&source, &wrong_path, Some(&locale)).as_deref(),
             Some("deployment")
         );
+
+        let neon_manifest = &OFFICIAL_MARKETPLACE_DESCRIPTION_ALIASES[0];
+        let neon = marketplace_plugin(neon_manifest.canonical, neon_manifest.english, "database");
+        assert!(
+            localized_marketplace_description(&source, &neon, Some(&locale))
+                .starts_with("使用 Neon Agent 技能")
+        );
+        assert_eq!(
+            localized_marketplace_category(&source, &neon, Some(&locale)).as_deref(),
+            Some("数据库")
+        );
+        let changed_neon = marketplace_plugin(
+            neon_manifest.canonical,
+            "Manage different Neon resources.",
+            "database",
+        );
+        assert_eq!(
+            localized_marketplace_description(&source, &changed_neon, Some(&locale)),
+            "Manage different Neon resources."
+        );
     }
 
     #[test]
     fn zh_localization_all_current_official_marketplace_descriptions_are_mapped() {
         let locale = zh();
         let source = official_source();
-        assert_eq!(OFFICIAL_MARKETPLACE_ENTRIES.len(), 21);
+        assert_eq!(OFFICIAL_MARKETPLACE_ENTRIES.len(), 22);
         for entry in OFFICIAL_MARKETPLACE_ENTRIES {
             let category = official_marketplace_category(entry.canonical).unwrap();
             let plugin = marketplace_plugin(entry.canonical, entry.english, category);
@@ -758,7 +728,7 @@ mod tests {
     #[test]
     fn zh_localization_all_current_bundled_skill_descriptions_are_mapped() {
         let locale = zh();
-        assert_eq!(BUNDLED_SKILL_ENTRIES.len(), 22);
+        assert_eq!(BUNDLED_SKILL_ENTRIES.len(), 24);
         for entry in BUNDLED_SKILL_ENTRIES {
             let skill = SkillInfo {
                 name: entry.canonical.into(),
@@ -783,12 +753,42 @@ mod tests {
             assert_eq!(skill.name, entry.canonical);
             assert_eq!(skill.description, entry.english);
         }
+
+        let pptx = BUNDLED_SKILL_ENTRIES
+            .iter()
+            .find(|entry| entry.canonical == "pptx")
+            .unwrap();
+        let stale = SkillInfo {
+            name: pptx.canonical.into(),
+            description: pptx
+                .english
+                .strip_suffix(
+                    " If a .pptx file needs to be opened, created, or touched, use this skill.",
+                )
+                .unwrap()
+                .into(),
+            has_user_specified_description: true,
+            path: grok_home()
+                .join("bundled")
+                .join("skills")
+                .join(pptx.canonical)
+                .join("SKILL.md")
+                .to_string_lossy()
+                .into_owned(),
+            scope: SkillScope::Bundled,
+            ..SkillInfo::default()
+        };
+        assert_eq!(
+            localized_bundled_skill_description(&stale, Some(&locale)),
+            stale.description,
+            "a stale upstream description must fail closed instead of receiving a mismatched copy"
+        );
     }
 
-    fn tasks_server() -> McpServerInfo {
+    fn managed_server(connector: &str, display_name: &str) -> McpServerInfo {
         McpServerInfo {
-            name: "managed_gateway:tasks".into(),
-            display_name: Some("Automations".into()),
+            name: format!("managed_gateway:{connector}"),
+            display_name: Some(display_name.into()),
             status: McpServerDisplayStatus::Ready,
             tool_count: 1,
             auth_required: false,
@@ -804,18 +804,19 @@ mod tests {
         }
     }
 
+    fn tasks_server() -> McpServerInfo {
+        managed_server("tasks", "Automations")
+    }
+
     #[test]
     fn zh_localization_managed_tasks_overlay_keeps_canonical_ids() {
         let locale = zh();
         let server = tasks_server();
-        let entry = TASK_TOOL_ENTRIES
-            .iter()
-            .find(|entry| entry.canonical == "tasks__create")
-            .unwrap();
+        let entry = known_managed_mcp_tool("tasks", "tasks__create", "Create").unwrap();
         let tool = McpToolDetail {
-            name: entry.canonical.into(),
+            name: entry.qualified_name.into(),
             display_name: Some(entry.display_name.into()),
-            description: Some(entry.description.unwrap().0.into()),
+            description: None,
             enabled: true,
         };
         assert_eq!(
@@ -824,11 +825,7 @@ mod tests {
         );
         assert_eq!(
             localized_mcp_tool_label(&server, &tool, Some(&locale)),
-            "创建任务（Create）"
-        );
-        assert!(
-            localized_mcp_tool_description(&server, &tool, Some(&locale))
-                .starts_with("创建新的自动化任务")
+            "创建自动化（Create）"
         );
         assert_eq!(server.name, "managed_gateway:tasks");
         assert_eq!(tool.name, "tasks__create");
@@ -863,16 +860,30 @@ mod tests {
             localized_mcp_tool_description(&server, &changed, Some(&locale)),
             "Updated server description"
         );
+
+        let github = managed_server("github", "GitHub");
+        let gist = McpToolDetail {
+            name: "github__create_gist".into(),
+            display_name: Some("Create Gist".into()),
+            description: Some("Create a new gist".into()),
+            enabled: true,
+        };
+        assert!(localized_mcp_tool_label(&github, &gist, Some(&locale)).contains("创建 Gist"));
+        assert_eq!(
+            localized_mcp_tool_description(&github, &gist, Some(&locale)),
+            "创建新的 Gist"
+        );
     }
 
     #[test]
-    fn zh_localization_all_managed_task_labels_are_mapped_without_rewriting_ids() {
+    fn zh_localization_all_managed_tool_labels_are_mapped_without_rewriting_ids() {
         let locale = zh();
-        let server = tasks_server();
-        assert_eq!(TASK_TOOL_ENTRIES.len(), 9);
-        for entry in TASK_TOOL_ENTRIES {
+        assert_eq!(KNOWN_MANAGED_MCP_TOOLS.len(), 137);
+        for entry in KNOWN_MANAGED_MCP_TOOLS {
+            let display_name = managed_connector_display_name(entry.connector).unwrap();
+            let server = managed_server(entry.connector, display_name);
             let tool = McpToolDetail {
-                name: entry.canonical.into(),
+                name: entry.qualified_name.into(),
                 display_name: Some(entry.display_name.into()),
                 description: None,
                 enabled: true,
@@ -881,10 +892,10 @@ mod tests {
             assert_ne!(
                 localized, entry.display_name,
                 "missing key for {}",
-                entry.canonical
+                entry.qualified_name
             );
             assert!(localized.ends_with(&format!("（{}）", entry.display_name)));
-            assert_eq!(tool.name, entry.canonical);
+            assert_eq!(tool.name, entry.qualified_name);
         }
     }
 
@@ -932,7 +943,7 @@ mod tests {
             localized
                 .labels
                 .iter()
-                .any(|label| label == "创建任务（Create）")
+                .any(|label| label == "创建自动化（Create）")
         );
         assert_eq!(servers[0].name, "managed_gateway:tasks");
         assert_eq!(servers[0].tools[0].name, "tasks__create");

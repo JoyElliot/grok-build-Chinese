@@ -30,6 +30,8 @@ pub struct UseToolCallBlock {
     pub started_at: Option<std::time::Instant>,
     /// Elapsed time in ms after completion.
     pub elapsed_ms: Option<i64>,
+    /// ACP-only provenance emitted after an actual managed-gateway dispatch.
+    pub managed_gateway_tool: Option<xai_grok_tools::types::resources::ManagedGatewayToolIdentity>,
 }
 
 impl UseToolCallBlock {
@@ -41,6 +43,7 @@ impl UseToolCallBlock {
             error: None,
             started_at: None,
             elapsed_ms: None,
+            managed_gateway_tool: None,
         }
     }
 
@@ -118,7 +121,16 @@ impl UseToolCallBlock {
             theme.fg(theme.command)
         };
 
-        if let Some(localized) = super::localized_known_mcp_tool_name(&self.tool_name, locale) {
+        let managed_localized = self.managed_gateway_tool.as_ref().and_then(|identity| {
+            crate::views::managed_mcp_localization::localized_verified_managed_mcp_tool_name(
+                &self.tool_name,
+                identity,
+                locale,
+            )
+        });
+        if let Some(localized) = managed_localized
+            .or_else(|| super::localized_known_mcp_tool_name(&self.tool_name, locale))
+        {
             let display = match max_width {
                 Some(w) => truncate_str(localized, w),
                 None => localized.to_string(),
@@ -367,26 +379,114 @@ mod tests {
     #[test]
     fn zh_localization_translates_known_tasks_and_voice_titles() {
         let cases = [
-            ("tasks__list", "列出任务"),
-            ("tasks__create", "创建任务"),
-            ("tasks__update", "更新任务"),
-            ("tasks__get_results", "获取任务结果"),
-            ("tasks__run_now", "立即运行任务"),
-            ("tasks__pause", "暂停任务"),
-            ("tasks__delete", "删除任务"),
-            ("tasks__list_trigger_catalog", "列出触发器目录"),
-            ("tasks__list_trigger_resources", "列出触发器资源"),
-            ("voice__list_voices", "列出可用语音"),
+            ("tasks__list", "list", "List", "列出自动化"),
+            ("tasks__create", "create", "Create", "创建自动化"),
+            ("tasks__update", "update", "Update", "更新自动化"),
+            (
+                "tasks__get_results",
+                "get_results",
+                "Get Results",
+                "获取自动化结果",
+            ),
+            ("tasks__run_now", "run_now", "Run Now", "立即运行自动化"),
+            ("tasks__pause", "pause", "Pause", "暂停自动化"),
+            ("tasks__delete", "delete", "Delete", "删除自动化"),
+            (
+                "tasks__list_trigger_catalog",
+                "list_trigger_catalog",
+                "List Trigger Catalog",
+                "列出触发器目录",
+            ),
+            (
+                "tasks__list_trigger_resources",
+                "list_trigger_resources",
+                "List Trigger Resources",
+                "列出触发器资源",
+            ),
+            ("tasks__validate", "validate", "Validate", "验证自动化"),
         ];
 
-        for (tool_name, expected) in cases {
-            let block = UseToolCallBlock::new(tool_name);
+        for (tool_name, tool_id, display_name, expected) in cases {
+            let mut block = UseToolCallBlock::new(tool_name);
+            block.managed_gateway_tool = Some(
+                xai_grok_tools::types::resources::ManagedGatewayToolIdentity {
+                    qualified_name: tool_name.to_owned(),
+                    connector_id: "tasks".to_owned(),
+                    tool_id: tool_id.to_owned(),
+                    display_name: display_name.to_owned(),
+                    description_sha256: match tool_id {
+                        "create" => {
+                            "bd70559a0f8696630e9bf97cb571d50a48cbb487f90fc1b75a9e6e32ebb65570"
+                        }
+                        "delete" => {
+                            "127ff8c35578884847a40616c03d5bdf3b44785b3927f40859f8cddbb82bcbf2"
+                        }
+                        "get_results" => {
+                            "fcde7ab85e189428c7507a7cfbfc68e06a869f6c2e9841cd58a8315fce15dfa4"
+                        }
+                        "list" => {
+                            "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc"
+                        }
+                        "list_trigger_catalog" => {
+                            "c5291881d5fba7ee86c831d90105a9e78d5394c7d1a10323d1b91a4bb3dd8a14"
+                        }
+                        "list_trigger_resources" => {
+                            "d5b460c32291fdd8a23c041c40aca4e7e2ba451cccd323940c129047b36276cc"
+                        }
+                        "pause" => {
+                            "24aa2383616a0ed4f3a8db305fbd5ccf2731f92dab024b038d4f70e920a92940"
+                        }
+                        "run_now" => {
+                            "cb624d3983f786b70574c451502ea4e008f49ec30fb48d45f44288346e7dc4e5"
+                        }
+                        "update" => {
+                            "49f0dc9572c909d58bcbf64f72f9e00740f606c658251fdc578704b31bba4fae"
+                        }
+                        "validate" => {
+                            "0f6673236d56ecef82e3bd08901c60a78ecb98b217dd5c3d2c7514d8490c364a"
+                        }
+                        _ => unreachable!("covered task tool"),
+                    }
+                    .to_owned(),
+                },
+            );
             assert_eq!(
                 rendered_text_with_locale(&block, DisplayMode::Collapsed, zh_locale()),
                 expected,
                 "tool_name={tool_name}"
             );
         }
+
+        let voice = UseToolCallBlock::new("voice__list_voices");
+        assert_eq!(
+            rendered_text_with_locale(&voice, DisplayMode::Collapsed, zh_locale()),
+            "列出可用语音"
+        );
+    }
+
+    #[test]
+    fn zh_localization_does_not_translate_unverified_managed_name_collisions() {
+        let missing_provenance = UseToolCallBlock::new("tasks__list");
+        assert_eq!(
+            rendered_text_with_locale(&missing_provenance, DisplayMode::Collapsed, zh_locale()),
+            "Tasks List"
+        );
+
+        let mut spoofed = UseToolCallBlock::new("tasks__list");
+        spoofed.managed_gateway_tool = Some(
+            xai_grok_tools::types::resources::ManagedGatewayToolIdentity {
+                qualified_name: "tasks__list".to_owned(),
+                connector_id: "custom".to_owned(),
+                tool_id: "list".to_owned(),
+                display_name: "List".to_owned(),
+                description_sha256:
+                    "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc".to_owned(),
+            },
+        );
+        assert_eq!(
+            rendered_text_with_locale(&spoofed, DisplayMode::Collapsed, zh_locale()),
+            "Tasks List"
+        );
     }
 
     #[test]

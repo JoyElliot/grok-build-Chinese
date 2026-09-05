@@ -692,10 +692,11 @@ pub async fn run(
         }
     };
     if matches!(
-        xai_grok_shell::auth::maybe_run_pre_tui_external_login(
+        xai_grok_shell::auth::maybe_run_pre_tui_external_login_with_locale(
             &grok_com_config,
             args.force_login,
             io::stdin().is_terminal(),
+            locale.as_ref(),
         )
         .await?,
         xai_grok_shell::auth::PreTuiLoginOutcome::SignedIn(_)

@@ -785,13 +785,15 @@ fn minimal_pending_hint(
     }
     let label = pending.label?;
     let shortcut = pending.shortcut.display().to_string();
+    let localized_label =
+        xai_grok_pager::views::shortcuts_bar::localized_shortcut_label_for_display(locale, label);
     Some(
         locale
             .map(|locale| {
                 locale
                     .named_text("minimal.double_press", "press {shortcut} again to {action}")
                     .replace("{shortcut}", &shortcut)
-                    .replace("{action}", label)
+                    .replace("{action}", localized_label.as_ref())
             })
             .unwrap_or_else(|| format!("press {shortcut} again to {label}")),
     )
@@ -1210,12 +1212,35 @@ mod tests {
         use xai_grok_pager::app::actions::Action;
         use xai_grok_pager::app::app_view::PendingAction;
         use xai_grok_pager::input::key::KeyShortcut;
+        use xai_grok_pager::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
         assert!(minimal_pending_hint(&None, None).is_none());
         let shortcut = KeyShortcut::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
         let pending = Some(PendingAction::new(Action::Quit, shortcut, "quit"));
         assert_eq!(
             minimal_pending_hint(&pending, None).as_deref(),
             Some("press Ctrl+q again to quit")
+        );
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let close = Some(PendingAction::new(
+            Action::DashboardOverlayStop,
+            shortcut,
+            "close this session",
+        ));
+        assert_eq!(
+            minimal_pending_hint(&close, Some(&zh)).as_deref(),
+            Some("再次按 Ctrl+q：关闭此会话")
+        );
+        let unknown = Some(PendingAction::new(
+            Action::Quit,
+            shortcut,
+            "new in worktree",
+        ));
+        assert_eq!(
+            minimal_pending_hint(&unknown, Some(&zh)).as_deref(),
+            Some("再次按 Ctrl+q：new in worktree")
         );
         let silent = Some(PendingAction::with_ttl(
             Action::Quit,

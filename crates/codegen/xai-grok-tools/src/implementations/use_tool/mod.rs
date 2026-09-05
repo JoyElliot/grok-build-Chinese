@@ -185,18 +185,17 @@ fn gateway_response_to_output(
 ) -> ToolOutput {
     let is_error = gateway_result_is_error(&result);
     let text = gateway_result_to_text(result);
+    let identity = source.identity(tool_name.to_owned());
     if is_error {
-        ToolOutput::MCP(MCPOutput::errored(
-            tool_name.to_owned(),
-            source.connector_name,
-            text,
-        ))
+        ToolOutput::MCP(
+            MCPOutput::errored(tool_name.to_owned(), source.connector_name, text)
+                .with_managed_gateway_tool(identity),
+        )
     } else {
-        ToolOutput::MCP(MCPOutput::okay_output(
-            tool_name.to_owned(),
-            source.connector_name,
-            text,
-        ))
+        ToolOutput::MCP(
+            MCPOutput::okay_output(tool_name.to_owned(), source.connector_name, text)
+                .with_managed_gateway_tool(identity),
+        )
     }
 }
 
@@ -229,7 +228,9 @@ pub async fn dispatch_mcp_tool(
             && let Some(dispatch) = dispatch.clone()
         {
             match dispatch_local_mcp(dispatch, tool_name, tool_input.clone(), ctx.clone()).await {
-                Ok(local_output) => return Ok(local_output),
+                Ok(local_output) => {
+                    return Ok(local_output.without_managed_gateway_provenance());
+                }
                 Err(err)
                     if err.kind != xai_tool_runtime::ToolErrorKind::NotFound
                         && !is_local_tool_id_rejection(&err, tool_name) =>
@@ -272,6 +273,7 @@ pub async fn dispatch_mcp_tool(
         ctx.clone(),
     )
     .await
+    .map(ToolOutput::without_managed_gateway_provenance)
 }
 
 impl crate::types::tool_metadata::ToolMetadata for UseTool {
@@ -666,6 +668,7 @@ mod tests {
                         tool_id: "search_dashboards".to_string(),
                         tool_name: "Search Dashboards".to_string(),
                         call_id: "grafana.searchDashboards".to_string(),
+                        description_sha256: "fixture-grafana".to_string(),
                     },
                 ),
                 (
@@ -676,6 +679,7 @@ mod tests {
                         tool_id: "tool".to_string(),
                         tool_name: "Tool".to_string(),
                         call_id: "gateway.collision".to_string(),
+                        description_sha256: "fixture-collision".to_string(),
                     },
                 ),
                 (
@@ -686,6 +690,7 @@ mod tests {
                         tool_id: "bad/id".to_string(),
                         tool_name: "Bad ID".to_string(),
                         call_id: "gateway.invalidLocal".to_string(),
+                        description_sha256: "fixture-invalid".to_string(),
                     },
                 ),
             ],
@@ -722,6 +727,13 @@ mod tests {
 
         assert_eq!(captured.lock().unwrap().clone().unwrap()["query"], "prod");
         if let ToolOutput::MCP(mcp) = result {
+            let identity = mcp
+                .managed_gateway_tool()
+                .expect("actual gateway dispatch must carry provenance");
+            assert_eq!(identity.qualified_name, "grafana__search_dashboards");
+            assert_eq!(identity.connector_id, "grafana");
+            assert_eq!(identity.tool_id, "search_dashboards");
+            assert_eq!(identity.display_name, "Search Dashboards");
             match mcp.output() {
                 crate::types::output::MCPOutputDetails::OkayOutput(text) => {
                     assert_eq!(text, "dashboards")
@@ -988,6 +1000,53 @@ mod tests {
         assert!(result.is_ok());
         let captured = captured.lock().unwrap().clone().unwrap();
         assert_eq!(captured, serde_json::json!({"local": true}));
+    }
+
+    #[tokio::test]
+    async fn gateway_catalog_collision_local_mcp_output_has_no_gateway_provenance() {
+        let gateway_captured: SharedArgs = Arc::new(std::sync::Mutex::new(None));
+        let ctx = ctx_with_dispatch_and_resources(
+            MockToolDispatch {
+                expected_tool_name: "server__tool".into(),
+                return_output: ToolOutput::MCP(
+                    crate::types::output::MCPOutput::okay_output(
+                        "server__tool".into(),
+                        "local".into(),
+                        "local result".into(),
+                    )
+                    .with_managed_gateway_tool(
+                        crate::types::resources::ManagedGatewayToolIdentity {
+                            qualified_name: "server__tool".into(),
+                            connector_id: "server".into(),
+                            tool_id: "tool".into(),
+                            display_name: "Tool".into(),
+                            description_sha256: "forged-local-marker".into(),
+                        },
+                    ),
+                ),
+            },
+            gateway_resources(
+                Arc::clone(&gateway_captured),
+                serde_json::json!("gateway should not run"),
+            ),
+        );
+
+        let result = xai_tool_runtime::Tool::run(
+            &UseTool,
+            ctx,
+            UseToolInput {
+                tool_name: "server__tool".into(),
+                tool_input: serde_json::json!({"local": true}),
+            },
+        )
+        .await
+        .expect("local MCP call");
+
+        let ToolOutput::MCP(mcp) = result else {
+            panic!("expected local MCP output");
+        };
+        assert!(mcp.managed_gateway_tool().is_none());
+        assert!(gateway_captured.lock().unwrap().is_none());
     }
 
     #[tokio::test]

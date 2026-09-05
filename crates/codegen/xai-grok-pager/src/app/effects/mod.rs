@@ -35,6 +35,29 @@ use agent::AgentId;
 use crate::unified_log as ulog;
 use xai_grok_shell::sampling::error::http_status_from_error;
 use xai_grok_shell::session::{ExtMethodResult, SessionInfoResponse};
+
+fn switch_model_error_from_acp(
+    error: &acp::Error,
+    prev_model_id: &Option<acp::ModelId>,
+    is_api_key_auth: bool,
+    locale: &crate::locale::LocaleContext,
+) -> SwitchModelError {
+    use xai_grok_shell::agent::config::ModelSwitchIncompatibleAgentError;
+
+    if let Some(typed) = ModelSwitchIncompatibleAgentError::from_acp_error(error) {
+        SwitchModelError::IncompatibleAgent {
+            error: typed,
+            prev_model_id: prev_model_id.clone(),
+        }
+    } else {
+        SwitchModelError::Other(format_acp_error_with_locale(
+            error,
+            is_api_key_auth,
+            locale,
+        ))
+    }
+}
+
 fn apply_permission_mode_override(
     meta: &mut Option<acp::Meta>,
     permission_mode_override: Option<PermissionModeKind>,
@@ -1910,6 +1933,8 @@ pub(crate) fn execute(
             prev_model_id,
         } => {
             let tx = acp_tx.clone();
+            let is_api_key_auth = session_flags.is_api_key_auth;
+            let locale = session_flags.locale.clone();
             tasks
                 .spawn(async move {
                     let meta = effort
@@ -1933,17 +1958,12 @@ pub(crate) fn execute(
                         .await
                         .map(|_| ())
                         .map_err(|e| {
-                            use xai_grok_shell::agent::config::ModelSwitchIncompatibleAgentError;
-                            if let Some(typed) = ModelSwitchIncompatibleAgentError::from_acp_error(
+                            switch_model_error_from_acp(
                                 &e,
-                            ) {
-                                SwitchModelError::IncompatibleAgent {
-                                    error: typed,
-                                    prev_model_id: prev_model_id.clone(),
-                                }
-                            } else {
-                                SwitchModelError::Other(sanitize_user_error(&e.to_string()))
-                            }
+                                &prev_model_id,
+                                is_api_key_auth,
+                                locale.as_ref(),
+                            )
                         });
                     TaskResult::SwitchModelComplete {
                         agent_id,

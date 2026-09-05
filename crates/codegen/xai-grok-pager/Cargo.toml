@@ -47,6 +47,7 @@ syntect = { workspace = true }
 similar = { workspace = true }
 indexmap = { workspace = true }
 blake3 = { workspace = true }
+sha2 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 strum = { workspace = true }

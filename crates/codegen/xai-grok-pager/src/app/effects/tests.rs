@@ -307,6 +307,65 @@ fn session_list_partial_parses_reasons() {
         );
 }
 #[test]
+fn format_acp_error_localizes_exact_model_policy_denials_only() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let denial = "This model isn't allowed by your organization's policy. Contact your administrator.";
+    let exact = acp::Error::invalid_params().data(denial);
+    assert_eq!(
+        format_acp_error_with_locale(&exact, false, &locale),
+        "组织策略不允许使用此模型。请联系管理员。"
+    );
+
+    let near_miss = acp::Error::invalid_params().data(format!("{denial} extra"));
+    assert_eq!(
+        format_acp_error_with_locale(&near_miss, false, &locale),
+        format!("{denial} extra")
+    );
+}
+
+#[test]
+fn switch_model_error_localizes_policy_denial_at_direct_effect_boundary() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let denial =
+        "This model isn't allowed by your organization's policy. Contact your administrator.";
+    let error = acp::Error::invalid_params().data(denial);
+    let mapped = switch_model_error_from_acp(&error, &None, false, &locale);
+    match mapped {
+        SwitchModelError::Other(message) => {
+            assert_eq!(message, "组织策略不允许使用此模型。请联系管理员。");
+        }
+        SwitchModelError::IncompatibleAgent { .. } => {
+            panic!("policy denial must remain a regular switch-model error")
+        }
+    }
+}
+
+#[test]
+fn session_list_partial_notices_localize_only_the_fixed_copy() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    assert_eq!(
+        ConversationsPartial::NoOauth.picker_notice_with_locale(Some(&locale)),
+        "无法加载聊天：请使用 /login 登录"
+    );
+    assert_eq!(
+        ConversationsPartial::Timeout.picker_notice_with_locale(Some(&locale)),
+        "无法加载会话：请重试"
+    );
+    assert_eq!(
+        ConversationsPartial::Error.picker_notice(),
+        "Couldn't load conversations: retry"
+    );
+}
+#[test]
 fn session_list_partial_absent_for_healthy_or_meta_less_responses() {
     let healthy = serde_json::json!({
             "sessions": [],

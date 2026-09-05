@@ -18,6 +18,8 @@ pub struct DiscoveredTool {
     pub server: String,
     pub description: String,
     pub score: f64,
+    /// ACP-only identity for a result sourced from the managed gateway.
+    pub managed_gateway_tool: Option<xai_grok_tools::types::resources::ManagedGatewayToolIdentity>,
 }
 
 /// A search_tool call: discovers MCP integration tools by keyword.
@@ -237,6 +239,7 @@ impl BlockContent for SearchToolCallBlock {
                         if let Some(localized) = super::localized_known_search_mcp_tool_name(
                             &tool.name,
                             &tool.server,
+                            tool.managed_gateway_tool.as_ref(),
                             &ctx.locale,
                         ) {
                             spans.push(Span::styled(
@@ -356,6 +359,23 @@ impl BlockContent for SearchToolCallBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xai_grok_tools::types::resources::ManagedGatewayToolIdentity;
+
+    fn managed_identity(
+        qualified_name: &str,
+        connector_id: &str,
+        tool_id: &str,
+        display_name: &str,
+    ) -> Option<ManagedGatewayToolIdentity> {
+        Some(ManagedGatewayToolIdentity {
+            qualified_name: qualified_name.into(),
+            connector_id: connector_id.into(),
+            tool_id: tool_id.into(),
+            display_name: display_name.into(),
+            description_sha256: "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc"
+                .into(),
+        })
+    }
     use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
 
     fn ctx(locale: LocaleContext) -> BlockContext {
@@ -402,6 +422,7 @@ mod tests {
             server: "linear".into(),
             description: String::new(),
             score: 1.0,
+            managed_gateway_tool: None,
         };
         assert_eq!(discovered_tool_action(&tool), "save_issue");
     }
@@ -413,6 +434,7 @@ mod tests {
             server: "Google Calendar".into(),
             description: String::new(),
             score: 1.0,
+            managed_gateway_tool: None,
         };
         assert_eq!(discovered_tool_action(&tool), "google_calendar_search");
     }
@@ -424,6 +446,7 @@ mod tests {
             server: "google_calendar".into(),
             description: String::new(),
             score: 1.0,
+            managed_gateway_tool: None,
         };
         assert_eq!(discovered_tool_action(&tool), "search");
     }
@@ -436,43 +459,47 @@ mod tests {
             DiscoveredTool {
                 name: "tasks__list".into(),
                 server: "tasks".into(),
-                description: "server-owned description".into(),
+                description: "List the user's active automations — time-based schedules and event triggers (Gmail, Outlook, GitHub, Finance, …). Use this when the user asks to see their automations, tasks, reminders, scheduled jobs, or event-triggered automations. Each entry includes `taskId`, `isActive`, `schedules[*].scheduleId` / `schedules[*].isEnabled`, and `triggers` (provider, trigger_type, dimensions, from/to/subject_contains, enabled) for use with the other automation tools.".into(),
                 score: 1.0,
+                managed_gateway_tool: managed_identity("tasks__list", "tasks", "list", "List"),
             },
             DiscoveredTool {
                 name: "tasks__run_now".into(),
                 server: "tasks".into(),
                 description: String::new(),
                 score: 0.95,
+                managed_gateway_tool: None,
             },
             DiscoveredTool {
                 name: "voice__list_voices".into(),
                 server: "voice".into(),
                 description: String::new(),
                 score: 0.9,
+                managed_gateway_tool: None,
             },
             DiscoveredTool {
                 name: "linear__list_issues".into(),
                 server: "linear".into(),
                 description: String::new(),
                 score: 0.8,
+                managed_gateway_tool: None,
             },
             DiscoveredTool {
                 name: "tasks__list".into(),
                 server: "custom".into(),
                 description: String::new(),
                 score: 0.7,
+                managed_gateway_tool: None,
             },
         ];
 
         let rendered = rendered_text(&block, zh_locale());
         assert!(rendered.contains("搜索工具 tasks list"), "{rendered}");
-        assert!(rendered.contains("1. 列出任务"), "{rendered}");
-        assert!(rendered.contains("2. 立即运行任务"), "{rendered}");
+        assert!(rendered.contains("1. 列出自动化"), "{rendered}");
+        assert!(rendered.contains("2. Run Now  Tasks"), "{rendered}");
         assert!(rendered.contains("3. 列出可用语音"), "{rendered}");
         assert!(rendered.contains("4. List Issues  Linear"), "{rendered}");
         assert!(rendered.contains("5. Tasks  List  Custom"), "{rendered}");
-        assert!(!rendered.contains("server-owned description"));
     }
 
     #[test]
@@ -484,6 +511,7 @@ mod tests {
             server: "tasks".into(),
             description: r"Keep C:\repo\API_KEY unchanged".into(),
             score: 1.0,
+            managed_gateway_tool: None,
         });
 
         let rendered = rendered_text(&block, LocaleContext::default());

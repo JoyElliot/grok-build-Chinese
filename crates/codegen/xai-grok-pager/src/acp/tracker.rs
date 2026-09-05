@@ -2118,10 +2118,14 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 && let Ok(ToolOutput::SearchTool(SearchToolOutput {
                     result_count,
                     content,
+                    managed_gateway_tools,
                 })) = serde_json::from_value::<ToolOutput>(raw.clone())
             {
                 block.result_count = result_count;
-                block.results = parse_search_tool_results(&content);
+                block.results = parse_search_tool_results(
+                    &content,
+                    managed_gateway_tools.as_deref().unwrap_or_default(),
+                );
                 block.content = Some(content);
             }
             if !success {
@@ -2133,10 +2137,12 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             let tool_name = extract_raw_field(tc, "tool_name").unwrap_or_else(|| tc.title.clone());
             let mut block = UseToolCallBlock::new(tool_name);
             block.input_args = extract_use_tool_args(tc);
+            let (extracted, managed_gateway_tool) = extract_use_tool_output(&tc.raw_output);
+            block.managed_gateway_tool = managed_gateway_tool;
             let text = content_text(tc);
             if !text.is_empty() {
                 block.output = Some(text);
-            } else if let Some(extracted) = extract_use_tool_output(&tc.raw_output) {
+            } else if let Some(extracted) = extracted {
                 block.output = Some(extracted);
             }
             if !success {
@@ -2778,7 +2784,10 @@ fn meta_summary(meta: &NotificationMeta) -> String {
 ///
 /// Results are grouped by server: `{"results": [{"server": "...", "tools": [...]}]}`.
 /// Each tool has `tool_name`, `description`, `score`, and `input_schema`.
-fn parse_search_tool_results(content: &str) -> Vec<DiscoveredTool> {
+fn parse_search_tool_results(
+    content: &str,
+    managed_gateway_tools: &[xai_grok_tools::types::resources::ManagedGatewayToolIdentity],
+) -> Vec<DiscoveredTool> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(content) else {
         return Vec::new();
     };
@@ -2805,11 +2814,22 @@ fn parse_search_tool_results(content: &str) -> Vec<DiscoveredTool> {
                 .unwrap_or("")
                 .to_owned();
             let score = r.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let managed_gateway_tool = managed_gateway_tools
+                .iter()
+                .find(|identity| {
+                    identity.qualified_name == name
+                        && identity.connector_id == server
+                        && name.split_once("__").is_some_and(|(connector, tool_id)| {
+                            connector == identity.connector_id && tool_id == identity.tool_id
+                        })
+                })
+                .cloned();
             out.push(DiscoveredTool {
                 name: name.to_owned(),
                 server: server.clone(),
                 description,
                 score,
+                managed_gateway_tool,
             });
         }
     }
@@ -2819,25 +2839,37 @@ fn parse_search_tool_results(content: &str) -> Vec<DiscoveredTool> {
 ///
 /// MCP tools don't put content in ACP content blocks; they only set raw_output.
 /// This extracts the text from ToolOutput::MCP, ToolOutput::Text, or ToolOutput::Dynamic variants.
-fn extract_use_tool_output(raw: &Option<serde_json::Value>) -> Option<String> {
-    let val = raw.as_ref()?;
+fn extract_use_tool_output(
+    raw: &Option<serde_json::Value>,
+) -> (
+    Option<String>,
+    Option<xai_grok_tools::types::resources::ManagedGatewayToolIdentity>,
+) {
+    let Some(val) = raw.as_ref() else {
+        return (None, None);
+    };
     if let Ok(output) = serde_json::from_value::<ToolOutput>(val.clone()) {
-        let text = match output {
+        let (text, managed_gateway_tool) = match output {
             ToolOutput::MCP(mcp) => {
                 use xai_grok_tools::types::output::MCPOutputDetails;
-                match mcp.output() {
+                let managed_gateway_tool = mcp.managed_gateway_tool().cloned();
+                let text = match mcp.output() {
                     MCPOutputDetails::OkayOutput(s) | MCPOutputDetails::Error(s) => s.clone(),
-                }
+                };
+                (text, managed_gateway_tool)
             }
-            ToolOutput::Text(text) => text.text,
+            ToolOutput::Text(text) => (text.text, None),
             ToolOutput::Dynamic(v) => {
-                return Some(serde_json::to_string_pretty(&v).unwrap_or_default());
+                return (
+                    Some(serde_json::to_string_pretty(&v).unwrap_or_default()),
+                    None,
+                );
             }
-            _ => return None,
+            _ => return (None, None),
         };
-        return Some(maybe_pretty_json(&text));
+        return (Some(maybe_pretty_json(&text)), managed_gateway_tool);
     }
-    val.as_str().map(maybe_pretty_json)
+    (val.as_str().map(maybe_pretty_json), None)
 }
 /// If the string is valid JSON, pretty-print it. Otherwise return as-is.
 fn maybe_pretty_json(s: &str) -> String {

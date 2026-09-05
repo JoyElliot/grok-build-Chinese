@@ -2650,7 +2650,7 @@ impl AgentView {
         } else {
             let announcement_banner_owns_slot =
                 self.session_banner_active && layout.banner.height > 0;
-            let banner_hits = crate::views::announcements::render_banner(
+            let banner_hits = crate::views::announcements::render_banner_with_locale(
                 layout.banner,
                 buf,
                 banner_announcements,
@@ -2658,6 +2658,7 @@ impl AgentView {
                 self.hit_announcement_hide.hovered,
                 self.hit_announcement_cta.hovered,
                 self.permission_queue.is_empty(),
+                locale,
             );
             self.hit_announcement_hide
                 .set_unless_dropdown(banner_hits.hide, dropdown_open);

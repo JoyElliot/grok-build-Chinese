@@ -3,7 +3,7 @@ use std::time::Duration;
 use ratatui::text::Span;
 
 use super::{
-    HookRunCounts, HookRunEntry, HookRunStatus, ToolCallHookData,
+    HookRunCounts, HookRunEntry, HookRunStatus, ToolCallHookData, localized_fixed_hook_error,
     render_group_hook_counts_inline_suffix, render_hooks_inline_suffix, render_stop_hooks_summary,
 };
 
@@ -68,4 +68,34 @@ fn zh_localization_group_hook_suffix_translates_fixed_status_labels() {
     .expect("hook suffix");
 
     assert_eq!(text(spans), "  [钩子：2 成功, 1 已阻止, 1 失败]");
+}
+
+#[test]
+fn zh_localization_hook_errors_preserves_protocol_fields_and_dynamic_detail() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    assert_eq!(
+        localized_fixed_hook_error("client hook timed out", Some(&locale)),
+        "客户端钩子超时"
+    );
+    assert_eq!(
+        localized_fixed_hook_error(
+            "updatedMCPToolOutput does not match the tool's kind",
+            Some(&locale)
+        ),
+        "updatedMCPToolOutput 与工具类型不匹配"
+    );
+    assert_eq!(
+        localized_fixed_hook_error(
+            "updatedToolOutput failed to parse: unexpected token at line 4",
+            Some(&locale)
+        ),
+        "updatedToolOutput 解析失败：unexpected token at line 4"
+    );
+    assert_eq!(
+        localized_fixed_hook_error("provider-specific failure", Some(&locale)),
+        "provider-specific failure"
+    );
 }

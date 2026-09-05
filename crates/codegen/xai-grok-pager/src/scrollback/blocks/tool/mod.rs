@@ -50,7 +50,7 @@ use std::fmt;
 /// using one id across tool kinds keeps multi-line drag/copy grouping simple.
 pub(crate) const TOOL_HEADER_RANGE: u16 = 0;
 
-/// Return a translated display alias for product-owned MCP tools.
+/// Return a translated display alias for the legacy product-owned voice tool.
 ///
 /// The qualified name remains the canonical routing, permission, search, and
 /// copy contract. Unknown and server-provided names deliberately fall back to
@@ -60,21 +60,6 @@ pub(crate) fn localized_known_mcp_tool_name(
     locale: &crate::locale::LocaleContext,
 ) -> Option<&'static str> {
     let (key, english) = match tool_name {
-        "tasks__list" => ("scrollback.tool.mcp.tasks.list", "Tasks List"),
-        "tasks__create" => ("scrollback.tool.mcp.tasks.create", "Tasks Create"),
-        "tasks__update" => ("scrollback.tool.mcp.tasks.update", "Tasks Update"),
-        "tasks__get_results" => ("scrollback.tool.mcp.tasks.get_results", "Tasks Get Results"),
-        "tasks__run_now" => ("scrollback.tool.mcp.tasks.run_now", "Tasks Run Now"),
-        "tasks__pause" => ("scrollback.tool.mcp.tasks.pause", "Tasks Pause"),
-        "tasks__delete" => ("scrollback.tool.mcp.tasks.delete", "Tasks Delete"),
-        "tasks__list_trigger_catalog" => (
-            "scrollback.tool.mcp.tasks.list_trigger_catalog",
-            "Tasks List Trigger Catalog",
-        ),
-        "tasks__list_trigger_resources" => (
-            "scrollback.tool.mcp.tasks.list_trigger_resources",
-            "Tasks List Trigger Resources",
-        ),
         "voice__list_voices" => ("scrollback.tool.mcp.voice.list_voices", "Voice List Voices"),
         _ => return None,
     };
@@ -89,11 +74,17 @@ pub(crate) fn localized_known_mcp_tool_name(
 pub(crate) fn localized_known_search_mcp_tool_name(
     tool_name: &str,
     server: &str,
+    managed_gateway_tool: Option<&xai_grok_tools::types::resources::ManagedGatewayToolIdentity>,
     locale: &crate::locale::LocaleContext,
 ) -> Option<&'static str> {
     let expected_server = tool_name.split_once("__")?.0;
     if server != expected_server {
         return None;
+    }
+    if let Some(identity) = managed_gateway_tool {
+        return crate::views::managed_mcp_localization::localized_verified_managed_mcp_tool_name(
+            tool_name, identity, locale,
+        );
     }
     localized_known_mcp_tool_name(tool_name, locale)
 }

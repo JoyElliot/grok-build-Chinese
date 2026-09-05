@@ -2,6 +2,7 @@
 //! Also holds the wait for MCP handshakes before the templated user prefix is built, and tool re-registration on a rebuilt bridge.
 
 use super::*;
+use sha2::Digest as _;
 
 pub(super) const MCP_INIT_CANCELLED_CONFIG_CHANGED: &str = "config_changed";
 
@@ -106,6 +107,10 @@ pub(super) async fn refresh_mcp_snapshot_and_schedule_reminder_with(
                     tool_id: tool.tool_id.clone(),
                     tool_name: tool.tool_name.clone(),
                     call_id: tool.call_id.clone(),
+                    description_sha256: format!(
+                        "{:x}",
+                        sha2::Sha256::digest(tool.description.as_bytes())
+                    ),
                 },
             ));
             // Gateway ids are the contract for the model and search
@@ -139,12 +144,23 @@ pub(super) async fn refresh_mcp_snapshot_and_schedule_reminder_with(
         metadata
     };
 
+    let managed_gateway_tools = gateway_resource_entries
+        .iter()
+        .map(|(qualified_name, source)| {
+            (
+                qualified_name.clone(),
+                source.identity(qualified_name.clone()),
+            )
+        })
+        .collect();
+
     // Scope the synchronous snapshot guard so it drops before the `materialize_descriptors` awaits below
     // A std `Mutex` guard must not cross an await point
     {
         let mut snapshot = tool_metadata_snapshot.lock().unwrap();
         snapshot.tools = mcp_tools;
         snapshot.servers = server_metadata;
+        snapshot.managed_gateway_tools = managed_gateway_tools;
         snapshot.mcp_initialized = mcp_initialized;
     }
 

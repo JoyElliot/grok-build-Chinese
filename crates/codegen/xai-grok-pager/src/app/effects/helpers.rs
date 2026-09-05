@@ -192,7 +192,8 @@ pub(super) fn format_acp_error_with_locale(
     if err.code == acp::ErrorCode::InvalidParams && let Some(data) = &err.data
         && let Some(msg) = error_detail_from_data(data) && !msg.is_empty()
     {
-        return sanitize_user_error(&msg);
+        let display = crate::scrollback::blocks::localized_model_unavailable_reason(locale, &msg);
+        return sanitize_user_error(&display);
     }
     let raw = error_data_detail(err)
         .filter(|s| !s.is_empty())
@@ -717,9 +718,30 @@ pub enum ConversationsPartial {
 impl ConversationsPartial {
     /// Picker notice for a degraded conversations lane.
     pub(crate) fn picker_notice(self) -> &'static str {
+        self.picker_notice_with_locale(None)
+    }
+
+    pub(crate) fn picker_notice_with_locale(
+        self,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> &'static str {
         match self {
-            Self::NoOauth => "Couldn't load your chats: log in with /login",
-            Self::Timeout | Self::Error => "Couldn't load conversations: retry",
+            Self::NoOauth => locale
+                .map(|locale| {
+                    locale.named_static_text(
+                        "session_picker.partial.no_oauth",
+                        "Couldn't load your chats: log in with /login",
+                    )
+                })
+                .unwrap_or("Couldn't load your chats: log in with /login"),
+            Self::Timeout | Self::Error => locale
+                .map(|locale| {
+                    locale.named_static_text(
+                        "session_picker.partial.retry",
+                        "Couldn't load conversations: retry",
+                    )
+                })
+                .unwrap_or("Couldn't load conversations: retry"),
         }
     }
 }

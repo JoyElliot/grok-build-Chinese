@@ -187,6 +187,7 @@ mod tests {
         let mut output = ToolOutput::SearchTool(SearchToolOutput {
             result_count: 0,
             content: "no images".into(),
+            managed_gateway_tools: None,
         });
         assert!(drain_tool_layer_extracted_images(&mut output).is_empty());
     }

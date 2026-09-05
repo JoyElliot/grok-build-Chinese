@@ -17,6 +17,7 @@ pub use agent::AgentMessageBlock;
 pub use bg_task::{BgTaskBlock, BgTaskKind};
 pub use btw::BtwBlock;
 pub use context_info::ContextInfoBlock;
+pub(crate) use session_event::localized_model_unavailable_reason;
 pub use session_event::{SessionEvent, SessionEventBlock};
 pub use subagent::{SubagentBlock, SubagentBlockKind};
 pub use system::SystemMessageBlock;

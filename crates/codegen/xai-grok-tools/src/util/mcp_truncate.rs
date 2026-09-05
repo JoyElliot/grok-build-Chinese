@@ -467,6 +467,7 @@ mod tests {
             ToolOutput::SearchTool(crate::types::output::SearchToolOutput {
                 result_count: 1,
                 content: "anything".to_string(),
+                managed_gateway_tools: None,
             }),
             &cfg,
         )

@@ -348,10 +348,17 @@ impl xai_tool_runtime::Tool for SearchTool {
         });
 
         let result_count = snapshot.results.len();
+        let managed_gateway_tools: Vec<_> = snapshot
+            .results
+            .iter()
+            .filter_map(|result| result.managed_gateway_tool.clone())
+            .collect();
         let content = serde_json::to_string_pretty(&response).unwrap();
         Ok(ToolOutput::SearchTool(SearchToolOutput {
             result_count,
             content,
+            managed_gateway_tools: (!managed_gateway_tools.is_empty())
+                .then_some(managed_gateway_tools),
         }))
     }
 }
@@ -398,6 +405,15 @@ mod tests {
                                 "query": {"type": "string"},
                             }
                         }),
+                        managed_gateway_tool: Some(
+                            crate::types::resources::ManagedGatewayToolIdentity {
+                                qualified_name: "grafana__search_dashboards".into(),
+                                connector_id: "grafana".into(),
+                                tool_id: "search_dashboards".into(),
+                                display_name: "Search Dashboards".into(),
+                                description_sha256: "fixture-grafana".into(),
+                            },
+                        ),
                     }],
                     total_hidden_tools: 1,
                     is_ready: true,
@@ -429,6 +445,18 @@ mod tests {
         assert_eq!(
             json["results"][0]["tools"][0]["input_schema"]["properties"]["query"]["type"],
             "string"
+        );
+        assert_eq!(
+            output
+                .managed_gateway_tools
+                .as_ref()
+                .expect("managed provenance")[0]
+                .qualified_name,
+            "grafana__search_dashboards"
+        );
+        assert!(
+            !output.content.contains("managed_gateway_tools"),
+            "provenance must not enter the model-visible content"
         );
     }
 

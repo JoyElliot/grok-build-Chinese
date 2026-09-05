@@ -183,6 +183,7 @@ fn completed_output_projection_ignores_other_outputs() {
             ToolOutput::SearchTool(SearchToolOutput {
                 result_count: 0,
                 content: String::new(),
+                managed_gateway_tools: None,
             }),
             ActiveAgentMessageOperation::Steer,
         )

@@ -1629,9 +1629,15 @@ impl AgentView {
                 // Refuse up front with the covering view instead of a confirm that can only fail
                 if source_pinned || !removable {
                     let message = if source_pinned {
-                        "This hook source is enforced by managed policy and cannot be removed."
+                        self.scrollback.locale().named_static_text(
+                            "extensions.hooks.remove.managed_policy",
+                            "This hook source is enforced by managed policy and cannot be removed.",
+                        )
                     } else {
-                        "Only user-added hook directories can be removed here."
+                        self.scrollback.locale().named_static_text(
+                            "extensions.hooks.remove.user_only",
+                            "Only user-added hook directories can be removed here.",
+                        )
                     };
                     if let Some(ref mut state) = self.extensions_modal {
                         state.modal_message = Some(
@@ -1641,8 +1647,16 @@ impl AgentView {
                     InputOutcome::Changed
                 } else {
                     let (label, _) = crate::views::extensions_modal::derive_source_label(&path);
+                    let template = self
+                        .scrollback
+                        .locale()
+                        .named_text(
+                            "extensions.hooks.remove.confirm",
+                            "Remove hook source \"{label}\"?",
+                        )
+                        .into_owned();
                     self.prompt_extensions_confirm(
-                        format!("Remove hook source \"{label}\"?"),
+                        template.replacen("{label}", &label, 1),
                         crate::views::extensions_modal::ConfirmationAction::Hooks(
                             xai_hooks_plugins_types::HooksAction::Remove { path },
                         ),
