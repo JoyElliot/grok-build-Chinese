@@ -1,0 +1,75 @@
+name: Upstream sync offline review inputs
+on:
+  push:
+    branches: [sync/upstream-1.0.32]
+    paths: [.github/workflows/upstream-sync-offline-review.yml]
+permissions:
+  contents: read
+jobs:
+  inputs:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.32'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Fetch fixed public source history
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sync-review"
+          cd "$RUNNER_TEMP/sync-review"
+          git clone --no-checkout https://github.com/JoyElliot/grok-build-Chinese.git fork
+          cd fork
+          git fetch https://github.com/xai-org/grok-build.git 482711333c7195dc16a272777f86086d615e2afb
+          git branch review-upstream FETCH_HEAD
+          git branch review-base 50f53f06bab8309cb8299a50cd2751deb26db726
+          git checkout --detach review-base
+          git bundle create ../source.bundle --all
+          git worktree add --detach ../upstream review-upstream
+          git log --format='%H %s' 8b217ebd..review-base > ../subsequent-commits.txt
+          git diff --stat review-base review-upstream > ../snapshot-diff-stat.txt
+          tar -C .. -czf "$RUNNER_TEMP/sync-review-source.tar.gz" source.bundle subsequent-commits.txt snapshot-diff-stat.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sync-review-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/sync-review-source.tar.gz
+          retention-days: 3
+          compression-level: 0
+      - name: Prepare pinned compiler and native build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal --component rustfmt
+          mkdir -p "$RUNNER_TEMP/sync-review/tools" "$RUNNER_TEMP/sync-review/debs"
+          root=$(rustc +1.94.0 --print sysroot)
+          cp -a "$root" "$RUNNER_TEMP/sync-review/tools/rust"
+          cd "$RUNNER_TEMP/sync-review/debs"
+          sudo apt-get update
+          apt-get download nasm libasound2-dev libasound2t64 libdbus-1-dev libdbus-1-3 libclang-18-dev libclang1-18 libllvm18 libobjc4 libobjc-13-dev
+          mkdir -p ../tools/sysroot
+          for p in ./*.deb; do dpkg-deb -x "$p" ../tools/sysroot; done
+          curl --fail --location --retry 3 https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip -o ../protoc.zip
+          unzip -q ../protoc.zip -d ../tools/protoc
+          tar -C .. -czf "$RUNNER_TEMP/sync-review-tools.tar.gz" tools
+          sha256sum "$RUNNER_TEMP/sync-review-tools.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sync-review-compiler-${{ github.run_id }}
+          path: ${{ runner.temp }}/sync-review-tools.tar.gz
+          retention-days: 3
+          compression-level: 0
+      - name: Vendor the fixed base and upstream dependencies for offline checks
+        shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: 1.94.0
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/sync-review/fork"
+          cargo vendor --locked --versioned-dirs --sync ../upstream/Cargo.toml ../vendor > ../vendor-config.toml
+          tar -C .. -czf "$RUNNER_TEMP/sync-review-vendor.tar.gz" vendor vendor-config.toml
+          sha256sum "$RUNNER_TEMP/sync-review-vendor.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sync-review-dependencies-${{ github.run_id }}
+          path: ${{ runner.temp }}/sync-review-vendor.tar.gz
+          retention-days: 3
+          compression-level: 0
