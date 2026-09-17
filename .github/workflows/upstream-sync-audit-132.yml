@@ -1,0 +1,91 @@
+name: Upstream 1.0.32 isolated audit
+on:
+  push:
+    branches: [review/upstream-1.0.32]
+    paths:
+      - .github/workflows/upstream-sync-audit-132.yml
+      - .github/sync-review-132/**
+permissions:
+  contents: read
+concurrency:
+  group: upstream-132-isolated-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/review/upstream-1.0.32'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BASE_SHA: e698cb14c90bc8f5b48b3bbeb0e0ebb477133383
+      PRODUCT_BASE_SHA: 50f53f06bab8309cb8299a50cd2751deb26db726
+      UPSTREAM_SHA: 482711333c7195dc16a272777f86086d615e2afb
+    steps:
+      - name: Read reviewed instructions without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Reproduce the merge in an isolated public checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sync132-report"
+          git clone --no-checkout https://github.com/JoyElliot/grok-build-Chinese.git "$RUNNER_TEMP/sync132-candidate"
+          cd "$RUNNER_TEMP/sync132-candidate"
+          git fetch https://github.com/xai-org/grok-build.git "$UPSTREAM_SHA"
+          git branch audit-upstream FETCH_HEAD
+          git checkout -b audit-candidate "$BASE_SHA"
+          git config user.name 'ChatGPT Review'
+          git config user.email 'review@localhost'
+          git config merge.conflictStyle diff3
+          git merge-base --is-ancestor "$PRODUCT_BASE_SHA" HEAD
+          echo '=== Subsequent fixes since the previous CI repair ==='
+          git log --reverse --format='%H %s' 8b217ebd.."$PRODUCT_BASE_SHA" | tee "$RUNNER_TEMP/sync132-report/subsequent-commits.txt"
+          echo '=== Latest upstream version ==='
+          git show "$UPSTREAM_SHA:crates/codegen/xai-grok-pager-bin/Cargo.toml" | head -25
+          git diff --stat 37949780c144e37df692e3d669051a21fec24f20 "$UPSTREAM_SHA" > "$RUNNER_TEMP/sync132-report/upstream-stat.txt"
+          merge_status=0
+          git merge --no-commit --no-ff "$UPSTREAM_SHA" > "$RUNNER_TEMP/sync132-report/merge.log" 2>&1 || merge_status=$?
+          if [[ "$merge_status" != 0 && "$merge_status" != 1 ]]; then cat "$RUNNER_TEMP/sync132-report/merge.log"; exit "$merge_status"; fi
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          report = pathlib.Path(os.environ['RUNNER_TEMP']) / 'sync132-report'
+          paths = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=U', '-z']).decode().split('\0')
+          paths = [p for p in paths if p]
+          records = []
+          lines_out = [f'=== CONFLICT PATHS: {len(paths)} ===']
+          for path in paths:
+              lines_out.append(f'\n=== FILE {path} ===')
+              stages = subprocess.check_output(['git','ls-files','-u','--',path]).decode()
+              lines_out.append(stages.rstrip())
+              p = root / path
+              text = p.read_text(errors='replace') if p.is_file() else ''
+              lines = text.splitlines()
+              starts = [i for i,l in enumerate(lines) if l.startswith('<<<<<<< ')]
+              blocks = []
+              for n, start in enumerate(starts):
+                  end = next((i for i in range(start+1,len(lines)) if lines[i].startswith('>>>>>>> ')),len(lines)-1)
+                  snippet = '\n'.join(f'{i+1:5d} {lines[i]}' for i in range(max(0,start-5),min(len(lines),end+6)))
+                  lines_out.append(f'--- CONFLICT {n+1} ---\n{snippet}')
+                  blocks.append({'start':start+1,'end':end+1,'excerpt':snippet})
+              if not starts:
+                  lines_out.append('No textual marker: inspect modify/delete or rename stages explicitly.')
+              records.append({'path':path,'stages':stages,'blocks':blocks})
+          (report/'conflicts.json').write_text(json.dumps(records,ensure_ascii=False,indent=2))
+          (report/'conflicts.txt').write_text('\n'.join(lines_out))
+          print('\n'.join(lines_out))
+          print('=== CONFLICT SUMMARY ===')
+          print(json.dumps({'paths':len(paths),'text_blocks':sum(len(r['blocks']) for r in records)},ensure_ascii=False))
+          PY
+          git diff --binary > "$RUNNER_TEMP/sync132-report/working-conflicts.diff"
+          git diff --cached --stat > "$RUNNER_TEMP/sync132-report/staged-stat.txt"
+          git status --short > "$RUNNER_TEMP/sync132-report/status.txt"
+      - name: Preserve review evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: upstream-132-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sync132-report
+          retention-days: 7
+          if-no-files-found: error
