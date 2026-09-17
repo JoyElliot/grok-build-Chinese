@@ -34,37 +34,18 @@ jobs:
           path: ${{ runner.temp }}/sync-review-source.tar.gz
           retention-days: 3
           compression-level: 0
-      - name: Prepare pinned compiler and native build inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.94.0 --profile minimal --component rustfmt
-          mkdir -p "$RUNNER_TEMP/sync-review/tools" "$RUNNER_TEMP/sync-review/debs"
-          root=$(rustc +1.94.0 --print sysroot)
-          cp -a "$root" "$RUNNER_TEMP/sync-review/tools/rust"
-          cd "$RUNNER_TEMP/sync-review/debs"
-          sudo apt-get update
-          apt-get download nasm libasound2-dev libasound2t64 libdbus-1-dev libdbus-1-3 libclang-18-dev libclang1-18 libllvm18 libobjc4 libobjc-13-dev
-          mkdir -p ../tools/sysroot
-          for p in ./*.deb; do dpkg-deb -x "$p" ../tools/sysroot; done
-          curl --fail --location --retry 3 https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip -o ../protoc.zip
-          unzip -q ../protoc.zip -d ../tools/protoc
-          tar -C .. -czf "$RUNNER_TEMP/sync-review-tools.tar.gz" tools
-          sha256sum "$RUNNER_TEMP/sync-review-tools.tar.gz"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: sync-review-compiler-${{ github.run_id }}
-          path: ${{ runner.temp }}/sync-review-tools.tar.gz
-          retention-days: 3
-          compression-level: 0
-      - name: Vendor the fixed base and upstream dependencies for offline checks
+          if-no-files-found: error
+      - name: Vendor fixed dependencies with canonical workspace paths
         shell: bash
         env:
           RUSTUP_TOOLCHAIN: 1.94.0
         run: |
           set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal
           cd "$RUNNER_TEMP/sync-review/fork"
-          cargo vendor --locked --versioned-dirs --sync ../upstream/Cargo.toml ../vendor > ../vendor-config.toml
+          cargo vendor --locked --versioned-dirs \
+            --sync "$RUNNER_TEMP/sync-review/upstream/Cargo.toml" \
+            "$RUNNER_TEMP/sync-review/vendor" > ../vendor-config.toml
           tar -C .. -czf "$RUNNER_TEMP/sync-review-vendor.tar.gz" vendor vendor-config.toml
           sha256sum "$RUNNER_TEMP/sync-review-vendor.tar.gz"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -73,3 +54,4 @@ jobs:
           path: ${{ runner.temp }}/sync-review-vendor.tar.gz
           retention-days: 3
           compression-level: 0
+          if-no-files-found: error
