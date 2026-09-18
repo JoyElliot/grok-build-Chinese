@@ -1,0 +1,66 @@
+name: Publish reviewed 1.0.35 follow-up
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths: [.github/workflows/publish-reviewed-135-final.yml]
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Publish the exact reviewed follow-up without merging or releasing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          base = '272382caed985e744564a8878c9e134d12cd6531'
+          tree = '967668486c5970b3601961e3426f0f9882068077'
+          branch = 'refs/heads/sync/upstream-1.0.35-reviewed'
+          patches = ['fix-review135-round9.patch', 'fix-review135-round10.patch', 'fix-review135-round11.patch']
+          def git(*args, cwd=root):
+              return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
+          remote = git('ls-remote', '--heads', 'origin', branch).split()[0]
+          if remote != base:
+              assert git('show', '-s', '--format=%T', remote) == tree, 'Source branch moved'
+              assert git('show', '-s', '--format=%P', remote) == base, 'Source history changed'
+          candidate = pathlib.Path(os.environ['RUNNER_TEMP']) / 'candidate'
+          git('worktree', 'add', '--detach', str(candidate), remote)
+          if remote == base:
+              for name in patches:
+                  path = root / '.github/review135' / name
+                  git('apply', '--check', str(path), cwd=candidate)
+                  git('apply', '--index', str(path), cwd=candidate)
+              git('diff', '--cached', '--check', cwd=candidate)
+              assert git('write-tree', cwd=candidate) == tree, 'Reviewed tree mismatch'
+              git('-c', 'user.name=ChatGPT Review', '-c', 'user.email=chatgpt@localhost',
+                  'commit', '-m', '复查修复工作树社区命令、搜索框中文键与防漏翻译门禁', cwd=candidate)
+          commit = git('rev-parse', 'HEAD', cwd=candidate)
+          assert git('show', '-s', '--format=%T', commit, cwd=candidate) == tree
+          git('merge-base', '--is-ancestor', 'a28ee2b2063426e8816e380ccea528b9de95e5da', commit, cwd=candidate)
+          assert git('ls-remote', '--heads', 'origin', branch).split()[0] == remote, 'Concurrent source update'
+          if remote == base:
+              git('push', 'origin', commit + ':' + branch, cwd=candidate)
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'source-evidence'
+          out.mkdir()
+          git('bundle', 'create', str(out / 'follow-up.bundle'), 'HEAD', '^' + base, cwd=candidate)
+          git('bundle', 'verify', str(out / 'follow-up.bundle'), cwd=candidate)
+          (out / 'result.json').write_text(json.dumps({'base': base, 'commit': commit, 'tree': tree, 'patches': patches}, ensure_ascii=False, indent=2))
+          print('Verified published source:', commit, tree)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: reviewed-135-follow-up-${{ github.run_id }}
+          path: ${{ runner.temp }}/source-evidence
+          retention-days: 14
+          if-no-files-found: error
