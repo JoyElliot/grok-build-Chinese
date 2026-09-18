@@ -201,7 +201,7 @@ pub fn verb_group_header_label_with_locale(
 
     let end = end.min(entries.len());
     let Some(run) = entries.get(header_idx.min(end)..end) else {
-        return acc.into_label(theme);
+        return acc.into_label(theme, locale);
     };
     for &entry in run {
         let kind = match run_step(entry, show_thinking) {

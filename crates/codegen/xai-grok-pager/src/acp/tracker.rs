@@ -2379,7 +2379,7 @@ fn tool_call_to_block(
             let mut block = OtherToolCallBlock::new(label, summary);
             let mut ct = content_text(tc);
             if ct.is_empty()
-                && let Some(extracted) = extract_use_tool_output(&tc.raw_output)
+                && let (Some(extracted), _) = extract_use_tool_output(&tc.raw_output)
             {
                 ct = extracted;
             }

@@ -480,7 +480,6 @@ pub(crate) fn execute(
                             meta,
                             &tx,
                             "Worktree session creation",
-                            locale.as_ref(),
                         )
                         .await;
                     match result {

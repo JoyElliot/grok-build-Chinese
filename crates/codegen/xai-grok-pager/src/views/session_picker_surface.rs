@@ -195,6 +195,11 @@ fn render_simple_session_picker_modal(
     use crate::views::modal_window::{ModalSizing, ModalWindowConfig, Shortcut};
     use crate::views::picker::{self, PickerField};
 
+    let text = |id: &str, english: &'static str| {
+        ctx.locale
+            .map(|locale| locale.named_static_text(id, english))
+            .unwrap_or(english)
+    };
     let shortcuts = vec![
         Shortcut {
             label: text("picker.shortcut.nav", "\u{2191}\u{2193} nav"),

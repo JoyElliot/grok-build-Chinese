@@ -654,6 +654,7 @@ impl BlockContent for SentMessageToolCallBlock {
             SentMessagePresentation::Sending
             | SentMessagePresentation::Sent
             | SentMessagePresentation::Rejected { .. }
+            | SentMessagePresentation::RejectedUnavailable
             | SentMessagePresentation::Unconfirmed { .. } => Some(AccentStyle::static_color(
                 self.presentation.accent(&theme, ctx.is_running),
             )),

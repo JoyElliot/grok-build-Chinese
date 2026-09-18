@@ -699,6 +699,9 @@ fn localized_command_display_name(
     locale: Option<&crate::locale::LocaleContext>,
 ) -> &'static str {
     match command {
+        AgentCommand::SwitchModelCompact | AgentCommand::MemoryFlush | AgentCommand::MemoryDream => {
+            command.display_name_with_locale(locale)
+        }
         AgentCommand::Compact => {
             turn_static_text(locale, "turn.command.compacting", command.display_name())
         }

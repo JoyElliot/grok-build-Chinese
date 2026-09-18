@@ -4732,6 +4732,7 @@ impl AppView {
                                     cached_lines,
                                     compact,
                                     &theme,
+                                    Some(self.locale.as_ref()),
                                 );
                             }
                             if !has_access && !self.access_gate_shown_logged {
@@ -5118,7 +5119,7 @@ impl AppView {
             return;
         }
         let Some((owner, _label, _url)) = crate::views::announcements::promo_cta(
-            display_announcements,
+            &self.active_announcements,
             &self.hidden_announcement_ids,
         ) else {
             return;
