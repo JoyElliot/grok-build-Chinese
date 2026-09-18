@@ -148,7 +148,14 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
             return (None, None);
         }
         if let Some(modal) = minimal_api::feedback_modal_mut(agent) {
-            return super::feedback::render(frame.buffer_mut(), area, modal, &theme, compact);
+            return super::feedback::render(
+                frame.buffer_mut(),
+                area,
+                modal,
+                &theme,
+                compact,
+                Some(&locale),
+            );
         }
         if minimal_api::extensions_modal(agent).is_some() {
             let tick = (now_millis() / 100) as u64;

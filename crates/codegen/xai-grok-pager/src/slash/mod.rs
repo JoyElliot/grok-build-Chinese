@@ -46,6 +46,18 @@ pub(crate) fn localize_command_error(
     message: &str,
     locale: &crate::locale::LocaleContext,
 ) -> String {
+    // Match only exact client-owned diagnostics; server text stays opaque.
+    let owned_id = match message {
+        "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status." => {
+            Some("slash.command.memory.error.arguments")
+        }
+        "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
+        "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
+        _ => None,
+    };
+    if let Some(id) = owned_id {
+        return locale.named_text(id, message).into_owned();
+    }
     if let Some(command) = message.strip_prefix("Usage: ") {
         return format!(
             "{}{command}",
@@ -1995,6 +2007,24 @@ mod tests {
                 &locale,
             ),
             "未知主题：solarized。可用主题：auto, Grokday, Groknight"
+        );
+        for (english, chinese) in [
+            ("/flush takes no arguments.", "/flush 不接受参数。"),
+            ("/dream takes no arguments.", "/dream 不接受参数。"),
+            (
+                "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status.",
+                "/memory 不接受参数。打开后按 t 启用或停用记忆，按 s 查看状态。",
+            ),
+        ] {
+            assert_eq!(localize_command_error(english, &locale), chinese);
+            assert_eq!(
+                localize_command_error(english, &crate::locale::LocaleContext::default()),
+                english,
+            );
+        }
+        assert_eq!(
+            localize_command_error("/custom takes no arguments.", &locale),
+            "/custom takes no arguments.",
         );
         assert_eq!(
             localize_command_error("server supplied opaque error", &locale),

@@ -542,7 +542,7 @@ mod tests {
                 .into(),
         );
         render_auth(&mut buf, area, &theme, &hint, &ZH_TEST_LOCALE);
-        let text = buffer_text(&buf, area);
+        let text = crate::buffer_text(&buf);
         let compact = text.replace(' ', "");
         assert!(compact.contains("登录失败"), "heading: {text:?}");
         assert!(

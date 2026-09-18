@@ -856,7 +856,7 @@ pub(crate) fn build_hints(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_hints_with_locale(
+pub(crate) fn build_hints_with_locale(
     active_pane: ActivePane,
     focus_hint: HintItem,
     prompt: &PromptWidget,

@@ -23,6 +23,7 @@ pub(super) fn render(
     modal: &mut FeedbackModalState,
     theme: &Theme,
     compact: bool,
+    locale: Option<&xai_grok_pager::locale::LocaleContext>,
 ) -> (Option<(u16, u16)>, Option<PostFlush>) {
     match modal.render(buf, area, theme, compact) {
         Some(frame) => (
@@ -36,7 +37,15 @@ pub(super) fn render(
                 height: 1u16.min(area.height),
                 ..area
             };
-            super::live::render_warning_hint(buf, row, theme, FEEDBACK_BAND_TOO_SMALL_HINT);
+            let hint = locale
+                .map(|locale| {
+                    locale.named_static_text(
+                        "minimal.feedback.too_small",
+                        FEEDBACK_BAND_TOO_SMALL_HINT,
+                    )
+                })
+                .unwrap_or(FEEDBACK_BAND_TOO_SMALL_HINT);
+            super::live::render_warning_hint(buf, row, theme, hint);
             (None, terminal::overlay::clear().map(PostFlush::from))
         }
     }
@@ -66,7 +75,7 @@ mod tests {
         let theme = Theme::terminal_default();
         let area = Rect::new(0, 0, 80, crate::overlay::MINIMAL_APP_MODAL_ROWS);
         let mut buf = Buffer::empty(area);
-        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false);
+        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, None);
 
         let text = crate::buffer_text(&buf);
         for needle in ["Feedback", "Write", "Drafts"] {
@@ -87,13 +96,35 @@ mod tests {
         let theme = Theme::terminal_default();
         let area = Rect::new(0, 0, 80, 4);
         let mut buf = Buffer::empty(area);
-        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false);
+        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, None);
 
         let text = crate::buffer_text(&buf);
         assert!(
             text.contains(FEEDBACK_BAND_TOO_SMALL_HINT),
             "the key owner must stay visible on a too-small band:\n{text}"
         );
+        assert!(cursor.is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn zh_localization_feedback_too_small_band_preserves_the_escape_hint() {
+        let _reset = EmbedReset;
+        modal_window::set_embedded(true);
+        let locale =
+            xai_grok_pager::locale::LocaleContext::new(xai_grok_pager::locale::ResolvedLocale {
+                locale: xai_grok_pager::locale::UiLocale::ZhCn,
+                source: xai_grok_pager::locale::LocaleSource::Cli,
+            });
+        let mut modal = FeedbackModalState::new_with_locale(OpenFeedbackModal::default(), &locale);
+        let theme = Theme::terminal_default();
+        let area = Rect::new(0, 0, 80, 4);
+        let mut buf = Buffer::empty(area);
+        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, Some(&locale));
+        let text = crate::buffer_text(&buf);
+        assert!(text.contains("反馈表单需要更大的终端"), "{text}");
+        assert!(text.contains("Esc"), "{text}");
+        assert!(!text.contains("Feedback form"), "{text}");
         assert!(cursor.is_none());
     }
 }

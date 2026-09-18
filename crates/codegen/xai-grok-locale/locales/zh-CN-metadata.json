@@ -1453,8 +1453,8 @@
   "slash.command.goal.arg_placeholder": "<目标> [--budget <Token 数>] | status | pause | resume | clear",
   "slash.command.screen_mode.error.no_session": "没有活动会话，无法以{mode}模式重新打开",
   "slash.command.goal.description": "设置、管理或检查自主目标",
-  "slash.command.flush.description": "立即将对话记忆刷新到磁盘",
-  "slash.command.dream.description": "运行记忆整合（将会话日志合并为有序主题）",
+  "slash.command.flush.description": "立即将本次会话的记忆保存到磁盘",
+  "slash.command.dream.description": "立即整合记忆（将观察记录合并为主题）",
   "slash.command.memory.description": "浏览、查看和管理记忆",
   "slash.command.build-with-ai.description": "在 SpaceXAI 上构建 AI 应用（XAI_API_KEY + api.x.ai）",
   "slash.command.build-with-ai.arg_placeholder": "<要构建的内容>",
@@ -3411,5 +3411,10 @@
   "contextual_hints.small_screen": "小屏幕提示",
   "contextual_hints.ssh_wrap": "SSH 换行提示",
   "contextual_hints.undo": "撤销提示",
-  "contextual_hints.word_select": "单词选择提示"
+  "contextual_hints.word_select": "单词选择提示",
+  "prompt.flag.always_approve": "始终批准",
+  "minimal.feedback.too_small": "反馈表单需要更大的终端 - 按 Esc 关闭",
+  "slash.command.memory.error.arguments": "/memory 不接受参数。打开后按 t 启用或停用记忆，按 s 查看状态。",
+  "slash.command.flush.error.arguments": "/flush 不接受参数。",
+  "slash.command.dream.error.arguments": "/dream 不接受参数。"
 }

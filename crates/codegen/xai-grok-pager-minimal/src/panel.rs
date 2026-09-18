@@ -882,7 +882,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(&mut buf, area, &mut a, ListPanel::Resume, &theme, None);
 
-        let text = buffer_text(&buf);
+        let text = crate::buffer_text(&buf);
         assert!(
             text.contains("1 external session hidden \u{b7} f to show"),
             "hidden foreign rows must stay explained while the list scrolls:\n{text}"

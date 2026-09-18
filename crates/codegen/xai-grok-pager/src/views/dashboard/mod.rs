@@ -39,7 +39,7 @@ mod usage_modal;
 
 pub use chrome::HeaderUpgradeCta;
 pub(crate) use render::render_dashboard;
-pub use render::render_dashboard_with_locale;
+pub(crate) use render::render_dashboard_with_locale;
 pub use render::{popup_rect, render_popup_overlay, render_popup_overlay_with_locale};
 pub use row::{
     DashboardRow, RowBadge, build_rows, build_rows_with_roster, classify_subagent,

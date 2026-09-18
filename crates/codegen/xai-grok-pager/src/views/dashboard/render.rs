@@ -143,7 +143,7 @@ pub(crate) fn render_dashboard(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn render_dashboard_with_locale(
+pub(crate) fn render_dashboard_with_locale(
     buf: &mut Buffer,
     area: Rect,
     state: &mut DashboardState,
