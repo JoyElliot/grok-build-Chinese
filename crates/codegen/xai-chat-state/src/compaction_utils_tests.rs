@@ -1,6 +1,10 @@
 use super::*;
 use xai_grok_sampling_types::SyntheticReason;
 use xai_grok_sampling_types::{BackendToolCallItem, BackendToolKind, rs};
+fn at<T>(xs: &[T], i: usize) -> &T {
+    xs.get(i)
+        .unwrap_or_else(|| panic!("expected index {i}, len {}", xs.len()))
+}
 #[test]
 fn summarization_prep_drops_backend_tool_calls() {
     let items = vec![
@@ -36,12 +40,15 @@ fn compaction_attempt_serde_roundtrip_and_skips_none() {
         error: None,
     };
     let json = serde_json::to_value(&attempt).unwrap();
-    assert_eq!(json["attempt"], 2);
-    assert_eq!(json["outcome"], "degenerate");
-    assert_eq!(json["summary_chars"], 47);
+    assert_eq!(json.get("attempt").and_then(|v| v.as_u64()), Some(2));
     assert_eq!(
-        json["summary"],
-        "Now I will summarize: I'll do X, then Y, then Z."
+        json.get("outcome").and_then(|v| v.as_str()),
+        Some("degenerate")
+    );
+    assert_eq!(json.get("summary_chars").and_then(|v| v.as_u64()), Some(47));
+    assert_eq!(
+        json.get("summary").and_then(|v| v.as_str()),
+        Some("Now I will summarize: I'll do X, then Y, then Z.")
     );
     assert!(json.get("error").is_none());
     let parsed: CompactionAttempt = serde_json::from_value(json).unwrap();
@@ -395,7 +402,7 @@ fn extract_messages_since_last_user_finds_assistant_and_tool() {
     ];
     let msgs = extract_messages_since_last_user(&conv);
     assert_eq!(msgs.len(), 3);
-    if let ConversationItem::ToolResult(ref tr) = msgs[1] {
+    if let ConversationItem::ToolResult(tr) = at(&msgs, 1) {
         assert_eq!(tr.content.as_ref(), "Tool call omitted...");
     } else {
         panic!("expected ToolResult");
@@ -592,7 +599,7 @@ fn agent_message_projection_uses_generic_label_and_preserves_image_only_payload(
     let raw = ConversationItem::User(image_only);
     let prepared = ModelRequestHistory::from_raw(vec![raw]);
     let projected = prepared.into_items();
-    let ConversationItem::User(user) = &projected[0] else {
+    let ConversationItem::User(user) = at(&projected, 0) else {
         panic!("projected agent message must stay a user item");
     };
     assert!(matches!(
@@ -609,7 +616,7 @@ fn agent_message_anchors(items: &[ConversationItem]) -> Vec<&ConversationItem> {
             matches!(
                 item,
                 ConversationItem::User(user)
-                    if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                    if user.synthetic_reason == SyntheticReason::AgentMessage
             )
         })
         .collect()
@@ -627,7 +634,7 @@ async fn agent_message_anchor_survives_two_compactions_with_raw_content_unchange
         ConversationItem::assistant("working tail"),
         ConversationItem::tool_result("tc1", "tool output"),
     ];
-    let raw_agent_message_bytes = serde_json::to_vec(&conversation[3]).unwrap();
+    let raw_agent_message_bytes = serde_json::to_vec(at(&conversation, 3)).unwrap();
     async fn compact_once(conversation: &[ConversationItem]) -> Vec<ConversationItem> {
         let state_context =
             CompactionStateContext::build(conversation, CompactionInputs::default())
@@ -648,43 +655,46 @@ async fn agent_message_anchor_survives_two_compactions_with_raw_content_unchange
     }
     let compacted_once = compact_once(&conversation).await;
     assert!(matches!(
-        &compacted_once[2],
+        at(&compacted_once, 2),
         ConversationItem::User(user)
-            if user.synthetic_reason.is_none()
-                && compacted_once[2].text_content()
+            if user.synthetic_reason.is_human()
+                && at(&compacted_once, 2).text_content()
                     == "<user_query>\nhuman task\n</user_query>"
     ));
     assert!(matches!(
-        &compacted_once[3],
+        at(&compacted_once, 3),
         ConversationItem::User(user)
-            if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
-                && compacted_once[3].text_content() == raw_agent_message
+            if user.synthetic_reason == SyntheticReason::AgentMessage
+                && at(&compacted_once, 3).text_content() == raw_agent_message
     ));
     let compacted_once_anchors = agent_message_anchors(&compacted_once);
     assert_eq!(compacted_once_anchors.len(), 1);
     assert_eq!(
-        serde_json::to_vec(compacted_once_anchors[0]).unwrap(),
+        serde_json::to_vec(at(&compacted_once_anchors, 0)).unwrap(),
         raw_agent_message_bytes
     );
     let compacted_twice = compact_once(&compacted_once).await;
     assert!(matches!(
-        &compacted_twice[2],
+        at(&compacted_twice, 2),
         ConversationItem::User(user)
-            if user.synthetic_reason.is_none()
-                && compacted_twice[2].text_content()
+            if user.synthetic_reason.is_human()
+                && at(&compacted_twice, 2).text_content()
                     == "<user_query>\nhuman task\n</user_query>"
     ));
     assert!(matches!(
-        &compacted_twice[3],
+        at(&compacted_twice, 3),
         ConversationItem::User(user)
-            if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
-                && compacted_twice[3].text_content() == raw_agent_message
+            if user.synthetic_reason == SyntheticReason::AgentMessage
+                && at(&compacted_twice, 3).text_content() == raw_agent_message
     ));
     let compacted_twice_anchors = agent_message_anchors(&compacted_twice);
     assert_eq!(compacted_twice_anchors.len(), 1);
-    assert_eq!(compacted_twice_anchors[0].text_content(), raw_agent_message);
     assert_eq!(
-        serde_json::to_vec(compacted_twice_anchors[0]).unwrap(),
+        at(&compacted_twice_anchors, 0).text_content(),
+        raw_agent_message
+    );
+    assert_eq!(
+        serde_json::to_vec(at(&compacted_twice_anchors, 0)).unwrap(),
         raw_agent_message_bytes
     );
     assert!(!compacted_twice.iter().any(|item| {
@@ -699,7 +709,7 @@ async fn agent_message_anchor_survives_two_compactions_with_raw_content_unchange
             ConversationItem::User(user)
                 if matches!(
                     user.synthetic_reason,
-                    Some(SyntheticReason::NotificationDrain | SyntheticReason::TaskCompleted)
+                    SyntheticReason::NotificationDrain | SyntheticReason::TaskCompleted
                 )
         )
     }));
@@ -735,7 +745,7 @@ async fn agent_message_before_latest_human_survives_compaction_exactly_once() {
         ConversationItem::user("<user_query>latest human query</user_query>"),
         ConversationItem::assistant("working tail"),
     ];
-    let raw_agent_message_bytes = serde_json::to_vec(&conversation[1]).unwrap();
+    let raw_agent_message_bytes = serde_json::to_vec(at(&conversation, 1)).unwrap();
     let state_context = CompactionStateContext::build(&conversation, CompactionInputs::default())
         .await
         .for_compaction();
@@ -756,23 +766,23 @@ async fn agent_message_before_latest_human_survives_compaction_exactly_once() {
         summary_count: 1,
     });
     assert!(matches!(
-        &compacted[2],
+        at(&compacted, 2),
         ConversationItem::User(user)
-            if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
-                && compacted[2].text_content() == raw_agent_message
+            if user.synthetic_reason == SyntheticReason::AgentMessage
+                && at(&compacted, 2).text_content() == raw_agent_message
     ));
     assert!(matches!(
-        &compacted[3],
+        at(&compacted, 3),
         ConversationItem::User(user)
-            if user.synthetic_reason.is_none()
-                && compacted[3].text_content()
+            if user.synthetic_reason.is_human()
+                && at(&compacted, 3).text_content()
                     == "<user_query>\nlatest human query\n</user_query>"
     ));
     let compacted_anchors = agent_message_anchors(&compacted);
     assert_eq!(compacted_anchors.len(), 1);
-    assert_eq!(compacted_anchors[0].text_content(), raw_agent_message);
+    assert_eq!(at(&compacted_anchors, 0).text_content(), raw_agent_message);
     assert_eq!(
-        serde_json::to_vec(compacted_anchors[0]).unwrap(),
+        serde_json::to_vec(at(&compacted_anchors, 0)).unwrap(),
         raw_agent_message_bytes
     );
     assert!(!compacted.iter().any(|item| {
@@ -781,7 +791,7 @@ async fn agent_message_before_latest_human_survives_compaction_exactly_once() {
             ConversationItem::User(user)
                 if matches!(
                     user.synthetic_reason,
-                    Some(SyntheticReason::NotificationDrain | SyntheticReason::TaskCompleted)
+                    SyntheticReason::NotificationDrain | SyntheticReason::TaskCompleted
                 )
         )
     }));
@@ -886,7 +896,52 @@ async fn test_compaction_state_context_build() {
     assert_eq!(ctx.recent_messages.len(), 2);
     assert_eq!(ctx.agent_edited_paths, vec!["src/main.rs".to_string()]);
     assert_eq!(ctx.running_tasks.len(), 1);
-    assert_eq!(ctx.running_tasks[0].command, "cargo test");
+    assert_eq!(at(&ctx.running_tasks, 0).command, "cargo test");
+}
+#[tokio::test]
+async fn build_prefers_goal_objective_over_stale_pre_goal_query() {
+    let conversation = vec![
+        ConversationItem::user(
+            "<user_query>\nplease review the PR for config-json-go\n</user_query>",
+        ),
+        ConversationItem::assistant("I'll start the code review."),
+        ConversationItem::system_reminder(
+            "A goal has been set: ssh to device-001 and test the genbw meter. Start now.",
+        ),
+    ];
+    let ctx = CompactionStateContext::build(
+        &conversation,
+        CompactionInputs {
+            goal_objective: Some(
+                "ssh to device-001 and test that genbw meter does NOT produce aggregate data"
+                    .into(),
+            ),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        ctx.last_user_query.as_deref(),
+        Some("ssh to device-001 and test that genbw meter does NOT produce aggregate data"),
+        "active goal must seed last_user_query, not the stale pre-goal human prompt"
+    );
+    let compacted = ctx.for_compaction();
+    assert_eq!(compacted.last_user_query, ctx.last_user_query);
+}
+#[tokio::test]
+async fn build_ignores_empty_goal_objective() {
+    let conversation = vec![ConversationItem::user(
+        "<user_query>\nplease review the PR\n</user_query>",
+    )];
+    let ctx = CompactionStateContext::build(
+        &conversation,
+        CompactionInputs {
+            goal_objective: Some("   ".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(ctx.last_user_query.as_deref(), Some("please review the PR"));
 }
 #[tokio::test]
 async fn build_stores_running_subagents() {
@@ -909,10 +964,10 @@ async fn build_stores_running_subagents() {
     )
     .await;
     assert_eq!(ctx.running_subagents.len(), 1);
-    assert_eq!(ctx.running_subagents[0].subagent_id, "sub-x");
-    assert_eq!(ctx.running_subagents[0].subagent_type, "Explore");
-    assert_eq!(ctx.running_subagents[0].description, "searching");
-    assert_eq!(ctx.running_subagents[0].elapsed_ms, 10_000);
+    assert_eq!(at(&ctx.running_subagents, 0).subagent_id, "sub-x");
+    assert_eq!(at(&ctx.running_subagents, 0).subagent_type, "Explore");
+    assert_eq!(at(&ctx.running_subagents, 0).description, "searching");
+    assert_eq!(at(&ctx.running_subagents, 0).elapsed_ms, 10_000);
 }
 #[tokio::test]
 async fn build_stores_and_for_compaction_preserves_todos() {
@@ -941,8 +996,8 @@ async fn build_stores_and_for_compaction_preserves_todos() {
     )
     .await;
     assert_eq!(ctx.todos.len(), 2);
-    assert_eq!(ctx.todos[0].id, "1");
-    assert_eq!(ctx.todos[0].status, TodoSummaryStatus::InProgress);
+    assert_eq!(at(&ctx.todos, 0).id, "1");
+    assert_eq!(at(&ctx.todos, 0).status, TodoSummaryStatus::InProgress);
     let compacted = ctx.for_compaction();
     assert!(compacted.recent_messages.is_empty());
     assert_eq!(
@@ -950,7 +1005,7 @@ async fn build_stores_and_for_compaction_preserves_todos() {
         2,
         "todos must survive for_compaction() like other live state"
     );
-    assert_eq!(compacted.todos[1].content, "do the other thing");
+    assert_eq!(at(&compacted.todos, 1).content, "do the other thing");
 }
 #[tokio::test]
 async fn build_stores_and_for_compaction_preserves_loops_and_workflows() {
@@ -984,12 +1039,12 @@ async fn build_stores_and_for_compaction_preserves_loops_and_workflows() {
         },
     )
     .await;
-    assert_eq!(ctx.scheduled_loops[0].task_id, "loop-1");
-    assert_eq!(ctx.workflows[0].run_id, "wf-1");
+    assert_eq!(at(&ctx.scheduled_loops, 0).task_id, "loop-1");
+    assert_eq!(at(&ctx.workflows, 0).run_id, "wf-1");
     let compacted = ctx.for_compaction();
     assert!(compacted.recent_messages.is_empty());
     assert_eq!(compacted.scheduled_loops.len(), 1);
-    assert_eq!(compacted.workflows[0].name, "review-changes");
+    assert_eq!(at(&compacted.workflows, 0).name, "review-changes");
     assert_eq!(compacted.workflow_tool_name.as_deref(), Some("workflow"));
 }
 /// The compaction view drops the working transcript while preserving the last real user query.
@@ -1057,7 +1112,7 @@ async fn for_compaction_drops_recent_messages_preserves_query() {
     );
     assert_eq!(compacted.agent_edited_paths, vec!["src/x.rs".to_string()]);
     assert_eq!(compacted.running_tasks.len(), 1);
-    assert_eq!(compacted.running_tasks[0].command, "cargo test");
+    assert_eq!(at(&compacted.running_tasks, 0).command, "cargo test");
     assert_eq!(full.recent_messages.len(), 5);
 }
 #[test]
@@ -1636,9 +1691,9 @@ fn repair_history_strips_displaced_result_and_backfills_call() {
     let report = repair_history(&mut items);
     assert_eq!(report.stripped_tool_result_ids, vec!["call_D"]);
     assert_eq!(report.synthetic_results_inserted, 1);
-    match (&items[1], &items[2]) {
+    match (at(&items, 1), at(&items, 2)) {
         (ConversationItem::Assistant(a), ConversationItem::ToolResult(tr)) => {
-            assert_eq!(a.tool_calls[0].id.as_ref(), "call_D");
+            assert_eq!(at(&a.tool_calls, 0).id.as_ref(), "call_D");
             assert_eq!(tr.tool_call_id, "call_D");
             assert!(
                 tr.content
@@ -1672,7 +1727,7 @@ fn repair_history_strips_result_split_by_assistant_item() {
         })
         .collect();
     assert_eq!(results.len(), 1);
-    assert!(results[0].content.contains("halted by the harness"));
+    assert!(at(&results, 0).content.contains("halted by the harness"));
 }
 /// A result whose owner lives before an *earlier, separate* result run
 /// must be stripped: the intervening run flushed the assistant message.
@@ -1700,7 +1755,7 @@ fn repair_history_dedups_duplicate_results() {
     let report = repair_history(&mut items);
     assert_eq!(report.duplicates_removed, 1);
     assert!(report.stripped_tool_result_ids.is_empty());
-    match &items[1] {
+    match at(&items, 1) {
         ConversationItem::ToolResult(tr) => {
             assert_eq!(tr.content.as_ref(), "real result")
         }
@@ -1780,16 +1835,19 @@ async fn build_compacted_history_full_scenario() {
         summary_count: 1,
     });
     assert_eq!(compacted.len(), 8);
-    assert_eq!(compacted[0].text_content(), "You are a helpful assistant.");
-    let prefix = compacted[1].text_content();
+    assert_eq!(
+        at(&compacted, 0).text_content(),
+        "You are a helpful assistant."
+    );
+    let prefix = at(&compacted, 1).text_content();
     assert_eq!(prefix, "<user_info>OS: macos</user_info>");
     assert!(!prefix.contains("<user_query>"));
-    let query = compacted[2].text_content();
+    let query = at(&compacted, 2).text_content();
     assert_eq!(query, "<user_query>\nfix the login bug\n</user_query>");
-    assert_eq!(compacted[3].text_content(), "Let me look.");
-    assert_eq!(compacted[4].text_content(), "Tool call omitted...");
-    assert_eq!(compacted[5].text_content(), "Found the bug, fixing.");
-    let summary = compacted[6].text_content();
+    assert_eq!(at(&compacted, 3).text_content(), "Let me look.");
+    assert_eq!(at(&compacted, 4).text_content(), "Tool call omitted...");
+    assert_eq!(at(&compacted, 5).text_content(), "Found the bug, fixing.");
+    let summary = at(&compacted, 6).text_content();
     assert!(
         !summary.contains("<user_query>"),
         "summary should NOT be wrapped in <user_query> tags"
@@ -1803,27 +1861,27 @@ async fn build_compacted_history_full_scenario() {
         !summary.contains("<system-reminder>"),
         "system-reminder should NOT be in the summary message"
     );
-    let reminder = compacted[7].text_content();
+    let reminder = at(&compacted, 7).text_content();
     assert!(reminder.contains("<system-reminder>"));
     assert!(reminder.contains("Files Edited This Session"));
-    if let ConversationItem::User(u) = &compacted[1] {
+    if let ConversationItem::User(u) = at(&compacted, 1) {
         assert_eq!(
             u.synthetic_reason,
-            Some(SyntheticReason::CompactionMeta),
+            SyntheticReason::CompactionMeta,
             "user_message_prefix should be tagged CompactionMeta"
         );
     }
-    if let ConversationItem::User(u) = &compacted[6] {
+    if let ConversationItem::User(u) = at(&compacted, 6) {
         assert_eq!(
             u.synthetic_reason,
-            Some(SyntheticReason::CompactionMeta),
+            SyntheticReason::CompactionMeta,
             "compaction summary should be tagged CompactionMeta"
         );
     }
-    if let ConversationItem::User(u) = &compacted[7] {
+    if let ConversationItem::User(u) = at(&compacted, 7) {
         assert_eq!(
             u.synthetic_reason,
-            Some(SyntheticReason::SystemReminder),
+            SyntheticReason::SystemReminder,
             "system-reminder should be tagged SystemReminder"
         );
     }
@@ -1849,7 +1907,7 @@ async fn build_compacted_history_minimal_no_reminder() {
         summary_count: 1,
     });
     assert_eq!(compacted.len(), 5);
-    let summary = compacted[4].text_content();
+    let summary = at(&compacted, 4).text_content();
     assert!(
         summary.starts_with("This session is being continued"),
         "summary should start with preamble (no <user_query> wrapping)"
@@ -1885,7 +1943,7 @@ async fn build_compacted_history_no_user_query() {
         summary_count: 1,
     });
     assert_eq!(compacted.len(), 4);
-    assert_eq!(compacted[2].text_content(), "proactive greeting");
+    assert_eq!(at(&compacted, 2).text_content(), "proactive greeting");
 }
 #[tokio::test]
 async fn build_compacted_history_transcript_hint() {
@@ -2035,9 +2093,9 @@ async fn build_compacted_history_multi_turn_with_parallel_tool_calls() {
     });
     assert_eq!(compacted.len(), 9, "compacted history should have 9 items");
     assert!(
-        matches!(&compacted[0], ConversationItem::System(s) if s.content.as_ref() == "You are a helpful coding assistant.")
+        matches!(at(&compacted, 0), ConversationItem::System(s) if s.content.as_ref() == "You are a helpful coding assistant.")
     );
-    let prefix = compacted[1].text_content();
+    let prefix = at(&compacted, 1).text_content();
     assert!(
         prefix.contains("<user_info>"),
         "item[1] should be the user_info prefix"
@@ -2046,21 +2104,21 @@ async fn build_compacted_history_multi_turn_with_parallel_tool_calls() {
         !prefix.contains("<user_query>"),
         "item[1] prefix should NOT have <user_query> tags"
     );
-    let last_query = compacted[2].text_content();
+    let last_query = at(&compacted, 2).text_content();
     assert_eq!(
         last_query, "<user_query>\nNow fix the typo in main.rs and run the tests\n</user_query>",
         "item[2] should be the last user query wrapped in <user_query> tags"
     );
-    match &compacted[3] {
+    match at(&compacted, 3) {
         ConversationItem::Assistant(a) => {
             assert_eq!(a.content.as_ref(), "I'll fix the typo and run tests.");
             assert_eq!(a.tool_calls.len(), 2, "should preserve both tool calls");
-            assert_eq!(a.tool_calls[0].name, "edit_file");
-            assert_eq!(a.tool_calls[1].name, "run_terminal_cmd");
+            assert_eq!(at(&a.tool_calls, 0).name, "edit_file");
+            assert_eq!(at(&a.tool_calls, 1).name, "run_terminal_cmd");
         }
         other => panic!("item[3] should be Assistant, got {:?}", other),
     }
-    match &compacted[4] {
+    match at(&compacted, 4) {
         ConversationItem::ToolResult(tr) => {
             assert_eq!(tr.tool_call_id, "call_3");
             assert_eq!(
@@ -2071,7 +2129,7 @@ async fn build_compacted_history_multi_turn_with_parallel_tool_calls() {
         }
         other => panic!("item[4] should be ToolResult, got {:?}", other),
     }
-    match &compacted[5] {
+    match at(&compacted, 5) {
         ConversationItem::ToolResult(tr) => {
             assert_eq!(tr.tool_call_id, "call_4");
             assert_eq!(tr.content.as_ref(), "Tool call omitted...");
@@ -2079,10 +2137,10 @@ async fn build_compacted_history_multi_turn_with_parallel_tool_calls() {
         other => panic!("item[5] should be ToolResult, got {:?}", other),
     }
     assert_eq!(
-        compacted[6].text_content(),
+        at(&compacted, 6).text_content(),
         "Fixed the typo and all tests pass!"
     );
-    let summary = compacted[7].text_content();
+    let summary = at(&compacted, 7).text_content();
     assert!(
         !summary.contains("<user_query>"),
         "summary should NOT be wrapped in <user_query> tags"
@@ -2107,7 +2165,7 @@ The user asked to read main.rs and lib.rs. main.rs prints hello world, lib.rs ha
         summary, expected_summary,
         "summary item should match expected format with preamble"
     );
-    let reminder = compacted[8].text_content();
+    let reminder = at(&compacted, 8).text_content();
     assert!(
         reminder.contains("<system-reminder>"),
         "reminder message should contain <system-reminder>"
@@ -2150,7 +2208,7 @@ fn generation_zero_compaction_keeps_legacy_project_instructions() {
         transcript_hint: None,
         summary_count: 1,
     });
-    assert_eq!(compacted[2].text_content(), "startup rules");
+    assert_eq!(at(&compacted, 2).text_content(), "startup rules");
 }
 #[test]
 fn relocated_compaction_uses_destination_project_instructions() {
@@ -2180,7 +2238,7 @@ fn relocated_compaction_uses_destination_project_instructions() {
         transcript_hint: None,
         summary_count: 1,
     });
-    assert_eq!(compacted[2].text_content(), "destination rules");
+    assert_eq!(at(&compacted, 2).text_content(), "destination rules");
 }
 #[test]
 fn relocated_compaction_does_not_restore_source_instructions_when_destination_has_none() {
@@ -2211,7 +2269,7 @@ fn relocated_compaction_does_not_restore_source_instructions_when_destination_ha
         summary_count: 1,
     });
     assert!(!compacted.iter().any(|item| {
-        matches!(item, ConversationItem::User(user) if user.synthetic_reason == Some(SyntheticReason::ProjectInstructions))
+        matches!(item, ConversationItem::User(user) if user.synthetic_reason == SyntheticReason::ProjectInstructions)
     }));
 }
 /// The AGENTS.md slot must use the structural project-instructions tag.
@@ -2244,18 +2302,18 @@ fn build_compacted_history_tags_agents_md_with_project_instructions() {
         transcript_hint: None,
         summary_count: 1,
     });
-    let ConversationItem::User(u) = &compacted[2] else {
+    let ConversationItem::User(u) = at(&compacted, 2) else {
         panic!("compacted[2] should be the AGENTS.md User slot");
     };
     assert_eq!(
         u.synthetic_reason,
-        Some(SyntheticReason::ProjectInstructions),
+        SyntheticReason::ProjectInstructions,
         "AGENTS.md slot must be tagged ProjectInstructions so the \
          spawn-time idempotence guard skips re-insertion on resume \
          from the compacted jsonl"
     );
     assert_eq!(
-        compacted[2].text_content(),
+        at(&compacted, 2).text_content(),
         reminder,
         "AGENTS.md slot must carry the reminder text verbatim"
     );
@@ -2294,7 +2352,7 @@ fn build_compacted_history_omits_agents_md_when_none() {
         matches!(
             item,
             ConversationItem::User(u)
-                if u.synthetic_reason == Some(SyntheticReason::ProjectInstructions)
+                if u.synthetic_reason == SyntheticReason::ProjectInstructions
         )
     });
     assert!(
@@ -2341,7 +2399,7 @@ fn conversation_item_preserves_reasoning_siblings() {
         }),
     ]);
     assert_eq!(result.len(), 3);
-    assert!(matches!(result[1], ConversationItem::Reasoning(_)));
+    assert!(matches!(at(&result, 1), ConversationItem::Reasoning(_)));
 }
 #[test]
 fn strip_reasoning_blocks_drops_reasoning_siblings() {
@@ -2365,7 +2423,7 @@ fn strip_reasoning_blocks_drops_reasoning_siblings() {
         }),
     ]);
     assert_eq!(result.len(), 1, "reasoning sibling must be dropped");
-    assert!(matches!(result[0], ConversationItem::Assistant(_)));
+    assert!(matches!(at(&result, 0), ConversationItem::Assistant(_)));
 }
 #[test]
 fn strip_reasoning_blocks_passes_other_items_through() {
@@ -2375,9 +2433,9 @@ fn strip_reasoning_blocks_passes_other_items_through() {
         ConversationItem::tool_result("call_1", "result"),
     ]);
     assert_eq!(result.len(), 3);
-    assert!(matches!(result[0], ConversationItem::System(_)));
-    assert!(matches!(result[1], ConversationItem::User(_)));
-    assert!(matches!(result[2], ConversationItem::ToolResult(_)));
+    assert!(matches!(at(&result, 0), ConversationItem::System(_)));
+    assert!(matches!(at(&result, 1), ConversationItem::User(_)));
+    assert!(matches!(at(&result, 2), ConversationItem::ToolResult(_)));
 }
 /// Reproduces the production 400: signed `reasoning` plus `tool_calls` fails after text mutation.
 /// After `prepare_conversation_for_summarization` no `reasoning` may remain for the provider to validate.
@@ -2423,7 +2481,7 @@ fn prepare_for_summarization_drops_reasoning_sibling_on_mutated_assistant() {
             .any(|m| matches!(m, ConversationItem::Reasoning(_))),
         "reasoning sibling must be dropped"
     );
-    let ConversationItem::Assistant(a) = &result[2] else {
+    let ConversationItem::Assistant(a) = at(&result, 2) else {
         panic!("expected assistant at index 2");
     };
     assert!(a.tool_calls.is_empty(), "tool_calls must be cleared");
@@ -2455,7 +2513,7 @@ fn prepare_for_summarization_drops_standalone_reasoning_sibling() {
         }),
     ]);
     assert_eq!(result.len(), 1);
-    let ConversationItem::Assistant(a) = &result[0] else {
+    let ConversationItem::Assistant(a) = at(&result, 0) else {
         panic!("expected assistant");
     };
     assert_eq!(a.content.as_ref(), "plain text response");
@@ -2532,19 +2590,19 @@ fn prepare_for_summarization_handles_multi_assistant_mixed_conversation() {
         assert!(a.tool_calls.is_empty(), "tool_calls must be cleared");
     }
     assert!(
-        assistants[0].content.contains("[Called tools: grep]"),
+        at(&assistants, 0).content.contains("[Called tools: grep]"),
         "tool-calling assistant must get annotation; got {:?}",
-        assistants[0].content
+        at(&assistants, 0).content
     );
     assert!(
-        !assistants[1].content.contains("[Called tools:"),
+        !at(&assistants, 1).content.contains("[Called tools:"),
         "no-tool-call assistant must not get annotation; got {:?}",
-        assistants[1].content
+        at(&assistants, 1).content
     );
     assert!(
-        !assistants[2].content.contains("[Called tools:"),
+        !at(&assistants, 2).content.contains("[Called tools:"),
         "plain assistant must not get annotation; got {:?}",
-        assistants[2].content
+        at(&assistants, 2).content
     );
 }
 /// Calling `prepare_conversation_for_summarization` twice must match calling it once.
@@ -2593,10 +2651,10 @@ fn test_strip_images_replaces_with_placeholder() {
         ConversationItem::assistant("I see an image"),
     ];
     let result = strip_images(input);
-    match &result[1] {
+    match at(&result, 1) {
         ConversationItem::User(u) => {
             assert_eq!(u.content.len(), 2);
-            match &u.content[1] {
+            match at(&u.content, 1) {
                 ContentPart::Text { text } => assert_eq!(text.as_ref(), "[image]"),
                 ContentPart::Image { .. } => panic!("image should have been stripped"),
             }
@@ -2611,7 +2669,7 @@ fn test_strip_images_leaves_text_only_messages_unchanged() {
         ConversationItem::assistant("reply"),
     ];
     let result = strip_images(input);
-    assert_eq!(result[0].text_content(), "just text");
+    assert_eq!(at(&result, 0).text_content(), "just text");
 }
 #[test]
 fn test_prepare_for_summarization_strips_images() {
@@ -2623,7 +2681,7 @@ fn test_prepare_for_summarization_strips_images() {
         ConversationItem::assistant("ok"),
     ];
     let result = prepare_conversation_for_summarization(input);
-    match &result[1] {
+    match at(&result, 1) {
         ConversationItem::User(u) => {
             for part in &u.content {
                 assert!(
@@ -2695,12 +2753,12 @@ fn verbatim_keeps_tool_calls_args_and_results() {
         ConversationItem::tool_result("c1", "fn main() {}"),
     ];
     let result = prepare_conversation_for_verbatim_summarization(conv, false);
-    match &result[2] {
+    match at(&result, 2) {
         ConversationItem::Assistant(a) => {
             assert_eq!(a.tool_calls.len(), 1, "tool call must survive verbatim");
-            assert_eq!(a.tool_calls[0].name, "read_file");
+            assert_eq!(at(&a.tool_calls, 0).name, "read_file");
             assert!(
-                a.tool_calls[0].arguments.contains("a.rs"),
+                at(&a.tool_calls, 0).arguments.contains("a.rs"),
                 "arguments (the path) must be preserved, not dropped"
             );
             assert!(
@@ -2710,7 +2768,7 @@ fn verbatim_keeps_tool_calls_args_and_results() {
         }
         _ => panic!("expected Assistant with tool_calls"),
     }
-    match &result[3] {
+    match at(&result, 3) {
         ConversationItem::ToolResult(t) => assert_eq!(t.content.as_ref(), "fn main() {}"),
         _ => panic!("expected ToolResult to survive"),
     }

@@ -2,7 +2,7 @@
 //!
 //! Layout (top to bottom):
 //! - Top margin row (always preserved)
-//! - Top bar: repo_root:branch (left), version (right)
+//! - Top bar: `{branch} worktree {cwd}` from [`location_parts`](crate::views::location::location_parts)
 //! - Vertically centered content: logo, gap, menu, gap, prompt
 //! - Bottom margin
 
@@ -1535,7 +1535,9 @@ fn render_raw_url_mode(
             if col >= buf_max_col || row >= buf_max_row {
                 continue;
             }
-            buf[(col, row)].set_char(ch).set_style(url_style);
+            if let Some(cell) = buf.cell_mut((col, row)) {
+                cell.set_char(ch).set_style(url_style);
+            }
         }
     }
 
@@ -2826,7 +2828,7 @@ pub(crate) fn render_session_picker_body(
             expanded: b.is_expanded,
             fields,
             description_lines: if has_snippet {
-                &content_snippets[i]
+                content_snippets.get(i).map(|s| s.as_slice()).unwrap_or(&[])
             } else {
                 &[]
             },
@@ -3124,7 +3126,11 @@ fn masked_auth_token_view(
         xai_ratatui_textarea::EditBuffer::from_parts(masked.display.as_str(), masked.cursor_byte);
     let viewport = buffer.single_line_viewport(width);
     (
-        masked.display[viewport.visible_byte_range].to_owned(),
+        masked
+            .display
+            .get(viewport.visible_byte_range)
+            .unwrap_or("")
+            .to_owned(),
         viewport.cursor_display_column,
     )
 }
@@ -3303,7 +3309,10 @@ mod tests {
             ] {
                 let mut lines = Vec::new();
                 push_auth_copy_block(&mut lines, &theme, locale, Some(delivery));
-                let feedback = lines[3]
+                let Some(line) = lines.get(3) else {
+                    panic!("expected copy-feedback line: {lines:?}");
+                };
+                let feedback = line
                     .spans
                     .iter()
                     .map(|span| span.content.as_ref())
@@ -3391,7 +3400,11 @@ mod tests {
         let theme = Theme::current();
         let mut buffer = Buffer::empty(area);
         render_auth_input_box(area, &mut buffer, &theme, token, cursor, &TEST_LOCALE);
-        assert!((0..area.width).any(|x| buffer[(x, 1)].bg == theme.text_primary));
+        assert!((0..area.width).any(|x| {
+            buffer
+                .cell((x, 1))
+                .is_some_and(|c| c.bg == theme.text_primary)
+        }));
     }
 
     fn make_entry(id: &str, summary: &str, repo_name: &str) -> SessionPickerEntry {
@@ -4142,18 +4155,18 @@ mod tests {
         // Groups are sorted alphabetically: fw-1 before xai.
         // Header positions: 0 (fw-1), 2 (xai)
         assert_eq!(non_sel.len(), 5);
-        assert!(non_sel[0], "first entry should be header (non-selectable)");
-        assert!(!non_sel[1], "second entry should be selectable row");
-        assert!(non_sel[2], "third entry should be header (non-selectable)");
-        assert!(!non_sel[3], "fourth entry should be selectable row");
-        assert!(!non_sel[4], "fifth entry should be selectable row");
+        assert_eq!(
+            non_sel,
+            vec![true, false, true, false, false],
+            "header/row selectability: {non_sel:?}"
+        );
 
         // Verify headers
         assert!(
-            matches!(&result[0], crate::views::picker::PickerEntry::Header { label } if label == &"fw-1")
+            matches!(result.first(), Some(crate::views::picker::PickerEntry::Header { label }) if label == &"fw-1")
         );
         assert!(
-            matches!(&result[2], crate::views::picker::PickerEntry::Header { label } if label == &"xai")
+            matches!(result.get(2), Some(crate::views::picker::PickerEntry::Header { label }) if label == &"xai")
         );
     }
 
@@ -4181,11 +4194,11 @@ mod tests {
             Some("zzz"),
         );
         assert!(
-            matches!(&result[0], crate::views::picker::PickerEntry::Header { label } if label == &"zzz"),
+            matches!(result.first(), Some(crate::views::picker::PickerEntry::Header { label }) if label == &"zzz"),
             "current repo group pinned first"
         );
         assert!(
-            matches!(&result[2], crate::views::picker::PickerEntry::Header { label } if label == &"aaa"),
+            matches!(result.get(2), Some(crate::views::picker::PickerEntry::Header { label }) if label == &"aaa"),
             "remaining group follows alphabetically"
         );
     }
@@ -4206,9 +4219,7 @@ mod tests {
             build_grouped_picker_entries(&entries, &indices, &built, &fields_vecs, &state, None);
 
         assert_eq!(result.len(), 3); // one header and two rows
-        assert!(non_sel[0]);
-        assert!(!non_sel[1]);
-        assert!(!non_sel[2]);
+        assert_eq!(non_sel, vec![true, false, false]);
     }
 
     #[test]
@@ -4239,7 +4250,7 @@ mod tests {
             build_grouped_picker_entries(&entries, &indices, &built, &fields_vecs, &state, None);
 
         // Grouped rows are indented one column under their header
-        if let crate::views::picker::PickerEntry::Row(row) = &result[1] {
+        if let Some(crate::views::picker::PickerEntry::Row(row)) = result.get(1) {
             assert_eq!(row.indent, 1);
         } else {
             panic!("expected Row, got Header");
@@ -4746,8 +4757,9 @@ mod tests {
         (area.top()..area.bottom())
             .filter(|&y| {
                 (area.left()..area.right()).any(|x| {
-                    buf[(x, y)]
-                        .symbol()
+                    buf.cell((x, y))
+                        .map(|c| c.symbol())
+                        .unwrap_or("")
                         .chars()
                         .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
                 })
@@ -5096,7 +5108,10 @@ mod tests {
         for y in area.y..area.y.saturating_add(area.height) {
             let mut skip = 0usize;
             for x in area.x..area.x.saturating_add(area.width) {
-                let symbol = buf[(x, y)].symbol();
+                let Some(cell) = buf.cell((x, y)) else {
+                    continue;
+                };
+                let symbol = cell.symbol();
                 if skip == 0 {
                     out.push_str(symbol);
                 }
@@ -5315,11 +5330,11 @@ mod tests {
         // The first row is flush against both edges (full width); the remainder starts at column 0 on the next row
         assert_eq!(
             first,
-            &url[..40],
+            url.get(..40).unwrap_or(url),
             "long URL row must span the full terminal width:\n{text}"
         );
         assert!(
-            second.starts_with(&url[40..]),
+            url.get(40..).is_some_and(|rest| second.starts_with(rest)),
             "wrapped remainder must start at column 0:\n{text}"
         );
     }

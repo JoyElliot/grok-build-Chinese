@@ -7,7 +7,7 @@
         let mut app = make_app_with_agent("sess-1");
         let (msg, _rx) = make_permission_message("sess-1");
         handle(msg, &mut app);
-        assert_eq!(app.agents[&AgentId(0)].permission_queue.len(), 1);
+        assert_eq!(test_agent(&app, AgentId(0)).permission_queue.len(), 1);
 
         let changed = handle_session_notification(
             &interaction_resolved_ext("sess-1", "call-perm-1"),
@@ -15,7 +15,7 @@
         );
         assert!(changed, "dismissing a visible permission must redraw");
         assert!(
-            app.agents[&AgentId(0)].permission_queue.is_empty(),
+            test_agent(&app, AgentId(0)).permission_queue.is_empty(),
             "the resolved permission must be removed from the queue"
         );
     }
@@ -34,7 +34,7 @@
             handle_session_notification(&interaction_resolved_ext("sess-1", "call-q"), &mut app);
         assert!(changed, "dismissing a visible question must redraw");
         assert!(
-            app.agents[&AgentId(0)].question_view.is_none(),
+            test_agent(&app, AgentId(0)).question_view.is_none(),
             "the resolved question must be cleared"
         );
     }
@@ -44,13 +44,13 @@
         let mut app = make_app_with_agent("sess-1");
         let (ext, _rx) = make_exit_plan_ext_with_tool_call_id("call-plan", Some("# Plan"));
         assert!(handle_exit_plan_mode(ext, &mut app));
-        assert!(app.agents[&AgentId(0)].plan_approval_view.is_some());
+        assert!(test_agent(&app, AgentId(0)).plan_approval_view.is_some());
 
         let changed =
             handle_session_notification(&interaction_resolved_ext("sess-1", "call-plan"), &mut app);
         assert!(changed, "dismissing a visible plan approval must redraw");
         assert!(
-            app.agents[&AgentId(0)].plan_approval_view.is_none(),
+            test_agent(&app, AgentId(0)).plan_approval_view.is_none(),
             "the resolved plan approval must be cleared"
         );
     }
@@ -67,7 +67,7 @@
         );
         assert!(!changed, "an unknown tool_call_id must be a silent no-op");
         assert_eq!(
-            app.agents[&AgentId(0)].permission_queue.len(),
+            test_agent(&app, AgentId(0)).permission_queue.len(),
             1,
             "an unrelated pending modal must be left intact"
         );
@@ -366,9 +366,9 @@
 
         // A peer resolves the elicitation while the question is open.
         handle_session_notification(&interaction_resolved_ext("sess-A", "mcp-elicit-1"), &mut app);
-        assert!(app.agents[&AgentId(0)].elicitation_view.is_none());
+        assert!(test_agent(&app, AgentId(0)).elicitation_view.is_none());
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "",
             "the question still owns the composer; the draft must not write through"
         );
@@ -376,7 +376,7 @@
         // The question closes: the handed-over draft comes back.
         handle_session_notification(&interaction_resolved_ext("sess-A", "call-q"), &mut app);
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "my precious draft",
             "the question's close must restore the elicitation's session draft"
         );
@@ -429,16 +429,16 @@
         // The question resolves first and restores the draft…
         handle_session_notification(&interaction_resolved_ext("sess-A", "call-q"), &mut app);
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "my precious draft",
             "question close must put the draft back"
         );
 
         // …then the elicitation resolves and must NOT clobber it.
         handle_session_notification(&interaction_resolved_ext("sess-A", "mcp-elicit-1"), &mut app);
-        assert!(app.agents[&AgentId(0)].elicitation_view.is_none());
+        assert!(test_agent(&app, AgentId(0)).elicitation_view.is_none());
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "my precious draft",
             "elicitation close must not restore an empty stash over the draft"
         );
@@ -494,7 +494,7 @@
             }),
             &mut app,
         );
-        assert!(app.agents[&AgentId(0)].pending_elicitation.is_some());
+        assert!(test_agent(&app, AgentId(0)).pending_elicitation.is_some());
 
         let changed = handle_session_notification(
             &interaction_resolved_ext("sess-A", "mcp-elicit-form"),
@@ -502,7 +502,7 @@
         );
         assert!(changed);
         assert!(
-            app.agents[&AgentId(0)].pending_elicitation.is_none(),
+            test_agent(&app, AgentId(0)).pending_elicitation.is_none(),
             "peer resolve must drop the parked form"
         );
         match rx2.try_recv() {
@@ -571,7 +571,7 @@
         );
         assert!(!changed);
         assert!(
-            app.agents[&AgentId(0)].elicitation_view.is_some(),
+            test_agent(&app, AgentId(0)).elicitation_view.is_some(),
             "a mismatched serverName must not dismiss the waiting card"
         );
 
@@ -589,7 +589,7 @@
         );
         assert!(changed);
         assert!(
-            app.agents[&AgentId(0)].elicitation_view.is_none(),
+            test_agent(&app, AgentId(0)).elicitation_view.is_none(),
             "the matching serverName must dismiss the waiting card"
         );
     }
@@ -837,7 +837,10 @@
         let response = rx.blocking_recv().expect("should have sent response");
         let raw = response.expect("should be Ok");
         let parsed: serde_json::Value = serde_json::from_str(raw.0.get()).unwrap();
-        assert_eq!(parsed["outcome"], "approved");
+        assert_eq!(
+            parsed.get("outcome").and_then(|v| v.as_str()),
+            Some("approved")
+        );
     }
 
     /// Delivers a status snapshot the way the agent does, and reports whether the client repainted.
@@ -866,7 +869,7 @@
 
         assert!(!notify_status(&mut app, "/tmp"), "no row, no repaint");
         assert!(
-            app.agents[&AgentId(0)].status_context.is_some(),
+            test_agent(&app, AgentId(0)).status_context.is_some(),
             "the payload is still stored for whenever a row is enabled"
         );
         assert!(app.status_line.display().is_none(), "and nothing is drawn");

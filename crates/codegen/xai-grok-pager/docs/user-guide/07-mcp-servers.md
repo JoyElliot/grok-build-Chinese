@@ -183,10 +183,32 @@ Project-scoped files contribute `[mcp_servers]`, `[plugins]`, and `[permission]`
 
 ## Tool Naming
 
-MCP tools are namespaced with the server name to avoid collisions:
+MCP tools are namespaced with the server name to avoid collisions. The catalog key is `server__tool` (two underscores):
 
 - Server `filesystem` with tool `read_file` becomes `filesystem__read_file`
 - Server `github` with tool `create_issue` becomes `github__create_issue`
+- A tool segment may start with a digit: server `auth` with tool `2fa_enable` becomes `auth__2fa_enable`
+
+### What Grok admits
+
+Grok admits a listed tool into the session catalog when all of these hold (`xai-grok-mcp` `qualify_mcp_tool_name`):
+
+| Part | Rule |
+| --- | --- |
+| Server name | Starts with a letter or underscore. Then ASCII letters, digits, underscores, and hyphens only. |
+| Tool name | Non-empty. ASCII letters, digits, underscores, and hyphens only. May start with a digit. |
+| Delimiter | Exactly one `__`. Names with a second `__`, or with `___`, are skipped. |
+| Catalog key | `server` + `__` + `tool` is at most **256** characters. |
+
+A rejected tool is skipped. The log line is `Skipping MCP tool` with the reason. The rest of that server's tools still load.
+
+The **64-character** cap is a provider **function-name** budget. It applies to the meta-tools `search_tool` and `use_tool` themselves. It does **not** apply to catalog keys. A `server__tool` name longer than 64 characters stays in the catalog. The model still calls it through `use_tool` with that full name. Grok used to drop those tools at 64 characters. It no longer does.
+
+The server name in `[mcp_servers.<name>]` / `grok mcp add` is the catalog prefix. A name that starts with a digit is a valid TOML key. Catalog admission still rejects it (`InvalidServerName`). Rename the server so it starts with a letter or underscore.
+
+A server name that ends with `_` makes `server__tool` contain `___`. Admission skips that key (`InvalidOrAmbiguousQualifiedName`).
+
+`search_tool` / `use_tool` take the qualified catalog key, not the raw MCP tool name. Example: `github__create_issue`, not `create_issue`.
 
 ---
 
@@ -368,6 +390,17 @@ tail -f ~/.grok/logs/mcp/filesystem.stderr.log
 ### Blocked by organization policy
 
 If native TOML policy or Claude `managed-settings.json` sets `deniedMcpServers`, a nonempty `allowedMcpServers`, or `allowManagedMcpServersOnly`, Grok drops non-matching servers at merge time and logs `MCP server blocked by managed settings policy`. Native grok layers bind every server; the Claude file binds foreign-defined servers only. `grok inspect` shows the lists, lockdown scope, and each remaining server. Details and examples: [Restrict which MCP servers can run](09-plugins.md#restrict-which-mcp-servers-can-run).
+
+### A listed tool never appears
+
+The server starts and `tools/list` returns the tool, but `/mcps` and `search_tool` omit it.
+
+1. Check `Skipping MCP tool` in `GROK_LOG_FILE` / `--debug`. The reason names the rule that failed (invalid server name, invalid tool name, ambiguous `__`, or catalog key longer than 256 characters).
+2. Confirm the server config key starts with a letter or underscore. A digit-leading key never enters the catalog. A key that ends with `_` is skipped as an ambiguous `___` name.
+3. Confirm the tool name uses only `[A-Za-z0-9_-]`. Dots and colons in the raw MCP name are skipped.
+4. Do not shorten a `server__tool` key to 64 characters. Catalog keys may be up to 256. The 64-character cap is only for `search_tool` / `use_tool` as function names. See [Tool Naming](#tool-naming).
+
+This is separate from a tool that is missing on the **first** prompt because the handshake is still running. Send a second prompt after the server is up, or run `grok mcp doctor`.
 
 ### Viewing Server Status
 

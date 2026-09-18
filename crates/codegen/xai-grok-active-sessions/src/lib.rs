@@ -2,6 +2,8 @@
 //! A clean exit removes the entry; a crash leaves it behind.
 //! On next launch, [`collect_crashed`] finds orphaned entries (dead PIDs).
 
+#![deny(clippy::indexing_slicing)]
+
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
@@ -234,8 +236,17 @@ mod tests {
 
         let crashed = collect_crashed_in(dir.path()).unwrap();
         assert_eq!(crashed.len(), 1);
-        assert_eq!(&*crashed[0].session_id.0, "dead");
-        assert_eq!(&*list_in(dir.path()).unwrap()[0].session_id.0, "alive");
+        assert_eq!(
+            crashed.first().map(|s| s.session_id.0.as_ref()),
+            Some("dead")
+        );
+        assert_eq!(
+            list_in(dir.path())
+                .unwrap()
+                .first()
+                .map(|s| s.session_id.0.as_ref()),
+            Some("alive")
+        );
     }
 
     #[test]

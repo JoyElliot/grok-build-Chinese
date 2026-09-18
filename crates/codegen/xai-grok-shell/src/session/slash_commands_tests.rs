@@ -321,28 +321,28 @@ fn resolve_model_authored_skill_requires_exact_child_catalog_name_and_loader() {
     assert_eq!(skill.name, "local:compact");
     assert_eq!(skill.args, "keep history");
 
-    let flush_skill = vec![make_skill("flush", true)];
-    let memory_off = CommandAvailability::default();
-    let advertised = available_commands(&flush_skill, memory_off, &[]);
-    assert!(advertised.iter().any(|command| command.name == "flush"));
+    let goal_skill = vec![make_skill("goal", true)];
+    let goal_off = CommandAvailability::default();
+    let advertised = available_commands(&goal_skill, goal_off, &[]);
+    assert!(advertised.iter().any(|command| command.name == "goal"));
     assert!(
         super::resolve_model_authored_skill(
-            vec![text_block("/flush")],
-            "flush",
+            vec![text_block("/goal")],
+            "goal",
             "",
-            &flush_skill,
-            memory_off,
+            &goal_skill,
+            goal_off,
             true,
         )
         .is_err()
     );
     assert!(
         super::resolve_model_authored_skill(
-            vec![text_block("/local:flush")],
-            "local:flush",
+            vec![text_block("/local:goal")],
+            "local:goal",
             "",
-            &flush_skill,
-            memory_off,
+            &goal_skill,
+            goal_off,
             true,
         )
         .is_ok()
@@ -412,6 +412,32 @@ async fn build_skill_information_for_refs_loads_and_wraps() {
         build_skill_information_for_refs(&parsed, &missing, "sid-1").await,
         None
     );
+}
+
+/// The cap runs before substitution, so the truncation note precedes the `**ARGUMENTS:**` suffix.
+#[tokio::test]
+async fn build_skill_information_for_refs_caps_oversized_body() {
+    let body = (1..=1100)
+        .map(|n| format!("{n:05} {}", "x".repeat(194)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("SKILL.md");
+    std::fs::write(&path, body).unwrap();
+
+    let mut skill = make_skill("big", true);
+    skill.path = path.to_string_lossy().to_string();
+    let skills = vec![skill];
+
+    let parsed =
+        parse_skill_references("/big go", &skills, all_gated()).expect("known skill must parse");
+    let info = build_skill_information_for_refs(&parsed, &skills, "sid-1")
+        .await
+        .expect("skill body must load");
+    assert!(!info.contains("01100 "));
+    let note_at = info.find("offset").expect("truncation note");
+    let args_at = info.find("**ARGUMENTS:** go").expect("args suffix");
+    assert!(note_at < args_at);
 }
 
 #[test]
@@ -1216,7 +1242,7 @@ fn inspect_reserved_names_exclude_gated_shell_builtins() {
     assert!(super::is_reserved_slash_name("compact"));
     assert!(super::is_reserved_slash_name("hooks-add"));
     assert!(super::is_reserved_slash_name("HOOKS-ADD"));
-    assert!(!super::is_reserved_slash_name("flush"));
+    assert!(!super::is_reserved_slash_name("goal"));
     assert!(!super::is_reserved_slash_name("deploy"));
 }
 
@@ -1430,9 +1456,7 @@ fn default_availability_is_fail_closed_on_every_gate() {
     }
 }
 
-/// `/flush` is a memory-write that's only useful when the model can later read back what it wrote.
-/// The shell's `build_command_availability()` ANDs `memory.is_enabled()` with `memory_search`/`memory_get` registration.
-/// Lock both halves so a future change to either side is forced through this test.
+/// `/flush` and `/dream` share the memory availability gate.
 #[test]
 fn flush_hidden_when_memory_gate_off_visible_when_on() {
     let off = advertised_names_with(CommandAvailability::default());
@@ -1454,36 +1478,15 @@ fn flush_hidden_when_memory_gate_off_visible_when_on() {
 // ── /memory ─────────────────────────────────────────────────────
 
 #[test]
-fn memory_bare_resolves_to_browse() {
-    assert!(matches!(
-        resolve_builtin("memory", ""),
-        Some(BuiltinAction::MemoryBrowse)
-    ));
-    // Any unrecognized arg also falls through to browse
-    assert!(matches!(
-        resolve_builtin("memory", "status"),
-        Some(BuiltinAction::MemoryBrowse)
-    ));
-}
-
-#[test]
-fn memory_on_off_resolves_to_toggle() {
-    for (arg, expected) in [
-        ("on", true),
-        ("enable", true),
-        ("ON", true),
-        ("Enable", true),
-        ("off", false),
-        ("disable", false),
-        ("OFF", false),
-        ("Disable", false),
-    ] {
+fn memory_resolves_to_browse_regardless_of_args() {
+    // Toggle and status live inside the modal now; stray args must not become anything else.
+    for arg in ["", "on", "off", "status", "unknown"] {
         assert!(
             matches!(
                 resolve_builtin("memory", arg),
-                Some(BuiltinAction::MemoryToggle { enabled }) if enabled == expected
+                Some(BuiltinAction::MemoryBrowse)
             ),
-            "expected toggle({expected}) for {arg:?}",
+            "{arg:?}"
         );
     }
 }
@@ -1501,22 +1504,6 @@ fn mem_alias_resolves_to_memory_browse() {
     assert!(matches!(
         outcome,
         SlashCommandOutcome::Builtin(BuiltinAction::MemoryBrowse)
-    ));
-}
-
-#[test]
-fn mem_alias_resolves_toggle_with_args() {
-    let outcome = resolve(
-        vec![text_block("/mem off")],
-        &[],
-        all_gated(),
-        SkillSlashRewrite::default(),
-        &[],
-    )
-    .unwrap_err();
-    assert!(matches!(
-        outcome,
-        SlashCommandOutcome::Builtin(BuiltinAction::MemoryToggle { enabled: false })
     ));
 }
 
@@ -1566,18 +1553,22 @@ fn memory_not_resolved_when_not_configured() {
 fn parse_skill_refs_single_skill() {
     let skills = vec![make_skill("commit", true)];
     let refs = parse_skill_references("/commit fix typo", &skills, all_gated()).unwrap();
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].name, "commit");
-    assert_eq!(refs[0].args, "fix typo");
+    let [r0] = refs.as_slice() else {
+        panic!("expected one skill ref: {refs:?}");
+    };
+    assert_eq!(r0.name, "commit");
+    assert_eq!(r0.args, "fix typo");
 }
 
 #[test]
 fn parse_skill_refs_single_no_args() {
     let skills = vec![make_skill("commit", true)];
     let refs = parse_skill_references("/commit", &skills, all_gated()).unwrap();
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].name, "commit");
-    assert_eq!(refs[0].args, "");
+    let [r0] = refs.as_slice() else {
+        panic!("expected one skill ref: {refs:?}");
+    };
+    assert_eq!(r0.name, "commit");
+    assert_eq!(r0.args, "");
 }
 
 #[test]
@@ -1585,11 +1576,13 @@ fn parse_skill_refs_multi_skill() {
     let skills = vec![make_skill("review", true), make_skill("lint", true)];
     let refs =
         parse_skill_references("/review fix auth /lint --strict", &skills, all_gated()).unwrap();
-    assert_eq!(refs.len(), 2);
-    assert_eq!(refs[0].name, "review");
-    assert_eq!(refs[0].args, "fix auth");
-    assert_eq!(refs[1].name, "lint");
-    assert_eq!(refs[1].args, "--strict");
+    let [r0, r1] = refs.as_slice() else {
+        panic!("expected two skill refs: {refs:?}");
+    };
+    assert_eq!(r0.name, "review");
+    assert_eq!(r0.args, "fix auth");
+    assert_eq!(r1.name, "lint");
+    assert_eq!(r1.args, "--strict");
 }
 
 #[test]
@@ -1631,10 +1624,12 @@ fn parse_skill_refs_qualified_name() {
         make_scoped_skill("commit", SkillScope::User),
     ];
     let refs = parse_skill_references("/local:commit fix typo", &skills, all_gated()).unwrap();
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].name, "local:commit");
-    assert_eq!(refs[0].args, "fix typo");
-    assert_eq!(refs[0].qualified_name, "local:commit");
+    let [r0] = refs.as_slice() else {
+        panic!("expected one skill ref: {refs:?}");
+    };
+    assert_eq!(r0.name, "local:commit");
+    assert_eq!(r0.args, "fix typo");
+    assert_eq!(r0.qualified_name, "local:commit");
 }
 
 #[test]
@@ -1642,9 +1637,11 @@ fn parse_skill_refs_text_before_first_skill() {
     // Text before the first skill reference is part of user query, not consumed as args
     let skills = vec![make_skill("commit", true)];
     let refs = parse_skill_references("please do /commit fix typo", &skills, all_gated()).unwrap();
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].name, "commit");
-    assert_eq!(refs[0].args, "fix typo");
+    let [r0] = refs.as_slice() else {
+        panic!("expected one skill ref: {refs:?}");
+    };
+    assert_eq!(r0.name, "commit");
+    assert_eq!(r0.args, "fix typo");
 }
 
 // ── /goal command resolution ─────────────────────────────────
@@ -1686,8 +1683,9 @@ fn same_named_builtin_projects_workflow_metadata_without_replacing_command() {
         .iter()
         .filter(|command| command.name == "deep-research")
         .collect();
-    assert_eq!(matching.len(), 1);
-    let command = matching[0];
+    let [command] = matching.as_slice() else {
+        panic!("expected one matching command: {matching:?}");
+    };
     assert_eq!(
         command.description,
         "Research with bounded parallel agents, cross-check evidence, and write a cited report"

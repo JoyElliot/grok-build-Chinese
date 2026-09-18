@@ -254,7 +254,9 @@ fn sanitize_session_id(session_id: &str) -> String {
     if modified {
         let digest = xai_file_utils::sha256_hex(session_id.as_bytes());
         safe.push('-');
-        safe.push_str(&digest[..8]);
+        if let Some(prefix) = digest.get(..8) {
+            safe.push_str(prefix);
+        }
     }
     safe
 }
@@ -269,6 +271,9 @@ fn ensure_session_dir(root: &std::path::Path, session_id: &str) -> (PathBuf, std
 /// The hazard is the global `environ` array, not the variable's value.
 #[cfg(test)]
 pub(crate) use crate::ENV_TEST_LOCK as TOOL_STATE_ENV_LOCK;
+/// Every tool id this binary's registry knows. Built once: a `ToolRegistryBuilder` is not free and binds consult it.
+static REGISTRY_TOOL_IDS: std::sync::LazyLock<Arc<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Arc::new(ToolRegistryBuilder::new().known_tool_ids()));
 /// Gen tools enable only with an [`AuthProvider`] and API base URL; otherwise they stay `Disabled`.
 /// `state_path` is `<home>/sessions/<session_id>/` only when set; `session_folder` is `/tmp/sessions/…`, not the project cwd.
 /// The persistent-shell backend is built once per session and reused on every context build.
@@ -278,6 +283,8 @@ pub struct WorkspaceSessionContextFactory {
     /// Resolved `$GROK_WORKSPACE_HOME` when tool-state persistence is enabled; `None` disables it.
     /// Resolved once by the caller so the factory performs no per-build env reads.
     tool_state_home: Option<PathBuf>,
+    /// The ids a pinned bind may name and this factory will serve.
+    served_tool_ids: Arc<std::collections::HashSet<String>>,
 }
 impl Default for WorkspaceSessionContextFactory {
     fn default() -> Self {
@@ -290,6 +297,7 @@ impl WorkspaceSessionContextFactory {
             auth: None,
             api_base_url: None,
             tool_state_home: None,
+            served_tool_ids: REGISTRY_TOOL_IDS.clone(),
         }
     }
     /// Factory with auth: gen tools use the provider's live token.
@@ -298,6 +306,22 @@ impl WorkspaceSessionContextFactory {
             auth: Some(auth),
             api_base_url: Some(api_base_url),
             tool_state_home: None,
+            served_tool_ids: REGISTRY_TOOL_IDS.clone(),
+        }
+    }
+    /// Factory for a host whose credential only serves the hub. Sessions get no credential, and the
+    /// tools that would call the API with one are not served even when a bind pins them: they come
+    /// back to the binder as `unserved_tool_ids` instead of registering without a client.
+    pub fn hub_only() -> Self {
+        let api_backed = xai_grok_agent::api_backed_tool_ids();
+        let served = REGISTRY_TOOL_IDS
+            .iter()
+            .filter(|id| !api_backed.contains(*id))
+            .cloned()
+            .collect();
+        WorkspaceSessionContextFactory {
+            served_tool_ids: Arc::new(served),
+            ..WorkspaceSessionContextFactory::new()
         }
     }
     /// Enable session-keyed tool-state persistence rooted at `home` (`$GROK_WORKSPACE_HOME`).
@@ -443,9 +467,7 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
         ToolRegistryBuilder::new()
     }
     fn known_tool_ids(&self) -> Arc<std::collections::HashSet<String>> {
-        static IDS: std::sync::LazyLock<Arc<std::collections::HashSet<String>>> =
-            std::sync::LazyLock::new(|| Arc::new(ToolRegistryBuilder::new().known_tool_ids()));
-        IDS.clone()
+        self.served_tool_ids.clone()
     }
 }
 /// Build extra headers for API calls routed through the chat proxy.

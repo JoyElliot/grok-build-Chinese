@@ -7,8 +7,9 @@ use xai_grok_hooks::result::HookDecision;
 #[path = "wait_interrupt.rs"]
 mod wait_interrupt;
 use wait_interrupt::{
-    InterruptedWaitFilter, apply_interrupted_wait_filter, finished_wait_ids,
-    interrupted_wait_tool_result, record_interruptible_wait_outcome, wait_task_ids_from_args,
+    InterruptedWaitFilter, WaitInterruptCause, apply_interrupted_wait_filter, finished_wait_ids,
+    interrupted_wait_tool_result, record_interruptible_wait_outcome, wait_for_wait_interrupt,
+    wait_task_ids_from_args,
 };
 #[derive(Default)]
 struct PreToolUseGate {
@@ -122,13 +123,12 @@ fn is_interruptible_wait_tool(tool_name: &str, args: &serde_json::Value) -> bool
         _ => false,
     }
 }
-async fn wait_for_pending_interjection(buf: &InterjectionBuffer<acp::ImageContent>) {
-    loop {
-        if !buf.is_empty() {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+fn should_flush_held_queue_before_wait(
+    has_interruptible_wait: bool,
+    steer: bool,
+    goal_loop_active: bool,
+) -> bool {
+    has_interruptible_wait && steer && !goal_loop_active
 }
 use crate::tools::tool_context::BlockingWaitGuard;
 /// Clears `awaiting_plan_approval` (and re-persists) when the [`SessionActor::request_plan_approval`] await resolves or is dropped.
@@ -212,13 +212,13 @@ pub(super) enum PlanEditGate {
     RejectNonPlanFile,
 }
 /// Compat-toolset `Delete` is not on the markdown carve-out: it maps to `AccessKind::Edit` and is plan-file-only (same as grok edits).
-/// `apply_patch` maps to a placeholder `AccessKind::Edit("apply_patch")` and therefore never matches the plan file.
+/// `apply_patch` is `AccessKind::Tool` (its files are named inside the patch text) and is always rejected: it could touch anything.
 /// `enter_plan_mode` / `exit_plan_mode` map to `AccessKind::Read` and are likewise never gated.
 fn access_kind_for_resolved_tool(tool_name: &str, tool_input: &ToolInput) -> AccessKind {
     if tool_name == xai_grok_tools::implementations::grok_build::SEND_FEEDBACK_TOOL_NAME {
         return match tool_input {
             ToolInput::SendFeedback(_) | ToolInput::Dynamic(_) => {
-                AccessKind::Edit("feedback_draft".to_owned())
+                AccessKind::Tool("send_feedback".to_owned())
             }
             other => AccessKind::from(other),
         };
@@ -235,6 +235,9 @@ pub(super) fn plan_mode_edit_gate(
     }
     if matches!(tool_input, ToolInput::Task(_)) {
         return PlanEditGate::Allow;
+    }
+    if matches!(tool_input, ToolInput::ApplyPatch(_)) {
+        return PlanEditGate::RejectNonPlanFile;
     }
     match access_kind {
         AccessKind::Edit(path) if !tracker.should_auto_approve_edit(Path::new(path)) => {
@@ -721,7 +724,23 @@ impl SessionActor {
         let workflow_smoke_check_permits = Arc::new(tokio::sync::Semaphore::new(
             workflow_write_smoke_check::MAX_CONCURRENT_CHECKS,
         ));
+        if should_flush_held_queue_before_wait(
+            approved.iter().any(|prepared| {
+                is_interruptible_wait_tool(&prepared.tool_name, &prepared.parsed_args)
+            }),
+            crate::util::config::follow_up_steer_enabled().await,
+            self.goal_loop_active(),
+        ) {
+            self.promote_queued_as_interjections().await;
+        }
         let pending_interjections = self.pending_interjections.clone();
+        let (parent_interject, running_turn) = {
+            let state = self.state.lock().await;
+            (
+                state.message_delivery.interject_signal(),
+                state.running_task.as_ref().map(|task| task.epoch),
+            )
+        };
         let session_id: Arc<str> = Arc::from(&*self.session_info.id.0);
         let dispatch_futures: Vec<_> = approved
             .iter()
@@ -740,6 +759,7 @@ impl SessionActor {
                 let workflow_script_path_param = workflow_script_path_param.clone();
                 let workflow_validate_only_param = workflow_validate_only_param.clone();
                 let pending_interjections = pending_interjections.clone();
+                let parent_interject = Arc::clone(&parent_interject);
                 let blocking_wait_depth = self.tool_context.blocking_wait_depth.clone();
                 let interruptible =
                     is_interruptible_wait_tool(&prepared.tool_name, &prepared.parsed_args);
@@ -779,8 +799,9 @@ impl SessionActor {
                         )
                     })
                     .unwrap_or_default();
-                let lock = lock_paths[idx]
-                    .as_ref()
+                let lock = lock_paths
+                    .get(idx)
+                    .and_then(|p| p.as_ref())
                     .and_then(|path| file_locks.get(path).cloned());
                 let tools_execute_span = tracing::Span::current();
                 async move {
@@ -868,13 +889,27 @@ impl SessionActor {
                                     &prepared.tool_name,
                                     run_tool,
                                 ) => (result, false),
-                                _ = wait_for_pending_interjection(&pending_interjections) => {
+                                cause = wait_for_wait_interrupt(
+                                    &pending_interjections,
+                                    &parent_interject,
+                                ) => {
                                     tracing::info!(
                                         tool = %prepared.tool_name,
-                                        "abort wait tool: interjection pending"
+                                        ?cause,
+                                        "abort wait tool: interrupt pending"
                                     );
+                                    match (cause, running_turn) {
+                                        (WaitInterruptCause::ParentInterject, Some(turn)) => {
+                                            parent_interject.note_wait_aborted(turn);
+                                        }
+                                        (WaitInterruptCause::ParentInterject, None)
+                                        | (WaitInterruptCause::HumanInterjection, _) => {}
+                                    }
                                     (
-                                        Ok(interrupted_wait_tool_result(&prepared.parsed_args)),
+                                        Ok(interrupted_wait_tool_result(
+                                            &prepared.parsed_args,
+                                            cause,
+                                        )),
                                         true,
                                     )
                                 }
@@ -952,9 +987,14 @@ impl SessionActor {
         );
         let _drainer_guard = crate::util::AbortOnDrop(drainer);
         while let Some((idx, result, duration_ms)) = dispatch_rx.recv().await {
-            let prepared = approved_slots[idx]
-                .take()
-                .expect("dispatch index should match an approved slot exactly once");
+            let Some(prepared) = approved_slots.get_mut(idx).and_then(Option::take) else {
+                tracing::error!(
+                    batch_idx = idx,
+                    slots = approved_slots.len(),
+                    "dispatch result has no pending approved slot; dropping it"
+                );
+                continue;
+            };
             self.signals_handle().record_tool_call(&prepared.tool_name);
             let tool_call_id = if prepared.call_id.is_empty() {
                 tracing::warn!(
@@ -981,23 +1021,11 @@ impl SessionActor {
             };
             let tool_failed = match &result {
                 Ok(tool_result) => {
-                    if let ToolsToolOutput::SendSubagentMessage(_) = &tool_result.output {
-                        let requested_operation = if prepared
-                            .parsed_args
-                            .get("queue")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false)
-                        {
-                            xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageOperation::Queue
-                        } else {
-                            xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageOperation::Steer
-                        };
-                        crate::session::telemetry::record_completed_tool_output(
-                            &tool_result.output,
-                            requested_operation,
-                            duration_ms,
-                        );
-                    }
+                    crate::session::telemetry::record_completed_tool_output(
+                        &tool_result.output,
+                        &prepared.parsed_args,
+                        duration_ms,
+                    );
                     tool_result.output.is_error()
                 }
                 Err(_) => true,
@@ -1427,7 +1455,12 @@ impl SessionActor {
                     if objects.is_empty() {
                         json!({ "raw": call.function.arguments.clone() })
                     } else {
-                        let best_match = objects[0].clone();
+                        let best_match = objects
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                json!({ "raw": call.function.arguments.clone() })
+                            });
                         let mut selected_index = 0;
                         let mut matched_tool = false;
                         let bridge = self.agent.borrow().tool_bridge().clone();
@@ -2127,7 +2160,8 @@ impl SessionActor {
                         .ok()
                         .and_then(|file_content| {
                             let pos = file_content.find(&sr.old_string)?;
-                            let line = file_content[..pos].matches('\n').count() + 1;
+                            let line =
+                                file_content.get(..pos).unwrap_or("").matches('\n').count() + 1;
                             serde_json::json!({ "old_line" : line, "new_line" : line, })
                                 .as_object()
                                 .cloned()
@@ -2249,6 +2283,7 @@ impl SessionActor {
                         skill_name: skill.skill.clone(),
                         plugin_source: None,
                         trigger: xai_grok_telemetry::events::SkillTrigger::SkillTool,
+                        skill_source: None,
                     },
                 );
                 xai_grok_telemetry::event_span!(
@@ -2298,7 +2333,10 @@ impl SessionActor {
                     .char_indices()
                     .nth(60)
                     .map_or(ms.query.len(), |(i, _)| i);
-                let display = &ms.query[..end];
+                let display = match ms.query.get(..end) {
+                    Some(s) => s,
+                    None => ms.query.as_str(),
+                };
                 (
                     format!("Memory search: \"{display}\""),
                     acp::ToolKind::Other,
@@ -2337,10 +2375,9 @@ impl SessionActor {
                 vec![],
             ),
             ToolInput::AskUserQuestion(ref ask) => {
-                let title = if ask.questions.len() == 1 {
-                    format!("Ask: {}", ask.questions[0].question)
-                } else {
-                    format!("Ask {} questions", ask.questions.len())
+                let title = match ask.questions.as_slice() {
+                    [q] => format!("Ask: {}", q.question),
+                    qs => format!("Ask {} questions", qs.len()),
                 };
                 (title, acp::ToolKind::Other, vec![], vec![])
             }
@@ -2376,9 +2413,9 @@ impl SessionActor {
             ToolInput::Workflow(ref w) => {
                 let script_name = |script: &str| -> Option<String> {
                     let head = script.get(..600).unwrap_or(script);
-                    let rest = &head[head.find("name:")? + 5..];
-                    let rest = &rest[rest.find('"')? + 1..];
-                    Some(rest[..rest.find('"')?].to_string())
+                    let rest = head.get(head.find("name:")? + 5..)?;
+                    let rest = rest.get(rest.find('"')? + 1..)?;
+                    Some(rest.get(..rest.find('"')?)?.to_string())
                 };
                 use xai_grok_tools::implementations::grok_build::workflow::WorkflowSource;
                 let inline_name = match &w.source {
@@ -2535,14 +2572,8 @@ impl SessionActor {
             })
     }
     fn emit_skill_md_read(&self, skill: xai_grok_tools::implementations::skills::types::SkillInfo) {
-        let skill_source = if skill.plugin_name.is_some() {
-            "plugin"
-        } else {
-            crate::session::telemetry::skill_source_label(
-                &skill.path,
-                self.session_info.cwd.as_str(),
-            )
-        };
+        let skill_source =
+            crate::session::telemetry::skill_source(skill.scope, skill.plugin_name.as_deref());
         xai_grok_telemetry::event_span!(
             "skill.activated",
             skill_name = %skill.name,
@@ -2553,6 +2584,7 @@ impl SessionActor {
             skill_name: skill.name,
             plugin_source: skill.plugin_name,
             trigger: xai_grok_telemetry::events::SkillTrigger::SkillMdRead,
+            skill_source: Some(skill_source.to_owned()),
         });
     }
     pub(super) fn make_pre_tool_use_envelope(
@@ -3373,7 +3405,7 @@ mod plan_mode_edit_gate_tests {
             PlanEditGate::Allow
         );
     }
-    /// `apply_patch` carries a placeholder access path, never the plan file: always rejected in plan mode (conservative).
+    /// `apply_patch` names its files inside the patch text, never the plan file alone: always rejected in plan mode.
     #[test]
     fn apply_patch_rejected_in_plan_mode() {
         use xai_grok_tools::implementations::codex::apply_patch::ApplyPatchInput;
@@ -3514,41 +3546,33 @@ mod plan_approval_helper_tests {
 }
 #[cfg(test)]
 mod wait_interrupt_tests {
-    use super::{BlockingWaitGuard, is_interruptible_wait_tool, wait_for_pending_interjection};
-    /// The interruptible-wait select arms: a pending interjection aborts an in-flight wait.
-    /// `biased` prefers an already-completed wait result over the abort.
-    /// (Unit-level: tests cannot drive the full dispatch loop.)
-    #[tokio::test(start_paused = true)]
-    async fn pending_interjection_aborts_in_flight_wait() {
-        use super::InterjectionBuffer;
-        use xai_interjection_core::PendingInterjection;
-        let buf: InterjectionBuffer<agent_client_protocol::ImageContent> =
-            InterjectionBuffer::default();
-        let out = tokio::select! {
-            biased;
-            r = async { "wait-result" } => r,
-            _ = wait_for_pending_interjection(&buf) => "aborted",
-        };
-        assert_eq!(out, "wait-result");
-        buf.push(PendingInterjection {
-            text: "user message".into(),
-            attachments: Vec::new(),
-        });
-        let out = tokio::select! {
-            biased;
-            r = async {
-                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                "wait-result"
-            } => r,
-            _ = wait_for_pending_interjection(&buf) => "aborted",
-        };
-        assert_eq!(out, "aborted");
-        let out = tokio::select! {
-            biased;
-            r = async { "wait-result" } => r,
-            _ = wait_for_pending_interjection(&buf) => "aborted",
-        };
-        assert_eq!(out, "wait-result");
+    use super::{
+        BlockingWaitGuard, WaitInterruptCause, is_interruptible_wait_tool,
+        should_flush_held_queue_before_wait,
+    };
+    #[test]
+    fn interrupted_wait_result_does_not_consume_the_waited_task() {
+        let result = super::interrupted_wait_tool_result(
+            &serde_json::json!({"task_ids": ["bg-running"], "timeout_ms": 120_000}),
+            WaitInterruptCause::HumanInterjection,
+        );
+        assert!(
+            xai_grok_tools::reminders::task_completion::consumed_completion_ids(&result.output)
+                .is_empty()
+        );
+    }
+    #[test]
+    fn wait_start_flush_skips_queue_mode_and_active_goals() {
+        assert!(should_flush_held_queue_before_wait(true, true, false));
+        assert!(
+            !should_flush_held_queue_before_wait(true, false, false),
+            "queue mode must keep follow-ups held across a wait"
+        );
+        assert!(
+            !should_flush_held_queue_before_wait(true, true, true),
+            "an active goal wait is not sendable; promoting would abort it immediately"
+        );
+        assert!(!should_flush_held_queue_before_wait(false, true, false));
     }
     #[test]
     fn interruptible_wait_tool_only_when_timeout_positive() {

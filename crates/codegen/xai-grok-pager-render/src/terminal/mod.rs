@@ -13,13 +13,17 @@ pub mod image;
 pub mod keyboard;
 pub mod kitty_keyboard;
 pub mod overlay;
+pub mod pop_fence;
 pub(crate) mod probe;
 pub mod term_version;
 pub mod tmux;
 pub mod tmux_probe;
 pub mod xtversion;
 
-pub use tmux::{passthrough_available, should_wrap_osc11, tmux_passthrough, tmux_passthrough_str};
+pub use tmux::{
+    passthrough_available, should_emit_synchronized_output, should_wrap_osc11, tmux_passthrough,
+    tmux_passthrough_str,
+};
 
 pub use embedded_editor::{EmbeddedEditor, embedded_editor_from_env};
 pub use hyperlinks::{
@@ -34,6 +38,7 @@ pub use kitty_keyboard::{
     kitty_event_types_withheld, kitty_flags_pushed, kitty_releases_reported,
     negotiated_kitty_flags, pushed_kitty_flags, set_pushed_kitty_flags, take_kitty_flags_pushed,
 };
+pub use pop_fence::{PopFence, PopFenceOutcome};
 pub use term_version::{TermVersion, TermVersionSource};
 
 #[cfg(test)]
@@ -310,7 +315,6 @@ impl TerminalContext {
     ///
     /// Terminal-emulator reasons take precedence over multiplexer reasons so the user is pointed at the deeper cause.
     pub fn kitty_skip_reason(&self) -> Option<&'static str> {
-        let is_tmux_3_3_later = self.is_tmux_version_or_later(3, 3);
         if matches!(
             self.brand,
             TerminalName::VsCode
@@ -332,6 +336,25 @@ impl TerminalContext {
         if self.brand == TerminalName::JetBrains {
             return Some("jetbrains");
         }
+        if let Some(reason) = self.kitty_multiplexer_skip_reason() {
+            return Some(reason);
+        }
+        // No positive evidence of KKP support, so skip: xterm.js mis-encodes shifted keys (https://github.com/xtermjs/xterm.js/issues/5823)
+        // Probing an unresponsive terminal blocks startup.
+        if self.brand.is_capability_unclassified()
+            && self.multiplexer == MultiplexerKind::Undetected
+        {
+            return Some("unknown_no_multiplexer");
+        }
+        None
+    }
+
+    /// Multiplexer layers that drop Kitty keyboard / extended Enter, independent of brand.
+    ///
+    /// [`Self::kitty_skip_reason`] may hide these behind a brand/VTE reason; footer and
+    /// newline-preference decisions must still see them.
+    fn kitty_multiplexer_skip_reason(&self) -> Option<&'static str> {
+        let is_tmux_3_3_later = self.is_tmux_version_or_later(3, 3);
         if self.multiplexer == MultiplexerKind::Screen {
             return Some("screen");
         }
@@ -343,13 +366,6 @@ impl TerminalContext {
             && self.tmux_extended_keys.as_deref() == Some("off")
         {
             return Some("tmux_extended_keys_off");
-        }
-        // No positive evidence of KKP support, so skip: xterm.js mis-encodes shifted keys (https://github.com/xtermjs/xterm.js/issues/5823)
-        // Probing an unresponsive terminal blocks startup.
-        if self.brand.is_capability_unclassified()
-            && self.multiplexer == MultiplexerKind::Undetected
-        {
-            return Some("unknown_no_multiplexer");
         }
         None
     }
@@ -402,6 +418,15 @@ impl TerminalContext {
         }
 
         false
+    }
+
+    /// Broader than [`Self::shift_enter_unavailable`]: SSH and multiplexers that drop
+    /// extended Enter (old tmux, `extended-keys off`, GNU screen) collapse Shift+Enter
+    /// even when the brand-first [`Self::kitty_skip_reason`] reports a terminal reason.
+    pub fn prefer_alt_enter_newline(&self) -> bool {
+        self.shift_enter_unavailable()
+            || self.is_ssh
+            || self.kitty_multiplexer_skip_reason().is_some()
     }
 
     /// Without KKP, Ctrl+. is not a C0 control and collapses to `.`. Follows [`Self::kitty_skip_reason`] so mux skips stay aligned.
@@ -922,7 +947,7 @@ fn parse_tmux_major_minor(version: &str) -> Option<(u32, u32)> {
     let minor_end = minor_str
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(minor_str.len());
-    let minor: u32 = minor_str[..minor_end].parse().ok()?;
+    let minor: u32 = minor_str.get(..minor_end)?.parse().ok()?;
     Some((major, minor))
 }
 

@@ -2,17 +2,18 @@
 #[cfg(test)]
 use super::test_agent_view;
 use super::{
-    ActivePane, AgentView, InlineMediaHitAreas, InputMode, PaneAreas, PluginCtaState,
-    PromptInputMode, PromptMode, REWOUND_PROMPT_ID_CAP, ReplayRebuiltState,
-    SELF_ORIGINATED_PROMPT_CAP, SessionReload,
+    ActivePane, AgentRole, AgentView, ChildLink, InlineMediaHitAreas, InputMode, PaneAreas,
+    PluginCtaState, PromptInputMode, PromptMode, REWOUND_PROMPT_ID_CAP, ReplayRebuiltState,
+    SELF_ORIGINATED_PROMPT_CAP, SessionReload, ViewSurface,
 };
-use crate::app::agent::AgentSession;
+use crate::app::agent::{AgentSession, GoalDisplayStatus};
 use crate::app::app_view::InputOutcome;
 use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
 use crate::app::prompt_ack::{AckSignal, PromptAckWatch};
 use crate::scrollback::state::ScrollbackState;
 use crate::scrollback::text_selection::ResolvedSelectionModel;
 use crate::views::prompt_widget::PromptWidget;
+use crate::views::queue_mutation::QueueMutation;
 use crate::views::queue_pane::QueuePane;
 use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
@@ -21,6 +22,11 @@ use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 use xai_grok_telemetry::events::{CancellationCompleted, CancellationScope};
+/// Approve/build after EndTurn is only for backends that implement ExecutePlan.
+/// Default off; `AppView` / `test_agent_view` turn it on for those backends and tests.
+fn post_turn_plan_review_default() -> bool {
+    false
+}
 impl AgentView {
     /// Always bumps [`Self::last_turn_summary_gen`] so a concurrent disk hydrate that captured an older generation cannot overwrite this write.
     pub(crate) fn set_last_turn_summary(&mut self, summary: Option<String>) {
@@ -39,8 +45,16 @@ impl AgentView {
             self.last_applied_xai_event_seq = None;
             self.deferred_subagent_finishes.clear();
             self.clear_minimal_btw_lifecycle();
+            self.clear_kept_plan();
         }
         self.session.session_id = Some(session_id);
+        self.session_starting_since = None;
+        self.session_new_phase = None;
+        self.pending_session_id = None;
+    }
+    /// The top-bar MCP chip shows real server counts only; a `0/0` report renders nothing
+    pub(crate) fn mcp_chip_visible(&self) -> bool {
+        self.mcp_init_progress.as_ref().is_some_and(|p| p.total > 0)
     }
     /// Advance the reconnect cursor forward-only. Stores the raw id and its parsed sequence together so later compares need not re-parse the string.
     /// A later lower-ID apply (out-of-order lifecycle) must not regress the cursor and re-deliver an already-applied tail on reconnect.
@@ -67,6 +81,7 @@ impl AgentView {
             self.session_binding_epoch = self.session_binding_epoch.wrapping_add(1);
             self.deferred_subagent_finishes.clear();
             self.clear_minimal_btw_lifecycle();
+            self.clear_kept_plan();
         }
     }
     /// Record a prompt id this client originated (sent to the agent as the turn driver).
@@ -99,6 +114,16 @@ impl AgentView {
     }
     pub(crate) fn is_rewound_prompt(&self, prompt_id: &str) -> bool {
         self.rewound_prompt_ids.iter().any(|p| p == prompt_id)
+    }
+    /// Same as [`Self::new`], then inherit the app's post-turn review flag.
+    pub fn from_app(
+        app: &crate::app::app_view::AppView,
+        session: AgentSession,
+        scrollback: ScrollbackState,
+    ) -> Self {
+        let mut agent = Self::new(session, scrollback);
+        agent.post_turn_plan_review = app.post_turn_plan_review;
+        agent
     }
     /// Create a new agent view with default UI state.
     ///
@@ -135,9 +160,11 @@ impl AgentView {
             finished_wake_prompts: HashSet::new(),
             active_pane: ActivePane::Prompt,
             dock_cursor: 0,
+            dock_workflows_expanded: true,
             dock_subagents_expanded: true,
             dock_tasks_expanded: true,
             dock_watchers_expanded: true,
+            dock_workflows_show_all: false,
             dock_subagents_show_all: false,
             dock_tasks_show_all: false,
             dock_watchers_show_all: false,
@@ -148,6 +175,7 @@ impl AgentView {
             dock_queued_expanded: true,
             dock_on: false,
             dock_shown: false,
+            dock_hidden: false,
             prompt_mode: PromptMode::Normal,
             prompt_input_mode: PromptInputMode::Normal,
             multiline_mode: false,
@@ -190,6 +218,8 @@ impl AgentView {
             turn_paused_duration: std::time::Duration::ZERO,
             turn_paused_wall: std::time::Duration::ZERO,
             self_interjection_ids: std::collections::HashSet::new(),
+            interjection_painted_blocks: std::collections::HashMap::new(),
+            interjection_retry_images: std::collections::HashMap::new(),
             last_active_at: Some(Instant::now()),
             current_branch: None,
             is_worktree: false,
@@ -252,6 +282,9 @@ impl AgentView {
             hit_follow_indicator: Default::default(),
             hit_response_top_indicator: Default::default(),
             hit_cwd: Default::default(),
+            hit_dashboard: Default::default(),
+            hit_overlay_prev: Default::default(),
+            hit_overlay_next: Default::default(),
             hit_cancel_button: Default::default(),
             hit_watching_cue: Default::default(),
             watching_cue_toast_shown: false,
@@ -326,13 +359,20 @@ impl AgentView {
             question_scroll_region: None,
             plan_mode_active: false,
             plan_mode_pending: None,
+            available_modes: Vec::new(),
+            session_mode: xai_grok_tools::types::SessionMode::Default,
+            session_mode_pending: None,
             deferred_session_mode: None,
             deferred_permission_mode: None,
             pending_extensions_fetch: false,
             in_dashboard_overlay: false,
             workspace_dashboard_enabled: false,
+            overlay_stop_label: None,
             overlay_can_cycle: false,
             mcp_init_progress: None,
+            session_starting_since: None,
+            session_new_phase: None,
+            pending_session_id: None,
             acp_synced_generation: 0,
             hovered_permission_item: None,
             last_permission_click: None,
@@ -343,7 +383,10 @@ impl AgentView {
             permission_stashed_pane: None,
             permission_pattern_edit: None,
             plan_approval_view: None,
-            latest_inline_plan_content: None,
+            kept_plan: crate::app::agent_view::KeptPlan::default(),
+            post_turn_plan_review: post_turn_plan_review_default(),
+            execute_plan: None,
+            pending_post_turn_commit: None,
             plan_comments: Vec::new(),
             plan_next_comment_id: 0,
             casual_commenting_range: None,
@@ -365,7 +408,7 @@ impl AgentView {
             subagent_sessions: HashMap::new(),
             subagent_views: HashMap::new(),
             active_subagent: None,
-            is_subagent_view: false,
+            role: AgentRole::Root,
             hook_annotations_visible: true,
             hit_subagent_frame_close: Default::default(),
             sharing_enabled: false,
@@ -397,6 +440,7 @@ impl AgentView {
             optimistic_queue_ids: std::collections::HashSet::new(),
             send_now_awaiting_confirm: None,
             send_now_painted_blocks: std::collections::HashMap::new(),
+            send_now_echo_pending: std::collections::HashMap::new(),
             follow_without_jump_prompt_id: None,
             plugin_cta: PluginCtaState::default(),
             follow_ups: None,
@@ -417,17 +461,18 @@ impl AgentView {
         view.set_input_mode(mode);
         view
     }
-    /// Establish read-only child identity before a view is stored or opened.
-    pub(crate) fn mark_as_subagent_view(&mut self) {
-        self.is_subagent_view = true;
-    }
-    /// Register a child view and establish its read-only subagent identity.
+    /// Register a child view; the sole path that turns a view into a child, so the role is stamped exactly once.
+    /// A child always opens on its transcript, whatever `AgentView::new` chose: `q`/`Esc` close from bare scrollback.
+    /// Its composer stays hidden until a role gives it a route, and its queue pane is a read-only mirror.
     pub(crate) fn insert_subagent_view(
         &mut self,
         child_sid: String,
         mut child_view: Box<AgentView>,
+        link: ChildLink,
     ) {
-        child_view.mark_as_subagent_view();
+        child_view.role = AgentRole::Child(link);
+        child_view.active_pane = ActivePane::Scrollback;
+        child_view.queue.set_mutation(QueueMutation::ReadOnly);
         let locale = self.scrollback.locale().clone();
         child_view.set_locale_recursive(&locale);
         child_view.set_hook_annotations_visible_recursive(self.hook_annotations_visible);
@@ -459,15 +504,16 @@ impl AgentView {
             child.set_hook_annotations_visible_recursive(visible);
         }
     }
-    /// Clear the turn-timing fields and stamp `last_active_at` to "now".
-    ///
-    /// Call this from every site that ends a turn (success, failure,
-    /// cancellation, reconnect cleanup). Centralised so the fields cannot
-    /// drift apart at the ~10 termination call sites across `dispatch.rs`
-    /// and `event_loop.rs`. The wall anchor is cleared so a later turn that
-    /// reuses a prompt id (stash-and-resubmit after `/login`) can never
-    /// wall-max against a previous attempt's anchor in
-    /// [`honest_turn_elapsed`].
+    pub(crate) fn subagent_view(&self, child_sid: &str) -> Option<&AgentView> {
+        self.subagent_views.get(child_sid).map(|v| &**v)
+    }
+    pub(crate) fn subagent_view_mut(&mut self, child_sid: &str) -> Option<&mut AgentView> {
+        self.subagent_views.get_mut(child_sid).map(|v| &mut **v)
+    }
+    pub(crate) fn has_subagent_view(&self, child_sid: &str) -> bool {
+        self.subagent_views.contains_key(child_sid)
+    }
+    /// Called at every turn-termination site; clears the wall anchor so a turn that reuses a prompt id cannot report the prior attempt's wall span.
     pub(crate) fn mark_turn_finished(&mut self, end: TurnEnd) {
         let now = Instant::now();
         self.turn_started_at = None;
@@ -527,7 +573,7 @@ impl AgentView {
             CancellationScope::Turn => self.session.cancel_turn(&mut self.scrollback),
             CancellationScope::Compaction => self.session.cancel_compact_command(),
         }
-        if origin == CancelOrigin::UserGesture && !self.is_subagent_view {
+        if origin == CancelOrigin::UserGesture && self.surface() == ViewSurface::Root {
             self.cancel_latency
                 .get_or_insert_with(|| CancelLatency::new(now, scope));
         }
@@ -595,6 +641,7 @@ impl AgentView {
         self.optimistic_queue_ids.clear();
         self.send_now_awaiting_confirm = None;
         self.send_now_painted_blocks.clear();
+        self.send_now_echo_pending.clear();
         self.workflow_blocks.clear();
         self.workflow_run_revisions.clear();
         self.cleared_workflow_runs.clear();
@@ -604,12 +651,12 @@ impl AgentView {
     /// The fields reset together so stale revision gates cannot suppress the replayed updates.
     pub(crate) fn take_replay_rebuilt_state(&mut self) -> ReplayRebuiltState {
         let fresh = self.scrollback.fresh_continuation();
+        let tracker = crate::acp::tracker::AcpUpdateTracker::sharing_labels(
+            &self.session.tracker.subagent_labels,
+        );
         ReplayRebuiltState {
             scrollback: std::mem::replace(&mut self.scrollback, fresh),
-            tracker: std::mem::replace(
-                &mut self.session.tracker,
-                crate::acp::tracker::AcpUpdateTracker::new(),
-            ),
+            tracker: std::mem::replace(&mut self.session.tracker, tracker),
             todo: std::mem::take(&mut self.todo),
             workflow_blocks: std::mem::take(&mut self.workflow_blocks),
             workflow_runs: std::mem::take(&mut self.workflow_runs),
@@ -727,6 +774,14 @@ impl AgentView {
         self.cancel_latency = None;
         self.session.start_turn(&mut self.scrollback);
     }
+    /// Locally originated prompt or ExecutePlan turn. `note_self` is idempotent.
+    pub(crate) fn begin_local_turn(&mut self, prompt_id: &str) {
+        self.note_self_originated_prompt(prompt_id);
+        self.start_turn_boundary(Some(prompt_id));
+        self.session.current_prompt_id = Some(prompt_id.to_owned());
+        self.arm_prompt_ack(prompt_id, Instant::now());
+        self.turn_started_at = Some(Instant::now());
+    }
     /// Adopt the in-flight turn another client is driving, conveyed by the `session/load` response meta (`x.ai/runningPromptId`).
     /// Enters TurnRunning and matches subsequent live deltas.
     /// No user-prompt block is pushed; the turn's prompt and prior chunks arrived via the replay.
@@ -783,6 +838,30 @@ impl AgentView {
     /// Whether a wake turn is in flight (streaming or cancelling) while the pane is idle.
     pub(crate) fn wake_turn_active(&self) -> bool {
         self.session.state.is_idle() && self.running_wake_turn.is_some()
+    }
+    pub(crate) fn has_wake_source(&self) -> bool {
+        self.running_wake_turn.is_some()
+            || self.session.has_running_bg_tasks()
+            || self
+                .subagent_sessions
+                .values()
+                .any(crate::app::subagent::SubagentInfo::is_running)
+            || !self.session.scheduled_tasks.is_empty()
+            || self
+                .workflow_runs
+                .iter()
+                .any(crate::views::workflows::WorkflowRunSnapshot::is_active)
+            || self
+                .goal_state
+                .as_ref()
+                .is_some_and(|goal| goal.status == GoalDisplayStatus::Active)
+    }
+    pub(crate) fn is_eligible_for_auto_recap(&self) -> bool {
+        self.session.session_id.is_some()
+            && self.session.state.is_idle()
+            && self.active_modal.is_none()
+            && self.question_view.is_none()
+            && !self.has_wake_source()
     }
     /// Whether the wake cancel was sent and is still waiting on its terminal. The pane stays idle.
     pub(crate) fn wake_turn_cancelling(&self) -> bool {
@@ -865,6 +944,9 @@ impl AgentView {
         running_prompt_id: Option<String>,
     ) -> bool {
         let finalized = self.finish_session_reload(generation, ok);
+        if finalized {
+            self.release_stale_execute_plan_prompt(running_prompt_id.as_deref());
+        }
         if finalized
             && let Some(pid) = running_prompt_id
             && self.should_adopt_running_prompt(&pid)
@@ -2333,6 +2415,32 @@ mod status_window_tests {
         assert!(agent.expects_send_now_cancel());
     }
     #[test]
+    fn session_rebind_forgets_a_waiting_plan() {
+        let mut agent = test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"));
+        agent.plan_mode_active = true;
+        agent.kept_plan =
+            crate::app::agent_view::KeptPlan::kept(Some("# Build it\n".to_owned()), None);
+        agent.open_post_turn_plan_review();
+        assert!(agent.plan_approval_view.is_some());
+        agent.bind_session_id(agent_client_protocol::SessionId::new("s2"));
+        assert!(
+            !agent.kept_plan.is_kept(),
+            "a new session must not inherit the previous keep"
+        );
+        assert!(agent.kept_plan.body().is_none());
+        assert!(
+            agent.plan_approval_view.is_none(),
+            "approve/build must not dispatch ExecutePlan into the new session"
+        );
+        agent.kept_plan =
+            crate::app::agent_view::KeptPlan::kept(Some("# Build it\n".to_owned()), None);
+        agent.bind_session_id(agent_client_protocol::SessionId::new("s2"));
+        assert!(
+            agent.kept_plan.is_kept(),
+            "rebinding the same id is reconnect, not a new session"
+        );
+    }
+    #[test]
     fn session_rebind_and_replay_invalidate_minimal_btw() {
         let mut agent = test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"));
         let old_request = crate::minimal_api::start_minimal_btw(&mut agent, "old question".into());
@@ -2404,8 +2512,22 @@ mod reconnect_workflow_maps_tests {
             1,
             "run list must be restored from the stash on cursor reconnect"
         );
-        assert_eq!(agent.workflow_runs[0].run_id, "wf-1");
-        assert_eq!(agent.workflow_runs[0].status, "active");
+        assert_eq!(
+            agent
+                .workflow_runs
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .run_id,
+            "wf-1"
+        );
+        assert_eq!(
+            agent
+                .workflow_runs
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .status,
+            "active"
+        );
         assert_eq!(
             agent.workflow_run_revisions.get("wf-1").copied(),
             Some(4),
@@ -2577,5 +2699,52 @@ mod recursive_locale_tests {
             parent.subagent_views["child"].scrollback.locale().locale(),
             UiLocale::ZhCn
         );
+    }
+}
+#[cfg(test)]
+mod auto_recap_eligibility_tests {
+    use super::super::test_agent_view;
+    use crate::app::agent::{AgentState, ScheduledTaskInfo};
+    fn bound_idle_agent() -> super::AgentView {
+        test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"))
+    }
+    #[test]
+    fn eligible_only_when_bound_idle_and_unblocked() {
+        let mut agent = bound_idle_agent();
+        assert!(agent.is_eligible_for_auto_recap());
+        agent.session.state = AgentState::TurnRunning;
+        assert!(!agent.is_eligible_for_auto_recap(), "running turn");
+        agent.session.state = AgentState::Idle;
+        agent.active_modal = Some(crate::views::modal::ActiveModal::CommandPalette {
+            entries: crate::views::modal::default_palette_entries(
+                agent.sharing_enabled,
+                &agent.prompt.slash_controller,
+            ),
+            state: crate::views::picker::PickerState::input_active(),
+            window: crate::views::modal_window::ModalWindowState::new(),
+        });
+        assert!(!agent.is_eligible_for_auto_recap(), "open modal");
+        agent.active_modal = None;
+        let unbound = test_agent_view(None, std::path::PathBuf::from("/tmp"));
+        assert!(!unbound.is_eligible_for_auto_recap(), "no session yet");
+    }
+    #[test]
+    fn scheduled_loop_blocks_the_recap_request_until_deleted() {
+        let mut agent = bound_idle_agent();
+        agent.session.scheduled_tasks.insert(
+            "loop-1".to_owned(),
+            ScheduledTaskInfo {
+                task_id: "loop-1".to_owned(),
+                prompt: "babysit prs".to_owned(),
+                human_schedule: "every 1h".to_owned(),
+                created_at: std::time::Instant::now(),
+                next_fire_at: None,
+                tag: "loop".to_owned(),
+                last_subagent_id: None,
+            },
+        );
+        assert!(!agent.is_eligible_for_auto_recap());
+        agent.session.scheduled_tasks.remove("loop-1");
+        assert!(agent.is_eligible_for_auto_recap());
     }
 }

@@ -78,6 +78,8 @@ pub mod user_message_chunk_meta {
     pub const HIDE_FROM_SCROLLBACK: &str = "hideFromScrollback";
     /// When true, the chunk is a persisted mid-turn interjection; replay renders its `displayText` as an interjection block.
     pub const INTERJECTION: &str = xai_grok_shell::session::storage::INTERJECTION_META_KEY;
+    /// Daemon `UserMessage.message_id`. An interjection stamps this with its injection id.
+    pub const MESSAGE_ID: &str = "messageId";
 }
 
 /// Extract the numeric counter from an `eventId` (`"{sessionId}-{counter}"`).

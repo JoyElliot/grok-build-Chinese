@@ -27,10 +27,6 @@ impl ChatStateActor {
         conv_id: String,
         req_id: String,
     ) -> ConversationRequest {
-        let needs_prune = should_prune(
-            self.state.total_tokens,
-            self.state.sampling_config.context_window,
-        );
         let mut memory_reminder = memory_reminder;
         if let Some(reminder) = memory_reminder.as_deref()
             && persist_memory_reminder
@@ -65,9 +61,7 @@ impl ChatStateActor {
                 body_bytes_after,
             });
         }
-        if needs_prune {
-            prune_conversation(&mut items, &self.pruning_config);
-        }
+        items = self.prune_items_for_turn_request(items);
         if let Some(reminder) = memory_reminder {
             inject_memory_reminder(&mut items, &reminder);
         }
@@ -92,6 +86,7 @@ impl ChatStateActor {
             x_grok_deployment_id: None,
             x_grok_user_id: None,
             trace,
+            traceparent: None,
             prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,
             json_schema: None,
@@ -99,6 +94,19 @@ impl ChatStateActor {
             // of failing it; text-only salvage stays behind `CompletePartial`.
             length_policy: xai_grok_sampling_types::LengthPolicy::CompleteToolCalls,
         }
+    }
+
+    pub(super) fn prune_items_for_turn_request(
+        &self,
+        mut items: Vec<ConversationItem>,
+    ) -> Vec<ConversationItem> {
+        if should_prune(
+            self.state.total_tokens,
+            self.state.sampling_config.context_window,
+        ) {
+            prune_conversation(&mut items, &self.pruning_config);
+        }
+        items
     }
 }
 
@@ -123,8 +131,8 @@ pub(crate) fn prune_conversation(conversation: &mut [ConversationItem], config: 
     let mut turn_from_end: usize = 0;
     let mut seen_first_user = false;
 
-    for i in (0..conversation.len()).rev() {
-        if matches!(&conversation[i], ConversationItem::User(_)) {
+    for item in conversation.iter_mut().rev() {
+        if matches!(item, ConversationItem::User(_)) {
             if seen_first_user {
                 turn_from_end += 1;
             }
@@ -132,7 +140,7 @@ pub(crate) fn prune_conversation(conversation: &mut [ConversationItem], config: 
             continue;
         }
 
-        let ConversationItem::ToolResult(tool_result) = &mut conversation[i] else {
+        let ConversationItem::ToolResult(tool_result) = item else {
             continue;
         };
 
@@ -184,12 +192,19 @@ pub(super) fn inject_memory_reminder(items: &mut Vec<ConversationItem>, reminder
 }
 
 fn upsert_memory_reminder_text(system_prompt: &mut std::sync::Arc<str>, reminder: &str) -> bool {
-    let existing_start = system_prompt
-        .find(MEMORY_CONTEXT_OPEN_TAG)
-        .map(|idx| system_prompt[..idx].trim_end_matches('\n').len());
+    let existing_start = system_prompt.find(MEMORY_CONTEXT_OPEN_TAG).map(|idx| {
+        system_prompt
+            .get(..idx)
+            .unwrap_or("")
+            .trim_end_matches('\n')
+            .len()
+    });
 
     let updated: String = if let Some(prefix_len) = existing_start {
-        let prefix = system_prompt[..prefix_len].trim_end_matches('\n');
+        let prefix = system_prompt
+            .get(..prefix_len)
+            .unwrap_or("")
+            .trim_end_matches('\n');
         if prefix.is_empty() {
             reminder.to_string()
         } else {
@@ -248,9 +263,10 @@ mod tests {
             ..Default::default()
         };
         prune_conversation(&mut conv, &config);
-        if let ConversationItem::ToolResult(ref tr) = conv[0] {
-            assert_eq!(tr.content.len(), 10_000);
-        }
+        let [ConversationItem::ToolResult(tr)] = conv.as_slice() else {
+            panic!("expected one tool result: {conv:?}")
+        };
+        assert_eq!(tr.content.len(), 10_000);
     }
 
     #[test]
@@ -260,7 +276,7 @@ mod tests {
             ConversationItem::user("hi"),
         ];
         inject_memory_reminder(&mut items, "Remember: user likes rust");
-        if let ConversationItem::System(ref sys) = items[0] {
+        if let Some(ConversationItem::System(sys)) = items.first() {
             assert!(sys.content.contains("Remember: user likes rust"));
             assert!(sys.content.starts_with("You are helpful."));
         }
@@ -272,6 +288,6 @@ mod tests {
         let mut items = vec![ConversationItem::user("hi")];
         inject_memory_reminder(&mut items, "Remember: user likes rust");
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], ConversationItem::System(_)));
+        assert!(matches!(items.first(), Some(ConversationItem::System(_))));
     }
 }

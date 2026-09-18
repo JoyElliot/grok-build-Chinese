@@ -350,8 +350,7 @@ pub(crate) fn affordance_row_with_locale(
         .unwrap_or(MERMAID_RENDERING);
     let buttons_start = UnicodeWidthStr::width(label) as u16 + AFFORDANCE_GAP;
     let buttons = affordance_buttons_with_locale(buttons_start, locale);
-    let status = rendering.then(|| {
-        let last = &buttons[buttons.len() - 1];
+    let status = rendering.then(|| buttons.last()).flatten().map(|last| {
         let after = last.col + UnicodeWidthStr::width(last.label) as u16 + AFFORDANCE_GAP;
         (after, rendering_label)
     });
@@ -381,8 +380,8 @@ fn prewrap_end_rows(lines: &[BlockLine]) -> Vec<usize> {
         .into_iter()
         .enumerate()
     {
-        if prewrap < ends.len() {
-            ends[prewrap] = row + 1;
+        if let Some(slot) = ends.get_mut(prewrap) {
+            *slot = row + 1;
         } else {
             ends.push(row + 1);
         }
@@ -456,9 +455,12 @@ mod tests {
         for pretty in [true, false] {
             let blocks = detect(src, pretty);
             assert_eq!(blocks.len(), 1, "pretty={pretty}");
+            let Some(block) = blocks.first() else {
+                panic!("expected one mermaid block");
+            };
             // `source` is the clean fence body (trailing newline included).
-            assert_eq!(blocks[0].source, "flowchart TD\n  A --> B\n");
-            assert!(!blocks[0].prewrap_line_range.is_empty());
+            assert_eq!(block.source, "flowchart TD\n  A --> B\n");
+            assert!(!block.prewrap_line_range.is_empty());
         }
     }
 
@@ -467,9 +469,12 @@ mod tests {
         let src = "```mermaid\nA-->B\n```\n\ntext\n\n```mermaid\nC-->D\n```\n";
         let blocks = detect(src, true);
         assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0].source, "A-->B\n");
-        assert_eq!(blocks[1].source, "C-->D\n");
-        assert!(blocks[0].prewrap_line_range.end <= blocks[1].prewrap_line_range.start);
+        let [b0, b1] = blocks.as_slice() else {
+            panic!("expected two mermaid blocks: {blocks:?}");
+        };
+        assert_eq!(b0.source, "A-->B\n");
+        assert_eq!(b1.source, "C-->D\n");
+        assert!(b0.prewrap_line_range.end <= b1.prewrap_line_range.start);
     }
 
     #[test]
@@ -480,7 +485,8 @@ mod tests {
             let blocks = detect(src, pretty);
             assert_eq!(blocks.len(), 1, "pretty={pretty}");
             assert_eq!(
-                blocks[0].source, "flowchart TD\n  A --> B\n",
+                blocks.first().map(|b| b.source.as_str()),
+                Some("flowchart TD\n  A --> B\n"),
                 "pretty={pretty}"
             );
         }
@@ -493,7 +499,8 @@ mod tests {
             let blocks = detect(src, pretty);
             assert_eq!(blocks.len(), 1, "pretty={pretty}");
             assert_eq!(
-                blocks[0].source, "flowchart TD\n  A --> B\n",
+                blocks.first().map(|b| b.source.as_str()),
+                Some("flowchart TD\n  A --> B\n"),
                 "pretty={pretty}"
             );
         }
@@ -716,8 +723,11 @@ mod tests {
         );
         assert_eq!(buttons[0].col, start);
         for win in buttons.windows(2) {
-            let prev_end = win[0].col + UnicodeWidthStr::width(win[0].label) as u16;
-            assert_eq!(win[1].col, prev_end + AFFORDANCE_GAP, "fixed gap: {win:?}");
+            let [prev, next] = win else {
+                panic!("windows(2): {win:?}");
+            };
+            let prev_end = prev.col + UnicodeWidthStr::width(prev.label) as u16;
+            assert_eq!(next.col, prev_end + AFFORDANCE_GAP, "fixed gap: {win:?}");
         }
     }
 
@@ -861,12 +871,21 @@ mod tests {
 
         // The reported offsets point at the inserted rows in the FINAL output.
         assert_eq!(affs.len(), 2);
-        assert_eq!(affs[0].row_offset, 1);
-        assert_eq!(affs[1].row_offset, 4);
-        assert!(matches!(out.lines[1].selectable, Selectable::None));
-        assert!(matches!(out.lines[4].selectable, Selectable::None));
-        assert_eq!(affs[0].source, "A-->B\n");
-        assert_eq!(affs[1].source, "C-->D\n");
+        let [a0, a1] = affs.as_slice() else {
+            panic!("expected two affordances: {affs:?}");
+        };
+        assert_eq!(a0.row_offset, 1);
+        assert_eq!(a1.row_offset, 4);
+        assert!(matches!(
+            out.lines.get(1).map(|l| &l.selectable),
+            Some(&Selectable::None)
+        ));
+        assert!(matches!(
+            out.lines.get(4).map(|l| &l.selectable),
+            Some(&Selectable::None)
+        ));
+        assert_eq!(a0.source, "A-->B\n");
+        assert_eq!(a1.source, "C-->D\n");
     }
 
     #[test]
@@ -875,9 +894,15 @@ mod tests {
         let mut out = output_with_wraps(&[1, 2, 1]);
         let affs = apply_affordance_rows(&mut out, &one(1..2), |_| "A-->B\n".to_string());
         assert_eq!(affs.len(), 1);
-        assert_eq!(affs[0].row_offset, 3);
-        assert!(matches!(out.lines[3].selectable, Selectable::None));
+        assert_eq!(affs.first().map(|a| a.row_offset), Some(3));
+        assert!(matches!(
+            out.lines.get(3).map(|l| &l.selectable),
+            Some(&Selectable::None)
+        ));
         // The trailing pre2 row is pushed down, not overwritten.
-        assert_eq!(caption_text(&out.lines[4]), "pre2-row0");
+        let Some(line) = out.lines.get(4) else {
+            panic!("expected trailing pre2 row: {out:?}");
+        };
+        assert_eq!(caption_text(line), "pre2-row0");
     }
 }

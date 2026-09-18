@@ -868,8 +868,11 @@ mod tests {
             entries,
             duplicate_names: BTreeMap::new(),
         };
-        assert_eq!(registry.list().len(), 1);
-        assert_eq!(registry.list()[0].source, "builtin");
+        let listed = registry.list();
+        let [first] = listed.as_slice() else {
+            panic!("expected one listing: {listed:?}");
+        };
+        assert_eq!(first.source, "builtin");
         assert_eq!(
             registry.resolve_by_name("same").unwrap().source,
             WorkflowSource::Builtin

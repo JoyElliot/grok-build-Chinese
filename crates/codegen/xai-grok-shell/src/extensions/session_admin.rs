@@ -816,19 +816,22 @@ async fn handle_plugins_reload(agent: &MvpAgent) -> ExtResult {
             .resident_handle(&id)
             .map(|h| std::path::PathBuf::from(&h.info.cwd))
     });
-    let mut plugins = agent.cfg.borrow().plugins.clone();
-    plugins.merge_claude_enabled_plugins(session_cwd.as_deref());
-    let disk_cfg = plugins.to_discovery_config();
-    // Folder-trust gates repo-local project plugins (hooks/MCP)
-    // Resolve and record the verdict for this cwd (honoring the real remote), then gate plugins on it
-    let project_trusted = session_cwd.as_deref().is_some_and(|c| {
-        let remote_settings = agent.cfg.borrow().remote_settings.clone();
-        crate::agent::folder_trust::resolve_and_record(c, remote_settings.as_ref(), false)
-    });
-    // Explicit desktop `x.ai/plugins/reload`: force a full local-install re-copy.
-    agent
-        .plugin_registry_handle()
-        .reload(session_cwd.as_deref(), &disk_cfg, project_trusted, true);
+    // No resident session → the launch dir. Trust gather, config read and the discovery walk are
+    // blocking filesystem work, so they run off the runtime.
+    let cwd = session_cwd.unwrap_or_else(|| agent.launch_cwd().to_path_buf());
+    let remote_settings = agent.cfg.borrow().remote_settings.clone();
+    let handle = agent.plugin_registry_handle().clone();
+    let rebuilt = tokio::task::spawn_blocking(move || {
+        let (project_trusted, disk_cfg) =
+            MvpAgent::registry_build_inputs(&cwd, remote_settings.as_ref());
+        // Explicit desktop `x.ai/plugins/reload`: force a full local-install re-copy.
+        handle.reload(Some(&cwd), &disk_cfg, project_trusted, true)
+    })
+    .await;
+    if let Err(err) = rebuilt {
+        return Err(acp::Error::internal_error().data(format!("plugin reload task failed: {err}")));
+    }
+    agent.mark_plugin_registry_initialized();
 
     // Eagerly fan out the new registry to every live session: each adopts a cwd-correct snapshot (hooks, MCP, skills, client slash-command catalog)
     // This is the same refresh the originating session of a reload gets
@@ -879,30 +882,10 @@ async fn handle_commands_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
 
     // For a given cwd, compute the plugin registry the same way a session would at spawn time (via build_for_cwd) That is also how reload_plugins_impl computes it (ancestor project config walk and vendor compat merge)
     // This makes `x.ai/commands/list` (the pull grok-desktop uses after session start) return plugin-provided slash commands for the target cwd
-    // The shared snapshot is only populated at agent boot (using process CWD) and by explicit reloads In desktop-to-docker (and ssh) setups the agent's launch CWD is unrelated to the user's chosen workspace dir
-    let plugin_reg = if let Some(cwd_str) = &req.cwd {
-        let cwd = Path::new(cwd_str);
-
-        // Folder-trust gates repo-local project plugins (hooks/MCP) Resolve and record the verdict for this cwd (honoring the real remote) BEFORE the plugins-config read below
-        // That read gates its project-paths merge on the recorded verdict A cold cwd (client-supplied, no session resolve yet) must not first take the gate's remote-less backstop
-        // That backstop would record a deny that ignores the kill switch and that no later resolve can lift
-        let remote_settings = agent.cfg.borrow().remote_settings.clone();
-        let project_trusted =
-            crate::agent::folder_trust::resolve_and_record(cwd, remote_settings.as_ref(), false);
-
-        // Effective [plugins] config (global, ancestor project configs, vendor compat merge)
-        // It is shared with reload_plugins_impl and the eager fan-out so the menu agrees with each session's registry for this cwd
-        let disk_cfg = crate::config::resolve_effective_plugins_config(cwd).to_discovery_config();
-
-        // Fresh discovery for *this* cwd (includes .grok/plugins under it, plus the cli --plugin-dir dirs)
-        // Does not mutate the shared snapshot
-        agent
-            .plugin_registry_handle()
-            .build_for_cwd(cwd, &disk_cfg, &[], project_trusted)
-    } else {
-        // No cwd: global/user skills only (pre-session case). Use the boot snapshot.
-        agent.plugin_registry_handle().snapshot()
-    };
+    // In desktop-to-docker (and ssh) setups the agent's launch CWD is unrelated to the user's chosen workspace dir; without a cwd the shared launch-dir snapshot serves the pre-session case
+    let plugin_reg = agent
+        .plugin_registry_for_cwd(req.cwd.as_deref().map(Path::new))
+        .await;
 
     let response = crate::session::slash_commands::list_commands(
         req.cwd.as_deref(),
@@ -1053,7 +1036,13 @@ mod sanitize_rename_title_tests {
             meta: Some(title_is_manual_meta()),
         };
         let v = serde_json::to_value(&n).unwrap();
-        assert_eq!(v["_meta"][TITLE_IS_MANUAL_META_KEY], true);
-        assert_eq!(v["update"]["session_summary"], "raw & title");
+        assert_eq!(
+            v.get("_meta").and_then(|m| m.get(TITLE_IS_MANUAL_META_KEY)),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            v.pointer("/update/session_summary"),
+            Some(&serde_json::json!("raw & title"))
+        );
     }
 }

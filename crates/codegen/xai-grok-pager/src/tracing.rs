@@ -100,8 +100,10 @@ impl TracingEntry {
 ///
 /// Lines are joined with `\n` (matching how `search_text()` should work for multi-line entries, though tracing entries are typically single-line).
 fn plain_text_from_styled(text: &Text<'_>) -> Arc<str> {
-    if text.lines.len() == 1 && text.lines[0].spans.len() == 1 {
-        return Arc::from(text.lines[0].spans[0].content.as_ref());
+    if let [line] = text.lines.as_slice()
+        && let [span] = line.spans.as_slice()
+    {
+        return Arc::from(span.content.as_ref());
     }
     let mut buf = String::new();
     for (i, line) in text.lines.iter().enumerate() {
@@ -446,24 +448,32 @@ mod tests {
         assert_eq!(entry.seq(), 42);
         assert_eq!(entry.plain(), "hello world");
         assert_eq!(entry.styled().lines.len(), 1);
-        assert_eq!(entry.styled().lines[0].spans.len(), 1);
-        assert_eq!(
-            entry.styled().lines[0].spans[0].content.as_ref(),
-            "hello world"
-        );
+        let [line] = entry.styled().lines.as_slice() else {
+            panic!("expected one line: {:?}", entry.styled().lines);
+        };
+        let [span] = line.spans.as_slice() else {
+            panic!("expected one span: {:?}", line.spans);
+        };
+        assert_eq!(span.content.as_ref(), "hello world");
     }
     #[test]
     fn entry_from_ansi_bold() {
         let entry = TracingEntry::new(0, "\x1b[1mBOLD\x1b[0m normal");
         assert_eq!(entry.plain(), "BOLD normal");
-        let spans = &entry.styled().lines[0].spans;
+        let Some(line) = entry.styled().lines.first() else {
+            panic!("expected a line: {:?}", entry.styled().lines);
+        };
+        let spans = &line.spans;
         assert!(spans.len() >= 2, "expected ≥2 spans, got {}", spans.len());
+        let Some(first) = spans.first() else {
+            panic!("expected a span");
+        };
         assert!(
-            spans[0].style.add_modifier.contains(Modifier::BOLD),
+            first.style.add_modifier.contains(Modifier::BOLD),
             "first span should be bold: {:?}",
-            spans[0].style
+            first.style
         );
-        assert_eq!(spans[0].content.as_ref(), "BOLD");
+        assert_eq!(first.content.as_ref(), "BOLD");
     }
     #[test]
     fn entry_from_realistic_tracing_line() {
@@ -473,7 +483,13 @@ mod tests {
             entry.plain(),
             "2025-02-16T10:30:00.123Z  INFO my_crate::module: hello from tracing"
         );
-        assert!(entry.styled().lines[0].spans.len() >= 4);
+        assert!(
+            entry
+                .styled()
+                .lines
+                .first()
+                .is_some_and(|l| l.spans.len() >= 4)
+        );
     }
     #[test]
     fn entry_malformed_ansi_does_not_panic() {
@@ -549,10 +565,12 @@ mod tests {
         model.push("bbb");
         model.push("ccc");
         let slice = model.as_slice();
-        assert_eq!(slice.len(), 3);
-        assert_eq!(slice[0].plain(), "aaa");
-        assert_eq!(slice[1].plain(), "bbb");
-        assert_eq!(slice[2].plain(), "ccc");
+        let [a, b, c] = slice else {
+            panic!("expected 3 entries: {slice:?}");
+        };
+        assert_eq!(a.plain(), "aaa");
+        assert_eq!(b.plain(), "bbb");
+        assert_eq!(c.plain(), "ccc");
     }
     #[test]
     fn model_seq_numbers_monotonic() {
@@ -608,8 +626,11 @@ mod tests {
         let entry = TracingEntry::new(999, "custom");
         let result = model.push_entry(entry);
         assert_eq!(result.evicted, 0);
-        assert_eq!(model.as_slice()[0].seq(), 0);
-        assert_eq!(model.as_slice()[0].plain(), "custom");
+        let Some(first) = model.as_slice().first() else {
+            panic!("expected an entry");
+        };
+        assert_eq!(first.seq(), 0);
+        assert_eq!(first.plain(), "custom");
     }
     #[test]
     fn model_first_last_seq_empty() {
@@ -632,7 +653,7 @@ mod tests {
         let result = model.push("d");
         assert_eq!(result.evicted, 1);
         assert_eq!(model.len(), 3);
-        assert_eq!(model.as_slice()[0].plain(), "b");
+        assert_eq!(model.as_slice().first().map(|e| e.plain()), Some("b"));
     }
     #[test]
     fn model_large_batch_eviction() {
@@ -652,11 +673,14 @@ mod tests {
         model.push("\x1b[32m INFO\x1b[0m  hello");
         model.push("\x1b[31mERROR\x1b[0m  world");
         let slice = model.as_slice();
-        assert_eq!(slice[0].stable_id(), 0);
-        assert_eq!(slice[1].stable_id(), 1);
-        assert_eq!(slice[0].search_text(), " INFO  hello");
-        assert_eq!(slice[1].search_text(), "ERROR  world");
-        assert_eq!(slice[0].desired_height(80), 1);
+        let [a, b] = slice else {
+            panic!("expected 2 entries: {slice:?}");
+        };
+        assert_eq!(a.stable_id(), 0);
+        assert_eq!(b.stable_id(), 1);
+        assert_eq!(a.search_text(), " INFO  hello");
+        assert_eq!(b.search_text(), "ERROR  world");
+        assert_eq!(a.desired_height(80), 1);
     }
     #[test]
     fn plain_text_fast_path() {
@@ -764,9 +788,12 @@ mod tests {
         }
         assert_eq!(model.len(), 2);
         let slice = model.as_slice();
-        assert!(slice[0].search_text().contains("hello from tracing"));
-        assert!(slice[1].search_text().contains("something went wrong"));
-        let content: String = slice[0]
+        let [a, b] = slice else {
+            panic!("expected 2 entries: {slice:?}");
+        };
+        assert!(a.search_text().contains("hello from tracing"));
+        assert!(b.search_text().contains("something went wrong"));
+        let content: String = a
             .content()
             .spans
             .iter()
@@ -791,7 +818,11 @@ mod tests {
             model.push(&line);
         }
         assert_eq!(model.len(), 3);
-        assert_eq!(model.as_slice()[0].plain(), "line 3");
-        assert_eq!(model.as_slice()[2].plain(), "line 5");
+        let slice = model.as_slice();
+        let [a, _, c] = slice else {
+            panic!("expected 3 entries: {slice:?}");
+        };
+        assert_eq!(a.plain(), "line 3");
+        assert_eq!(c.plain(), "line 5");
     }
 }

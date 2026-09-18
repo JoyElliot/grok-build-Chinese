@@ -32,8 +32,11 @@ fn running_is_a_static_diamond_not_a_spinner() {
         format!("{} 2", crate::glyphs::diamond_filled())
     );
     assert_eq!(first.spans.len(), 1);
-    assert_eq!(first.spans[0].style.fg, Some(theme.accent_running));
-    assert_eq!(first.spans[0].style.bg, Some(theme.bg_base));
+    let Some(span) = first.spans.first() else {
+        panic!("expected a span: {first:?}");
+    };
+    assert_eq!(span.style.fg, Some(theme.accent_running));
+    assert_eq!(span.style.bg, Some(theme.bg_base));
 }
 
 #[test]
@@ -48,9 +51,17 @@ fn paused_is_static_warning_styled_and_hover_bold() {
     let hovered = task_status_line(counts, &theme, true, 0, None).expect("paused line");
 
     assert_eq!(line_text(&first), "P 3");
-    assert_eq!(first.spans[0].style.fg, Some(theme.warning));
-    assert_eq!(first.spans[0].style.bg, Some(theme.bg_base));
-    assert!(hovered.spans[0].style.add_modifier.contains(Modifier::BOLD));
+    let Some(span) = first.spans.first() else {
+        panic!("expected a span: {first:?}");
+    };
+    assert_eq!(span.style.fg, Some(theme.warning));
+    assert_eq!(span.style.bg, Some(theme.bg_base));
+    assert!(
+        hovered
+            .spans
+            .first()
+            .is_some_and(|s| s.style.add_modifier.contains(Modifier::BOLD))
+    );
 }
 
 #[test]
@@ -62,14 +73,16 @@ fn mixed_uses_separate_styles_and_neither_animates() {
     };
     let line = task_status_line(counts, &theme, false, 0, None).expect("mixed line");
 
-    assert_eq!(line.spans.len(), 2);
-    assert_eq!(line.spans[0].style.fg, Some(theme.accent_running));
-    assert_eq!(line.spans[1].style.fg, Some(theme.warning));
+    let [running, paused] = line.spans.as_slice() else {
+        panic!("expected two spans: {line:?}");
+    };
+    assert_eq!(running.style.fg, Some(theme.accent_running));
+    assert_eq!(paused.style.fg, Some(theme.warning));
     assert_eq!(
-        line.spans[0].content,
+        running.content,
         format!("{} 1", crate::glyphs::diamond_filled())
     );
-    assert_eq!(line.spans[1].content, "  P 2");
+    assert_eq!(paused.content, "  P 2");
 }
 
 #[test]

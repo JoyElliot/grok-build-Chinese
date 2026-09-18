@@ -81,7 +81,7 @@ pub(crate) fn revoke_folder_trust(cwd: &Path) -> bool {
 /// Authoritative and fail-closed, mirroring [`resolve_and_record_inner`]'s arms. A cached **grant** short-circuits (allow).
 /// A cached **untrusted** verdict is RE-READ against the store so a `grant_folder_trust` issued AFTER the untrusted resolve is honored. That re-read records the upgrade and allows.
 /// So this never over-denies the common no-configs case, whose Trusted verdict is provisional and therefore never cached. There [`resolve_and_record`] would short-circuit to allow before reaching the cache. `DECISIONS` uses `parking_lot::Mutex` (no poisoning), so this gate cannot fail OPEN on a poisoned lock.
-pub(crate) fn project_scope_allowed(cwd: &Path) -> bool {
+pub fn project_scope_allowed(cwd: &Path) -> bool {
     let key = workspace_key(cwd);
     // Copy out of the lock so the Some(false) reconcile can re-acquire it (parking_lot mutexes are not re-entrant)
     let cached = DECISIONS.lock().get(&key).copied();
@@ -884,6 +884,7 @@ mod tests {
         let instructions = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
             &cwd,
             xai_grok_agent::prompt::skills::CompatConfig::default(),
+            &xai_grok_agent::prompt::paths::PathsConfig::default(),
             verdict,
         )
         .await;
@@ -911,6 +912,7 @@ mod tests {
         let instructions = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
             &cwd,
             xai_grok_agent::prompt::skills::CompatConfig::default(),
+            &xai_grok_agent::prompt::paths::PathsConfig::default(),
             verdict,
         )
         .await;

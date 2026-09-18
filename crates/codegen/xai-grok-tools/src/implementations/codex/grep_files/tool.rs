@@ -329,7 +329,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("match.rs"));
+        assert!(results.first().is_some_and(|r| r.contains("match.rs")));
     }
 
     #[tokio::test]
@@ -345,7 +345,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("alpha.rs"));
+        assert!(results.first().is_some_and(|r| r.contains("alpha.rs")));
     }
 
     #[tokio::test]

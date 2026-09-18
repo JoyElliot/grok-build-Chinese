@@ -98,6 +98,9 @@ mod tests {
         std::fs::write(project.join(".grok/config.toml"), "# project\n").unwrap();
         let found = find_project_configs(&project);
         assert_eq!(found.len(), 1);
-        assert!(!is_user_grok_config_file(&found[0]));
+        let Some(first) = found.first() else {
+            panic!("expected one project config: {found:?}");
+        };
+        assert!(!is_user_grok_config_file(first));
     }
 }

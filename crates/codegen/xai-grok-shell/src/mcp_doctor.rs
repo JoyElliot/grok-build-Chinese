@@ -356,26 +356,56 @@ async fn check_handshake(
     }
 }
 
-async fn check_tools_list(service: &mcp_servers::McpService) -> Check {
+async fn check_tools_list(server_name: &str, service: &mcp_servers::McpService) -> Check {
     use xai_grok_mcp::rmcp::model::PaginatedRequestParams;
     match service
         .list_tools(Some(PaginatedRequestParams::default()))
         .await
     {
-        Ok(result) => {
-            let count = result.tools.len();
-            if count == 0 {
-                Check::fail(
-                    "0 tools discovered",
-                    "server returned an empty tool list",
-                    "check server config",
-                )
-            } else {
-                Check::pass(format!("{} tools discovered", count), "")
-            }
-        }
+        Ok(result) => tools_list_admission_check(
+            server_name,
+            result.tools.iter().map(|tool| tool.name.as_ref()),
+        ),
         Err(e) => Check::fail("tools/list failed", e.to_string(), "check server logs"),
     }
+}
+
+/// Apply session admission to a `tools/list` snapshot so doctor matches the catalog.
+fn tools_list_admission_check<'a>(
+    server_name: &str,
+    tool_names: impl IntoIterator<Item = &'a str>,
+) -> Check {
+    let mut listed = 0;
+    let mut skipped = Vec::new();
+    for name in tool_names {
+        listed += 1;
+        if let Err(reason) = mcp_servers::qualify_mcp_tool_name(server_name, name) {
+            skipped.push((name.to_owned(), reason.to_string()));
+        }
+    }
+    if listed == 0 {
+        return Check::fail(
+            "0 tools discovered",
+            "server returned an empty tool list",
+            "check server config",
+        );
+    }
+    if skipped.is_empty() {
+        return Check::pass(format!("{listed} tools discovered"), "");
+    }
+    let detail = skipped
+        .iter()
+        .map(|(name, reason)| format!("{name} ({reason})"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Check::fail(
+        format!(
+            "{listed} tools listed, {} skipped by session admission",
+            skipped.len()
+        ),
+        detail,
+        "session catalog omits these tools; rename the server or tool so each segment is a valid MCP id",
+    )
 }
 
 fn format_mcp_error(label: &str, err: &mcp_servers::McpError) -> Check {
@@ -493,7 +523,7 @@ async fn check_server(
                 }
                 Ok((service, check)) => {
                     checks.push(check);
-                    checks.push(check_tools_list(&service).await);
+                    checks.push(check_tools_list(&name, &service).await);
                 }
             }
             // Client drops here, killing the child process via kill_on_drop
@@ -857,13 +887,16 @@ mod tests {
             true,
             true,
         );
+        let [first, ..] = checks.as_slice() else {
+            panic!("expected skip checks: {checks:?}");
+        };
         assert_eq!(checks.len(), 3);
         assert_eq!(
-            checks[0].label,
+            first.label,
             "blocked by organization policy — matches deniedMcpServers"
         );
         assert_eq!(
-            checks[0].detail.as_deref(),
+            first.detail.as_deref(),
             Some("/etc/grok/managed_config.toml")
         );
         assert!(
@@ -872,11 +905,17 @@ mod tests {
         );
 
         let checks = skip_verdict_checks(None, true, true);
-        assert!(checks[0].hint.is_some(), "--trust is the actionable step");
-        assert!(checks[1].hint.is_none(), "re-enable hint is a dead end");
+        let [first, second, ..] = checks.as_slice() else {
+            panic!("expected skip checks: {checks:?}");
+        };
+        assert!(first.hint.is_some(), "--trust is the actionable step");
+        assert!(second.hint.is_none(), "re-enable hint is a dead end");
 
         let checks = skip_verdict_checks(None, false, true);
-        assert!(checks[0].hint.is_some(), "plain disable keeps its hint");
+        assert!(
+            checks.first().is_some_and(|c| c.hint.is_some()),
+            "plain disable keeps its hint"
+        );
     }
 
     /// Project-declared servers must count under their own config file.
@@ -894,10 +933,10 @@ mod tests {
         let proj_path = std::path::PathBuf::from("/repo/.grok/config.toml");
 
         let declaring = toml_declaring_paths(user_path, Some(&user), &[(proj_path.clone(), proj)]);
-        assert_eq!(declaring["home1"], user_path);
-        assert_eq!(declaring["projsrv"], proj_path);
+        assert_eq!(declaring.get("home1").map(|p| p.as_path()), Some(user_path));
+        assert_eq!(declaring.get("projsrv"), Some(&proj_path));
         // The nearest definition wins a shared name, matching the merge.
-        assert_eq!(declaring["home2"], proj_path);
+        assert_eq!(declaring.get("home2"), Some(&proj_path));
     }
 
     /// Pins the CLI add gate seam: a deny-matching new definition gets the org-policy refusal;
@@ -1006,6 +1045,51 @@ mod tests {
             None,
             "the same definition in user config.toml is grok-native and unpinned"
         );
+    }
+
+    #[test]
+    fn tools_list_admission_reports_session_skips() {
+        // Digit-leading tool segments are admitted; letter/_ first-char is the server prefix.
+        let check = tools_list_admission_check("linear", ["list_issues", "2fa_enable"]);
+        assert!(check.passed, "{check:?}");
+        assert_eq!(check.label, "2 tools discovered");
+
+        let check = tools_list_admission_check("123bad", ["lookup"]);
+        assert!(!check.passed);
+        assert_eq!(
+            check.label,
+            "1 tools listed, 1 skipped by session admission"
+        );
+        assert!(
+            check
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("lookup") && d.contains("server name")),
+            "{check:?}"
+        );
+
+        let check = tools_list_admission_check("linear", ["list_issues", "bad.tool"]);
+        assert!(!check.passed);
+        assert_eq!(
+            check.label,
+            "2 tools listed, 1 skipped by session admission"
+        );
+        assert!(
+            check
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("bad.tool")),
+            "{check:?}"
+        );
+
+        // 31-char server + 37-char tool is 70 qualified chars: provider-64 rejects,
+        // session admission keeps it.
+        let check = tools_list_admission_check(
+            "sL_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            ["t0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],
+        );
+        assert!(check.passed, "{check:?}");
+        assert_eq!(check.label, "1 tools discovered");
     }
 
     #[test]

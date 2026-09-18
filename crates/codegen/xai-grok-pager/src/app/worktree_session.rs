@@ -57,18 +57,21 @@ impl WorktreeSpec {
 /// Worktree and session identity for a create. A CLI `--session-id` names both; otherwise a
 /// `pager-*` id (dashboard, palette, and unlabeled headless paths).
 pub(crate) fn new_worktree_id(preferred_session_id: Option<&str>) -> String {
-    preferred_session_id
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("pager-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]))
+    preferred_session_id.map(str::to_owned).unwrap_or_else(|| {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        format!("pager-{}", id.get(..12).unwrap_or(id.as_str()))
+    })
 }
 
-/// User-facing failure text, already sanitized (and hinted, for resume).
+/// User-facing failure text, already sanitized and (for resume) hinted, carried to the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorktreeRpcError(pub String);
+pub(crate) struct WorktreeRpcError {
+    pub message: String,
+}
 
 impl std::fmt::Display for WorktreeRpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
@@ -106,11 +109,13 @@ pub(crate) fn create_worktree_params(
         "newSessionId": worktree_id,
         "copyMode": spec.copy_mode(),
     });
-    if let Some(label) = &spec.label {
-        params["label"] = serde_json::Value::String(label.clone());
-    }
-    if let Some(r) = &spec.git_ref {
-        params["gitRef"] = serde_json::Value::String(r.clone());
+    if let Some(obj) = params.as_object_mut() {
+        if let Some(label) = &spec.label {
+            obj.insert("label".into(), serde_json::Value::String(label.clone()));
+        }
+        if let Some(r) = &spec.git_ref {
+            obj.insert("gitRef".into(), serde_json::Value::String(r.clone()));
+        }
     }
     params
 }
@@ -128,11 +133,13 @@ pub(crate) fn resume_worktree_params(
         "worktreeType": xai_grok_shell::util::config::worktree_type(),
     });
     // Omitted when unset so the agent-side default applies.
-    if let Some(rc) = restore_code {
-        params["restoreCode"] = serde_json::Value::Bool(rc);
-    }
-    if let Some(r) = &spec.git_ref {
-        params["gitRef"] = serde_json::Value::String(r.clone());
+    if let Some(obj) = params.as_object_mut() {
+        if let Some(rc) = restore_code {
+            obj.insert("restoreCode".into(), serde_json::Value::Bool(rc));
+        }
+        if let Some(r) = &spec.git_ref {
+            obj.insert("gitRef".into(), serde_json::Value::String(r.clone()));
+        }
     }
     params
 }
@@ -204,9 +211,9 @@ pub(crate) fn parse_resume_response(
 }
 
 fn create_failure(detail: &str) -> WorktreeRpcError {
-    WorktreeRpcError(sanitize_user_error(&format!(
-        "couldn't create worktree: {detail}"
-    )))
+    WorktreeRpcError {
+        message: sanitize_user_error(&format!("couldn't create worktree: {detail}")),
+    }
 }
 
 /// Create a worktree from `source_cwd`. Unbounded send: hydrating a large checkout can outlast
@@ -242,11 +249,8 @@ pub(crate) async fn resume_session_into_worktree(
     locale: &crate::locale::LocaleContext,
 ) -> Result<ResumedWorktree, WorktreeRpcError> {
     // Sanitize before appending the hint; the sanitizer collapses disk-full chains whole.
-    let fail = |detail: &str| {
-        WorktreeRpcError(worktree_resume_failure_message(
-            local_miss,
-            &sanitize_user_error(detail),
-        ))
+    let fail = |detail: &str| WorktreeRpcError {
+        message: worktree_resume_failure_message(local_miss, &sanitize_user_error(detail)),
     };
     let params = resume_worktree_params(source_cwd, spec, session_id, restore_code);
     let req = acp::ExtRequest::new(
@@ -256,7 +260,7 @@ pub(crate) async fn resume_session_into_worktree(
             .into(),
     );
     let started = std::time::Instant::now();
-    let resp = match acp_send_bounded(req, acp_tx, "Worktree session resume", locale).await {
+    let resp = match acp_send_bounded(req, acp_tx, "Worktree session resume").await {
         Ok(resp) => {
             tracing::info!(
                 session_id,
@@ -272,7 +276,7 @@ pub(crate) async fn resume_session_into_worktree(
                 error = %e,
                 "worktree resume_session: ACP call failed"
             );
-            return Err(fail(&e.to_string()));
+            return Err(fail(&e.localized_message(locale)));
         }
     };
     parse_resume_response(resp.0.get(), session_id).map_err(|d| fail(&d))
@@ -290,6 +294,13 @@ pub(crate) fn note_orphaned_worktree(message: &str, worktree_root: &Path) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn j<'a>(v: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+        let Some(got) = v.get(key) else {
+            panic!("missing json key {key}: {v}");
+        };
+        got
+    }
 
     #[test]
     fn spec_from_cli_flags() {
@@ -315,14 +326,14 @@ mod tests {
     fn create_params_carry_label_ref_and_copy_mode() {
         let spec = WorktreeSpec::from_cli(Some("fix"), Some("origin/main")).unwrap();
         let p = create_worktree_params(Path::new("/repo/sub"), &spec, "wt-1");
-        assert_eq!(p["sourceWorktreePath"], "/repo/sub");
-        assert_eq!(p["newSessionId"], "wt-1");
-        assert_eq!(p["copyMode"], "clean");
-        assert_eq!(p["label"], "fix");
-        assert_eq!(p["gitRef"], "origin/main");
+        assert_eq!(j(&p, "sourceWorktreePath"), "/repo/sub");
+        assert_eq!(j(&p, "newSessionId"), "wt-1");
+        assert_eq!(j(&p, "copyMode"), "clean");
+        assert_eq!(j(&p, "label"), "fix");
+        assert_eq!(j(&p, "gitRef"), "origin/main");
 
         let bare = create_worktree_params(Path::new("/repo"), &WorktreeSpec::default(), "wt-2");
-        assert_eq!(bare["copyMode"], "dirty");
+        assert_eq!(j(&bare, "copyMode"), "dirty");
         assert!(bare.get("label").is_none());
         assert!(bare.get("gitRef").is_none());
     }
@@ -331,14 +342,14 @@ mod tests {
     fn resume_params_omit_restore_code_when_unset() {
         let spec = WorktreeSpec::default();
         let p = resume_worktree_params(Path::new("/repo"), &spec, "sid", None);
-        assert_eq!(p["sessionId"], "sid");
-        assert_eq!(p["sourceCwd"], "/repo");
-        assert_eq!(p["copyMode"], "dirty");
+        assert_eq!(j(&p, "sessionId"), "sid");
+        assert_eq!(j(&p, "sourceCwd"), "/repo");
+        assert_eq!(j(&p, "copyMode"), "dirty");
         assert!(p.get("restoreCode").is_none());
         assert!(p.get("worktreeType").is_some());
 
         let p = resume_worktree_params(Path::new("/repo"), &spec, "sid", Some(true));
-        assert_eq!(p["restoreCode"], true);
+        assert_eq!(j(&p, "restoreCode"), true);
     }
 
     #[test]

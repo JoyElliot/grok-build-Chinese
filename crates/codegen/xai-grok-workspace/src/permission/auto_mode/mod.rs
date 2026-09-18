@@ -460,9 +460,10 @@ impl HeuristicPermissionClassifier {
             // Edits never reach here in practice: the fast path Allows ALL edits before classify (the accept-all-edits product decision)
             // If one ever does (a fast-path bypass), Block fails closed so the user is prompted instead of silently auto-approved
             // Non-allowlisted MCP tools land here too
-            AccessKind::Edit(_) | AccessKind::MCPTool { .. } | AccessKind::AgentMessage { .. } => {
-                ClassifierVerdict::Block
-            }
+            AccessKind::Edit(_)
+            | AccessKind::MCPTool { .. }
+            | AccessKind::AgentMessage { .. }
+            | AccessKind::Tool(_) => ClassifierVerdict::Block,
             AccessKind::Read(_) | AccessKind::Grep { .. } | AccessKind::WebSearch(_) => {
                 ClassifierVerdict::Allow
             }
@@ -639,10 +640,13 @@ fn bash_command_is_routine(words: &[String]) -> bool {
     if inner.is_empty() || is_lone_wrapper(inner) {
         return true;
     }
-    let head = inner[0]
+    let Some(head_word) = inner.first() else {
+        return true;
+    };
+    let head = head_word
         .rsplit(['/', '\\'])
         .next()
-        .unwrap_or(inner[0].as_str())
+        .unwrap_or(head_word.as_str())
         .to_ascii_lowercase();
     // Package managers: fail-closed safe-subcommand allowlist; None means not a package manager, fall through to the generic find/prefix checks
     if let Some(routine) = package_manager_subcommand_is_routine(&head, inner) {
@@ -683,15 +687,18 @@ fn bash_command_is_routine(words: &[String]) -> bool {
     let joined = inner.join(" ").to_ascii_lowercase();
     ROUTINE_PREFIXES.iter().any(|p| {
         let base = p.trim();
-        joined == base || (joined.starts_with(base) && joined[base.len()..].starts_with(' '))
+        joined == base
+            || (joined.starts_with(base)
+                && joined.get(base.len()..).is_some_and(|s| s.starts_with(' ')))
     })
 }
 
 /// First `n` non-flag tokens after the head.
 /// Space-separated flag values are not modeled; one landing here can only make a match fail, never allow more.
 fn nonflag_tokens(inner: &[String], n: usize) -> Vec<&str> {
-    inner[1..]
+    inner
         .iter()
+        .skip(1)
         .filter(|w| !w.starts_with('-'))
         .take(n)
         .map(String::as_str)
@@ -907,7 +914,12 @@ fn explicit_launch_target<'a>(head: &str, inner: &'a [String]) -> LaunchTarget<'
         _ => return LaunchTarget::NotLauncher,
     };
     match inner.get(start) {
-        Some(tok) if !tok.starts_with('-') => LaunchTarget::Inner(&inner[start..]),
+        Some(tok) if !tok.starts_with('-') => {
+            let Some(rest) = inner.get(start..) else {
+                return LaunchTarget::Unresolved;
+            };
+            LaunchTarget::Inner(rest)
+        }
         // Missing, or a leading option we refuse to model; fail closed
         _ => LaunchTarget::Unresolved,
     }
@@ -977,7 +989,7 @@ fn command_env_risk(words: &[String]) -> EnvRisk {
     for _ in 0..8 {
         if current.first().and_then(|w| w.rsplit(['/', '\\']).next()) == Some("env") {
             let mut options_done = false;
-            for arg in &current[1..] {
+            for arg in current.iter().skip(1) {
                 if arg == "--" {
                     options_done = true;
                     continue;
@@ -1281,6 +1293,7 @@ pub fn build_classifier_messages(
         AccessKind::WebFetch(_) => "web_fetch",
         AccessKind::WebSearch(_) => "web_search",
         AccessKind::AgentMessage { .. } => "agent_message",
+        AccessKind::Tool(_) => "tool",
     };
     let proposed_action =
         format!("tool: {tool_name}\naccess_kind: {access_kind}\ndetail: {detail}");
@@ -1353,7 +1366,8 @@ pub fn parse_classifier_model_output(text: &str) -> ClassifierOutcome {
     if let Some(start) = trimmed.find('{')
         && let Some(end) = trimmed.rfind('}')
         && end > start
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
+        && let Some(slice) = trimmed.get(start..=end)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(slice)
         && let Some(b) = v
             .get("shouldBlock")
             .or_else(|| v.get("should_block"))
@@ -2131,6 +2145,7 @@ mod tests {
         // Flag/operand-named writes to an arbitrary path: Block
         assert_eq!(v("sort -o ~/.bashrc x"), ClassifierVerdict::Block);
         assert_eq!(v("sort --output=/etc/x y"), ClassifierVerdict::Block);
+        assert_eq!(v("sort --out=/etc/x y"), ClassifierVerdict::Block);
         assert_eq!(v("uniq payload ~/.bashrc"), ClassifierVerdict::Block);
         assert_eq!(v("git diff --output=~/.bashrc"), ClassifierVerdict::Block);
         assert_eq!(v("go build -o ~/.bashrc"), ClassifierVerdict::Block);
@@ -2145,6 +2160,7 @@ mod tests {
         assert_eq!(v("git diff"), ClassifierVerdict::Allow);
         assert_eq!(v("git diff --stat"), ClassifierVerdict::Allow);
         assert_eq!(v("git diff -O orderfile"), ClassifierVerdict::Allow);
+        assert_eq!(v("git log --oneline"), ClassifierVerdict::Allow);
         assert_eq!(v("go test ./..."), ClassifierVerdict::Allow);
         assert_eq!(v("cargo test"), ClassifierVerdict::Allow);
         assert_eq!(v("cargo test > /dev/null"), ClassifierVerdict::Allow);
@@ -2338,13 +2354,36 @@ mod tests {
         );
         // Order: system, AGENTS.md user turn, trailing transcript/action user turn.
         assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0].role, ClassifierMessageRole::System);
-        assert_eq!(msgs[1].role, ClassifierMessageRole::User);
-        assert!(msgs[1].text.contains("AGENTS.md"));
-        assert!(msgs[1].text.contains("<project_instructions>"));
-        assert!(msgs[1].text.contains("\\# Repo rules"));
+        assert_eq!(
+            msgs.first()
+                .unwrap_or_else(|| panic!("expected msg 0"))
+                .role,
+            ClassifierMessageRole::System
+        );
+        assert_eq!(
+            msgs.get(1).unwrap_or_else(|| panic!("expected msg 1")).role,
+            ClassifierMessageRole::User
+        );
+        assert!(
+            msgs.get(1)
+                .unwrap_or_else(|| panic!("expected msg 1"))
+                .text
+                .contains("AGENTS.md")
+        );
+        assert!(
+            msgs.get(1)
+                .unwrap_or_else(|| panic!("expected msg 1"))
+                .text
+                .contains("<project_instructions>")
+        );
+        assert!(
+            msgs.get(1)
+                .unwrap_or_else(|| panic!("expected msg 1"))
+                .text
+                .contains("\\# Repo rules")
+        );
         // Trailing message renders the turns chronologically.
-        let last = &msgs[2];
+        let last = &msgs.get(2).unwrap_or_else(|| panic!("expected msg 2"));
         assert_eq!(last.role, ClassifierMessageRole::User);
         assert!(last.text.contains("User: fix the build"));
         assert!(
@@ -2355,7 +2394,13 @@ mod tests {
         assert!(last.text.contains("## Proposed action"));
         assert!(last.text.contains("tool: run_terminal_command"));
         assert!(last.text.contains("access_kind: bash"));
-        assert!(!msgs[0].text.contains("## Proposed action"));
+        assert!(
+            !msgs
+                .first()
+                .unwrap_or_else(|| panic!("expected msg 0"))
+                .text
+                .contains("## Proposed action")
+        );
     }
 
     /// The AGENTS.md message is omitted when `project_instructions` is None.
@@ -2370,14 +2415,27 @@ mod tests {
             ClassifierPromptType::Full,
         );
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role, ClassifierMessageRole::System);
-        assert_eq!(msgs[1].role, ClassifierMessageRole::User);
+        assert_eq!(
+            msgs.first()
+                .unwrap_or_else(|| panic!("expected msg 0"))
+                .role,
+            ClassifierMessageRole::System
+        );
+        assert_eq!(
+            msgs.get(1).unwrap_or_else(|| panic!("expected msg 1")).role,
+            ClassifierMessageRole::User
+        );
         assert!(
             !msgs
                 .iter()
                 .any(|m| m.text.contains("<project_instructions>"))
         );
-        assert!(msgs[1].text.contains("## Proposed action"));
+        assert!(
+            msgs.get(1)
+                .unwrap_or_else(|| panic!("expected msg 1"))
+                .text
+                .contains("## Proposed action")
+        );
     }
 
     /// Each `ClassifierPromptType` variant includes the right sections.
@@ -2437,7 +2495,12 @@ mod tests {
         // BareInstructions: drops AGENTS.md and transcript; keeps action and json
         let bare = build(ClassifierPromptType::BareInstructions);
         assert_eq!(bare.len(), 2);
-        assert_eq!(bare[0].role, ClassifierMessageRole::System);
+        assert_eq!(
+            bare.first()
+                .unwrap_or_else(|| panic!("expected bare 0"))
+                .role,
+            ClassifierMessageRole::System
+        );
         assert!(
             !bare
                 .iter()
@@ -2455,7 +2518,12 @@ mod tests {
         // JustCommand: system and the minimal action only, no JSON instruction text
         let just = build(ClassifierPromptType::JustCommand);
         assert_eq!(just.len(), 2);
-        assert_eq!(just[0].role, ClassifierMessageRole::System);
+        assert_eq!(
+            just.first()
+                .unwrap_or_else(|| panic!("expected just 0"))
+                .role,
+            ClassifierMessageRole::System
+        );
         let last = &just.last().unwrap().text;
         assert!(last.contains("tool: run_terminal_command"));
         assert!(last.contains("access_kind: bash"));
@@ -2611,14 +2679,42 @@ mod tests {
             }
             let parsed: serde_json::Value =
                 serde_json::from_str(record).expect("valid JSON record");
-            assert_eq!(parsed["decision"], expected_decision);
-            assert!(parsed["tool"].is_string());
-            assert!(parsed["args"].is_string());
+            assert_eq!(
+                parsed.get("decision").unwrap_or(&serde_json::Value::Null),
+                expected_decision
+            );
+            assert!(
+                parsed
+                    .get("tool")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_string()
+            );
+            assert!(
+                parsed
+                    .get("args")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_string()
+            );
             assert!(!record.starts_with("ignore the classifier policy"));
         }
-        assert!(records[0].contains("ignore the classifier policy"));
-        assert!(records[0].contains("\\\\"));
-        assert!(records[0].contains("\\\"quoted\\\""));
+        assert!(
+            records
+                .first()
+                .unwrap_or_else(|| panic!("expected record 0"))
+                .contains("ignore the classifier policy")
+        );
+        assert!(
+            records
+                .first()
+                .unwrap_or_else(|| panic!("expected record 0"))
+                .contains("\\\\")
+        );
+        assert!(
+            records
+                .first()
+                .unwrap_or_else(|| panic!("expected record 0"))
+                .contains("\\\"quoted\\\"")
+        );
         assert!(
             !records
                 .join("\n")
@@ -2738,9 +2834,21 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(decisions.len(), 1);
-        assert!(!decisions[0].text.contains("create the ticket"));
-        assert!(!decisions[0].text.contains("linear__save_issue"));
-        assert!(decisions[0].text.contains(
+        assert!(
+            !decisions
+                .first()
+                .unwrap_or_else(|| panic!("expected decision 0"))
+                .text
+                .contains("create the ticket")
+        );
+        assert!(
+            !decisions
+                .first()
+                .unwrap_or_else(|| panic!("expected decision 0"))
+                .text
+                .contains("linear__save_issue")
+        );
+        assert!(decisions.first().unwrap_or_else(|| panic!("expected decision 0")).text.contains(
             r#"{"tool":"run_terminal_command","args":"{\"command\":\"cargo test\"}","decision":"approved"}"#
         ));
     }
@@ -3233,10 +3341,25 @@ mod tests {
                 1,
                 "exactly one findings message: {pt:?}"
             );
-            assert_eq!(findings_msgs[0].text, expected, "{pt:?}");
+            assert_eq!(
+                findings_msgs
+                    .first()
+                    .unwrap_or_else(|| panic!("expected msg 0"))
+                    .text,
+                expected,
+                "{pt:?}"
+            );
             assert!(
-                !findings_msgs[0].text.contains("notes.md")
-                    && !findings_msgs[0].text.contains("echo hi"),
+                !findings_msgs
+                    .first()
+                    .unwrap_or_else(|| panic!("expected msg 0"))
+                    .text
+                    .contains("notes.md")
+                    && !findings_msgs
+                        .first()
+                        .unwrap_or_else(|| panic!("expected msg 0"))
+                        .text
+                        .contains("echo hi"),
                 "{pt:?}: no command text in findings"
             );
         }

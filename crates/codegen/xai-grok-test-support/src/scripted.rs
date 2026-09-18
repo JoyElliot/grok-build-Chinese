@@ -1,4 +1,4 @@
-//! Data-driven scripted responses for the mock inference server: status/header/body triples queued per path and rendered to HTTP at serve time.
+//! Data-driven scripted responses: status/header/body triples the mock inference server queues per path and the loopback mocks serve on request, rendered to HTTP at serve time.
 //! Pure data: no router or handler types are public.
 
 use std::convert::Infallible;
@@ -6,6 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use axum::Json;
+use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -14,6 +15,10 @@ use serde_json::Value;
 
 pub(crate) type BoxWait = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub(crate) type TerminalWait = Box<dyn FnOnce() -> BoxWait + Send>;
+
+/// An SSE comment the hang body flushes so the response head reaches the client, then the stream
+/// produces no chunk; a comment carries no event, so the client's idle timer runs from here.
+const HANG_OPENING_FRAME: &[u8] = b": grok-mock stream open\n\n";
 
 /// One SSE event as data: optional `event:` name plus the `data:` payload.
 #[derive(Debug, Clone)]
@@ -44,10 +49,15 @@ pub enum ScriptedBody {
     Sse(Vec<SseEvent>),
     /// Raw body bytes served verbatim, for byte-exact payloads such as malformed SSE.
     Raw(String),
+    /// The connection closes before the response head reaches the client: the body stream fails on
+    /// its first poll, so hyper tears the connection down without flushing the head it queued.
+    Dropped,
+    /// The head reaches the client, then the body stalls forever with no chunk, so the client's
+    /// inference idle timeout fires.
+    Hang,
 }
 
-/// A scripted reply served by a matched expectation or compatibility FIFO.
-/// Scripted replies take precedence over required auth and fallback modes.
+/// A scripted reply; see `inference_override` for where it sits in the tier order.
 #[derive(Debug, Clone)]
 pub struct ScriptedResponse {
     pub status: u16,
@@ -81,6 +91,24 @@ impl ScriptedResponse {
         }
     }
 
+    pub fn dropped() -> Self {
+        Self {
+            status: 200,
+            headers: Vec::new(),
+            body: ScriptedBody::Dropped,
+        }
+    }
+
+    /// A 200 stream whose head reaches the client, then never yields a chunk, so the client's
+    /// inference idle timeout fires.
+    pub fn hang() -> Self {
+        Self {
+            status: 200,
+            headers: vec![("content-type".to_owned(), "text/event-stream".to_owned())],
+            body: ScriptedBody::Hang,
+        }
+    }
+
     pub(crate) fn is_sse(&self) -> bool {
         matches!(self.body, ScriptedBody::Sse(_))
     }
@@ -101,21 +129,46 @@ impl ScriptedResponse {
         delay: Option<std::time::Duration>,
         before_terminal: Option<TerminalWait>,
     ) -> Response {
-        let mut resp = match self.body {
-            ScriptedBody::Json(v) => {
+        let mut response = match self.body {
+            ScriptedBody::Json(body_json) => {
                 if let Some(wait) = before_terminal {
                     wait().await;
                 }
-                Json(v).into_response()
+                Json(body_json).into_response()
             }
-            ScriptedBody::Raw(s) => {
+            ScriptedBody::Raw(raw_body) => {
                 if let Some(wait) = before_terminal {
                     wait().await;
                 }
-                s.into_response()
+                raw_body.into_response()
+            }
+            ScriptedBody::Dropped => {
+                if let Some(wait) = before_terminal {
+                    wait().await;
+                }
+                Response::new(Body::from_stream(stream::once(async {
+                    Err::<Bytes, _>(std::io::Error::other("the mock dropped the connection"))
+                })))
+            }
+            ScriptedBody::Hang => {
+                if let Some(wait) = before_terminal {
+                    wait().await;
+                }
+                let body = stream::unfold(false, |flushed| async move {
+                    if flushed {
+                        std::future::pending::<()>().await;
+                        None
+                    } else {
+                        Some((
+                            Ok::<Bytes, std::io::Error>(Bytes::from_static(HANG_OPENING_FRAME)),
+                            true,
+                        ))
+                    }
+                });
+                Response::new(Body::from_stream(body))
             }
             ScriptedBody::Sse(events) => {
-                let last_idx = events.len().checked_sub(1);
+                let last_index = events.len().checked_sub(1);
                 let mut events: Vec<_> = events.into_iter().enumerate().map(Some).collect();
                 if events.is_empty() && before_terminal.is_some() {
                     events.push(None);
@@ -125,16 +178,16 @@ impl ScriptedResponse {
                     move |(mut events, mut before_terminal)| async move {
                         loop {
                             let item = events.next()?;
-                            let Some((idx, scripted_event)) = item else {
+                            let Some((index, scripted_event)) = item else {
                                 if let Some(wait) = before_terminal.take() {
                                     wait().await;
                                 }
                                 continue;
                             };
-                            if let Some(d) = delay {
-                                tokio::time::sleep(d).await;
+                            if let Some(delay) = delay {
+                                tokio::time::sleep(delay).await;
                             }
-                            if Some(idx) == last_idx
+                            if Some(index) == last_index
                                 && let Some(wait) = before_terminal.take()
                             {
                                 wait().await;
@@ -154,13 +207,14 @@ impl ScriptedResponse {
                     .into_response()
             }
         };
-        *resp.status_mut() = StatusCode::from_u16(self.status).expect("valid scripted status code");
-        for (k, v) in self.headers {
-            resp.headers_mut().insert(
-                HeaderName::from_bytes(k.as_bytes()).expect("valid scripted header name"),
-                HeaderValue::from_str(&v).expect("valid scripted header value"),
+        *response.status_mut() =
+            StatusCode::from_u16(self.status).expect("valid scripted status code");
+        for (name, value) in self.headers {
+            response.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).expect("valid scripted header name"),
+                HeaderValue::from_str(&value).expect("valid scripted header value"),
             );
         }
-        resp
+        response
     }
 }

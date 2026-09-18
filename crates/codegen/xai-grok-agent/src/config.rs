@@ -161,6 +161,18 @@ pub fn workspace_grok_build_toolset() -> ToolServerConfig {
         behavior_preset: None,
     }
 }
+/// Fully qualified ids of the workspace tools that call the Grok API with the workspace server's own credential.
+/// A server whose credential only serves the hub cannot run them, so it neither advertises nor serves them.
+pub fn api_backed_tool_ids() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut ids = vec![
+        ToolConfig::from(&grok_build::WebSearchTool).id,
+        ToolConfig::from(&grok_build::ImageGenTool).id,
+        ToolConfig::from(&grok_build::ImageToVideoTool).id,
+        ToolConfig::from(&grok_build::ReferenceToVideoTool).id,
+    ];
+    ids
+}
 /// Toolset for the `grok-computer` (workspace/sandbox) preset.
 fn grok_computer_toolset() -> ToolServerConfig {
     #[allow(unused_mut)]
@@ -1231,11 +1243,15 @@ impl AgentDefinition {
                 "missing frontmatter delimiters".to_string(),
             ));
         }
-        let after_opening = &trimmed[3..];
+        let after_opening = trimmed.get(3..).ok_or_else(|| {
+            AgentBuildError::ParseError("missing frontmatter delimiters".to_string())
+        })?;
         let closing_idx = after_opening.find("\n---").ok_or_else(|| {
             AgentBuildError::ParseError("missing closing frontmatter delimiter".to_string())
         })?;
-        let yaml_content = &after_opening[..closing_idx];
+        let yaml_content = after_opening.get(..closing_idx).ok_or_else(|| {
+            AgentBuildError::ParseError("missing closing frontmatter delimiter".to_string())
+        })?;
         let mut def: AgentDefinition = serde_yaml::from_str(yaml_content)
             .map_err(|e| AgentBuildError::ParseError(e.to_string()))?;
         def.prompt_body = None;
@@ -1253,14 +1269,20 @@ impl AgentDefinition {
                 "missing frontmatter delimiters".to_string(),
             ));
         }
-        let after_opening = &trimmed[3..];
+        let after_opening = trimmed.get(3..).ok_or_else(|| {
+            AgentBuildError::ParseError("missing frontmatter delimiters".to_string())
+        })?;
         let closing_idx = after_opening.find("\n---").ok_or_else(|| {
             AgentBuildError::ParseError("missing closing frontmatter delimiter".to_string())
         })?;
-        let yaml_content = &after_opening[..closing_idx];
-        let after_closing = &after_opening[closing_idx + 4..];
+        let yaml_content = after_opening.get(..closing_idx).ok_or_else(|| {
+            AgentBuildError::ParseError("missing closing frontmatter delimiter".to_string())
+        })?;
+        let after_closing = after_opening.get(closing_idx + 4..).ok_or_else(|| {
+            AgentBuildError::ParseError("missing closing frontmatter delimiter".to_string())
+        })?;
         let body_start = after_closing.find('\n').map(|i| i + 1).unwrap_or(0);
-        let body = after_closing[body_start..].trim();
+        let body = after_closing.get(body_start..).unwrap_or("").trim();
         let prompt_body = if body.is_empty() {
             None
         } else {
@@ -1565,8 +1587,13 @@ impl AgentDefinition {
     /// Handles `prompt_body` which is `#[serde(skip)]` on the struct.
     pub fn to_json_value(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).expect("AgentDefinition is always serializable");
-        if let Some(ref body) = self.prompt_body {
-            value["promptBody"] = serde_json::Value::String(body.clone());
+        if let Some(body) = &self.prompt_body
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "promptBody".to_owned(),
+                serde_json::Value::String(body.clone()),
+            );
         }
         value
     }

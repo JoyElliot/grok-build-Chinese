@@ -121,11 +121,14 @@ fn percentile(sorted: &[f64], pct: f64) -> f64 {
     }
     let rank = (pct / 100.0) * (sorted.len() - 1) as f64;
     let lower = rank.floor() as usize;
-    if lower + 1 >= sorted.len() {
-        return sorted[lower];
-    }
+    let Some(&lo) = sorted.get(lower) else {
+        return 0.0;
+    };
+    let Some(&hi) = sorted.get(lower + 1) else {
+        return lo;
+    };
     let frac = rank - lower as f64;
-    sorted[lower] + (sorted[lower + 1] - sorted[lower]) * frac
+    lo + (hi - lo) * frac
 }
 /// Owned render params for one frame (title and stats line, top-right).
 pub struct FpsOverlay {
@@ -228,7 +231,9 @@ mod tests {
         let x0 = area.width - PANEL_WIDTH;
         for y in 1..3u16 {
             for x in x0..area.width {
-                let cell = &buf[(x, y)];
+                let Some(cell) = buf.cell((x, y)) else {
+                    panic!("cell ({x},{y})");
+                };
                 assert_eq!(cell.bg, Color::Black, "cell ({x},{y}) bg");
                 assert!(
                     cell.fg == Color::White || cell.fg == Color::Yellow,
@@ -242,7 +247,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(buf[(0, 1)].bg, Color::Rgb(3, 3, 4));
-        assert_eq!(buf[(area.width - 1, 0)].bg, Color::Rgb(3, 3, 4));
+        assert_eq!(buf.cell((0, 1)).map(|c| c.bg), Some(Color::Rgb(3, 3, 4)));
+        assert_eq!(
+            buf.cell((area.width - 1, 0)).map(|c| c.bg),
+            Some(Color::Rgb(3, 3, 4))
+        );
     }
 }

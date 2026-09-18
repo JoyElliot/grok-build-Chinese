@@ -7,7 +7,8 @@ use std::task::{Context, Poll};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::coordinator::active_message::{ActiveChildGeneration, ActiveMessageLifecycle};
+use super::coordinator::ActiveChildGeneration;
+use super::coordinator::active_message::ActiveMessageLifecycle;
 use super::types::{
     ActiveAgentMessageDelivery, ActiveSubagentSummary, AgentAddress, SubagentCompletionSummary,
     SubagentDescribeOutcome, SubagentInspection, SubagentRequest, SubagentResult,
@@ -101,6 +102,8 @@ pub struct ChildRunRequest<C> {
     pub cancellation: CancellationToken,
     pub reporter: ChildReporter<C>,
     pub attempt_id: xai_message_delivery_core::AttemptId,
+    pub generation: super::root_control::AgentMessageGeneration,
+    pub agent_message_sender: Option<super::types::AgentMessageSender>,
     pub wake_origin: Option<WakeOrigin>,
     /// Time parked in the admission queue; `None` if admitted immediately.
     pub queued_for: Option<std::time::Duration>,
@@ -146,6 +149,7 @@ pub struct ChildCompletion<D> {
 /// `Send` futures.
 pub trait ChildRunner: 'static {
     type Control: ChildControl;
+    type RootControl: super::root_control::RootControl;
     type CompletionData: Default + 'static;
     type RunFuture: Future<Output = ChildRunOutput<Self::CompletionData>> + 'static;
     type ValidateFuture: Future<Output = SubagentValidateTypeOutcome> + 'static;
@@ -175,6 +179,21 @@ pub trait ChildRunner: 'static {
 
     /// Whether `run` can continue a woken agent's persisted session in place.
     fn supports_wake(&self) -> bool;
+
+    fn supports_agent_message_sender(&self) -> bool {
+        false
+    }
+
+    fn resolve_root(
+        &self,
+        _agent_id: &xai_message_delivery_core::AgentId,
+    ) -> Option<Self::RootControl> {
+        None
+    }
+
+    fn resolve_root_session(&self, _session_id: &str) -> Option<Self::RootControl> {
+        None
+    }
 
     fn running_count_changed(&self, _running: usize) {}
 
@@ -414,6 +433,15 @@ pub(super) struct DisplacedCompletedChild {
     pub(super) completed: Box<CompletedChild>,
 }
 
+/// Set at the cancel sites; a wake rollback reads it because host rejections cancel the token too.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PendingDisposition {
+    #[default]
+    Live,
+    /// A user or owner cancel: the prior completed record must not be re-woken.
+    Cancelled,
+}
+
 pub(super) struct PendingChild {
     pub(super) request: SubagentRequest,
     pub(super) started_at: std::time::Instant,
@@ -422,9 +450,12 @@ pub(super) struct PendingChild {
     pub(super) foreground_deadline: Option<tokio::time::Instant>,
     pub(super) handle_only: bool,
     pub(super) explicitly_killed: bool,
+    pub(super) disposition: PendingDisposition,
     /// False when the record was synthesized for a spawn that never reached
     /// the runner (admission reject, cancelled while queued).
     pub(super) launched: bool,
+    pub(super) attempt_id: xai_message_delivery_core::AttemptId,
+    pub(super) generation: ActiveChildGeneration,
     pub(super) agent_address: Option<AgentAddress>,
     /// Pre-reparent spawner session for a nested spawn. Human sends from it
     /// stay owned only while that session can be given the live address.
@@ -443,12 +474,14 @@ pub(super) struct ActiveChild<C> {
     /// `Outstanding` accounting even while the spawn caller block-awaits.
     pub(super) definition_background: bool,
     pub(super) explicitly_killed: bool,
+    pub(super) disposition: PendingDisposition,
     pub(super) child_session_id: String,
     pub(super) persona: Option<String>,
     pub(super) resumed_from: Option<String>,
     pub(super) child_cwd: String,
     pub(super) worktree_path: Option<String>,
     pub(super) effective_model_id: String,
+    pub(super) attempt_id: xai_message_delivery_core::AttemptId,
     pub(super) generation: ActiveChildGeneration,
     pub(super) agent_address: Option<AgentAddress>,
     /// See [`PendingChild::spawner_session_id`].
@@ -473,6 +506,7 @@ pub(super) struct CompletedChild {
     pub(super) effective_model_id: String,
     pub(super) agent_address: Option<AgentAddress>,
     pub(super) spawner_session_id: Option<String>,
+    pub(super) wake_eligible: bool,
     pub(super) result: SubagentResult,
 }
 
@@ -606,6 +640,13 @@ impl<C> ChildRecord<C> {
         match self {
             Self::Pending(child) => child.explicitly_killed,
             Self::Active(child) => child.explicitly_killed,
+        }
+    }
+
+    pub(super) fn attempt_id(&self) -> &xai_message_delivery_core::AttemptId {
+        match self {
+            Self::Pending(child) => &child.attempt_id,
+            Self::Active(child) => &child.attempt_id,
         }
     }
 

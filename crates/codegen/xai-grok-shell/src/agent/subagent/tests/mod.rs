@@ -570,11 +570,11 @@ async fn subagent_inherits_session_cli_overrides() {
         .expect("cli agent resolves");
     assert_eq!(
             def.session_tools_allowlist.as_deref(),
-            Some(&["read_file".into(), "grep".into()][..])
+            Some(["read_file".into(), "grep".into()].as_slice())
         );
     assert_eq!(
             def.session_tools_denylist.as_deref(),
-            Some(&["web_search".into(), "write".into()][..])
+            Some(["web_search".into(), "write".into()].as_slice())
         );
     assert_eq!(def.disallowed_tools, vec!["write"]);
     assert_eq!(def.permission_mode, PermissionMode::AcceptEdits);
@@ -645,7 +645,12 @@ async fn emit_subagent_notification_stamps_one_event_id_on_both_paths() {
                     args.request.params.get(),
                 )
                 .unwrap();
-            params["_meta"]["eventId"].as_str().unwrap().to_string()
+            params
+                .get("_meta")
+                .and_then(|m| m.get("eventId"))
+                .and_then(|v| v.as_str())
+                .expect("broadcast must carry eventId")
+                .to_string()
         }
         _ => panic!("expected ExtNotification"),
     };
@@ -904,7 +909,11 @@ fn inject_subagent_completed_prompt_copies_capped_task_output() {
                  <subagent_meta>id=sa-1, "
             )),
             "{}",
-            &prompt[prompt.len() - 400..]
+            prompt
+                .len()
+                .checked_sub(400)
+                .and_then(|i| prompt.get(i..))
+                .unwrap_or(prompt.as_str())
         );
     let len = prompt.len();
     let threshold = crate::session::acp_session::LARGE_PROMPT_THRESHOLD;
@@ -1292,7 +1301,7 @@ fn forked_initial_context_normalizes_parent_history() {
     assert!(ctx.copy_error.is_none());
     assert_eq!(ctx.prefix_len, Some(2));
     assert_eq!(ctx.conversation.len(), 2);
-    if let ConversationItem::User(ref u) = ctx.conversation[1] {
+    if let Some(ConversationItem::User(u)) = ctx.conversation.get(1) {
         let text: String = u
             .content
             .iter()
@@ -1327,7 +1336,7 @@ fn forked_initial_context_inherits_parent_across_reasoning() {
     assert_eq!(ctx.source, InitialContextSource::Forked);
     assert_eq!(ctx.prefix_len, Some(2));
     assert_eq!(ctx.conversation.len(), 2);
-    if let ConversationItem::User(ref u) = ctx.conversation[1] {
+    if let Some(ConversationItem::User(u)) = ctx.conversation.get(1) {
         let text: String = u
             .content
             .iter()
@@ -1391,7 +1400,7 @@ fn forked_initial_context_applies_fork_filter_before_normalize() {
         ];
     let ctx = forked_initial_context(items);
     assert_eq!(ctx.source, InitialContextSource::Forked);
-    if let ConversationItem::User(ref u) = ctx.conversation[1] {
+    if let Some(ConversationItem::User(u)) = ctx.conversation.get(1) {
         let text: String = u
             .content
             .iter()
@@ -1423,7 +1432,7 @@ fn verbatim_fork_keeps_items_byte_for_byte_when_small() {
                 content: vec![ContentPart::Text {
                     text: "SYNTHETIC_KEEP_ME".into(),
                 }],
-                synthetic_reason: Some(SyntheticReason::SystemReminder),
+                synthetic_reason: SyntheticReason::SystemReminder,
                 ..Default::default()
             }),
             ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(
@@ -1439,7 +1448,10 @@ fn verbatim_fork_keeps_items_byte_for_byte_when_small() {
         );
     assert_eq!(ctx.prefix_len, Some(5));
     assert_eq!(ctx.conversation.len(), 5);
-    assert!(matches!(ctx.conversation[0], ConversationItem::System(_)));
+    assert!(matches!(
+            ctx.conversation.first(),
+            Some(ConversationItem::System(_))
+        ));
     assert!(matches!(
             ctx.conversation.last(),
             Some(ConversationItem::Assistant(_))
@@ -1465,7 +1477,7 @@ fn verbatim_fork_keeps_items_byte_for_byte_when_small() {
     assert!(
             ctx.conversation
                 .iter()
-                .any(|i| matches!(i, ConversationItem::User(u) if u.synthetic_reason.is_some())),
+                .any(|i| matches!(i, ConversationItem::User(u) if !u.synthetic_reason.is_human())),
             "the synthetic_reason marker itself must remain in the verbatim mirror"
         );
     assert!(
@@ -1799,9 +1811,18 @@ async fn bootstrap_fork_live_parent_chat_state_is_forked_with_marker() {
                 );
             assert_eq!(ic.conversation.len(), 3);
             assert_eq!(ic.prefix_len, Some(3));
-            assert!(matches!(ic.conversation[0], ConversationItem::System(_)));
-            assert!(matches!(ic.conversation[1], ConversationItem::User(_)));
-            assert!(matches!(ic.conversation[2], ConversationItem::Assistant(_)));
+            assert!(matches!(
+                    ic.conversation.first(),
+                    Some(ConversationItem::System(_))
+                ));
+            assert!(matches!(
+                    ic.conversation.get(1),
+                    Some(ConversationItem::User(_))
+                ));
+            assert!(matches!(
+                    ic.conversation.get(2),
+                    Some(ConversationItem::Assistant(_))
+                ));
             let text: String = ic
                 .conversation
                 .iter()
@@ -2453,42 +2474,9 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
     crate::agent::config::ModelEntry {
         bundled_catalog_entry: false,
         info: crate::agent::config::ModelInfo {
-            user_selectable: true,
-            id: None,
-            model_family: None,
             model: model_id.to_string(),
-            base_url: String::new(),
-            name: None,
-            description: None,
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            api_backend: Default::default(),
-            auth_scheme: Default::default(),
-            extra_headers: Default::default(),
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(256_000).unwrap(),
-            auto_compact_threshold_percent: None,
-            system_prompt_label: None,
-            use_concise: false,
-            agent_type: crate::agent::config::default_agent_type(),
-            inference_idle_timeout_secs: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            subagent_rate_limit_max_attempts: None,
-            hidden: false,
-            supported_in_api: true,
-            reasoning_effort: None,
-            supports_reasoning_effort: false,
-            reasoning_efforts: Vec::new(),
-            supports_backend_search: false,
-            compactions_remaining: None,
-            compaction_at_tokens: None,
-            show_model_fingerprint: false,
-            stream_tool_calls: None,
-            laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
-            variants: Vec::new(),
+            ..Default::default()
         },
         mtls_cert_dir: None,
         api_key: None,
@@ -2698,27 +2686,15 @@ fn normalize_forked_context_empty_parent() {
     );
     assert_eq!(conv.len(), 1);
     assert_eq!(prefix_len, 1);
-    assert!(matches!(conv[0], ConversationItem::System(_)));
+    assert!(matches!(conv.first(), Some(ConversationItem::System(_))));
 }
 fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingConfig {
     use std::num::NonZeroU64;
     xai_grok_sampling_types::SamplingConfig {
         base_url: "https://api.test/v1".to_string(),
-        mtls_cert_dir: None,
         model: model_slug.to_string(),
-        max_completion_tokens: None,
-        temperature: None,
-        top_p: None,
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        api_backend: Default::default(),
-        extra_headers: Default::default(),
-        conversation_group_id: None,
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(256_000).expect("non-zero context window"),
-        reasoning_effort: None,
-        stream_tool_calls: None,
+        ..Default::default()
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

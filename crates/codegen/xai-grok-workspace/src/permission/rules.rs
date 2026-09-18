@@ -115,18 +115,31 @@ pub fn parse_permission_rule(
     // Try to extract tool prefix: "ToolName(" ... ")"
     // Use escape-aware parsing to handle \( and \) in content.
     if let Some(open_paren) = find_first_unescaped(rule, b'(') {
-        let prefix = &rule[..open_paren];
+        let Some(prefix) = rule.get(..open_paren) else {
+            return Err(RuleParseError::MalformedRule {
+                detail: "missing opening parenthesis".to_string(),
+            });
+        };
         let prefix_trimmed = prefix.trim();
 
         // Find last unescaped closing paren
-        let content_and_close = &rule[open_paren + 1..];
+        let Some(content_and_close) = rule.get(open_paren + 1..) else {
+            return Err(RuleParseError::MalformedRule {
+                detail: "missing closing parenthesis".to_string(),
+            });
+        };
         let close_paren = find_last_unescaped(content_and_close, b')').ok_or_else(|| {
             RuleParseError::MalformedRule {
                 detail: "missing closing parenthesis".to_string(),
             }
         })?;
 
-        let raw_content = content_and_close[..close_paren].trim();
+        let Some(raw_content) = content_and_close.get(..close_paren) else {
+            return Err(RuleParseError::MalformedRule {
+                detail: "missing closing parenthesis".to_string(),
+            });
+        };
+        let raw_content = raw_content.trim();
         // Empty content or a standalone wildcard means a tool-wide rule
         let pattern = if raw_content.is_empty() || raw_content == "*" {
             String::new()
@@ -248,7 +261,7 @@ pub(crate) fn tool_name_to_filter(name: &str) -> Option<ToolFilter> {
 pub(crate) fn is_unescaped(bytes: &[u8], pos: usize) -> bool {
     let mut backslashes = 0usize;
     let mut j = pos;
-    while j > 0 && bytes[j - 1] == b'\\' {
+    while j > 0 && bytes.get(j - 1) == Some(&b'\\') {
         backslashes += 1;
         j -= 1;
     }
@@ -268,7 +281,7 @@ pub(crate) fn find_last_unescaped(s: &str, target: u8) -> Option<usize> {
     let bytes = s.as_bytes();
     (0..bytes.len())
         .rev()
-        .find(|&i| bytes[i] == target && is_unescaped(bytes, i))
+        .find(|&i| bytes.get(i) == Some(&target) && is_unescaped(bytes, i))
 }
 
 /// Unescape rule content: `\(` → `(`, `\)` → `)`, `\\` → `\`.

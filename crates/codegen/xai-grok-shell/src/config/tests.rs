@@ -48,7 +48,10 @@ args = ["--path", "${GROK_TEST_CONFIG_EXPAND}/data"]
             let command = test.get("command").and_then(|v| v.as_str()).unwrap();
             assert_eq!(command, "expanded/bin/server");
             let args = test.get("args").and_then(|v| v.as_array()).unwrap();
-            assert_eq!(args[1].as_str().unwrap(), "expanded/data");
+            let Some(arg) = args.get(1) else {
+                panic!("expected args[1]: {args:?}");
+            };
+            assert_eq!(arg.as_str().unwrap(), "expanded/data");
         },
     );
 }
@@ -153,12 +156,29 @@ fn memory_config_legacy_wrapper_matches_tri_state_override() {
 fn memory_config_from_toml() {
     without_grok_memory(|| {
         let config: toml::Value = toml::from_str(
-                "[memory]\nenabled = true\nmode = \"v2\"",
+                "[memory]\nenabled = false\n[memory_v2]\nenabled = true",
             )
             .unwrap();
         let mem = MemoryConfig::resolve(false, false, &config, None);
         assert!(mem.enabled);
         assert_eq!(mem.mode, crate::config::MemoryMode::V2);
+    });
+}
+#[test]
+fn standalone_memory_mode_honors_remote_v2_enrollment() {
+    without_grok_memory(|| {
+        let config = toml::Value::Table(toml::map::Map::new());
+        let remote = crate::util::config::RemoteSettings {
+            memory_v2: Some(crate::config::MemoryV2Settings {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+                super::resolve_standalone_memory_mode(&config, Some(&remote)),
+                crate::config::MemoryMode::V2
+            );
     });
 }
 #[test]
@@ -176,9 +196,9 @@ fn public_memory_config_deserializes_with_skipped_defaults() {
     assert!(!config.flat_memory_root);
 }
 #[test]
-fn invalid_memory_mode_is_rejected() {
+fn invalid_memory_v2_rollout_is_rejected() {
     let invalid: toml::Value = toml::from_str(
-            "[memory]\nenabled = true\nmode = \"unknown\"",
+            "[memory_v2]\nenabled = true\nrollout = \"unknown\"",
         )
         .unwrap();
     assert!(crate::agent::config::Config::new_from_toml_cfg(&invalid).is_err());
@@ -288,12 +308,14 @@ fn memory_config_env_zero_force_disables_toml_enabled() {
     with_grok_memory(
         "0",
         || {
-            let config: toml::Value = toml::from_str("[memory]\nenabled = true")
+            let config: toml::Value = toml::from_str(
+                    "[memory]\nenabled = true\n[memory_v2]\nenabled = true",
+                )
                 .unwrap();
             let mem = MemoryConfig::resolve(false, false, &config, None);
             assert!(
                 !mem.enabled,
-                "GROK_MEMORY=0 should force-disable even when TOML enables memory"
+                "GROK_MEMORY=0 should force-disable both legacy and v2 TOML gates"
             );
         },
     );
@@ -360,12 +382,16 @@ fn memory_config_no_memory_overrides_remote_enabled() {
         let config = toml::Value::Table(toml::map::Map::new());
         let remote = crate::util::config::RemoteSettings {
             memory_enabled: Some(true),
+            memory_v2: Some(crate::config::MemoryV2Settings {
+                enabled: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let mem = MemoryConfig::resolve(false, true, &config, Some(&remote));
         assert!(
                 !mem.enabled,
-                "--no-memory should override remote memory_enabled=true"
+                "--no-memory should override both remote memory gates"
             );
     });
 }
@@ -388,9 +414,17 @@ fn memory_config_defaults_are_correct() {
         assert!((mem.search.temporal_decay.half_life_days - 30.0).abs() < f64::EPSILON);
         assert!(mem.search.mmr.enabled);
         assert!((mem.search.mmr.lambda - 0.7).abs() < f64::EPSILON);
-        assert!((mem.search.source_weights["workspace"] - 1.0).abs() < f32::EPSILON);
-        assert!((mem.search.source_weights["session"] - 1.0).abs() < f32::EPSILON);
-        assert!((mem.search.source_weights["global"] - 1.0).abs() < f32::EPSILON);
+        let weight = |key| {
+            mem
+                .search
+                .source_weights
+                .get(key)
+                .copied()
+                .unwrap_or_else(|| panic!("missing source weight {key}"))
+        };
+        assert!((weight("workspace") - 1.0).abs() < f32::EPSILON);
+        assert!((weight("session") - 1.0).abs() < f32::EPSILON);
+        assert!((weight("global") - 1.0).abs() < f32::EPSILON);
         assert!(mem.initial_injection.enabled);
         assert_eq!(mem.initial_injection.min_score, Some(0.9));
         assert!(mem.session.save_on_end);
@@ -498,7 +532,10 @@ hard_clear_age_turns = 20
         assert_eq!(mem.initial_injection.min_score, Some(0.8));
         assert!(mem.search.temporal_decay.enabled);
         assert!((mem.search.temporal_decay.half_life_days - 14.0).abs() < f64::EPSILON);
-        assert!((mem.search.source_weights["global"] - 0.5).abs() < f32::EPSILON);
+        let Some(&global) = mem.search.source_weights.get("global") else {
+            panic!("missing source weight global");
+        };
+        assert!((global - 0.5).abs() < f32::EPSILON);
         assert!(!mem.session.save_on_end);
         assert!(!mem.flush.enabled);
         assert_eq!(mem.flush.soft_threshold_tokens, 8000);
@@ -2376,8 +2413,11 @@ fn validate_roles_catches_empty_description() {
     let cfg: SubagentsConfig = toml::from_str(toml_str).unwrap();
     let errors = cfg.validate_roles();
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].0, "bad");
-    assert!(errors[0].1.contains("description is required"));
+    let Some((name, msg)) = errors.first() else {
+        panic!("expected one role error: {errors:?}");
+    };
+    assert_eq!(name.as_str(), "bad");
+    assert!(msg.contains("description is required"));
 }
 #[test]
 fn validate_roles_catches_invalid_capability_mode() {
@@ -2389,8 +2429,11 @@ fn validate_roles_catches_invalid_capability_mode() {
     let cfg: SubagentsConfig = toml::from_str(toml_str).unwrap();
     let errors = cfg.validate_roles();
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].1.contains("invalid default_capability_mode"));
-    assert!(errors[0].1.contains("readonly"));
+    let Some((_, msg)) = errors.first() else {
+        panic!("expected one role error: {errors:?}");
+    };
+    assert!(msg.contains("invalid default_capability_mode"));
+    assert!(msg.contains("readonly"));
 }
 #[test]
 fn validate_roles_passes_valid_config() {
@@ -2413,7 +2456,10 @@ fn validate_roles_catches_empty_prompt_file() {
     let cfg: SubagentsConfig = toml::from_str(toml_str).unwrap();
     let errors = cfg.validate_roles();
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].1.contains("prompt_file must not be empty"));
+    let Some((_, msg)) = errors.first() else {
+        panic!("expected one role error: {errors:?}");
+    };
+    assert!(msg.contains("prompt_file must not be empty"));
 }
 #[test]
 fn validate_roles_accepts_valid_prompt_file() {
@@ -3252,8 +3298,14 @@ fn config_layers_origins_tracks_source() {
         ..Default::default()
     };
     let origins = config_origins(&layers);
-    assert_eq!(origins["features.telemetry"], ConfigSource::ManagedConfig);
-    assert_eq!(origins["ui.theme"], ConfigSource::UserConfig);
+    assert_eq!(
+            origins.get("features.telemetry").copied(),
+            Some(ConfigSource::ManagedConfig)
+        );
+    assert_eq!(
+            origins.get("ui.theme").copied(),
+            Some(ConfigSource::UserConfig)
+        );
 }
 #[test]
 fn config_layers_origins_user_wins() {
@@ -3268,7 +3320,10 @@ fn config_layers_origins_user_wins() {
         ..Default::default()
     };
     let origins = config_origins(&layers);
-    assert_eq!(origins["features.telemetry"], ConfigSource::UserConfig);
+    assert_eq!(
+            origins.get("features.telemetry").copied(),
+            Some(ConfigSource::UserConfig)
+        );
 }
 #[test]
 fn config_layers_system_managed_lowest_priority() {
@@ -3454,7 +3509,10 @@ fn a_repeated_pin_is_reported_against_the_layer_that_decided() {
         .filter(|field| field.path == "features.session_search")
         .collect();
     assert_eq!(reported.len(), 1, "one row per pinned key");
-    assert_eq!(reported[0].source, system);
+    let Some(row) = reported.first() else {
+        panic!("expected one reported pin: {reported:?}");
+    };
+    assert_eq!(row.source, system);
 }
 /// title_refresh is not a registry row, so the loop that pins those does not reach it.
 /// An administrator pinning the title off must still outrank a user's GROK_TITLE_REFRESH, which a config-tier value would lose to.
@@ -3560,12 +3618,19 @@ fn apply_requirements_allowed_models_clamps_catalog_and_names_source() {
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
     pin_allowed_models(&mut cfg, "[models]\nallowed_models = [\"grok-4\"]\n");
     let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
+    let selectable = |id| {
+        catalog
+            .get(id)
+            .unwrap_or_else(|| panic!("expected {id}: {catalog:?}"))
+            .info
+            .user_selectable
+    };
     assert!(
-            catalog["grok-4"].info.user_selectable,
+            selectable("grok-4"),
             "signed allowlist member must stay selectable"
         );
     assert!(
-            !catalog["grok-3"].info.user_selectable,
+            !selectable("grok-3"),
             "models outside the signed set must not be selectable"
         );
     let err = crate::agent::remote_config::validate_selectable(&cfg, &catalog)
@@ -3605,16 +3670,23 @@ fn apply_requirements_allowed_models_ignores_user_catalog_key() {
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
     pin_allowed_models(&mut cfg, "[models]\nallowed_models = [\"grok-4*\"]\n");
     let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
+    let selectable = |id| {
+        catalog
+            .get(id)
+            .unwrap_or_else(|| panic!("expected {id}: {catalog:?}"))
+            .info
+            .user_selectable
+    };
     assert!(
-            catalog["grok-4"].info.user_selectable,
+            selectable("grok-4"),
             "routing slug grok-4 matches grok-4*"
         );
     assert!(
-            catalog["my-alias"].info.user_selectable,
+            selectable("my-alias"),
             "user alias whose model id is grok-4 stays selectable"
         );
     assert!(
-            !catalog["grok-4-anything"].info.user_selectable,
+            !selectable("grok-4-anything"),
             "catalog key grok-4-anything pointing at another model must not satisfy the pin"
         );
 }
@@ -3635,8 +3707,11 @@ fn apply_requirements_malformed_allowed_models_fail_closes() {
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
     pin_allowed_models(&mut cfg, "[models]\nallowed_models = \"grok-4\"\n");
     let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
+    let Some(grok4) = catalog.get("grok-4") else {
+        panic!("expected grok-4: {catalog:?}");
+    };
     assert!(
-            !catalog["grok-4"].info.user_selectable,
+            !grok4.info.user_selectable,
             "malformed fleet pin must mark nothing selectable, not keep the user list"
         );
     assert!(
@@ -3677,8 +3752,15 @@ fn apply_requirements_allowed_models_empty_array_is_unrestricted() {
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
     pin_allowed_models(&mut cfg, "[models]\nallowed_models = []\n");
     let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
+    let selectable = |id| {
+        catalog
+            .get(id)
+            .unwrap_or_else(|| panic!("expected {id}: {catalog:?}"))
+            .info
+            .user_selectable
+    };
     assert!(
-            catalog["grok-3"].info.user_selectable && catalog["grok-4"].info.user_selectable,
+            selectable("grok-3") && selectable("grok-4"),
             "empty fleet array must not restrict"
         );
     assert!(
@@ -3714,9 +3796,16 @@ fn apply_requirements_allowed_models_replaces_user_list() {
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
     pin_allowed_models(&mut cfg, "[models]\nallowed_models = [\"grok-4\"]\n");
     let catalog = crate::agent::remote_config::resolve_model_catalog(&cfg, None);
-    assert!(catalog["grok-4"].info.user_selectable);
+    let selectable = |id| {
+        catalog
+            .get(id)
+            .unwrap_or_else(|| panic!("expected {id}: {catalog:?}"))
+            .info
+            .user_selectable
+    };
+    assert!(selectable("grok-4"));
     assert!(
-            !catalog["grok-3"].info.user_selectable,
+            !selectable("grok-3"),
             "user * must not union with the fleet pin"
         );
 }
@@ -3925,7 +4014,10 @@ fn project_overlay_tracks_authoritative_trust_transitions() {
         repo.path(),
         false,
     );
-    assert_eq!(untrusted_roles["shared"].description, "User role");
+    let Some(shared) = untrusted_roles.get("shared") else {
+        panic!("expected shared role: {untrusted_roles:?}");
+    };
+    assert_eq!(shared.description, "User role");
     assert!(!untrusted_roles.contains_key("project-only"));
     let (trusted_roles, trusted_personas) = SubagentsConfig::effective_definition_maps(
         &base.roles,
@@ -3933,7 +4025,10 @@ fn project_overlay_tracks_authoritative_trust_transitions() {
         repo.path(),
         true,
     );
-    assert_eq!(trusted_roles["shared"].description, "Project role");
+    let Some(shared) = trusted_roles.get("shared") else {
+        panic!("expected shared role: {trusted_roles:?}");
+    };
+    assert_eq!(shared.description, "Project role");
     assert!(trusted_personas.contains_key("project-only"));
     let (revoked_roles, _) = SubagentsConfig::effective_definition_maps(
         &base.roles,
@@ -3941,7 +4036,10 @@ fn project_overlay_tracks_authoritative_trust_transitions() {
         repo.path(),
         false,
     );
-    assert_eq!(revoked_roles["shared"].description, "User role");
+    let Some(shared) = revoked_roles.get("shared") else {
+        panic!("expected shared role: {revoked_roles:?}");
+    };
+    assert_eq!(shared.description, "User role");
     assert!(!revoked_roles.contains_key("project-only"));
 }
 #[test]
@@ -4336,8 +4434,51 @@ fn concurrent_plugin_list_writers_lose_no_updates() {
     }
     let content = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
     let config: toml::Value = toml::from_str(&content).unwrap();
-    let enabled = config["plugins"]["enabled"].as_array().unwrap();
+    let enabled = config
+        .get("plugins")
+        .and_then(|p| p.get("enabled"))
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert_eq!(enabled.len(), n, "a concurrent enable was lost:\n{content}");
+}
+/// Bind dest before load. A retarget inside `mutate` must refuse — not merge
+/// A's `[plugins]` onto B.
+#[cfg(unix)]
+#[test]
+fn update_config_toml_locked_refuses_retarget_between_read_and_write() {
+    let home = tempfile::tempdir().unwrap();
+    let a = home.path().join("a.toml");
+    let b = home.path().join("b.toml");
+    std::fs::write(&a, "[ui]\nfrom_a = true\n").unwrap();
+    std::fs::write(&b, "[ui]\nfrom_b = true\n").unwrap();
+    let link = home.path().join("config.toml");
+    std::os::unix::fs::symlink(&a, &link).unwrap();
+    let err = update_config_toml_locked(
+            home.path(),
+            |table| {
+                plugins_list_add(table, "enabled", "demo-plugin")?;
+                std::fs::remove_file(&link).unwrap();
+                std::os::unix::fs::symlink(&b, &link).unwrap();
+                Ok(true)
+            },
+        )
+        .expect_err("retarget between load and save must fail closed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("changed") || msg.contains("follow destination"),
+        "expected retarget refusal, got {msg}"
+    );
+    let raw_a = std::fs::read_to_string(&a).unwrap();
+    let raw_b = std::fs::read_to_string(&b).unwrap();
+    assert!(
+        raw_a.contains("from_a = true") && !raw_a.contains("demo-plugin"),
+        "referent A must stay unmerged:\n{raw_a}"
+    );
+    assert!(
+        raw_b.contains("from_b = true") && !raw_b.contains("demo-plugin"),
+        "must not merge A's snapshot onto B:\n{raw_b}"
+    );
+    assert_eq!(b, std::fs::read_link(&link).unwrap());
 }
 /// Pins the blocking-pool hop behind the session `[plugins]` writers: LocalSet tasks keep running during a flock poll.
 #[test]

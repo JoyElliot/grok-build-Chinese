@@ -57,7 +57,11 @@ impl PatternEditState {
     }
 
     pub fn backspace(&mut self) {
-        if let Some(ch) = self.buffer[..self.cursor].chars().next_back() {
+        if let Some(ch) = self
+            .buffer
+            .get(..self.cursor)
+            .and_then(|s| s.chars().next_back())
+        {
             self.cursor -= ch.len_utf8();
             self.buffer.remove(self.cursor);
             self.dirty = true;
@@ -72,13 +76,21 @@ impl PatternEditState {
     }
 
     pub fn move_left(&mut self) {
-        if let Some(ch) = self.buffer[..self.cursor].chars().next_back() {
+        if let Some(ch) = self
+            .buffer
+            .get(..self.cursor)
+            .and_then(|s| s.chars().next_back())
+        {
             self.cursor -= ch.len_utf8();
         }
     }
 
     pub fn move_right(&mut self) {
-        if let Some(ch) = self.buffer[self.cursor..].chars().next() {
+        if let Some(ch) = self
+            .buffer
+            .get(self.cursor..)
+            .and_then(|s| s.chars().next())
+        {
             self.cursor += ch.len_utf8();
         }
     }
@@ -792,7 +804,10 @@ pub fn render_permission_view_with_locale(
     if let Some(last_idx) = last_drawn_bash
         && last_idx + 1 < bash_lines.len()
     {
-        let text_w = bash_lines[last_idx].width() as u16;
+        let text_w = bash_lines
+            .get(last_idx)
+            .map(|l| l.width() as u16)
+            .unwrap_or(0);
         let ellipsis_x = content_x + text_w.min(content_width.saturating_sub(2));
         let ellipsis_style = Style::default().fg(theme.gray);
         buf.set_span(
@@ -860,10 +875,12 @@ pub fn render_permission_view_with_locale(
             state.bash_selection_count,
         )
     });
-    let deny_selected_words: Option<String> = state
-        .bash_highlights
-        .as_ref()
-        .map(|h| h.highlighted_words[..state.bash_deny_selection_count].join(" "));
+    let deny_selected_words: Option<String> = state.bash_highlights.as_ref().map(|h| {
+        h.highlighted_words
+            .get(..state.bash_deny_selection_count)
+            .unwrap_or(&[])
+            .join(" ")
+    });
 
     let mut inline_prompt_result: Option<InlinePromptArea> = None;
 
@@ -1008,7 +1025,11 @@ fn render_pattern_editor_line(
     }
 
     let chars: Vec<char> = edit.buffer.chars().collect();
-    let cursor_idx = edit.buffer[..edit.cursor].chars().count();
+    let cursor_idx = edit
+        .buffer
+        .get(..edit.cursor)
+        .map(|s| s.chars().count())
+        .unwrap_or(0);
     let start = (cursor_idx + 1).saturating_sub(window);
 
     let text_style = Style::default().fg(theme.text_primary);
@@ -1022,7 +1043,7 @@ fn render_pattern_editor_line(
 
     let end = (start + window).min(chars.len());
     let mut col: u16 = 0;
-    for (offset, ch) in chars[start..end].iter().enumerate() {
+    for (offset, ch) in chars.get(start..end).unwrap_or(&[]).iter().enumerate() {
         let idx = start + offset;
         let style = if idx == cursor_idx {
             caret_style
@@ -1158,7 +1179,9 @@ fn prepare_bash_display_text(command: &str) -> String {
         out.push_str(line.trim_end());
     }
     while out.ends_with('\n') {
-        let without = &out[..out.len() - 1];
+        let Some(without) = out.len().checked_sub(1).and_then(|n| out.get(..n)) else {
+            break;
+        };
         if without.ends_with('\\') {
             out.pop();
             break;
@@ -1198,7 +1221,9 @@ fn soft_wrap_row_texts<'a>(
     }
 
     let first_inside = full_breaks.partition_point(|&b| b <= line_start);
-    let mut bounds = full_breaks[first_inside..]
+    let mut bounds = full_breaks
+        .get(first_inside..)
+        .unwrap_or(&[])
         .iter()
         .copied()
         .take_while(|&b| b < line_end)
@@ -1217,7 +1242,12 @@ fn soft_wrap_row_texts<'a>(
     while pos < line.len() && out.len() < max_rows {
         let mut start = pos;
         if !first_row {
-            while start < line.len() && line.as_bytes()[start].is_ascii_whitespace() {
+            while start < line.len()
+                && line
+                    .as_bytes()
+                    .get(start)
+                    .is_some_and(|b| b.is_ascii_whitespace())
+            {
                 start += 1;
             }
             while bounds.peek().is_some_and(|&b| b <= start) {
@@ -1232,18 +1262,19 @@ fn soft_wrap_row_texts<'a>(
         let Some(mut end) = bounds.next() else {
             break;
         };
-        if UnicodeWidthStr::width(&line[start..end]) <= content_width {
+        if UnicodeWidthStr::width(line.get(start..end).unwrap_or("")) <= content_width {
             while let Some(&next_end) = bounds.peek() {
-                if UnicodeWidthStr::width(&line[start..next_end]) <= content_width {
+                if UnicodeWidthStr::width(line.get(start..next_end).unwrap_or("")) <= content_width
+                {
                     end = next_end;
                     bounds.next();
                 } else {
                     break;
                 }
             }
-            out.push(line[start..end].trim_end());
+            out.push(line.get(start..end).unwrap_or("").trim_end());
         } else {
-            let row = line[start..end].trim_end();
+            let row = line.get(start..end).unwrap_or("").trim_end();
             if UnicodeWidthStr::width(row) <= content_width {
                 out.push(row);
             } else {
@@ -1282,13 +1313,13 @@ fn bash_quote_aware_wrap(line: &str, width: usize, max_rows: usize) -> Vec<&str>
         if b <= row_start {
             continue;
         }
-        let candidate = line[row_start..b].trim_end();
+        let candidate = line.get(row_start..b).unwrap_or("").trim_end();
         if UnicodeWidthStr::width(candidate) <= width {
             last_break = b;
             continue;
         }
         if last_break > row_start {
-            let row = line[row_start..last_break].trim_end();
+            let row = line.get(row_start..last_break).unwrap_or("").trim_end();
             if !row.is_empty() {
                 rows.push(row);
                 if rows.len() >= max_rows {
@@ -1296,17 +1327,22 @@ fn bash_quote_aware_wrap(line: &str, width: usize, max_rows: usize) -> Vec<&str>
                 }
             }
             row_start = last_break;
-            while row_start < line.len() && line.as_bytes()[row_start].is_ascii_whitespace() {
+            while row_start < line.len()
+                && line
+                    .as_bytes()
+                    .get(row_start)
+                    .is_some_and(|b| b.is_ascii_whitespace())
+            {
                 row_start += 1;
             }
             last_break = row_start;
             if b > row_start {
-                let candidate = line[row_start..b].trim_end();
+                let candidate = line.get(row_start..b).unwrap_or("").trim_end();
                 if UnicodeWidthStr::width(candidate) <= width {
                     last_break = b;
                 } else {
                     let force_end = b;
-                    let row = line[row_start..force_end].trim_end();
+                    let row = line.get(row_start..force_end).unwrap_or("").trim_end();
                     if !row.is_empty() {
                         rows.push(row);
                         if rows.len() >= max_rows {
@@ -1314,7 +1350,11 @@ fn bash_quote_aware_wrap(line: &str, width: usize, max_rows: usize) -> Vec<&str>
                         }
                     }
                     row_start = force_end;
-                    while row_start < line.len() && line.as_bytes()[row_start].is_ascii_whitespace()
+                    while row_start < line.len()
+                        && line
+                            .as_bytes()
+                            .get(row_start)
+                            .is_some_and(|b| b.is_ascii_whitespace())
                     {
                         row_start += 1;
                     }
@@ -1322,7 +1362,7 @@ fn bash_quote_aware_wrap(line: &str, width: usize, max_rows: usize) -> Vec<&str>
                 }
             }
         } else {
-            let row = line[row_start..b].trim_end();
+            let row = line.get(row_start..b).unwrap_or("").trim_end();
             if !row.is_empty() {
                 rows.push(row);
                 if rows.len() >= max_rows {
@@ -1330,14 +1370,19 @@ fn bash_quote_aware_wrap(line: &str, width: usize, max_rows: usize) -> Vec<&str>
                 }
             }
             row_start = b;
-            while row_start < line.len() && line.as_bytes()[row_start].is_ascii_whitespace() {
+            while row_start < line.len()
+                && line
+                    .as_bytes()
+                    .get(row_start)
+                    .is_some_and(|b| b.is_ascii_whitespace())
+            {
                 row_start += 1;
             }
             last_break = row_start;
         }
     }
     if row_start < line.len() && rows.len() < max_rows {
-        let row = line[row_start..].trim_end();
+        let row = line.get(row_start..).unwrap_or("").trim_end();
         if !row.is_empty() {
             rows.push(row);
         }
@@ -1368,7 +1413,7 @@ impl Iterator for QuoteAwareBreakPoints<'_> {
 
     fn next(&mut self) -> Option<usize> {
         while self.i < self.bytes.len() {
-            let c = self.bytes[self.i];
+            let c = *self.bytes.get(self.i)?;
             if self.in_single {
                 if c == b'\'' {
                     self.in_single = false;
@@ -1398,7 +1443,12 @@ impl Iterator for QuoteAwareBreakPoints<'_> {
                 }
                 b if b.is_ascii_whitespace() => {
                     let start = self.i;
-                    while self.i < self.bytes.len() && self.bytes[self.i].is_ascii_whitespace() {
+                    while self.i < self.bytes.len()
+                        && self
+                            .bytes
+                            .get(self.i)
+                            .is_some_and(|b| b.is_ascii_whitespace())
+                    {
                         self.i += 1;
                     }
                     if start > 0 {
@@ -1871,12 +1921,12 @@ pub(crate) fn allow_scope_label(
         && n > 0
         && h.prefix.is_empty()
         && h.suffix.is_empty()
-        && words[..n]
-            .iter()
-            .any(|w| w.chars().any(char::is_whitespace));
+        && words
+            .get(..n)
+            .is_some_and(|w| w.iter().any(|w| w.chars().any(char::is_whitespace)));
     match raw_command.filter(|_| uses_raw_key) {
         Some(raw) => raw.to_owned(),
-        None => words[..n].join(" "),
+        None => words.get(..n).unwrap_or(&[]).join(" "),
     }
 }
 
@@ -2095,6 +2145,13 @@ mod tests {
             option_label_for_selection_with_locale(&mcp, None, Some(&server_scope), Some(&locale),),
             "始终允许： 来自 Linear 的所有工具"
         );
+    }
+
+    fn at<'a, T>(xs: &'a [T], i: usize) -> &'a T {
+        match xs.get(i) {
+            Some(v) => v,
+            None => panic!("index {i} out of {}", xs.len()),
+        }
     }
 
     #[test]
@@ -2401,13 +2458,13 @@ mod tests {
         let spans = vec![Span::styled("aaaa", red), Span::styled("bbbb", blue)];
         let lines = char_wrap_spans(spans, 6);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].spans.len(), 2);
-        assert_eq!(lines[0].spans[0].content.as_ref(), "aaaa");
-        assert_eq!(lines[0].spans[0].style, red);
-        assert_eq!(lines[0].spans[1].content.as_ref(), "bb");
-        assert_eq!(lines[0].spans[1].style, blue);
-        assert_eq!(lines[1].spans[0].content.as_ref(), "bb");
-        assert_eq!(lines[1].spans[0].style, blue);
+        assert_eq!(at(&lines, 0).spans.len(), 2);
+        assert_eq!(at(&at(&lines, 0).spans, 0).content.as_ref(), "aaaa");
+        assert_eq!(at(&at(&lines, 0).spans, 0).style, red);
+        assert_eq!(at(&at(&lines, 0).spans, 1).content.as_ref(), "bb");
+        assert_eq!(at(&at(&lines, 0).spans, 1).style, blue);
+        assert_eq!(at(&at(&lines, 1).spans, 0).content.as_ref(), "bb");
+        assert_eq!(at(&at(&lines, 1).spans, 0).style, blue);
     }
 
     #[test]
@@ -2480,7 +2537,11 @@ mod tests {
         let text: String = (0..area.height)
             .map(|row| {
                 (0..area.width)
-                    .map(|col| buf[(col, row)].symbol().to_string())
+                    .map(|col| {
+                        buf.cell((col, row))
+                            .map(|c| c.symbol().to_string())
+                            .unwrap_or_default()
+                    })
                     .collect::<String>()
                     + "\n"
             })
@@ -2542,7 +2603,11 @@ mod tests {
         (0..area.height)
             .map(|row| {
                 (area.x..area.x + area.width)
-                    .map(|col| buf[(col, row)].symbol().to_string())
+                    .map(|col| {
+                        buf.cell((col, row))
+                            .map(|c| c.symbol().to_string())
+                            .unwrap_or_default()
+                    })
                     .collect::<String>()
                     + "\n"
             })
@@ -2807,7 +2872,7 @@ mod tests {
             .join("\n");
         let rows = build_raw_bash_lines(&script, 80, 4);
         assert_eq!(rows.len(), 4);
-        assert_eq!(row_text(&rows[3]), "echo line3");
+        assert_eq!(row_text(at(&rows, 3)), "echo line3");
         assert!(build_raw_bash_lines(&script, 80, 0).is_empty());
     }
 
@@ -2836,7 +2901,7 @@ mod tests {
         assert!(all.len() > 3, "expected several rows, got {all:?}");
         let capped = soft_wrap_row_texts(line, 0, &breaks, &[], 5, 3);
         assert_eq!(capped.len(), 3);
-        assert_eq!(&all[..3], &capped[..]);
+        assert_eq!(all.get(..3).unwrap_or(&[]), capped.as_slice());
         assert!(soft_wrap_row_texts(line, 0, &breaks, &[], 5, 0).is_empty());
 
         let op_line = "echo a && echo b && echo c && echo d && echo e";
@@ -2845,7 +2910,7 @@ mod tests {
         assert!(op_all.len() > 2, "expected several rows, got {op_all:?}");
         let op_capped = soft_wrap_row_texts(op_line, 0, &op_breaks, &[], 10, 2);
         assert_eq!(op_capped.len(), 2);
-        assert_eq!(&op_all[..2], &op_capped[..]);
+        assert_eq!(op_all.get(..2).unwrap_or(&[]), op_capped.as_slice());
     }
 
     #[test]
@@ -2900,7 +2965,7 @@ mod tests {
         let capped = soft_wrap_row_texts(&script, 0, &breaks, &[], 12, 4);
         assert_eq!(capped.len(), 4);
         let wider = soft_wrap_row_texts(&script, 0, &breaks, &[], 12, 8);
-        assert_eq!(&wider[..4], &capped[..]);
+        assert_eq!(wider.get(..4).unwrap_or(&[]), capped.as_slice());
         let last = capped.last().unwrap();
         let consumed = (last.as_ptr() as usize - script.as_ptr() as usize) + last.len();
         assert!(
@@ -3105,7 +3170,7 @@ mod tests {
             "expected operator split, got {} rows",
             rows.len()
         );
-        let first = rows[0];
+        let first = at(&rows, 0);
         assert!(
             first.contains("&&"),
             "first row should keep the operator: {first:?}"
@@ -3114,7 +3179,7 @@ mod tests {
             !first.contains("cargo"),
             "cargo should be on a later row, not packed with git: {first:?}"
         );
-        let second = rows[1];
+        let second = at(&rows, 1);
         assert!(
             !second.starts_with(' '),
             "no leading space on continuation row: {second:?}"
@@ -3200,7 +3265,7 @@ mod tests {
         let width = 28;
         assert!(UnicodeWidthStr::width(line) > width);
         let rows = soft_wrap_row_texts(line, 0, &breaks, &[], width, usize::MAX);
-        let first = rows[0];
+        let first = at(&rows, 0);
         assert!(
             first.contains(r#""keep && together""#),
             "quoted && must stay on the first row: {first:?}"
@@ -3249,7 +3314,7 @@ mod tests {
             1,
             "heredoc body must stay one row even when narrow: {rows:?}"
         );
-        assert_eq!(rows[0], body_line);
+        assert_eq!(*at(&rows, 0), body_line);
     }
 
     #[test]
@@ -3317,7 +3382,7 @@ mod tests {
         let flat: Vec<String> = lines.iter().map(row_text).collect();
         let expected: Vec<&str> = script.split('\n').collect();
         assert_eq!(flat, expected, "body must be the raw script, line for line");
-        assert_eq!(flat[2], "");
+        assert_eq!(at(&flat, 2), "");
         for line in &lines {
             for span in &line.spans {
                 assert!(
@@ -3395,9 +3460,9 @@ mod tests {
     fn interior_blank_line_renders_empty_row() {
         let lines = build_raw_bash_lines("echo a\n\necho b", 80, usize::MAX);
         assert_eq!(lines.len(), 3, "blank separator must keep its row");
-        assert_eq!(lines[1].width(), 0, "separator row must be empty");
-        assert_eq!(row_text(&lines[0]), "echo a");
-        assert_eq!(row_text(&lines[2]), "echo b");
+        assert_eq!(at(&lines, 1).width(), 0, "separator row must be empty");
+        assert_eq!(row_text(at(&lines, 0)), "echo a");
+        assert_eq!(row_text(at(&lines, 2)), "echo b");
     }
 
     #[test]

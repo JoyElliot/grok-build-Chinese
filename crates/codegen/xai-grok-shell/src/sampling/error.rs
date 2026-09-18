@@ -70,8 +70,9 @@ fn strip_sampling_api_error_prefix(detail: &str) -> &str {
     const SEP: &str = "): ";
     if let Some(rest) = detail.strip_prefix(PREFIX)
         && let Some(idx) = rest.find(SEP)
+        && let Some(body) = rest.get(idx + SEP.len()..)
     {
-        return rest[idx + SEP.len()..].trim();
+        return body.trim();
     }
     detail.trim()
 }
@@ -181,7 +182,9 @@ pub(crate) fn error_data_with_status(
 
 pub(crate) fn local_error(code: &str, message: impl Into<String>) -> acp::Error {
     let mut data = serde_json::json!({ "message": message.into() });
-    data[ERROR_CODE_DATA_KEY] = serde_json::json!(code);
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert(ERROR_CODE_DATA_KEY.to_string(), serde_json::json!(code));
+    }
     acp::Error::internal_error().data(data)
 }
 
@@ -212,9 +215,14 @@ pub(crate) fn terminal_error_data(
         return error_data_with_status(message, http_status);
     }
     let mut data = serde_json::json!({ "message": message });
-    data[ERROR_KIND_DATA_KEY] = serde_json::json!(kind.as_ref());
-    if let Some(sc) = http_status {
-        data["http_status"] = serde_json::json!(sc);
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert(
+            ERROR_KIND_DATA_KEY.to_string(),
+            serde_json::json!(kind.as_ref()),
+        );
+        if let Some(sc) = http_status {
+            obj.insert("http_status".to_string(), serde_json::json!(sc));
+        }
     }
     data
 }
@@ -287,13 +295,17 @@ fn replace_ascii_case_insensitive(text: &str, pattern: &str, replacement: &str) 
     let lower_pattern = pattern.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len());
     let mut idx = 0;
-    while let Some(pos) = lower_text[idx..].find(&lower_pattern) {
+    while let Some(pos) = lower_text.get(idx..).and_then(|s| s.find(&lower_pattern)) {
         let start = idx + pos;
-        out.push_str(&text[idx..start]);
+        if let Some(chunk) = text.get(idx..start) {
+            out.push_str(chunk);
+        }
         out.push_str(replacement);
         idx = start + pattern.len();
     }
-    out.push_str(&text[idx..]);
+    if let Some(tail) = text.get(idx..) {
+        out.push_str(tail);
+    }
     out
 }
 

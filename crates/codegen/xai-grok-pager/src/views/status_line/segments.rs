@@ -113,26 +113,15 @@ pub fn compose_builtin(
                 .map(|usd| StatusSegment::dim(format!("${usd:.2}"))),
             StatusLineItem::TurnTimer => {
                 let secs = turn_elapsed?.as_secs();
-                let seconds = locale
-                    .map(|locale| {
-                        locale
-                            .named_text("status_line.unit.seconds", "s")
-                            .into_owned()
-                    })
-                    .unwrap_or_else(|| "s".to_string());
-                let minutes = locale
-                    .map(|locale| {
-                        locale
-                            .named_text("status_line.unit.minutes", "m")
-                            .into_owned()
-                    })
-                    .unwrap_or_else(|| "m".to_string());
-                let text = match secs {
-                    0 => return None,
-                    s if s < 60 => format!("{s}{seconds}"),
-                    s => format!("{}{minutes}{:02}{seconds}", s / 60, s % 60),
-                };
-                Some(StatusSegment::dim(text))
+                if secs == 0 {
+                    return None;
+                }
+                Some(StatusSegment::dim(
+                    crate::views::goal_detail::format_elapsed_with_locale(
+                        secs.saturating_mul(1000),
+                        locale,
+                    ),
+                ))
             }
             StatusLineItem::SessionName => {
                 let name = ctx.session_name.as_deref().filter(|s| !s.is_empty())?;

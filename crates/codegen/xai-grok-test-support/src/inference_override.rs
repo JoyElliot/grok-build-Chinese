@@ -1,3 +1,7 @@
+//! What answers an inference request ahead of the fallback modes, tried in this order: a named
+//! expectation matching the request, the endpoint's compatibility FIFO, the required auth check,
+//! the request's conversation script, then the concurrency cap.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,54 +10,14 @@ use std::time::Duration;
 use axum::Json;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{Value, json};
+use serde_json::json;
 
+use crate::conversation_replay::ConversationReplay;
+use crate::failure::ObservedFailure;
+use crate::inference_request::{
+    InferenceEndpoint, InferenceRequest, InferenceRequestKind, RepostIdentity, model_name,
+};
 use crate::scripted::{BoxWait, ScriptedResponse, TerminalWait};
-
-/// Inference endpoint matched by a scripted expectation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum InferenceEndpoint {
-    ChatCompletions,
-    Responses,
-    Messages,
-}
-
-impl InferenceEndpoint {
-    pub(crate) fn path(self) -> &'static str {
-        match self {
-            Self::ChatCompletions => "/v1/chat/completions",
-            Self::Responses => "/v1/responses",
-            Self::Messages => "/v1/messages",
-        }
-    }
-}
-
-/// Coarse request kind used to keep auxiliary calls from stealing turn scripts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum InferenceRequestKind {
-    Foreground,
-    Auxiliary,
-}
-
-impl InferenceRequestKind {
-    fn classify(headers: &HeaderMap, body: &Value) -> Self {
-        if nonempty_header(headers, "x-grok-turn-idx").is_some() {
-            return Self::Foreground;
-        }
-        if nonempty_header(headers, "x-grok-req-id").is_some() {
-            return Self::Auxiliary;
-        }
-        if body
-            .get("tools")
-            .and_then(Value::as_array)
-            .is_some_and(|tools| tools.len() >= 2)
-        {
-            Self::Foreground
-        } else {
-            Self::Auxiliary
-        }
-    }
-}
 
 /// Typed match criteria for one named inference response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +29,7 @@ pub struct InferenceRequestMatcher {
 impl InferenceRequestMatcher {
     /// Match a user-facing agent turn on the selected endpoint.
     pub fn foreground(endpoint: InferenceEndpoint) -> Self {
-        Self {
+        InferenceRequestMatcher {
             endpoint,
             kind: InferenceRequestKind::Foreground,
         }
@@ -73,14 +37,14 @@ impl InferenceRequestMatcher {
 
     /// Match title, classifier, prompt-suggestion, or other side-channel work.
     pub fn auxiliary(endpoint: InferenceEndpoint) -> Self {
-        Self {
+        InferenceRequestMatcher {
             endpoint,
             kind: InferenceRequestKind::Auxiliary,
         }
     }
 
-    fn matches(self, endpoint: InferenceEndpoint, kind: InferenceRequestKind) -> bool {
-        self.endpoint == endpoint && self.kind == kind
+    fn matches(self, request: &InferenceRequest<'_>) -> bool {
+        self.endpoint == request.endpoint() && self.kind == request.kind()
     }
 }
 
@@ -123,7 +87,6 @@ impl ExpectationControl {
             .expect("expectation release sender lives with the claimed response");
     }
 
-    #[cfg(test)]
     async fn wait_claims(&self, target: usize) {
         let mut claims_rx = self.claims_tx.subscribe();
         claims_rx
@@ -164,8 +127,8 @@ impl InferenceExpectation {
         self.wait_for(ExpectationPhase::Satisfied).await;
     }
 
-    #[cfg(test)]
-    pub(crate) async fn wait_claims(&self, target: usize) {
+    /// Wait until `target` requests have claimed this expectation, overlapping duplicates included.
+    pub async fn wait_claims(&self, target: usize) {
         self.control.wait_claims(target).await;
     }
 
@@ -234,14 +197,6 @@ struct PendingExpectation {
     control: Arc<ExpectationControl>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ModelCallFingerprint {
-    endpoint: InferenceEndpoint,
-    kind: InferenceRequestKind,
-    request_id: String,
-    body: String,
-}
-
 struct CallState {
     response: ScriptedResponse,
     block_before_terminal: bool,
@@ -253,13 +208,12 @@ struct CallState {
 #[derive(Default)]
 struct ExpectationState {
     pending: VecDeque<PendingExpectation>,
-    in_flight: HashMap<ModelCallFingerprint, CallState>,
+    in_flight: HashMap<RepostIdentity, CallState>,
 }
 
 type Expectations = Arc<std::sync::Mutex<ExpectationState>>;
 type ScriptQueues = Arc<std::sync::Mutex<HashMap<String, VecDeque<ScriptedResponse>>>>;
 
-/// Default-responder concurrency cap: over `cap` in-flight (each held for `hold`), extra requests get a 429 with `Retry-After`.
 #[derive(Clone)]
 struct ConcurrencyCap {
     slots: Arc<tokio::sync::Semaphore>,
@@ -271,6 +225,7 @@ struct ConcurrencyCap {
 pub(crate) struct InferenceOverrides {
     expectations: Expectations,
     scripted: ScriptQueues,
+    conversation_scripts: ConversationReplay,
     completion_gate: Arc<CompletionGate>,
     required_token: Option<Arc<str>>,
     concurrency_cap: Arc<std::sync::Mutex<Option<ConcurrencyCap>>>,
@@ -278,13 +233,18 @@ pub(crate) struct InferenceOverrides {
 
 impl InferenceOverrides {
     pub(crate) fn new(required_token: Option<String>) -> Self {
-        Self {
+        InferenceOverrides {
             expectations: Arc::new(std::sync::Mutex::new(ExpectationState::default())),
             scripted: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            conversation_scripts: ConversationReplay::default(),
             completion_gate: Arc::new(CompletionGate::default()),
             required_token: required_token.map(Arc::from),
             concurrency_cap: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn conversation_scripts(&self) -> &ConversationReplay {
+        &self.conversation_scripts
     }
 
     pub(crate) fn set_concurrency_cap(&self, cap: usize, hold: Duration, retry_after_secs: u64) {
@@ -295,66 +255,68 @@ impl InferenceOverrides {
         });
     }
 
-    pub(crate) fn classify(
-        &self,
-        endpoint: InferenceEndpoint,
-        headers: &HeaderMap,
-        body: &Value,
-    ) -> ClassifiedInferenceRequest {
-        let kind = InferenceRequestKind::classify(headers, body);
-        let fingerprint =
-            nonempty_header(headers, "x-grok-req-id").map(|request_id| ModelCallFingerprint {
-                endpoint,
-                kind,
-                request_id: request_id.to_owned(),
-                body: serde_json::to_string(body).expect("serialize inference request fingerprint"),
-            });
-        ClassifiedInferenceRequest {
-            endpoint,
-            kind,
-            fingerprint,
-        }
-    }
-
+    /// Reports to `note_failure` what the mock decided on its own before any hold, so a stall still
+    /// shows it; an enqueued answer is what the test asked for, not a failure.
     pub(crate) async fn response_override(
         &self,
-        request: &ClassifiedInferenceRequest,
-        headers: &HeaderMap,
+        request: &InferenceRequest<'_>,
         delay: Option<Duration>,
+        note_failure: impl FnOnce(ObservedFailure),
     ) -> Option<Response> {
         if let Some(claimed) = self.claim_expectation(request) {
             let (response, wait) = claimed.into_parts();
             return Some(response.into_response_paced(delay, Some(wait)).await);
         }
 
-        if let Some(response) = self.pop_scripted(request.endpoint.path()) {
-            let wait =
-                (request.is_foreground() && response.is_sse()).then(|| self.global_terminal_wait());
+        if let Some(response) = self.pop_scripted(request.endpoint().path()) {
+            let wait = if response.is_sse() {
+                self.fallback_terminal_wait(request)
+            } else {
+                None
+            };
             return Some(response.into_response_paced(delay, wait).await);
         }
 
-        if let Some(rejection) = self.auth_rejection(headers) {
+        if let Some(rejection) = self.auth_rejection(request.headers()) {
+            note_failure(ObservedFailure::Status(401));
             return Some(rejection);
         }
 
-        // Cap only the default-responder fallthrough; scripts/expectations stay deterministic.
-        let cap = self.concurrency_cap.lock().unwrap().clone();
-        if let Some(cap) = cap {
-            match Arc::clone(&cap.slots).try_acquire_owned() {
-                Ok(permit) => {
-                    tokio::time::sleep(cap.hold).await;
-                    drop(permit);
-                }
-                Err(_) => {
-                    let mut reply = ScriptedResponse::text(429, "concurrent request cap exceeded");
-                    reply
-                        .headers
-                        .push(("retry-after".to_string(), cap.retry_after_secs.to_string()));
-                    return Some(reply.into_response_paced(delay, None).await);
-                }
+        if let Some(served) = self.conversation_scripts.respond(request) {
+            if let Some(observed) = served.observed {
+                note_failure(observed);
+            }
+            if let Some(hold) = served.hold {
+                tokio::time::sleep(hold).await;
+            }
+            let response = served
+                .reply
+                .into_response(request.endpoint(), model_name(request.body()));
+            // A refusal or a dropped connection has no terminal event to hold on the gate.
+            let wait = if response.is_sse() {
+                self.fallback_terminal_wait(request)
+            } else {
+                None
+            };
+            return Some(response.into_response_paced(delay, wait).await);
+        }
+
+        let cap = self.concurrency_cap.lock().unwrap().clone()?;
+        match Arc::clone(&cap.slots).try_acquire_owned() {
+            Ok(permit) => {
+                tokio::time::sleep(cap.hold).await;
+                drop(permit);
+                None
+            }
+            Err(_) => {
+                note_failure(ObservedFailure::Status(429));
+                let mut reply = ScriptedResponse::text(429, "concurrent request cap exceeded");
+                reply
+                    .headers
+                    .push(("retry-after".to_owned(), cap.retry_after_secs.to_string()));
+                Some(reply.into_response_paced(delay, None).await)
             }
         }
-        None
     }
 
     pub(crate) fn register_expectation(
@@ -416,9 +378,15 @@ impl InferenceOverrides {
 
     pub(crate) fn fallback_terminal_wait(
         &self,
-        request: &ClassifiedInferenceRequest,
+        request: &InferenceRequest<'_>,
     ) -> Option<TerminalWait> {
-        request.is_foreground().then(|| self.global_terminal_wait())
+        if request.kind() != InferenceRequestKind::Foreground {
+            return None;
+        }
+        let completion_gate = self.completion_gate.clone();
+        Some(Box::new(move || {
+            Box::pin(async move { completion_gate.wait_if_held().await })
+        }))
     }
 
     pub(crate) fn hold_completions(&self) {
@@ -429,13 +397,10 @@ impl InferenceOverrides {
         self.completion_gate.release();
     }
 
-    fn claim_expectation(
-        &self,
-        request: &ClassifiedInferenceRequest,
-    ) -> Option<ClaimedExpectation> {
+    fn claim_expectation(&self, request: &InferenceRequest<'_>) -> Option<ClaimedExpectation> {
         let mut expectations = self.expectations.lock().unwrap();
-        if let Some(fingerprint) = request.fingerprint.as_ref()
-            && let Some(call) = expectations.in_flight.get_mut(fingerprint)
+        if let Some(identity) = request.repost_identity()
+            && let Some(call) = expectations.in_flight.get_mut(identity)
             && call.active > 0
         {
             call.active += 1;
@@ -444,7 +409,7 @@ impl InferenceOverrides {
                 response: call.response.clone(),
                 lease: ClaimLease::new(
                     self.expectations.clone(),
-                    Some(fingerprint.clone()),
+                    Some(identity.clone()),
                     call.control.clone(),
                     call.block_before_terminal,
                     ClaimRole::Replay,
@@ -455,7 +420,7 @@ impl InferenceOverrides {
         let index = expectations
             .pending
             .iter()
-            .position(|expectation| expectation.matcher.matches(request.endpoint, request.kind))?;
+            .position(|expectation| expectation.matcher.matches(request))?;
         let expectation = expectations
             .pending
             .remove(index)
@@ -464,14 +429,14 @@ impl InferenceOverrides {
         expectation.control.claim();
         let lease = ClaimLease::new(
             self.expectations.clone(),
-            request.fingerprint.clone(),
+            request.repost_identity().cloned(),
             expectation.control.clone(),
             expectation.block_before_terminal,
             ClaimRole::Primary,
         );
-        if let Some(fingerprint) = request.fingerprint.clone() {
+        if let Some(identity) = request.repost_identity().cloned() {
             let replaced = expectations.in_flight.insert(
-                fingerprint,
+                identity,
                 CallState {
                     response: expectation.response.clone(),
                     block_before_terminal: expectation.block_before_terminal,
@@ -480,10 +445,7 @@ impl InferenceOverrides {
                     primary_crossed_terminal: false,
                 },
             );
-            assert!(
-                replaced.is_none(),
-                "duplicate in-flight model-call fingerprint"
-            );
+            assert!(replaced.is_none(), "duplicate in flight repost identity");
         }
         Some(ClaimedExpectation {
             response: expectation.response,
@@ -514,23 +476,6 @@ impl InferenceOverrides {
             )
                 .into_response(),
         )
-    }
-
-    fn global_terminal_wait(&self) -> TerminalWait {
-        let completion_gate = self.completion_gate.clone();
-        Box::new(move || Box::pin(async move { completion_gate.wait_if_held().await }))
-    }
-}
-
-pub(crate) struct ClassifiedInferenceRequest {
-    endpoint: InferenceEndpoint,
-    kind: InferenceRequestKind,
-    fingerprint: Option<ModelCallFingerprint>,
-}
-
-impl ClassifiedInferenceRequest {
-    pub(crate) fn is_foreground(&self) -> bool {
-        self.kind == InferenceRequestKind::Foreground
     }
 }
 
@@ -565,7 +510,7 @@ impl ClaimedExpectation {
 
 struct ClaimLease {
     expectations: Expectations,
-    fingerprint: Option<ModelCallFingerprint>,
+    repost_identity: Option<RepostIdentity>,
     control: Arc<ExpectationControl>,
     block_before_terminal: bool,
     role: ClaimRole,
@@ -576,14 +521,14 @@ struct ClaimLease {
 impl ClaimLease {
     fn new(
         expectations: Expectations,
-        fingerprint: Option<ModelCallFingerprint>,
+        repost_identity: Option<RepostIdentity>,
         control: Arc<ExpectationControl>,
         block_before_terminal: bool,
         role: ClaimRole,
     ) -> Self {
-        Self {
+        ClaimLease {
             expectations,
-            fingerprint,
+            repost_identity,
             control,
             block_before_terminal,
             role,
@@ -609,14 +554,14 @@ impl ClaimLease {
     }
 
     fn update_shared_state(&self) {
-        let Some(fingerprint) = self.fingerprint.as_ref() else {
+        let Some(identity) = self.repost_identity.as_ref() else {
             if matches!(&self.role, ClaimRole::Primary) && self.crossed_terminal {
                 self.control.set_phase(ExpectationPhase::Satisfied);
             }
             return;
         };
         let mut expectations = self.expectations.lock().unwrap();
-        let Some(call) = expectations.in_flight.get_mut(fingerprint) else {
+        let Some(call) = expectations.in_flight.get_mut(identity) else {
             return;
         };
         assert!(call.active > 0, "claim active count underflow");
@@ -627,7 +572,7 @@ impl ClaimLease {
         if call.active == 0 {
             let control = call.control.clone();
             let satisfied = call.primary_crossed_terminal;
-            expectations.in_flight.remove(fingerprint);
+            expectations.in_flight.remove(identity);
             if satisfied {
                 control.set_phase(ExpectationPhase::Satisfied);
             }
@@ -666,12 +611,4 @@ impl CompletionGate {
             notified.await;
         }
     }
-}
-
-fn nonempty_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }

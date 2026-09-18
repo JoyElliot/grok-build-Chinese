@@ -19,10 +19,6 @@ use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, Shortcut,
 };
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
 /// Overlay for the reset-confirm dialog.
 /// Overrides chrome breadcrumb, footer, and search bar with the confirmation prompt.
 pub struct ResetConfirmOverlay<'a> {
@@ -680,15 +676,19 @@ pub(super) fn render_rows_with_locale(
     let row_heights = compute_filtered_row_heights(state, area.width, locale);
     if let Some(fpos) = selected_fpos {
         if fpos < state.scroll_offset {
-            let new_offset = if fpos > 0 {
-                let prev_idx = state.filtered_cache[fpos - 1];
-                if matches!(state.rows[prev_idx], RowEntry::Header { .. }) {
+            let new_offset = match fpos
+                .checked_sub(1)
+                .and_then(|i| state.filtered_cache.get(i).copied())
+            {
+                Some(prev_idx)
+                    if state
+                        .rows
+                        .get(prev_idx)
+                        .is_some_and(|r| matches!(r, RowEntry::Header { .. })) =>
+                {
                     fpos - 1
-                } else {
-                    fpos
                 }
-            } else {
-                fpos
+                _ => fpos,
             };
             state.scroll_offset = new_offset;
         }
@@ -723,7 +723,11 @@ pub(super) fn render_rows_with_locale(
     let max_label_w = compute_settings_max_label_w(state.registry.all(), area.width);
 
     // Snapshot visible rows to avoid borrow conflicts in the render loop.
-    let visible_filtered: Vec<usize> = state.filtered_cache[state.scroll_offset..end].to_vec();
+    let visible_filtered: Vec<usize> = state
+        .filtered_cache
+        .get(state.scroll_offset..end)
+        .unwrap_or(&[])
+        .to_vec();
 
     let hover_row_snapshot = state.hover_row;
     let mut values: Vec<Option<SettingValue>> = Vec::with_capacity(visible_filtered.len());
@@ -765,7 +769,9 @@ pub(super) fn render_rows_with_locale(
             height: 1,
         };
 
-        state.row_rects[row_idx] = label_rect;
+        if let Some(slot) = state.row_rects.get_mut(row_idx) {
+            *slot = label_rect;
+        }
 
         rendered_any = true;
 
@@ -811,7 +817,9 @@ pub(super) fn render_rows_with_locale(
                         theme,
                         locale,
                     );
-                    state.value_hit_rects[row_idx] = value_rect;
+                    if let Some(slot) = state.value_hit_rects.get_mut(row_idx) {
+                        *slot = value_rect;
+                    }
                     y_cursor = y_cursor.saturating_add(1);
                     // Mirror normal rows: render the description inline when the group's key is expanded (Right/l)
                     // The group has no value, so this is the only place its description can appear
@@ -885,7 +893,9 @@ pub(super) fn render_rows_with_locale(
                     height: row_height,
                 };
                 // Hit-rect spans both lines for two-line rows.
-                state.row_rects[row_idx] = render_area;
+                if let Some(slot) = state.row_rects.get_mut(row_idx) {
+                    *slot = render_area;
+                }
 
                 let is_hovered = hover_row_snapshot == Some(row_idx);
                 let value_rect = render_setting_row_with_locale(
@@ -901,7 +911,9 @@ pub(super) fn render_rows_with_locale(
                     lock,
                     locale,
                 );
-                state.value_hit_rects[row_idx] = value_rect;
+                if let Some(slot) = state.value_hit_rects.get_mut(row_idx) {
+                    *slot = value_rect;
+                }
                 y_cursor = y_cursor.saturating_add(row_height);
 
                 if is_expanded && y_cursor < area_end {
@@ -956,8 +968,10 @@ fn compute_min_scroll_offset_for_visibility(
         let candidate_height = row_heights.get(candidate).copied().unwrap_or(1) as usize;
         // Cost of including `candidate` as the new top of the viewport: its own visual height, plus 1 line for the
         // blank above the OLD top (`offset`) when it is a header, since that row is no longer the first rendered
-        let old_first_idx = filtered_cache[offset];
-        let old_first_is_header = matches!(rows[old_first_idx], RowEntry::Header { .. });
+        let old_first_is_header = filtered_cache
+            .get(offset)
+            .and_then(|&idx| rows.get(idx))
+            .is_some_and(|r| matches!(r, RowEntry::Header { .. }));
         let cost: usize = candidate_height + usize::from(old_first_is_header);
         if lines_used.saturating_add(cost) > visible_h {
             break;
@@ -1093,7 +1107,6 @@ fn render_sub_pane_header(
     description: &str,
     min_non_desc_rows: u16,
 ) -> u16 {
-    // ── Row 0: title (truncated with `…`). ────────────────────────
     let title_style = Style::default()
         .fg(theme.text_primary)
         .bg(theme.bg_base)
@@ -1111,7 +1124,6 @@ fn render_sub_pane_header(
         title_w,
     );
 
-    // ── Row 1+: word-wrapped description ──────────────────────────
     let description_wrapped = wrap_description(description, area.width);
     let desc_rows: u16 = description_wrapped.len() as u16;
     let has_description =
@@ -1244,14 +1256,12 @@ fn render_picking_enum_with_locale(
         return;
     }
 
-    // ── Per-choice wrapped layout ─────────────────────────────────
     let layouts: Vec<PickerChoiceLayout> = choices
         .iter()
         .map(|choice| compute_picker_choice_layout(choice, area.width))
         .collect();
     let total_h: u16 = layouts.iter().map(|l| l.height).sum();
 
-    // ── Scroll offset (variable per-choice height) ────────────────
     let needs_overflow = total_h as usize > max_choices_h;
     let available_h: u16 = if needs_overflow {
         (max_choices_h as u16).saturating_sub(1).max(1)
@@ -1276,10 +1286,8 @@ fn render_picking_enum_with_locale(
     }
     let _ = consumed_h; // height bookkeeping kept for future tuning
 
-    // ── Hit-rect bookkeeping ──────────────────────────────────────
     let mut picker_choice_rects: Vec<Rect> = vec![Rect::default(); choices.len()];
 
-    // ── Choice rows ───────────────────────────────────────────────
     let fg_primary = theme.text_primary;
     let fg_gray = theme.gray;
     let fg_accent = theme.accent_user;
@@ -1291,7 +1299,10 @@ fn render_picking_enum_with_locale(
         .skip(scroll_offset)
         .take(visible_end - scroll_offset)
     {
-        let choice = &choices[choice_i];
+        let Some(choice) = choices.get(choice_i) else {
+            y_cursor = y_cursor.saturating_add(layout.height);
+            continue;
+        };
         let is_focused = choice_i == choices_idx;
         let is_current = committed_canonical.is_some_and(|c| c == choice.canonical);
 
@@ -1330,9 +1341,10 @@ fn render_picking_enum_with_locale(
         if let Some(ov) = settings_row_overlay(theme, is_focused, is_hovered) {
             buf.set_style(block_rect, ov);
         }
-        picker_choice_rects[choice_i] = block_rect;
+        if let Some(slot) = picker_choice_rects.get_mut(choice_i) {
+            *slot = block_rect;
+        }
 
-        // ── Line 1: prefix, display, then "·" and the first wrap line ──
         let y = y_cursor;
         if area.width > 0 {
             // Leading space (col 0 of the row).
@@ -1424,7 +1436,10 @@ fn render_picking_enum_with_locale(
         }
 
         // Line 1: first wrap line at the description column.
-        let first_line = &layout.wrap_lines[0];
+        let Some(first_line) = layout.wrap_lines.first() else {
+            y_cursor = y_cursor.saturating_add(layout.height);
+            continue;
+        };
         let first_w = (first_line.width() as u16).min(area.x + area.width - desc_x);
         buf.set_span(
             desc_x,
@@ -1451,7 +1466,6 @@ fn render_picking_enum_with_locale(
         y_cursor = y_cursor.saturating_add(layout.height);
     }
 
-    // ── Overflow indicator: "… N more" on the row right below the last rendered choice ──
     if needs_overflow && visible_end < choices.len() {
         let more_count = choices.len() - visible_end;
         let overflow_y = y_cursor;
@@ -1539,7 +1553,6 @@ fn render_picking_group(
     let mut y = area.y + header_rows;
     let area_end = area.y + area.height;
 
-    // ── Child toggle rows. ────────────────────────────────────────
     let mut rects: Vec<Rect> = vec![Rect::default(); children.len()];
     for (i, child_key) in children.iter().enumerate() {
         if y >= area_end {
@@ -1562,7 +1575,9 @@ fn render_picking_group(
         if let Some(ov) = settings_row_overlay(theme, is_focused, is_hovered) {
             buf.set_style(row_rect, ov);
         }
-        rects[i] = row_rect;
+        if let Some(slot) = rects.get_mut(i) {
+            *slot = row_rect;
+        }
 
         let marker = if is_focused {
             crate::glyphs::filled_dot()
@@ -1921,7 +1936,6 @@ fn render_editing_value_with_locale(
     }
     let input_y = area.y + header_rows;
 
-    // ── Row 3: input line. ────────────────────────────────────────
     let has_error = validation_error.is_some();
     let input_bg = theme.bg_visual;
     let input_fg = if has_error {
@@ -1999,7 +2013,7 @@ fn render_editing_value_with_locale(
         );
     } else {
         let viewport = editor.viewport(buffer_room);
-        let visible = &buffer[viewport.visible_byte_range];
+        let visible = buffer.get(viewport.visible_byte_range).unwrap_or("");
         let visible_width = (visible.width() as u16).min(buffer_room as u16);
         buf.set_span(
             input_x,
@@ -2018,7 +2032,6 @@ fn render_editing_value_with_locale(
         );
     }
 
-    // ── Row 4: validation error. ──────────────────────────────────
     if area.height > header_rows + 1
         && let Some(err) = validation_error
     {
@@ -2062,7 +2075,6 @@ fn render_int_stepper(
     }
     let stepper_y = area.y + header_rows;
 
-    // ── Row 3: centered stepper "‹  N  ›". ────────────────────────
     let value_text = if buffer.is_empty() {
         // Defensive: try_enter_editing_value seeds the buffer from the current value, so this branch is unreachable today
         // A blank cell would be confusing if a future refactor dropped the seed
@@ -2229,7 +2241,7 @@ fn render_max_thoughts_width_preview(
         area,
         effective_width,
         clamped,
-        &wrapped[..visible_content],
+        wrapped.get(..visible_content).unwrap_or(&[]),
         theme,
         locale,
     );
@@ -2257,7 +2269,6 @@ fn render_preview_block(
     // Any rows below the last content row stay blank, except for the optional clamped-note row described at the bottom of this function
     let title_y = area.y.saturating_add(1);
 
-    // ── Title row. ────────────────────────────────────────────────
     let title_bg = theme.bg_visual;
     let content_bg = theme.bg_highlight;
     let title_fg = theme.text_primary;
@@ -2301,7 +2312,6 @@ fn render_preview_block(
         title_w,
     );
 
-    // ── Content rows. ─────────────────────────────────────────────
     let content_style = Style::default()
         .fg(content_fg)
         .bg(content_bg)
@@ -2704,7 +2714,6 @@ fn render_setting_row_with_locale(
     };
     let _ = max_label_w;
 
-    // ── Compute right-side x positions (shared across layouts). ──
     // Layout (right-to-left): [restart pill][space][chevron][space][value]
     // The 1-cell right pad is baked into `restart_x`.
     let restart_x_line1 = (area.x + area.width).saturating_sub(restart_w + 1);
@@ -2769,7 +2778,6 @@ fn render_setting_row_with_locale(
             }
         }
         RowLayout::TwoLine | RowLayout::TwoLineWithLabelTruncation => {
-            // ── Line 1: triangle + label + (restart pill) ──
             // Compute how much horizontal space is available to the label before colliding with the restart pill
             let label_avail = area
                 .width

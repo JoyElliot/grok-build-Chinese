@@ -1,6 +1,9 @@
+#![deny(clippy::indexing_slicing)]
+
 #[cfg(feature = "community-build")]
 pub mod announcement_translations;
 pub mod auto_update;
+mod cleanup_downloads;
 #[cfg(feature = "community-build")]
 mod community_release;
 pub mod version;

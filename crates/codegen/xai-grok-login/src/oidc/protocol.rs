@@ -162,8 +162,8 @@ pub fn enforce_login_principal(
     {
         return Ok(());
     }
-    let expected = if allowed.len() == 1 {
-        format!("team {}", allowed[0])
+    let expected = if let [id] = allowed {
+        format!("team {id}")
     } else {
         format!("one of teams: {}", allowed.join(", "))
     };

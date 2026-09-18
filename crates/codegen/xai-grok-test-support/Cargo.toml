@@ -11,12 +11,22 @@ agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+axum-server = { workspace = true, features = ["tls-rustls"] }
+base64 = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
+opentelemetry-proto = { workspace = true, features = ["logs", "metrics"] }
 portable-pty = { workspace = true }
+prost = { workspace = true }
+rcgen = { workspace = true }
+regex = { workspace = true }
+ring = { workspace = true }
+# `ring` feature: the TLS mock picks the same provider per target as xai-grok-extra-ca.
+rustls = { workspace = true, features = ["ring"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true, features = ["compat"] }
@@ -28,6 +38,8 @@ xai-tty-utils = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+# `test-util` enables the paused clock the recorder's deadline tests run on.
+tokio = { workspace = true, features = ["test-util"] }
 [features]
 default = []
 default-bazel = []

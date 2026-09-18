@@ -4,14 +4,17 @@ use xai_chat_state::conversation_util::replace_or_insert_system_head;
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         self: &std::sync::Arc<Self>,
-        sampling_config: xai_grok_sampler::SamplerConfig,
-        use_concise: bool,
-        is_family_switch: bool,
-        apply_prompt_override: bool,
-        skip_prompt_rewrite: bool,
-        auto_compact_threshold_percent: u8,
+        switch: crate::session::SessionModelSwitch,
     ) -> Result<acp::ModelId, acp::Error> {
-        let mut sampling_config = sampling_config;
+        let crate::session::SessionModelSwitch {
+            mut sampling_config,
+            use_concise,
+            is_family_switch,
+            apply_prompt_override,
+            skip_prompt_rewrite,
+            auto_compact_threshold_percent,
+            system_prompt_label,
+        } = switch;
         if let Some(current) = self.chat_state_handle.get_sampling_config().await
             && let Some(id) = current.conversation_group_id
         {
@@ -71,6 +74,7 @@ impl SessionActor {
                 env_http_headers: sampling_config.env_http_headers.clone(),
                 context_window: new_context_window,
                 reasoning_effort: sampling_config.reasoning_effort,
+                reasoning_summary: sampling_config.reasoning_summary,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
             });
         let existing = self.chat_state_handle.get_credentials().await;
@@ -93,6 +97,15 @@ impl SessionActor {
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
         if apply_prompt_override && !skip_prompt_rewrite {
+            if self.state.lock().await.running_task.is_some() {
+                tracing::warn!(
+                    session_id = %self.session_info.id.0,
+                    model_id = %model_id.0,
+                    "system_prompt_label relabel skipped: turn in flight"
+                );
+            } else {
+                self.relabel_agent_system_prompt(system_prompt_label).await;
+            }
             let mut conversation = self.chat_state_handle.get_conversation().await;
             for item in conversation.iter_mut() {
                 if let ConversationItem::System(sys) = item {
@@ -146,6 +159,9 @@ impl SessionActor {
                     estimated_total_tokens,
                     context_window,
                 ),
+                reason_override: Some(
+                    crate::extensions::notification::MODEL_FAMILY_SWITCH_COMPACT_BANNER,
+                ),
             };
             tracing::info!("Family-switch compact: -> {}", sampling_config.model);
             if let Err(e) = self.run_compact_only(trigger_info, true).await {
@@ -153,6 +169,47 @@ impl SessionActor {
             }
         }
         Ok(model_id)
+    }
+    /// `running_task` is re-checked with no await before the `borrow_mut`: a running turn pins `Ref<Agent>`.
+    pub(super) async fn relabel_agent_system_prompt(&self, system_prompt_label: String) {
+        let (mut prompt_context, tool_bridge) = {
+            let agent = self.agent.borrow();
+            if agent.prompt_context().system_prompt_label == system_prompt_label {
+                return;
+            }
+            (
+                agent.prompt_context().clone(),
+                std::sync::Arc::clone(agent.tool_bridge()),
+            )
+        };
+        prompt_context.system_prompt_label = system_prompt_label.clone();
+        let Some(rendered) = prompt_context.render_paired(&tool_bridge).await else {
+            tracing::warn!(
+                session_id = %self.session_info.id.0,
+                %system_prompt_label,
+                "system prompt re-render failed; keeping the previous identity label"
+            );
+            return;
+        };
+        if self.state.lock().await.running_task.is_some() {
+            tracing::warn!(
+                session_id = %self.session_info.id.0,
+                "system_prompt_label relabel skipped: turn started during re-render"
+            );
+            return;
+        }
+        self.agent.borrow_mut().set_rendered_prompt(rendered);
+        self.abort_and_clear_prefire().await;
+        let agent = self.agent.borrow();
+        let mut persisted_context = agent.prompt_context().clone();
+        persisted_context.normalize_for_persistence();
+        save_prompt_context(&self.session_info, &persisted_context);
+        save_system_prompt(&self.session_info, agent.system_prompt());
+        tracing::info!(
+            session_id = %self.session_info.id.0,
+            system_prompt_label = %agent.prompt_context().system_prompt_label,
+            "system_prompt_label updated for model switch"
+        );
     }
     /// Set the reasoning effort on the live sampling config, applying the same
     /// support check and per-effort model routing as `apply_supported_effort`.
@@ -194,6 +251,7 @@ impl SessionActor {
     pub(super) async fn handle_rebuild_agent_for_definition(
         &self,
         definition: xai_grok_agent::AgentDefinition,
+        system_prompt_label: String,
     ) -> Result<(), acp::Error> {
         {
             let state = self.state.lock().await;
@@ -215,7 +273,7 @@ impl SessionActor {
         );
         let new_agent = self
             .rebuild_spec
-            .build_agent(definition)
+            .build_agent(definition, system_prompt_label)
             .await
             .map_err(|e| {
                 tracing::error!(

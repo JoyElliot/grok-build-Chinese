@@ -99,9 +99,11 @@ async fn goal_send_now_routes_text_and_image_as_planner_steering_and_interjectio
             let run = actor.goal_tracker.lock().take_planner_run().unwrap();
             assert_eq!(run.steering, ["steer"]);
             let interjections = actor.pending_interjections.drain_all();
-            assert_eq!(interjections.len(), 1);
-            assert_eq!(interjections[0].text, "steer");
-            assert_eq!(interjections[0].attachments.len(), 1);
+            let [inj] = interjections.as_slice() else {
+                panic!("expected one interjection: {interjections:?}");
+            };
+            assert_eq!(inj.text, "steer");
+            assert_eq!(inj.attachments.len(), 1);
         })
         .await;
 }
@@ -126,10 +128,7 @@ async fn drain_interjection_with_images_attaches_image_parts() {
                 Some(ConversationItem::User(u)) => u,
                 other => panic!("conversation tail must be a user item, got: {other:?}"),
             };
-            assert_eq!(
-                user_item.synthetic_reason,
-                Some(SyntheticReason::Interjection)
-            );
+            assert_eq!(user_item.synthetic_reason, SyntheticReason::Interjection);
             let image_urls: Vec<&str> = user_item
                 .content
                 .iter()
@@ -138,11 +137,13 @@ async fn drain_interjection_with_images_attaches_image_parts() {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(image_urls.len(), 1, "image part must be attached");
+            let [url] = image_urls.as_slice() else {
+                panic!("image part must be attached: {image_urls:?}");
+            };
             assert!(
-                image_urls[0].starts_with("data:image/"),
+                url.starts_with("data:image/"),
                 "inline base64 data URL expected, got {}",
-                &image_urls[0][..image_urls[0].len().min(32)]
+                url.get(..url.len().min(32)).unwrap_or(*url)
             );
             let text = conversation.last().unwrap().text_content();
             assert!(
@@ -400,7 +401,8 @@ async fn interjection_fallback_prompt_queues_front_with_prefix() {
             );
             assert!(front.queue_meta.is_none(), "not a shared-queue row");
             assert_eq!(
-                state.pending_inputs[1].prompt_id, "queued-later",
+                state.pending_inputs.get(1).map(|i| i.prompt_id.as_str()),
+                Some("queued-later"),
                 "previously queued prompt stays behind the send-now text"
             );
         })
@@ -498,12 +500,15 @@ async fn fallback_prompt_lands_behind_running_front() {
                 .iter()
                 .map(|i| i.prompt_id.as_str())
                 .collect();
-            assert_eq!(ids[0], "running", "running front stays pinned");
+            let [running, fallback, later] = ids.as_slice() else {
+                panic!("expected running/fallback/later: {ids:?}");
+            };
+            assert_eq!(*running, "running", "running front stays pinned");
             assert!(
-                ids[1].starts_with("interject-fallback-"),
+                fallback.starts_with("interject-fallback-"),
                 "fallback lands right behind the running front, got {ids:?}"
             );
-            assert_eq!(ids[2], "later");
+            assert_eq!(*later, "later");
         })
         .await;
 }

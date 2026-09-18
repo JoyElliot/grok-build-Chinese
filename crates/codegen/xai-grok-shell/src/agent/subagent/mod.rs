@@ -254,6 +254,7 @@ pub(crate) struct SubagentSpawnContext {
     pub app_builder_deployer_config:
         xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig,
     pub write_file_enabled: bool,
+    pub active_agent_messages_enabled: bool,
     /// Whether goal mode (`/goal`) is enabled.
     pub goal_enabled: bool,
     pub background_workflows_enabled: bool,
@@ -361,6 +362,8 @@ pub(crate) struct SubagentSpawnContext {
     pub parent_skills_config: xai_grok_agent::prompt::skills::SkillsConfig,
     /// Parent's resolved vendor-compat config, inherited by the child so its skills / rules / AGENTS.md discovery honors the same vendor toggles.
     pub parent_compat: xai_grok_tools::types::compat::CompatConfig,
+    /// Parent's `[paths]` config, inherited for the same reason as `parent_compat`.
+    pub parent_paths_config: xai_grok_agent::prompt::paths::PathsConfig,
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
     pub synthetic_trace_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
@@ -384,14 +387,6 @@ const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<SubagentSpawnContext>()
 };
-pub(crate) fn strip_ask_user_question_tool(tools: &mut Vec<xai_grok_sampling_types::ToolSpec>) {
-    tools.retain(|tool| tool.name != "ask_user_question");
-}
-pub(crate) fn strip_workflow_tool(tools: &mut Vec<xai_grok_sampling_types::ToolSpec>) {
-    tools.retain(|tool| {
-        !xai_grok_tools::implementations::grok_build::is_workflow_tool_id(&tool.name)
-    });
-}
 impl SubagentSpawnContext {
     /// Would installing a live bearer resolver strip this subagent's only credential? A wired resolver is the sampler's sole auth source, so with no session key at spawn it must not displace a fallback key (env `XAI_API_KEY`).
     /// Keyed on the resolved config key, not the session cache alone. The cache is empty in exactly the post-wake / mid-refresh states the resolver targets, and gating on it would freeze the subagent for life.
@@ -783,6 +778,9 @@ async fn read_parent_sampling_config(
                 top_p: cfg.top_p,
                 api_backend: cfg.api_backend,
                 auth_scheme,
+                request_compression: crate::util::config::request_compression_for_url(
+                    &inherited_base_url,
+                ),
                 extra_headers,
                 extra_response_includes,
                 conversation_group_id: cfg.conversation_group_id,
@@ -791,6 +789,7 @@ async fn read_parent_sampling_config(
                 context_window: cfg.context_window.get(),
                 client_version: creds.client_version,
                 reasoning_effort: cfg.reasoning_effort,
+                reasoning_summary: cfg.reasoning_summary,
                 force_http1: false,
                 max_retries: cfg.max_retries.or(ctx.sampling_config.max_retries),
                 rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
@@ -2673,5 +2672,7 @@ pub(crate) async fn reconcile_live_orphaned_subagents(
     )
     .await;
 }
+#[cfg(feature = "test-support")]
+pub(crate) mod isolated_spawn_e2e;
 #[cfg(test)]
 mod tests;

@@ -368,8 +368,8 @@ mod tests {
         .unwrap();
         assert_eq!(req.method.as_ref(), "x.ai/git/worktree/list");
         let params: serde_json::Value = serde_json::from_str(req.params.get()).unwrap();
-        assert_eq!(params["repo"], "xai");
-        assert_eq!(params["includeAll"], true);
+        assert_eq!(params.get("repo").and_then(|v| v.as_str()), Some("xai"));
+        assert_eq!(params.get("includeAll"), Some(&serde_json::json!(true)));
     }
     #[test]
     fn ext_request_builds_gc_with_max_age_string() {
@@ -383,8 +383,8 @@ mod tests {
         )
         .unwrap();
         let params: serde_json::Value = serde_json::from_str(req.params.get()).unwrap();
-        assert_eq!(params["maxAge"], "7d");
-        assert_eq!(params["dryRun"], true);
+        assert_eq!(params.get("maxAge").and_then(|v| v.as_str()), Some("7d"));
+        assert_eq!(params.get("dryRun"), Some(&serde_json::json!(true)));
     }
     #[test]
     fn ext_request_builds_remove_with_id_or_path() {
@@ -398,7 +398,10 @@ mod tests {
         )
         .unwrap();
         let params: serde_json::Value = serde_json::from_str(req.params.get()).unwrap();
-        assert_eq!(params["idOrPath"], "wt-abc123");
+        assert_eq!(
+            params.get("idOrPath").and_then(|v| v.as_str()),
+            Some("wt-abc123")
+        );
     }
     #[test]
     fn ext_request_builds_show() {
@@ -408,7 +411,10 @@ mod tests {
         )
         .unwrap();
         let params: serde_json::Value = serde_json::from_str(req.params.get()).unwrap();
-        assert_eq!(params["idOrPath"], "/some/path");
+        assert_eq!(
+            params.get("idOrPath").and_then(|v| v.as_str()),
+            Some("/some/path")
+        );
     }
     #[test]
     fn ext_request_builds_detach_salvage_clean() {

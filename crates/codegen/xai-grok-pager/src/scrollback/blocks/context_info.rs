@@ -370,7 +370,7 @@ impl ContextInfoBlock {
             let start = row_idx * bar.row_len;
             let end = (start + bar.row_len).min(cells.len());
             let mut spans = Vec::with_capacity(bar.row_len * 2);
-            for (i, (glyph, color)) in cells[start..end].iter().enumerate() {
+            for (i, (glyph, color)) in cells.get(start..end).into_iter().flatten().enumerate() {
                 if i > 0 {
                     spans.push(Span::raw(" "));
                 }
@@ -691,11 +691,10 @@ mod tests {
 
     /// Render a block and collapse a single line's spans into a flat string.
     fn line_text(lines: &[Line<'static>], idx: usize) -> String {
-        lines[idx]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
+        let Some(line) = lines.get(idx) else {
+            panic!("expected line {idx}, got {} lines", lines.len());
+        };
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     /// Render a block and collapse all spans into a flat newline-joined string, useful for `contains` assertions.
@@ -952,7 +951,7 @@ mod tests {
         let mut free = 0usize;
         let bar_start = 5; // header / blank / tokens / model / blank
         let bar_end = bar_start + layout.rows;
-        for line in &lines[bar_start..bar_end] {
+        for line in lines.get(bar_start..bar_end).into_iter().flatten() {
             for span in &line.spans {
                 let c = span.content.as_ref();
                 if c == SYSTEM_GLYPH_TEST || c == MESSAGES_GLYPH_TEST {
@@ -1142,7 +1141,10 @@ mod tests {
         for needle in [" tokens ", ")"] {
             let positions = cols(needle);
             assert!(
-                positions.windows(2).all(|w| w[0] == w[1]),
+                positions.windows(2).all(|w| {
+                    let [a, b] = w else { return false };
+                    a == b
+                }),
                 "{needle:?} column misaligned: {positions:?}\n{all}"
             );
         }
@@ -1216,14 +1218,17 @@ mod tests {
         let lines = block.build_lines(&theme, BarLayout::NARROW);
         // The bar starts at index 5 (header / blank / tokens / model / blank)
         // Each of the next 10 rows must be a non-empty bar row
-        for (offset, line) in lines[5..15].iter().enumerate() {
+        for (offset, line) in lines.get(5..15).into_iter().flatten().enumerate() {
             assert!(
                 !line.spans.is_empty(),
                 "narrow bar row {offset} must be non-empty"
             );
         }
         // The line right after the bar is the spacer blank
-        let after_bar: String = lines[15].spans.iter().map(|s| s.content.as_ref()).collect();
+        let after_bar: String = lines
+            .get(15)
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .unwrap_or_else(|| panic!("expected line 15 after narrow bar"));
         assert_eq!(after_bar, "", "expected blank line after narrow bar");
     }
 
@@ -1243,7 +1248,10 @@ mod tests {
         let block = ContextInfoBlock::new(snapshot(), "grok-4");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::NARROW);
-        for (offset, line) in lines[5..15].iter().enumerate() {
+        let bar = lines
+            .get(5..15)
+            .unwrap_or_else(|| panic!("expected 10 narrow bar rows, got {}", lines.len()));
+        for (offset, line) in bar.iter().enumerate() {
             let cell_count = line
                 .spans
                 .iter()
@@ -1268,7 +1276,10 @@ mod tests {
         let block = ContextInfoBlock::new(snapshot(), "grok-4");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::WIDE);
-        for (offset, line) in lines[5..10].iter().enumerate() {
+        let bar = lines
+            .get(5..10)
+            .unwrap_or_else(|| panic!("expected 5 wide bar rows, got {}", lines.len()));
+        for (offset, line) in bar.iter().enumerate() {
             let cell_count = line
                 .spans
                 .iter()
@@ -1359,16 +1370,14 @@ mod tests {
         ];
         let mut idx = 16;
         for (label, expected_tokens) in categories {
-            let row1: String = lines[idx]
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            let row2: String = lines[idx + 1]
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let row1: String = lines
+                .get(idx)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_else(|| panic!("expected legend row {idx}"));
+            let row2: String = lines
+                .get(idx + 1)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_else(|| panic!("expected legend row {}", idx + 1));
             assert!(
                 row1.contains(label),
                 "expected row {idx} to contain `{label}`, got: {row1:?}"
@@ -1388,7 +1397,9 @@ mod tests {
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::NARROW);
         // The data row for the first legend entry sits at index 17 (16 is the "System prompt" header row, 17 its data row)
-        let data_row = &lines[17];
+        let Some(data_row) = lines.get(17) else {
+            panic!("expected data row at index 17");
+        };
         let first = data_row
             .spans
             .first()
@@ -1406,8 +1417,12 @@ mod tests {
         let block = ContextInfoBlock::new(snapshot(), "grok-4");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::WIDE);
-        let row_text =
-            |i: usize| -> String { lines[i].spans.iter().map(|s| s.content.as_ref()).collect() };
+        let row_text = |i: usize| -> String {
+            lines
+                .get(i)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_else(|| panic!("expected legend row {i}"))
+        };
         let l11 = row_text(11);
         assert!(
             l11.contains("System prompt") && l11.contains("1.2k"),

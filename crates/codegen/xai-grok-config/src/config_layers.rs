@@ -314,7 +314,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            layers.effective_config_disk_only()["features"]["web_fetch"].as_bool(),
+            layers
+                .effective_config_disk_only()
+                .get("features")
+                .and_then(|f| f.get("web_fetch"))
+                .and_then(toml::Value::as_bool),
             Some(false),
         );
     }

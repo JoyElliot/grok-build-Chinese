@@ -52,7 +52,7 @@ async fn drain_interjections_pushes_synthetic_user_message_after_tool_result() {
             };
             assert_eq!(
                 user_item.synthetic_reason,
-                Some(SyntheticReason::Interjection),
+                SyntheticReason::Interjection,
                 "interjection must be tagged SyntheticReason::Interjection"
             );
             let text = conversation
@@ -120,7 +120,7 @@ async fn drain_multiple_interjections_pushes_one_user_message_each_in_order() {
                 .iter()
                 .filter_map(|item| match item {
                     ConversationItem::User(u)
-                        if u.synthetic_reason == Some(SyntheticReason::Interjection) =>
+                        if u.synthetic_reason == SyntheticReason::Interjection =>
                     {
                         Some(item.text_content())
                     }

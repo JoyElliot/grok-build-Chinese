@@ -1,12 +1,22 @@
 //! Canonical, extensible tool types.
 pub mod definition;
 mod ext;
+mod glob;
+mod grep;
+mod read;
 mod schema_utils;
 pub mod serde_lenient;
 mod task;
 mod types;
+mod web_search;
 
 pub use ext::Extensions;
+pub use glob::GlobToolInput;
+pub use grep::{
+    GrepFileMatch, GrepLineMatch, GrepOutputMode, GrepSearchOutput, GrepToolInput,
+    LenientNumberSchema, LenientNumberSchemaMin0, deserialize_lenient_u32,
+};
+pub use read::{ReadLineCounts, ReadLineRange};
 pub use schema_utils::parse_arguments_from_schema_lossy;
 pub use serde_lenient::{
     deserialize_lenient_bool, deserialize_lenient_i64, deserialize_lenient_option_bool,
@@ -26,9 +36,10 @@ pub use task::{
     builtin_subagent_by_name, default_subagent_type, format_resume_footer,
     format_subagent_auto_backgrounded, format_subagent_completed,
     format_subagent_started_background, format_wait_cap_ms, is_not_sentinel, max_wait_block_ms,
-    resolve_task_ids, sanitize_optional_arg, should_continue_parent_work, task_output_waits,
-    task_output_waits_from_json,
+    render_tool_access_fragment, resolve_task_ids, sanitize_optional_arg,
+    should_continue_parent_work, task_output_waits, task_output_waits_from_json,
 };
 pub use types::{
     ArgumentType, SchemaType, ToolArgument, ToolDescription, ValidationError, ValidationErrors,
 };
+pub use web_search::{WebSearchOutput, WebSearchToolInput};

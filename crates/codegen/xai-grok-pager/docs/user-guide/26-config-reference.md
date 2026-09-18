@@ -98,7 +98,8 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | --- | --- | --- | --- | --- |
 | `cli.auto_update` | `boolean` | `pin` | `user` | Check for CLI updates on launch. Also GROK_DISABLE_AUTOUPDATER to suppress. |
 | `cli.channel` | `stable / alpha` | `pin` | `user` | Release channel preference. |
-| `cli.grove_worktree` | `boolean` or `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | Session / `-w` Grove vs copy. Default copy. Distinct from creation-mode `cli.worktree_type`. Also `GROK_WORKTREE_TYPE`. Layer order: request → env → local → remote-true; then kill last: remote `grove_worktree = false` → copy (`remote_kill`); missing remote settings → copy (`remote_unavailable`). Does not enable `grok clone`. |
+| `cli.grove` | `boolean` or `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `all` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | Convenience that turns **both** `grok clone` and session / `-w` Grove on when the specific knobs are unset. Also `GROK_GROVE`. `false` / `copy` / `off` means enable-all is off (fall through); it does not force both surfaces off. `[cli] grove_worktree` and `GROK_WORKTREE_TYPE` still win for worktrees; `GROK_CLONE` still wins for clone. Remote `grove_worktree = false` still kills worktrees only. |
+| `cli.grove_worktree` | `boolean` or `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | Session / `-w` Grove vs copy. Default copy. Distinct from creation-mode `cli.worktree_type`. Also `GROK_WORKTREE_TYPE`. Layer order: request → env → local → enable-all (`GROK_GROVE` / `[cli] grove`) → remote-true; then kill last: remote `grove_worktree = false` → copy (`remote_kill`). Missing remote settings are not a kill: local/env/request/enable-all still apply. Does not enable `grok clone`. |
 | `cli.installer` | `string` | `—` | `user` | Which installer last set up this CLI, used to pick the update path. |
 | `cli.maximum_version` | `string` | `pin` | `user` | Highest CLI version that still runs without a hard block. Also GROK_MAXIMUM_VERSION. |
 | `cli.minimum_version` | `string` | `pin` | `user` | Lowest CLI version that still runs without a hard block. Also GROK_MINIMUM_VERSION. |
@@ -347,8 +348,16 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `memory.enabled` | `boolean` | `pin` | `user` | Cross-session memory master switch. Also GROK_MEMORY. |
-| `memory.mode` | `"legacy"`, `"v2"` | — | `user` | Selects the persistent-memory implementation for new sessions. Default: `"legacy"`. `"v2"` is experimental; its legacy search, flush, and Dream paths are disabled. |
+| `memory.enabled` | `boolean` | `pin` | `user` | Legacy memory switch. Also `GROK_MEMORY`; superseded when the v2 gate is enabled. |
+| `memory_v2.enabled` | `boolean` | `pin` | `user` | Primary memory-v2 switch. When true, v2 takes precedence over legacy `memory.enabled`. When false or absent, legacy enablement is resolved normally. Default: `false`. |
+| `memory_v2.rollout` | `"off"`, `"record_only"`, `"shadow"`, `"active"` | — | `user` | Advanced staged-rollout control for new v2 sessions. Default: `"active"` after enabling v2. Most users should leave this unset. |
+| `memory_v2.capture_status_enabled` | `boolean` | — | `user` | Shows memory-v2 capture lifecycle messages in the UI for debugging. Successful captures are expandable and include generated content plus links to committed observation files. Telemetry and debug logs are always recorded. Default: `false`. |
+| `memory_v2.capture_enabled` | `boolean` | — | `user` | Enables memory-v2 extraction and observation capture. Default: `true`. |
+| `memory_v2.automatic_dream_enabled` | `boolean` | — | `user` | Enables event-driven memory-v2 Dream. Default: `true`. |
+| `memory_v2.manual_dream_enabled` | `boolean` | — | `user` | Enables explicitly requested memory-v2 Dream. Default: `true`. |
+| `memory_v2.file_writes_enabled` | `boolean` | — | `user` | Enables all memory-v2 file mutation; `false` fails closed before scaffold creation. Default: `true`. |
+| `memory_v2.archived_retention_days` | `number` | — | `user` | Retains archived memory-v2 observation files for this many days. Default: `30`. |
+| `memory_v2.job_retention_days` | `number` | — | `user` | Retains terminal memory-v2 capture-job metadata for this many days. Default: `14`. |
 
 ### `model`
 
@@ -382,6 +391,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `model.<id>.rate_limit_retry_threshold` | `number` | `yes` | `user` | Total-attempt ceiling for rate-limited requests, capped by the resolved `max_retries`; when configured, it disables the separate subagent 429 wait loop. |
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | Deprecated per-model effort; prefer `reasoning_efforts`. |
 | `model.<id>.reasoning_efforts` | `array of tables` | `yes` | `user` | Allowed reasoning-effort values for this model. |
+| `model.<id>.reasoning_summary` | `none / auto / concise / detailed` | `yes` | `user` | Responses API `reasoning.summary` for this model; default `concise`. `none` omits the field for endpoints that reject it (e.g. AWS Bedrock Mantle). |
 | `model.<id>.show_model_fingerprint` | `boolean` | `yes` | `user` | Show the provider model fingerprint in the UI when present. |
 | `model.<id>.stream_tool_calls` | `boolean` | `yes` | `user` | Per-model tool-call streaming request shape. |
 | `model.<id>.subagent_rate_limit_max_attempts` | `number` | `yes` | `user` | Maximum subagent 429 wait-loop attempts when `rate_limit_retry_threshold` is unset; default 8, maximum 32, and `0` disables the wait loop. |
@@ -433,8 +443,8 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `paths.extra_rule_dirs` | `string[]` | `yes` | `user` | More rule directories (each contains `*.md`). |
-| `paths.extra_skill_dirs` | `string[]` | `yes` | `user` | More skill directories (each contains `<skill>/SKILL.md`). |
+| `paths.extra_rule_dirs` | `string[]` | `yes` | `user` | More rule directories (absolute or `~/…`; each contains `*.md`), loaded after the home rules. |
+| `paths.extra_skill_dirs` | `string[]` | `yes` | `user` | Records `/import-claude` skill directories that skill injection ignores in favor of `[skills] paths`. |
 
 ### `permission`
 
@@ -500,7 +510,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `storage` | `table` | `yes` | `user` | Local session storage cleanup policy. |
+| `storage.cleanup_ttl_days` | `integer` | `yes` | `user` | Days a session may stay idle before its folder is deleted; media and terminal logs older than this are pruned from live sessions. Default 30. |
 
 ### `subagents`
 

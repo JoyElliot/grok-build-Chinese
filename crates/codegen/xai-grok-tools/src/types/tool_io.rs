@@ -209,7 +209,7 @@ mod tests {
         let input = ToolInput::Dynamic(serde_json::json!({"custom": "data"}));
         match input {
             ToolInput::Dynamic(v) => {
-                assert_eq!(v["custom"], "data");
+                assert_eq!(v.get("custom").and_then(|x| x.as_str()), Some("data"));
             }
             _ => panic!("Expected Dynamic variant"),
         }

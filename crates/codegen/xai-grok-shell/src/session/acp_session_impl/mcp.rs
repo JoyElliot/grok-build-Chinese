@@ -680,6 +680,25 @@ impl SessionActor {
         {
             return;
         }
+        let has_restored_fingerprints = !self.mcp_announcements.lock().fingerprints.is_empty();
+        let has_live_servers = !self.connected_server_summaries().is_empty();
+        {
+            let mcp_state = self.mcp_state.lock().await;
+            let has_pending_servers =
+                !mcp_state.configs.is_empty() || !mcp_state.pending_acp_server_names().is_empty();
+            let has_settled_failure =
+                !mcp_state.init_failed.is_empty() || !mcp_state.auth_required.is_empty();
+            let is_unresolved_restore =
+                !has_settled_failure && !has_live_servers && has_restored_fingerprints;
+            if has_pending_servers
+                && !mcp_state.is_initialized()
+                && (mcp_state.is_initializing()
+                    || mcp_state.is_init_abandoned()
+                    || is_unresolved_restore)
+            {
+                return;
+            }
+        }
         use xai_grok_tools::implementations::search_tool::fingerprint_servers;
         self.mcp_reminder_dirty
             .store(false, std::sync::atomic::Ordering::Relaxed);

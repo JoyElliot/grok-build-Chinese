@@ -58,7 +58,7 @@ pub(super) fn dispatch_enter_plan_mode(
     };
 
     // Set optimistic pending state (same pattern as dispatch_cycle_mode).
-    agent.plan_mode_pending = Some(true);
+    agent.stage_plan_mode(true);
     tracing::info!("Plan mode entered via /plan slash command");
 
     let mode_id = acp::SessionModeId::new("plan");
@@ -117,6 +117,7 @@ pub(super) fn dispatch_enter_plan_mode(
 /// Set plan mode (on / off).
 /// PAGER-owned and ACP-mediated, per-session.
 /// Optimistic flow: captures effective state (`pending.or(active)`), sets `plan_mode_pending`, refreshes modals, and toasts.
+/// Reconnect and a missing session refuse before any commit or `session/set_mode`.
 pub(super) fn set_plan_mode(
     app: &mut AppView,
     kind: crate::app::actions::PlanModeKind,
@@ -131,10 +132,24 @@ pub(super) fn set_plan_mode(
         return vec![];
     };
 
+    // Same gate as ExecutePlan and post-turn revise: toast and keep the
+    // review mounted. Do not commit or send session/set_mode on a dead channel.
+    if app.reconnect_pending {
+        agent.show_toast(super::prompt::RECONNECTING_NOTICE);
+        return vec![];
+    }
+
     let Some(session_id) = agent.session.session_id.clone() else {
         agent.show_toast(no_session);
         return vec![];
     };
+
+    // Same refuse as a second approve: ExecutePlan already marked the turn
+    // running. Revise and abandon must not commit while that build is starting.
+    if !kind.to_bool() && agent.is_post_turn_build_starting() {
+        agent.show_toast(super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE);
+        return vec![];
+    }
 
     // Effective state: prefer optimistic pending over confirmed active
     // Mirrors `dispatch_cycle_mode`'s `in_plan` read so rapid toggles don't double-send
@@ -148,9 +163,10 @@ pub(super) fn set_plan_mode(
         return vec![];
     }
 
-    // Optimistic mutation: pager-side pending flag, then UI feedback, then effect
-    // The shell's `CurrentModeUpdate` broadcast will confirm and clear `plan_mode_pending` via `detect_plan_mode_change`
-    agent.plan_mode_pending = Some(new);
+    // Stage pending before the effect. CurrentModeUpdate confirms the Off.
+    // Commit abandon only after accept — earlier commit made Off look idempotent.
+    // Leave-Plan before EndTurn drops the keep so EndTurn cannot reopen review.
+    agent.stage_plan_mode(new);
     refresh_open_settings_modals(app);
     let toast = plan_mode_toast(kind, app.locale.as_ref());
     app.show_toast(&toast);
@@ -673,6 +689,18 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
+    // Same gate as set_plan_mode: toast and keep the review. Do not
+    // commit abandon or send session/set_mode on a dead channel.
+    if app.reconnect_pending {
+        agent.show_toast(super::prompt::RECONNECTING_NOTICE);
+        return vec![];
+    }
+    // Same refuse as set_plan_mode(Off). Shift+Tab Default is not worker
+    // accept; a later ExecutePlan refuse must not see !plan_mode_active.
+    if agent.is_post_turn_build_starting() {
+        agent.show_toast(super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE);
+        return vec![];
+    }
     // Per-session (symmetric with the `in_yolo` reads below), not the global UI mirror, so the cycle and the prompt "auto" indicator agree per agent
     let in_auto = agent.session.is_auto();
     let Some(session_id) = agent.session.session_id.clone() else {
@@ -804,6 +832,21 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
         return effects;
     };
 
+    // Published modes own the ring. The permission arms below are Grok-shell only.
+    if let Some((next, name)) = agent.next_published_mode() {
+        let name = name.to_owned();
+        // Leave is abandon; re-enter clears a leftover Abandoned intent.
+        agent.stage_plan_mode(next.is_plan());
+        agent.pick_published_mode(next.clone());
+        agent.show_mode_switch_banner(&name);
+        refresh_open_settings_modals(app);
+        tracing::info!(mode = next.as_id(), "Mode cycle: published mode");
+        return vec![Effect::SetSessionMode {
+            session_id,
+            mode_id: acp::SessionModeId::new(next.as_id()),
+        }];
+    }
+
     // Effective plan state: prefer optimistic pending over confirmed active.
     let in_plan = agent.plan_mode_pending.unwrap_or(agent.plan_mode_active);
     let in_yolo = agent.session.is_yolo();
@@ -811,7 +854,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
     match (in_plan, in_auto, in_yolo) {
         // Normal to Plan
         (false, false, false) => {
-            agent.plan_mode_pending = Some(true);
+            agent.stage_plan_mode(true);
             agent.show_mode_switch_banner("Plan");
             refresh_open_settings_modals(app);
             tracing::info!("Mode cycle: Normal → Plan");
@@ -823,7 +866,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
         // Plan to Auto (classifier mode; exit plan, not always-approve)
         // When the auto feature is gated off, Plan goes to Always-Approve (skip Auto), matching the legacy cycle and respecting the yolo policy pin
         (true, false, false) => {
-            agent.plan_mode_pending = Some(false);
+            agent.stage_plan_mode(false);
             if !auto_gate {
                 if let Some(warning) = yolo_locked {
                     set_yolo_mode_inner(app, false);
@@ -942,7 +985,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
         // Plan + Always-Approve to Always-Approve (keep yolo, nothing to persist)
         // Under the policy pin the yolo flag is stale and stays on the `_` reset below
         (true, false, true) if yolo_locked.is_none() => {
-            agent.plan_mode_pending = Some(false);
+            agent.stage_plan_mode(false);
             agent.show_mode_switch_banner("Always-Approve");
             refresh_open_settings_modals(app);
             tracing::info!(
@@ -959,7 +1002,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
         // Plan + Auto to Auto: exit plan but keep the classifier
         // Without this explicit arm the state falls to `_` and would reset to Normal/ask
         (true, true, false) => {
-            agent.plan_mode_pending = Some(false);
+            agent.stage_plan_mode(false);
             app.current_ui.permission_mode = Some("auto".into());
             refresh_open_settings_modals(app);
             if let Some(a) = app.agents.get_mut(&id) {
@@ -984,7 +1027,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
         // Any other combination resets to Normal
         // `set_yolo_mode_inner` runs only when actually in YOLO (avoids spurious telemetry)
         _ => {
-            agent.plan_mode_pending = Some(false);
+            agent.stage_plan_mode(false);
             // NLL releases the `agent` borrow after the assignment above; `set_yolo_mode_inner(app, …)` can reborrow below
             if in_yolo {
                 set_yolo_mode_inner(app, false);

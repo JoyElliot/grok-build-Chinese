@@ -25,6 +25,8 @@ mod dashboard_overlay_tab_esc_backout_and_ctrl_backslash;
 mod extensions_modal_copy_hints_pty;
 #[path = "pty_e2e/extensions_modal_workflows_tab_pty.rs"]
 mod extensions_modal_workflows_tab_pty;
+#[path = "pty_e2e/feedback_draft_send_pty.rs"]
+mod feedback_draft_send_pty;
 #[path = "pty_e2e/feedback_modal_pty.rs"]
 mod feedback_modal_pty;
 #[path = "pty_e2e/iterm_readline_editing.rs"]

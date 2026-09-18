@@ -563,70 +563,74 @@ fn ends_with_wait_builtin(command: &str) -> bool {
 /// position_after_delimiter_token)`, or `None` if the `<<` is not followed by a valid delimiter word. This only parses the operator on the
 /// command line (e.g. `<< 'EOF'`). The heredoc *body* is consumed separately by `skip_heredoc_body`.
 fn parse_heredoc_start(chars: &[char], start: usize) -> Option<(String, bool, usize)> {
-    let len = chars.len();
     let mut i = start + 2; // skip `<<`
 
     // `<<-` strips leading tabs from the body and the closing delimiter.
-    let strip_tabs = i < len && chars[i] == '-';
+    let strip_tabs = chars.get(i).copied() == Some('-');
     if strip_tabs {
         i += 1;
     }
 
     // Skip horizontal whitespace (not newlines).
-    while i < len && (chars[i] == ' ' || chars[i] == '\t') {
+    while matches!(chars.get(i).copied(), Some(' ' | '\t')) {
         i += 1;
     }
 
-    if i >= len || chars[i] == '\n' {
-        return None; // no delimiter
-    }
-
-    let delimiter: String;
-    if chars[i] == '\'' {
-        // Single-quoted delimiter: << 'WORD'
-        i += 1;
-        let d_start = i;
-        while i < len && chars[i] != '\'' {
+    match chars.get(i).copied() {
+        None | Some('\n') => None, // no delimiter
+        Some('\'') => {
+            // Single-quoted delimiter: << 'WORD'
             i += 1;
+            let d_start = i;
+            while chars.get(i).is_some_and(|c| *c != '\'') {
+                i += 1;
+            }
+            chars.get(i)?;
+            let delimiter: String = chars.get(d_start..i)?.iter().collect();
+            i += 1; // skip closing quote
+            if delimiter.is_empty() {
+                return None;
+            }
+            Some((delimiter, strip_tabs, i))
         }
-        if i >= len {
-            return None; // unclosed quote
-        }
-        delimiter = chars[d_start..i].iter().collect();
-        i += 1; // skip closing quote
-    } else if chars[i] == '"' {
-        // Double-quoted delimiter: << "WORD"
-        i += 1;
-        let d_start = i;
-        while i < len && chars[i] != '"' {
+        Some('"') => {
+            // Double-quoted delimiter: << "WORD"
             i += 1;
-        }
-        if i >= len {
-            return None;
-        }
-        delimiter = chars[d_start..i].iter().collect();
-        i += 1;
-    } else {
-        // Unquoted (or backslash-escaped) delimiter: << WORD
-        let d_start = i;
-        while i < len
-            && !chars[i].is_whitespace()
-            && !matches!(chars[i], ';' | '&' | '|' | '(' | ')' | '<' | '>')
-        {
+            let d_start = i;
+            while chars.get(i).is_some_and(|c| *c != '"') {
+                i += 1;
+            }
+            chars.get(i)?;
+            let delimiter: String = chars.get(d_start..i)?.iter().collect();
             i += 1;
+            if delimiter.is_empty() {
+                return None;
+            }
+            Some((delimiter, strip_tabs, i))
         }
-        if i == d_start {
-            return None;
+        Some(_) => {
+            // Unquoted (or backslash-escaped) delimiter: << WORD
+            let d_start = i;
+            while chars.get(i).is_some_and(|c| {
+                !c.is_whitespace() && !matches!(*c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
+            }) {
+                i += 1;
+            }
+            if i == d_start {
+                return None;
+            }
+            // Strip backslashes (they quote individual chars in unquoted delimiters).
+            let delimiter: String = chars
+                .get(d_start..i)?
+                .iter()
+                .filter(|&&c| c != '\\')
+                .collect();
+            if delimiter.is_empty() {
+                return None;
+            }
+            Some((delimiter, strip_tabs, i))
         }
-        // Strip backslashes (they quote individual chars in unquoted delimiters).
-        delimiter = chars[d_start..i].iter().filter(|&&c| c != '\\').collect();
     }
-
-    if delimiter.is_empty() {
-        return None;
-    }
-
-    Some((delimiter, strip_tabs, i))
 }
 
 /// Skip past a heredoc body that starts at `chars[start]`. Scans lines until one matches `delimiter` (for `<<-`, after
@@ -638,10 +642,10 @@ fn skip_heredoc_body(chars: &[char], start: usize, delimiter: &str, strip_tabs: 
 
     while i < len {
         let line_start = i;
-        while i < len && chars[i] != '\n' {
+        while chars.get(i).is_some_and(|c| *c != '\n') {
             i += 1;
         }
-        let line: String = chars[line_start..i].iter().collect();
+        let line: String = chars.get(line_start..i).unwrap_or(&[]).iter().collect();
 
         let check = if strip_tabs {
             line.trim_start_matches('\t')
@@ -676,7 +680,9 @@ fn contains_background_operator(command: &str) -> bool {
     let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
 
     while i < len {
-        let ch = chars[i];
+        let Some(&ch) = chars.get(i) else {
+            break;
+        };
 
         // ── Backslash escape (honoured everywhere except inside single quotes) ──
         if ch == '\\' && !in_single_quote {
@@ -709,9 +715,8 @@ fn contains_background_operator(command: &str) -> bool {
         if ch == '<'
             && !in_single_quote
             && !in_double_quote
-            && i + 1 < len
-            && chars[i + 1] == '<'
-            && !(i + 2 < len && chars[i + 2] == '<')
+            && chars.get(i + 1).copied() == Some('<')
+            && chars.get(i + 2).copied() != Some('<')
             && let Some((delim, strip_tabs, after)) = parse_heredoc_start(&chars, i)
         {
             pending_heredocs.push((delim, strip_tabs));
@@ -722,16 +727,16 @@ fn contains_background_operator(command: &str) -> bool {
         // Only inspect `&` outside of any quoting context.
         if ch == '&' && !in_single_quote && !in_double_quote {
             // `&&` — logical AND, skip both characters.
-            if i + 1 < len && chars[i + 1] == '&' {
+            if chars.get(i + 1).copied() == Some('&') {
                 i += 2;
                 continue;
             }
 
             // `&>` / `&>>` — redirect stdout+stderr.
-            if i + 1 < len && chars[i + 1] == '>' {
+            if chars.get(i + 1).copied() == Some('>') {
                 i += 2;
                 // Skip an extra `>` for `&>>`.
-                if i < len && chars[i] == '>' {
+                if chars.get(i).copied() == Some('>') {
                     i += 1;
                 }
                 continue;
@@ -740,7 +745,10 @@ fn contains_background_operator(command: &str) -> bool {
             // `>&` or `<&` — the `&` is part of a fd-duplication redirect.
             // Look at the immediately preceding character (no whitespace allowed
             // between `>` / `<` and `&` for these to be valid redirects).
-            if i > 0 && (chars[i - 1] == '>' || chars[i - 1] == '<') {
+            if i.checked_sub(1)
+                .and_then(|j| chars.get(j).copied())
+                .is_some_and(|prev| prev == '>' || prev == '<')
+            {
                 i += 1;
                 continue;
             }
@@ -816,9 +824,15 @@ fn self_matching_pkill_pattern(command: &str) -> Option<SelfMatchingPkill> {
         // because all statement-boundary parsing already treats `\n` as a separator.
         let m = caps.get(0).expect("group 0 always present");
         let mut rest = String::with_capacity(command.len());
-        rest.push_str(&command[..m.start()]);
+        let Some(before) = command.get(..m.start()) else {
+            continue;
+        };
+        let Some(after) = command.get(m.end()..) else {
+            continue;
+        };
+        rest.push_str(before);
         rest.push('\n');
-        rest.push_str(&command[m.end()..]);
+        rest.push_str(after);
 
         // Resolve the matched command word as a static slice so callers
         // get a `&'static str` rather than borrowing the input command.
@@ -909,7 +923,9 @@ fn is_bare_echo(command: &str) -> bool {
         return false;
     }
     // Word boundary check.
-    let after_prefix = &t[4..];
+    let Some(after_prefix) = t.get(4..) else {
+        return false;
+    };
     if !after_prefix.is_empty() && !after_prefix.starts_with(char::is_whitespace) {
         return false;
     }
@@ -926,8 +942,10 @@ fn is_bare_echo(command: &str) -> bool {
         if flag_part.is_empty() || flag_part == "-" {
             break;
         }
-        rest = &rest[flag_part.len()..];
-        rest = rest.trim_start();
+        let Some(next) = rest.get(flag_part.len()..) else {
+            break;
+        };
+        rest = next.trim_start();
     }
 
     is_simple_narration_tail(rest)
@@ -941,7 +959,9 @@ fn is_bare_printf(command: &str) -> bool {
     if !t.starts_with("printf") {
         return false;
     }
-    let after_prefix = &t[6..];
+    let Some(after_prefix) = t.get(6..) else {
+        return false;
+    };
     if !after_prefix.is_empty() && !after_prefix.starts_with(char::is_whitespace) {
         return false;
     }
@@ -1299,12 +1319,16 @@ impl BashTool {
         if auto_bg
             && !fg_budget_disabled
             && let Some(wait_ms) = Self::advertised_fg_budget_ms(params)
+            && let Some(obj) = extras.as_object_mut()
         {
-            extras["fg_budget_secs"] = if wait_ms.is_multiple_of(1000) {
-                serde_json::json!(wait_ms / 1000)
-            } else {
-                serde_json::json!(wait_ms as f64 / 1000.0)
-            };
+            obj.insert(
+                "fg_budget_secs".to_owned(),
+                if wait_ms.is_multiple_of(1000) {
+                    serde_json::json!(wait_ms / 1000)
+                } else {
+                    serde_json::json!(wait_ms as f64 / 1000.0)
+                },
+            );
         }
         renderer
             .render_with_extra(raw_desc, &extras)
@@ -2068,7 +2092,9 @@ mod tests {
     #[test]
     fn bash_timeout_schema_defaults_to_120s() {
         let schema = serde_json::to_value(schemars::schema_for!(BashToolInput)).unwrap();
-        let timeout = &schema["properties"]["timeout"];
+        let Some(timeout) = schema.get("properties").and_then(|p| p.get("timeout")) else {
+            panic!("schema missing properties.timeout: {schema}");
+        };
         assert_eq!(
             timeout.get("default"),
             Some(&serde_json::json!(120_000)),
@@ -2442,12 +2468,19 @@ mod tests {
         match p {
             xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "bash_output_chunk", "unexpected subkind");
-                (
-                    payload["delta"].as_str().unwrap().to_owned(),
-                    payload["total_bytes"].as_u64().unwrap() as usize,
-                    payload["truncated"].as_bool().unwrap(),
-                    payload["gap"].as_bool().unwrap(),
-                )
+                let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) else {
+                    panic!("payload missing delta: {payload}");
+                };
+                let Some(total_bytes) = payload.get("total_bytes").and_then(|v| v.as_u64()) else {
+                    panic!("payload missing total_bytes: {payload}");
+                };
+                let Some(truncated) = payload.get("truncated").and_then(|v| v.as_bool()) else {
+                    panic!("payload missing truncated: {payload}");
+                };
+                let Some(gap) = payload.get("gap").and_then(|v| v.as_bool()) else {
+                    panic!("payload missing gap: {payload}");
+                };
+                (delta.to_owned(), total_bytes as usize, truncated, gap)
             }
             other => panic!("expected Custom progress, got {other:?}"),
         }
@@ -2527,7 +2560,9 @@ mod tests {
         match p {
             xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "bash_output_chunk");
-                let delta = payload["delta"].as_str().unwrap();
+                let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) else {
+                    panic!("payload missing delta: {payload}");
+                };
                 // Capped: never larger than the per-frame limit.
                 assert!(
                     delta.len() <= MAX_PROGRESS_DELTA_BYTES,
@@ -2538,11 +2573,14 @@ mod tests {
                 // char from a split `€`). With `€` being 3 bytes, the cap (16384) is not a
                 // boundary, so we back off below it.
                 assert!(delta.len() < MAX_PROGRESS_DELTA_BYTES);
-                assert_eq!(delta, &payload_str[..delta.len()]);
+                assert_eq!(Some(delta), payload_str.get(..delta.len()));
                 // Append defers rather than drops: the over-cap remainder is
                 // held back for the next tick.
                 // total_bytes still reflects the true monotonic count.
-                assert_eq!(payload["total_bytes"].as_u64().unwrap() as usize, total);
+                assert_eq!(
+                    payload.get("total_bytes").and_then(|v| v.as_u64()),
+                    Some(total as u64)
+                );
                 // `last` advanced only past the emitted bytes (deferral), so
                 // subsequent ticks re-slice the held remainder.
                 assert_eq!(last, delta.len());
@@ -2553,13 +2591,19 @@ mod tests {
         // Drain the deferred remainder: repeated calls with the same chunk
         // pace it out in capped frames until the full payload is surfaced.
         let mut reassembled = String::new();
-        reassembled.push_str(&payload_str[..last]);
+        let Some(prefix) = payload_str.get(..last) else {
+            panic!("last not a char boundary: {last}");
+        };
+        reassembled.push_str(prefix);
         while last < total {
             let p = bash_output_chunk_progress(spec, &chunk, &mut last).unwrap();
             let xai_tool_runtime::ToolProgress::Custom { payload, .. } = p else {
                 panic!("expected Custom progress");
             };
-            let delta = payload["delta"].as_str().unwrap().to_owned();
+            let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) else {
+                panic!("payload missing delta: {payload}");
+            };
+            let delta = delta.to_owned();
             assert!(delta.len() <= MAX_PROGRESS_DELTA_BYTES);
             reassembled.push_str(&delta);
         }
@@ -2706,11 +2750,14 @@ mod tests {
 
         // total_bytes is strictly increasing (keyed off the monotonic counter).
         for w in deltas.windows(2) {
+            let [prev, next] = w else {
+                continue;
+            };
             assert!(
-                w[1].0 > w[0].0,
+                next.0 > prev.0,
                 "total_bytes must strictly increase: {} !> {}",
-                w[1].0,
-                w[0].0
+                next.0,
+                prev.0
             );
         }
 
@@ -3911,8 +3958,11 @@ mod tests {
         fn timeout_desc(params: &BashParams) -> String {
             let _g = env_lock();
             let schema = BashTool::exported_input_schema(&base_schema(), params, "timeout");
-            schema["properties"]["timeout"]["description"]
-                .as_str()
+            schema
+                .get("properties")
+                .and_then(|p| p.get("timeout"))
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("timeout description")
                 .to_string()
         }
@@ -4071,7 +4121,11 @@ mod tests {
             );
             let schema = BashTool::exported_input_schema(&base_schema(), &params, "timeout");
             assert_eq!(
-                schema["properties"]["timeout"]["maximum"].as_u64(),
+                schema
+                    .get("properties")
+                    .and_then(|p| p.get("timeout"))
+                    .and_then(|t| t.get("maximum"))
+                    .and_then(|v| v.as_u64()),
                 Some(60_000)
             );
             let auto = BashParams {
@@ -4158,8 +4212,11 @@ mod tests {
             };
             let wait = BashTool::effective_auto_bg_wait_ms(&params);
             let schema = BashTool::exported_input_schema(&base_schema(), &params, "timeout");
-            let desc = schema["properties"]["timeout"]["description"]
-                .as_str()
+            let desc = schema
+                .get("properties")
+                .and_then(|p| p.get("timeout"))
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("timeout description")
                 .to_string();
             match prev {
@@ -4213,8 +4270,11 @@ mod tests {
             let exported =
                 BashTool::exported_input_schema(&base_schema(), &BashParams::default(), "max_wait");
             let remapped = crate::util::remap::remap_schema_properties(&exported, &param_map);
-            let desc = remapped["properties"]["max_wait"]["description"]
-                .as_str()
+            let desc = remapped
+                .get("properties")
+                .and_then(|p| p.get("max_wait"))
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("max_wait description");
             assert!(
                 desc.contains("max_wait"),
@@ -4261,8 +4321,10 @@ mod tests {
                 props.get("timeout").is_some() && props.get("max_wait").is_none(),
                 "empty param_map must keep schema key timeout, got: {props}"
             );
-            let desc = props["timeout"]["description"]
-                .as_str()
+            let desc = props
+                .get("timeout")
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("timeout description");
             assert!(
                 desc.contains("timeout"),

@@ -454,7 +454,12 @@ fn replay_inherited_updates(
                     .handle_update(update, &meta, &mut child_view.scrollback);
             }
             ReplayedUpdate::Xai(update) => {
+                // Same window as `session/load`: historical xAI events must not start live commands
+                // (family-switch compact) or defer compact outcomes to a turn that never comes.
+                let was_loading = child_view.session.loading_replay;
+                child_view.session.loading_replay = true;
                 crate::app::acp_handler::apply_child_view_session_event(child_view, &update, false);
+                child_view.session.loading_replay = was_loading;
             }
         }
     });
@@ -952,12 +957,31 @@ pub(crate) fn parse_tag_prefix(description: &str) -> (Option<&str>, &str) {
     if let Some(rest) = description.strip_prefix('[')
         && let Some(close) = rest.find(']')
     {
-        let tag = rest[..close].trim();
+        let Some(tag) = rest.get(..close) else {
+            return (None, description);
+        };
+        let tag = tag.trim();
         if !tag.is_empty() {
-            return (Some(tag), rest[close + 1..].trim_start());
+            let after = rest.get(close + 1..).map_or("", |s| s.trim_start());
+            return (Some(tag), after);
         }
     }
     (None, description)
+}
+
+/// `format_subagent_label`'s label, then the description in curly quotes when there is one, as the `Subagent`
+/// scrollback row quotes it. Clamped by `clamp_activity_subject` (first line, 40 chars) rather than by width:
+/// the label is fixed at spawn for rows built later, which have no width to truncate against.
+pub(crate) fn subagent_display_label(info: &SubagentInfo) -> String {
+    let (label, description) = format_subagent_label(info);
+    if description.trim().is_empty() {
+        label
+    } else {
+        format!(
+            "{label} \u{201c}{}\u{201d}",
+            crate::acp::tracker::clamp_activity_subject(&description)
+        )
+    }
 }
 
 /// Single consolidated label and display description for a subagent row.

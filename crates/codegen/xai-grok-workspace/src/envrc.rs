@@ -293,7 +293,7 @@ printf '%s' '{sentinel}'
         .windows(anchored.len())
         .position(|window| window == anchored.as_slice())
     {
-        Some(sentinel_at) => &output.stdout[..sentinel_at],
+        Some(sentinel_at) => output.stdout.get(..sentinel_at).unwrap_or(&[]),
         None if output.stdout.starts_with(sentinel.as_bytes()) => {
             tracing::debug!(?envrc_path, ".envrc produced no output");
             return None;
@@ -478,7 +478,9 @@ impl PipeDrain {
                             cut.store(true, Ordering::Relaxed);
                             break;
                         }
-                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(read) = chunk.get(..n) {
+                            buf.extend_from_slice(read);
+                        }
                     }
                     Err(e)
                         if e.kind() == std::io::ErrorKind::WouldBlock
@@ -509,7 +511,9 @@ impl PipeDrain {
                             cut.store(true, Ordering::Relaxed);
                             break;
                         }
-                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(read) = chunk.get(..n) {
+                            buf.extend_from_slice(read);
+                        }
                     }
                 }
             }

@@ -67,7 +67,7 @@ impl SessionActor {
                 item,
                 ConversationItem::User(u)
                     if u.synthetic_reason
-                        == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                        == xai_grok_sampling_types::SyntheticReason::SystemReminder
             )
         });
         let effects = bridge.apply_pending_skill_update().await;
@@ -178,7 +178,7 @@ impl SessionActor {
                     conversation
                         .iter()
                         .position(|item| {
-                            matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_none())
+                            matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_human())
                         })
                         .unwrap_or(conversation.len()),
                 );

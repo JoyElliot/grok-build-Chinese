@@ -205,8 +205,11 @@ timeout = 5
 
         let layers = xai_grok_config::hook_config_layers_at(Some(system_dir.path()), None);
         assert_eq!(layers.len(), 1, "one requirements layer expected");
-        assert_eq!(layers[0].provenance(), HookProvenance::Requirements);
-        assert_eq!(layers[0].source_name(), "requirements/system");
+        let Some(layer) = layers.first() else {
+            panic!("one requirements layer expected: {layers:?}");
+        };
+        assert_eq!(layer.provenance(), HookProvenance::Requirements);
+        assert_eq!(layer.source_name(), "requirements/system");
 
         let compat = xai_grok_tools::types::compat::CompatConfig::default();
         let (registry, errors) = assemble_hooks(&layers, None, &compat, false);

@@ -120,13 +120,23 @@ async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::To
         let comma = value.find(',').ok_or_else(|| {
             xai_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
         })?;
-        if !value[..comma].contains(";base64") {
+        let Some(header) = value.get(..comma) else {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            ));
+        };
+        if !header.contains(";base64") {
             return Err(xai_tool_runtime::ToolError::invalid_arguments(
                 "image references only support base64 data URLs",
             ));
         }
+        let Some(payload) = value.get(comma + 1..) else {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            ));
+        };
         base64::engine::general_purpose::STANDARD
-            .decode(&value[comma + 1..])
+            .decode(payload)
             .map_err(|e| {
                 xai_tool_runtime::ToolError::invalid_arguments(format!(
                     "invalid base64 in image reference: {e}"
@@ -169,7 +179,10 @@ fn parse_attachment_token(value: &str) -> Option<usize> {
     // Strip an optional leading `image` label (case-insensitive). The
     // 5-byte prefix is ASCII, so slicing at byte 5 stays on a boundary.
     let rest = match inner.get(..5).map(str::to_ascii_lowercase).as_deref() {
-        Some("image") => inner[5..].trim_start(),
+        Some("image") => {
+            let rest = inner.get(5..)?;
+            rest.trim_start()
+        }
         _ => inner,
     };
     // Require the `#` sigil followed by a bare positive integer.
@@ -359,11 +372,24 @@ impl xai_tool_runtime::Tool for ImageEditTool {
             .iter()
             .map(|u| serde_json::json!({ "url": u }))
             .collect();
+        let Some(obj) = payload.as_object_mut() else {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "failed to build image edit payload",
+            ));
+        };
         if imgs.len() == 1 {
-            payload["image"] = imgs.pop().unwrap();
+            let Some(img) = imgs.pop() else {
+                return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                    "failed to build image edit payload",
+                ));
+            };
+            obj.insert("image".to_owned(), img);
         } else {
-            payload["images"] = serde_json::Value::Array(imgs);
-            payload["aspect_ratio"] = serde_json::json!(input.aspect_ratio);
+            obj.insert("images".to_owned(), serde_json::Value::Array(imgs));
+            obj.insert(
+                "aspect_ratio".to_owned(),
+                serde_json::json!(input.aspect_ratio),
+            );
         }
 
         let sent_bearer = client.current_bearer().await;

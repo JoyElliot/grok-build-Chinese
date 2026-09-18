@@ -11,6 +11,27 @@ use std::path::PathBuf;
 use std::time::Instant;
 use xai_grok_shell::extensions::notification::RetryState;
 use xai_grok_shell::extensions::notification::SessionUpdate as XaiSessionUpdate;
+pub(super) fn test_agent(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
+}
+pub(super) fn test_subagent<'a>(parent: &'a AgentView, sid: &str) -> &'a AgentView {
+    let Some(child) = parent.subagent_views.get(sid) else {
+        panic!("expected subagent {sid}");
+    };
+    child.as_ref()
+}
+pub(super) fn json_set(
+    value: &mut serde_json::Value,
+    key: impl Into<String>,
+    v: serde_json::Value,
+) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(key.into(), v);
+    }
+}
 pub(super) fn make_session(session_id: Option<&str>) -> AgentSession {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     AgentSession {
@@ -494,16 +515,20 @@ pub(super) fn queue_changed_running_ex(
         .collect();
     let mut params = serde_json::json!({ "sessionId": session_id, "entries": entries });
     if let Some(r) = running {
-        params["runningPromptId"] = serde_json::Value::String(r.to_string());
+        json_set(
+            &mut params,
+            "runningPromptId",
+            serde_json::Value::String(r.to_string()),
+        );
     }
     if let Some(t) = running_text {
-        params["runningText"] = serde_json::Value::String(t.to_string());
+        json_set(&mut params, "runningText", serde_json::Value::String(t.to_string()));
     }
     if let Some(k) = running_kind {
-        params["runningKind"] = serde_json::Value::String(k.to_string());
+        json_set(&mut params, "runningKind", serde_json::Value::String(k.to_string()));
     }
     if let Some(segs) = running_combined_texts {
-        params["runningCombinedTexts"] = serde_json::json!(segs);
+        json_set(&mut params, "runningCombinedTexts", serde_json::json!(segs));
     }
     acp::ExtNotification::new(
         "x.ai/queue/changed",
@@ -536,7 +561,7 @@ pub(super) fn send_tool_call_update(
 ) {
     let mut meta = serde_json::json!({ "promptId": prompt_id });
     if let Some(eid) = event_id {
-        meta["eventId"] = serde_json::Value::String(eid.to_string());
+        json_set(&mut meta, "eventId", serde_json::Value::String(eid.to_string()));
     }
     let (tx, _rx) = tokio::sync::oneshot::channel();
     handle(
@@ -864,7 +889,7 @@ pub(super) fn plan_update_msg(
     })
 }
 pub(super) fn todo_contents(app: &AppView, id: AgentId) -> Vec<String> {
-    app.agents[&id].todo.todos().iter().map(|t| t.content.clone()).collect()
+    test_agent(app, id).todo.todos().iter().map(|t| t.content.clone()).collect()
 }
 pub(super) fn xai_model_switch_notif(
     session_id: &str,
@@ -952,7 +977,7 @@ pub(super) fn prompt_complete_ext_with_reason(
             "stopReason": stop_reason,
         });
     if let Some(r) = agent_result {
-        payload["agentResult"] = serde_json::json!(r);
+        json_set(&mut payload, "agentResult", serde_json::json!(r));
     }
     let raw = serde_json::value::to_raw_value(&payload).unwrap();
     acp::ExtNotification::new("x.ai/session/prompt_complete", std::sync::Arc::from(raw))
@@ -1170,7 +1195,7 @@ pub(super) fn xai_turn_completed_replay(
     let mut meta = serde_json::json!({ "isReplay": true });
     if let Some(obj) = extra_meta.as_object() {
         for (k, v) in obj {
-            meta[k] = v.clone();
+            json_set(&mut meta, k.clone(), v.clone());
         }
     }
     let payload = SessionNotification {
@@ -1254,7 +1279,7 @@ pub(super) fn xai_wake_turn_completed_notif(
 ) -> acp::ExtNotification {
     let mut meta = serde_json::json!({ "isReplay": false });
     if let Some(ms) = agent_timestamp_ms {
-        meta["agentTimestampMs"] = ms.into();
+        json_set(&mut meta, "agentTimestampMs", ms.into());
     }
     let payload = SessionNotification {
         session_id: acp::SessionId::new(session_id),
@@ -1351,7 +1376,7 @@ pub(super) fn interjection_ext_with_id(
 ) -> acp::ExtNotification {
     let mut payload = serde_json::json!({ "sessionId": session_id, "text": text });
     if let Some(id) = interjection_id {
-        payload["interjectionId"] = serde_json::json!(id);
+        json_set(&mut payload, "interjectionId", serde_json::json!(id));
     }
     let raw = serde_json::value::to_raw_value(&payload).unwrap();
     acp::ExtNotification::new("x.ai/session/interjection", std::sync::Arc::from(raw))
@@ -2044,7 +2069,7 @@ pub(super) fn make_app_with_parent_and_child(
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     agent.subagent_sessions.insert(child_sid.into(), make_subagent_info(child_sid));
     let child_view = make_agent(Some(child_sid));
-    agent.subagent_views.insert(child_sid.into(), Box::new(child_view));
+    agent.insert_test_child(child_sid.into(), Box::new(child_view));
     app
 }
 pub(super) fn make_task_completed_notif(

@@ -64,6 +64,18 @@ pub(super) fn mcp_target_agent<'a>(
     }
 }
 
+/// The in-flight create a setup-phase notification targets, matched only by `pending_session_id`
+/// (not the bound id, so a late phase can't re-stain a live session; no active-view fallback).
+pub(super) fn setup_phase_target_agent<'a>(
+    app: &'a mut AppView,
+    session_id: &str,
+) -> Option<&'a mut AgentView> {
+    let sid = acp::SessionId::new(session_id);
+    app.agents
+        .values_mut()
+        .find(|agent| agent.pending_session_id.as_ref() == Some(&sid))
+}
+
 /// Given a matched session and the owning agent, borrow the correct `(session, scrollback)` pair.
 /// That is the child view's pair when the notification targets a subagent, the root agent's otherwise.
 pub(super) fn resolve_target_view<'a>(

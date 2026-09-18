@@ -1,14 +1,14 @@
 //! New, exit, cloud, and worktree session dispatchers plus trust and startup actions.
 use super::fork::{dispatch_startup_fork_session, worktree_persist_options};
 use super::load::dispatch_load_session;
-use super::modal::remove_agent_and_cleanup;
+use super::modal::{drop_other_agents_in_minimal, remove_agent_and_cleanup};
 use crate::acp::model_state::{EffortTokenError, ModelState};
 use crate::acp::tracker::AcpUpdateTracker;
 use crate::app::actions::{
     Action, AfterSessionDelete, Effect, PermissionModePersist, SwitchModelError,
 };
 use crate::app::agent::{AgentCommand, AgentId, AgentSession, AgentState, DeferredModelSwitch};
-use crate::app::agent_view::{ActivePane, AgentView, McpInitProgress};
+use crate::app::agent_view::{ActivePane, AgentView};
 use crate::app::app_view::{ActiveView, AppView, TrustState};
 use crate::app::cancel_latency::TurnEnd;
 use crate::app::consent::ConsentState;
@@ -477,6 +477,18 @@ mod workspace_error_localization_tests {
         );
     }
 }
+/// The create's `_meta.sessionId`: honor `preferred`, else mint a v7 UUID. Records it as `pending_session_id` so setup phases route here.
+fn assign_pending_session_id(
+    app: &mut AppView,
+    agent_id: AgentId,
+    preferred: Option<String>,
+) -> String {
+    let session_id = preferred.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    if let Some(agent) = app.agents.get_mut(&agent_id) {
+        agent.pending_session_id = Some(acp::SessionId::new(session_id.clone()));
+    }
+    session_id
+}
 /// Factored out of [`dispatch_new_session`] so the worktree-question "No" path can call it directly without re-opening the modal.
 pub(in crate::app::dispatch) fn dispatch_new_session_inner(
     app: &mut AppView,
@@ -506,7 +518,8 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
     app.next_agent_id += 1;
     let mut scrollback = ScrollbackState::new();
     scrollback.set_appearance(app.appearance.clone());
-    let agent = AgentView::new(
+    let agent = AgentView::from_app(
+        app,
         AgentSession {
             id: agent_id,
             acp_tx: app.acp_tx.clone(),
@@ -559,6 +572,7 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
         app.optimistic_home_husk = Some(agent_id);
     } else {
         switch_to_agent(app, agent_id, SwitchCause::New);
+        effects.extend(drop_other_agents_in_minimal(app, agent_id));
     }
     if app.screen_mode.is_minimal() {
         app.minimal_state.welcome_pending = true;
@@ -592,27 +606,25 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
             agent.workspace_mode_cli_locked = locked;
         }
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-        agent.mcp_init_progress = Some(McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: Instant::now(),
-        });
+        agent.session_starting_since = Some(Instant::now());
         agent.session.prompt_history_loading = true;
     }
     let preferred_session_id = app.deferred_startup.preferred_session_id.take();
+    let session_id = assign_pending_session_id(app, agent_id, preferred_session_id);
     effects.push(Effect::CreateSession {
         agent_id,
         cwd: effective_cwd,
         model_id,
         permission_mode_override: None,
-        preferred_session_id,
+        preferred_session_id: Some(session_id),
         chat_kind,
     });
     (agent_id, effects)
 }
 /// Exit the current session and return to the welcome screen.
+/// Minimal has no welcome chrome, so this then opens an empty session (same as startup).
 pub(in crate::app::dispatch) fn dispatch_exit_session(app: &mut AppView) -> Vec<Effect> {
-    let effects =
+    let mut effects =
         unregister_session_effect(get_active_agent(app).and_then(|a| a.session.session_id.clone()));
     show_welcome(app);
     app.welcome_prompt_focused = true;
@@ -622,6 +634,9 @@ pub(in crate::app::dispatch) fn dispatch_exit_session(app: &mut AppView) -> Vec<
     app.session_picker_content_results = None;
     app.session_picker_content_loading = false;
     app.exit_session_pending = None;
+    if app.screen_mode.is_minimal() && !app.is_zdr_blocked() {
+        effects.extend(dispatch_new_session(app));
+    }
     effects
 }
 /// Aftermath for `/delete` on the active agent: dashboard overlay returns there; standalone agent sessions go home.
@@ -800,19 +815,57 @@ pub(in crate::app::dispatch) fn dispatch_delete_current_session_answered(
     });
     effects
 }
-/// Persist the shown folder-trust key.
-/// Durable and auto-trust finish trust. A failed store write quits like Welcome `n`.
+use xai_grok_workspace::folder_trust::GrantResolution;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app::dispatch) enum AgentLocation {
+    Embedded,
+    Leader,
+}
+pub(in crate::app::dispatch) fn agent_location(app: &AppView) -> AgentLocation {
+    if app.leader_mode {
+        AgentLocation::Leader
+    } else {
+        AgentLocation::Embedded
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app::dispatch) enum TrustGateOutcome {
+    Finish,
+    FinishSessionLocal,
+    Quit,
+}
+pub(in crate::app::dispatch) fn trust_gate_outcome(
+    resolution: GrantResolution,
+    agent: AgentLocation,
+) -> TrustGateOutcome {
+    match resolution {
+        GrantResolution::Trusted => TrustGateOutcome::Finish,
+        GrantResolution::SessionLocal => match agent {
+            AgentLocation::Embedded => TrustGateOutcome::FinishSessionLocal,
+            AgentLocation::Leader => TrustGateOutcome::Quit,
+        },
+        GrantResolution::Unrecorded => TrustGateOutcome::Quit,
+    }
+}
 pub(in crate::app::dispatch) fn dispatch_trust_folder(app: &mut AppView) -> Vec<Effect> {
     let TrustState::Pending { workspace } = &app.trust_state else {
         return vec![];
     };
     let shown = workspace.clone();
     let outcome = xai_grok_workspace::folder_trust::grant_folder_trust_key(&shown);
-    if outcome.dismisses_gate() {
-        return finish_trust(app);
+    match trust_gate_outcome(outcome.resolution(), agent_location(app)) {
+        TrustGateOutcome::Finish => finish_trust(app),
+        TrustGateOutcome::FinishSessionLocal => {
+            app.show_toast(
+                "Folder trusted for this session only. Run `grok --trust` here to save it for next time.",
+            );
+            finish_trust(app)
+        }
+        TrustGateOutcome::Quit => {
+            app.trust_quit_error = Some(outcome.to_string());
+            confirmed_quit(app)
+        }
     }
-    app.trust_quit_error = Some(outcome.to_string());
-    confirmed_quit(app)
 }
 /// Tail of accepting the folder-trust question (via [`dispatch_trust_folder`]; declining quits instead).
 /// Resolves `trust_state` to `Done`, focuses the welcome prompt, and replays the deferred session startup once auth is also resolved.
@@ -899,8 +952,6 @@ pub(crate) fn maybe_create_home_session(app: &mut AppView) -> Vec<Effect> {
     effects
 }
 /// Stamp session-composer config onto `agent.prompt` after create or after swapping the welcome widget onto it. Without this, reveal leaves compact, gates, plugin visibility, and ACP commands on the discarded widget.
-/// swapping the welcome widget onto it. Without this, reveal leaves compact,
-/// gates, plugin visibility, and ACP commands on the discarded widget.
 fn configure_agent_composer(app: &mut AppView, agent_id: AgentId) {
     let compact = app.appearance.prompt.compact;
     let slash_mru = app.slash_mru.clone();
@@ -1327,7 +1378,8 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
     app.next_agent_id += 1;
     let mut scrollback = ScrollbackState::new();
     scrollback.set_appearance(app.appearance.clone());
-    let mut agent = AgentView::new(
+    let mut agent = AgentView::from_app(
+        app,
         AgentSession {
             id: agent_id,
             acp_tx: app.acp_tx.clone(),
@@ -1424,6 +1476,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         }
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
         agent.set_plugins_visible_recursive(!app.appearance.disable_plugins);
+        agent.session_starting_since = Some(Instant::now());
     }
     if let Some(prompt) = prompt
         && let Some(agent) = app.agents.get_mut(&agent_id)
@@ -1431,12 +1484,19 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         agent.session.enqueue_prompt(prompt);
     }
     switch_to_agent(app, agent_id, SwitchCause::New);
+    effects.extend(drop_other_agents_in_minimal(app, agent_id));
     if from_welcome {
         take_welcome_composer_onto_agent(app, agent_id);
         if let Some(agent) = app.agents.get_mut(&agent_id) {
             agent.active_pane = ActivePane::Prompt;
         }
     }
+    let minted_session_id = if load_session_id.is_none() {
+        let session_id = assign_pending_session_id(app, agent_id, preferred_session_id.clone());
+        preferred_session_id.is_none().then_some(session_id)
+    } else {
+        None
+    };
     effects.push(Effect::CreateWorktreeSession {
         agent_id,
         load_session_id,
@@ -1445,6 +1505,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         model_id,
         permission_mode_override: None,
         preferred_session_id,
+        minted_session_id,
         chat_kind,
     });
     effects
@@ -1494,6 +1555,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
     agent_id: AgentId,
     session_id: acp::SessionId,
     new_models: Option<acp::SessionModelState>,
+    modes: Option<acp::SessionModeState>,
 ) -> Vec<Effect> {
     let identity_rebind = super::super::dashboard::WorkspaceIdentityRebind::capture(app);
     crate::app::workspace_sync::allow_loaded_session(app, session_id.0.as_ref());
@@ -1501,10 +1563,12 @@ pub(in crate::app::dispatch) fn handle_session_created(
     let locale = app.locale.clone();
     let switch_hint =
         crate::views::dashboard::session_switch_hint_command(app.screen_mode.is_minimal());
+    let has_switch_target =
+        agent_count > 1 || (app.screen_mode.is_minimal() && app.next_agent_id > 1);
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         let session_id_clone = session_id.clone();
         if agent.session.created_via_new
-            && agent_count > 1
+            && has_switch_target
             && let Some(cmd) = switch_hint
         {
             let session_id = session_id_clone.0.to_string();
@@ -1529,6 +1593,10 @@ pub(in crate::app::dispatch) fn handle_session_created(
         if let Some(m) = new_models {
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
+        }
+        if agent.apply_session_modes(modes) {
+            app.default_yolo = false;
+            app.current_ui.permission_mode = Some("ask".into());
         }
         let deferred = apply_deferred_model_switch_with_locale(
             agent,
@@ -1641,6 +1709,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
     worktree_path: std::path::PathBuf,
     session_cwd: std::path::PathBuf,
     new_models: Option<acp::SessionModelState>,
+    modes: Option<acp::SessionModeState>,
     strategy_summary: Option<String>,
 ) -> Vec<Effect> {
     let locale = app.locale.clone();
@@ -1660,6 +1729,10 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         if let Some(m) = new_models {
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
+        }
+        if agent.apply_session_modes(modes) {
+            app.default_yolo = false;
+            app.current_ui.permission_mode = Some("ask".into());
         }
         agent.prompt.file_search.retarget(&session_cwd);
         let worktree_path = worktree_path.display().to_string();
@@ -1827,20 +1900,55 @@ fn restore_orphan_create_draft_to_welcome(app: &mut AppView, agent_id: AgentId) 
         let _ = app.welcome_prompt.insert_image(image);
     }
 }
+/// Emits the create-failure event and returns the stalled phase's user-facing copy, if any.
+fn report_session_create_failed(
+    app: &AppView,
+    agent_id: AgentId,
+    timed_out: bool,
+) -> Option<&'static str> {
+    use strum::EnumMessage as _;
+    let (phase, elapsed_ms) = app
+        .agents
+        .get(&agent_id)
+        .map(|a| {
+            (
+                a.session_new_phase,
+                a.session_starting_since
+                    .map(|t| t.elapsed().as_millis() as u64)
+                    .unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
+    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SessionCreateFailed {
+        outcome: if timed_out {
+            xai_grok_telemetry::startup::StartupOutcome::Timeout
+        } else {
+            xai_grok_telemetry::startup::StartupOutcome::Error
+        },
+        stuck_phase: phase.map(|p| <&'static str>::from(&p).to_owned()),
+        elapsed_ms,
+    });
+    phase.and_then(|p| p.get_message())
+}
 /// Failed plain `CreateSession`: drop orphan placeholders, clear the starting-session spinner, and report the error.
 /// The report is a toast when an agent remains; on the welcome screen, which has no toast, it is a startup warning.
 pub(in crate::app::dispatch) fn handle_session_failed(
     app: &mut AppView,
     agent_id: AgentId,
     error: String,
+    timed_out: bool,
 ) -> Vec<Effect> {
     tracing::error!(agent = ?agent_id, error = %error, "Session creation failed");
-    let msg = localized_template(
-        app.locale.as_ref(),
-        "session.create.failed",
-        "Session creation failed: {error}",
-        &[("{error}", &error)],
-    );
+    let stuck_step = report_session_create_failed(app, agent_id, timed_out);
+    let msg = match stuck_step {
+        Some(step) if timed_out => crate::app::effects::timed_out_while(step),
+        Some(_) | None => localized_template(
+            app.locale.as_ref(),
+            "session.create.failed",
+            "Session creation failed: {error}",
+            &[("{error}", &error)],
+        ),
+    };
     let is_orphan = app
         .agents
         .get(&agent_id)
@@ -1874,7 +1982,10 @@ pub(in crate::app::dispatch) fn handle_session_failed(
     } else if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.pending_extensions_fetch = false;
         agent.session.prompt_history_loading = false;
+        agent.session_starting_since = None;
         agent.mcp_init_progress = None;
+        agent.session_new_phase = None;
+        agent.pending_session_id = None;
         agent.session.finish_command();
         let elapsed = agent.turn_elapsed();
         agent.mark_turn_finished(TurnEnd::Aborted);
@@ -1894,14 +2005,32 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
     app: &mut AppView,
     agent_id: AgentId,
     error: String,
+    orphaned_worktree_root: Option<std::path::PathBuf>,
+    timed_out: bool,
 ) -> Vec<Effect> {
     tracing::error!(agent = ?agent_id, error = %error, "Worktree session creation failed");
-    let worktree_error = localized_template(
-        app.locale.as_ref(),
-        "session.worktree.create_failed",
-        "Cannot create worktree: {error}",
-        &[("{error}", &error)],
-    );
+    let is_create = app
+        .agents
+        .get(&agent_id)
+        .is_some_and(|a| a.pending_session_id.is_some());
+    let stuck_step = if is_create {
+        report_session_create_failed(app, agent_id, timed_out)
+    } else {
+        None
+    };
+    let reason = match stuck_step {
+        Some(step) if timed_out => crate::app::effects::timed_out_while(step),
+        Some(_) | None => localized_template(
+            app.locale.as_ref(),
+            "session.worktree.create_failed",
+            "Cannot create worktree: {error}",
+            &[("{error}", &error)],
+        ),
+    };
+    let msg = match orphaned_worktree_root {
+        Some(root) => crate::app::worktree_session::note_orphaned_worktree(&reason, &root),
+        None => reason,
+    };
     let is_orphan = app
         .agents
         .get(&agent_id)
@@ -1923,26 +2052,26 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
             app.session_picker_content_loading = false;
             restore_dashboard_attach_after_orphan_remove(app, agent_id, None);
         }
-        if !app
-            .startup_warnings
-            .iter()
-            .any(|w| w.message == worktree_error)
-        {
+        if !app.startup_warnings.iter().any(|w| w.message == msg) {
             app.startup_warnings.push(crate::startup::StartupWarning {
                 severity: crate::startup::WarningSeverity::Warning,
-                message: worktree_error,
+                message: msg,
                 action: None,
             });
         }
     } else if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.pending_extensions_fetch = false;
         agent.session.prompt_history_loading = false;
+        agent.session_starting_since = None;
         agent.mcp_init_progress = None;
+        agent.session_new_phase = None;
+        agent.pending_session_id = None;
         agent.session.finish_command();
         let elapsed = agent.turn_elapsed();
         agent.mark_turn_finished(TurnEnd::Aborted);
         agent.pending_first_prompt = None;
         agent.pending_fork_banner = None;
+        agent.show_toast(&msg);
         agent
             .scrollback
             .push_block(RenderBlock::session_event(SessionEvent::TurnFailed {
@@ -1977,6 +2106,11 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 let prev_effort = agent.session.models.reasoning_effort;
                 agent.session.models.set_current(model_id.clone(), effort);
                 let resolved_effort = agent.session.models.reasoning_effort;
+                if let Some(used) = agent.context_state.as_ref().map(|c| c.used)
+                    && let Some(window) = agent.session.models.get_context_window()
+                {
+                    agent.apply_context_used(used, window);
+                }
                 let unchanged =
                     prev_model.as_ref() == Some(&model_id) && prev_effort == resolved_effort;
                 if !unchanged {

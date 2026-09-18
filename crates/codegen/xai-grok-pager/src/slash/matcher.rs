@@ -138,7 +138,10 @@ mod tests {
         let mut matcher = FuzzyMatcher::new();
         let items = ["model", "help", "history"];
         let hits = matcher.rank(&items, "mod", items.len(), |item| item);
-        assert_eq!(hits.first().map(|&(idx, _)| items[idx]), Some("model"));
+        assert_eq!(
+            hits.first().and_then(|&(idx, _)| items.get(idx).copied()),
+            Some("model")
+        );
     }
 
     #[test]
@@ -165,7 +168,7 @@ mod tests {
         let hits = matcher.rank(&items, "p", items.len(), |item| item);
         let score_of = |name: &str| -> Option<u32> {
             hits.iter()
-                .find(|&&(idx, _)| items[idx] == name)
+                .find(|&&(idx, _)| items.get(idx).is_some_and(|&item| item == name))
                 .map(|&(_, s)| s)
         };
         let personas = score_of("personas").expect("personas matches p");
@@ -174,6 +177,9 @@ mod tests {
         assert!(personas > 0);
         // Matcher limit=1 secondary sort is ascending key text, so pager-headless wins
         let top1 = matcher.rank(&items, "p", 1, |item| item);
-        assert_eq!(items[top1[0].0], "pager-headless");
+        let Some(&(idx, _)) = top1.first() else {
+            panic!("expected a hit: {top1:?}");
+        };
+        assert_eq!(items.get(idx).copied(), Some("pager-headless"));
     }
 }

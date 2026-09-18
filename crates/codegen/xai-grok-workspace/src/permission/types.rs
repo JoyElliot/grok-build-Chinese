@@ -114,6 +114,7 @@ pub enum AccessKind {
         path: Option<String>,
         glob: Option<String>,
     },
+    /// A file edit, named by its path.
     Edit(String),
     Bash(String),
     MCPTool {
@@ -125,6 +126,10 @@ pub enum AccessKind {
     AgentMessage {
         subagent_id: String,
     },
+    /// A mutating tool that is neither a file edit, a command, nor an MCP call (subagent spawn,
+    /// scheduler, workflow, generation, deploy, feedback, browser, anything unclassified), named by
+    /// its tool id. No grant scope covers it: every call prompts.
+    Tool(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -243,31 +248,56 @@ pub enum PermissionCommand {
     ResetState,
     Shutdown,
 }
+/// Classification is an allowlist of read-only tools: a tool is `Read`/`Grep`/`WebSearch` only when it
+/// reads state or touches nothing but the session's own bookkeeping. Every other tool prompts as an
+/// edit, a command, an MCP call, or a fetch, so a new `ToolInput` variant cannot run unasked.
 impl From<&xai_grok_tools::types::ToolInput> for AccessKind {
     fn from(input: &xai_grok_tools::types::ToolInput) -> Self {
         use xai_grok_tools::types::ToolInput;
         match input {
             ToolInput::ReadFile(r) => AccessKind::Read(Some(r.path.clone())),
             ToolInput::ListDir(l) => AccessKind::Read(Some(l.target_directory.clone())),
+            ToolInput::CodexReadFile(r) => AccessKind::Read(Some(r.file_path.clone())),
+            ToolInput::CodexListDir(l) => AccessKind::Read(Some(l.dir_path.clone())),
+            ToolInput::MemoryGet(m) => AccessKind::Read(Some(m.path.clone())),
+            ToolInput::Lsp(l) => AccessKind::Read(l.file_path.clone()),
             ToolInput::Grep(g) => AccessKind::Grep {
                 path: g.path.clone(),
                 glob: g.glob.clone(),
+            },
+            ToolInput::CodexGrepFiles(g) => AccessKind::Grep {
+                path: g.path.clone(),
+                glob: g.include.clone(),
             },
             ToolInput::TodoWrite(_)
             | ToolInput::TaskOutput(_)
             | ToolInput::WaitTasks(_)
             | ToolInput::KillTask(_)
-            | ToolInput::Skill(_) => AccessKind::Read(None),
-            ToolInput::Task(t) => AccessKind::Edit(format!("task:{}", t.subagent_type)),
+            | ToolInput::Skill(_)
+            | ToolInput::MemorySearch(_)
+            | ToolInput::SearchTool(_)
+            | ToolInput::SchedulerList(_)
+            | ToolInput::EnterPlanMode(_)
+            | ToolInput::ExitPlanMode(_)
+            | ToolInput::AskUserQuestion(_)
+            | ToolInput::UpdateGoal(_) => AccessKind::Read(None),
+            ToolInput::Task(_) => AccessKind::Tool("task".to_owned()),
+            ToolInput::SchedulerCreate(_) => AccessKind::Tool("scheduler_create".to_owned()),
+            ToolInput::SchedulerDelete(_) => AccessKind::Tool("scheduler_delete".to_owned()),
+            ToolInput::Workflow(_) => AccessKind::Tool("workflow".to_owned()),
+            ToolInput::ImageGen(_) => AccessKind::Tool("image_gen".to_owned()),
+            ToolInput::ImageEdit(_) => AccessKind::Tool("image_edit".to_owned()),
+            ToolInput::ImageToVideo(_) => AccessKind::Tool("image_to_video".to_owned()),
+            ToolInput::ReferenceToVideo(_) => AccessKind::Tool("reference_to_video".to_owned()),
             ToolInput::SendSubagentMessage(message) => AccessKind::AgentMessage {
                 subagent_id: message.subagent_id.clone(),
             },
-            ToolInput::SendFeedback(_) => AccessKind::Edit("feedback_draft".to_owned()),
+            ToolInput::SendFeedback(_) => AccessKind::Tool("send_feedback".to_owned()),
             ToolInput::WebSearch(ws) => AccessKind::WebSearch(ws.query.clone()),
             ToolInput::SearchReplace(search_replace) => {
                 AccessKind::Edit(search_replace.file_path.to_string())
             }
-            ToolInput::ApplyPatch(_) => AccessKind::Edit("apply_patch".to_string()),
+            ToolInput::ApplyPatch(_) => AccessKind::Tool("apply_patch".to_owned()),
             ToolInput::HashlineEdit(he) => AccessKind::Edit(he.file_path.to_string()),
             ToolInput::Write(w) => AccessKind::Edit(w.file_path.clone()),
             ToolInput::Bash(bash) => AccessKind::Bash(bash.command.to_string()),
@@ -283,7 +313,7 @@ impl From<&xai_grok_tools::types::ToolInput> for AccessKind {
             ToolInput::WebFetch(wf) => AccessKind::WebFetch(wf.url.clone()),
             ToolInput::Dynamic(value) => access_kind_from_dynamic(value),
             #[allow(unreachable_patterns)]
-            _ => AccessKind::Read(None),
+            _ => AccessKind::Tool("unclassified_tool".to_owned()),
         }
     }
 }
@@ -302,7 +332,7 @@ fn access_kind_from_dynamic(value: &serde_json::Value) -> AccessKind {
     if let Some(name) = dynamic_string_field(value, &["name", "tool", "tool_name", "variant"])
         && (name == "send_feedback" || name == "SendFeedback")
     {
-        return AccessKind::Edit("feedback_draft".to_owned());
+        return AccessKind::Tool("send_feedback".to_owned());
     }
     if let Some(path) = dynamic_string_field(value, &["filePath", "file_path", "path"]) {
         let is_mutation = dynamic_has_field(
@@ -513,7 +543,7 @@ mod tests {
             "classifier_verdict": "block"
         }"#;
         let event: PermissionEvent = serde_json::from_str(base).unwrap();
-        assert_eq!(event.security_findings.as_deref(), Some(&[][..]));
+        assert_eq!(event.security_findings.as_deref(), Some([].as_slice()));
         assert_eq!(event.classifier_verdict.as_deref(), Some("block"));
         let with_tokens: PermissionEvent = serde_json::from_str(&base.replace(
             "\"security_findings\": []",
@@ -522,7 +552,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             with_tokens.security_findings.as_deref(),
-            Some(&["opaque_shell".to_owned()][..])
+            Some(["opaque_shell".to_owned()].as_slice())
         );
     }
     #[test]
@@ -555,20 +585,55 @@ mod tests {
             remember_tool_approvals: Some(true),
         };
         let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["subagent_session_id"], "child-1");
-        assert_eq!(json["subagent_type"], "explore");
-        assert_eq!(json["subagent_description"], "Find endpoints");
-        assert_eq!(json["permission_mode"], "ask");
-        assert_eq!(json["decision_reason"], "needs_user");
-        assert_eq!(json["classifier_source"], "llm");
-        assert_eq!(json["classifier_latency_ms"], 42);
-        assert_eq!(json["auto_denials_consecutive"], 2);
-        assert_eq!(json["auto_denials_total"], 5);
-        assert_eq!(json["wait_ms"], 1234);
-        assert_eq!(json["queue_depth"], 3);
-        assert_eq!(json["security_findings"][0], "opaque_shell");
-        assert_eq!(json["classifier_verdict"], "block");
-        assert_eq!(json["remember_tool_approvals"], true);
+        assert_eq!(
+            json.get("subagent_session_id").and_then(|v| v.as_str()),
+            Some("child-1")
+        );
+        assert_eq!(
+            json.get("subagent_type").and_then(|v| v.as_str()),
+            Some("explore")
+        );
+        assert_eq!(
+            json.get("subagent_description").and_then(|v| v.as_str()),
+            Some("Find endpoints")
+        );
+        assert_eq!(
+            json.get("permission_mode").and_then(|v| v.as_str()),
+            Some("ask")
+        );
+        assert_eq!(
+            json.get("decision_reason").and_then(|v| v.as_str()),
+            Some("needs_user")
+        );
+        assert_eq!(
+            json.get("classifier_source").and_then(|v| v.as_str()),
+            Some("llm")
+        );
+        assert_eq!(
+            json.get("classifier_latency_ms"),
+            Some(&serde_json::json!(42))
+        );
+        assert_eq!(
+            json.get("auto_denials_consecutive"),
+            Some(&serde_json::json!(2))
+        );
+        assert_eq!(json.get("auto_denials_total"), Some(&serde_json::json!(5)));
+        assert_eq!(json.get("wait_ms"), Some(&serde_json::json!(1234)));
+        assert_eq!(json.get("queue_depth"), Some(&serde_json::json!(3)));
+        assert_eq!(
+            json.get("security_findings")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.as_str()),
+            Some("opaque_shell")
+        );
+        assert_eq!(
+            json.get("classifier_verdict").and_then(|v| v.as_str()),
+            Some("block")
+        );
+        assert_eq!(
+            json.get("remember_tool_approvals"),
+            Some(&serde_json::json!(true))
+        );
     }
     #[test]
     fn permission_event_skips_none_optional_fields() {
@@ -652,6 +717,7 @@ mod tests {
         let access = AccessKind::from(&ToolInput::SendSubagentMessage(SendSubagentMessageInput {
             subagent_id: "sub-1".into(),
             text: text.into(),
+            delivery: None,
             queue: false,
         }));
         let AccessKind::AgentMessage { subagent_id } = access else {
@@ -661,7 +727,7 @@ mod tests {
         assert!(!subagent_id.contains(text));
     }
     #[test]
-    fn send_feedback_maps_to_write_access() {
+    fn send_feedback_maps_to_tool_access() {
         use xai_grok_tools::types::ToolInput;
         let input: ToolInput = serde_json::from_value(serde_json::json!({
             "variant": "SendFeedback",
@@ -672,7 +738,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             AccessKind::from(&input),
-            AccessKind::Edit(path) if path == "feedback_draft"
+            AccessKind::Tool(name) if name == "send_feedback"
         ));
         assert!(matches!(
             AccessKind::from(&ToolInput::Dynamic(serde_json::json!({
@@ -680,7 +746,7 @@ mod tests {
                 "title": "Draft title",
                 "details": "What happened",
             }))),
-            AccessKind::Edit(path) if path == "feedback_draft"
+            AccessKind::Tool(name) if name == "send_feedback"
         ));
     }
     #[test]
@@ -696,7 +762,8 @@ mod tests {
             matches!(
                 access,
                 AccessKind::MCPTool { ref name, ref input }
-                    if name == "linear__save_issue" && input["title"] == "test"
+                    if name == "linear__save_issue"
+                        && input.get("title").and_then(|v| v.as_str()) == Some("test")
             ),
             "UseTool should produce AccessKind::MCPTool carrying the inner tool name and args, got {access:?}"
         );
@@ -760,18 +827,19 @@ mod tests {
             "WebSearch should produce AccessKind::WebSearch with the query, got {access:?}"
         );
     }
+    /// The patch text names its files; no grant scope can vouch for them, so a patch prompts every time.
     #[test]
-    fn apply_patch_maps_to_edit_access() {
+    fn apply_patch_maps_to_tool_access() {
         use xai_grok_tools::implementations::codex::apply_patch::ApplyPatchInput;
         use xai_grok_tools::types::ToolInput;
         let input = ToolInput::ApplyPatch(ApplyPatchInput {
-            patch: String::new(),
+            patch: "*** Begin Patch\n*** Update File: /home/user/.grok/mcp.json\n*** End Patch"
+                .to_owned(),
         });
-        let access = AccessKind::from(&input);
-        assert!(
-            matches!(access, AccessKind::Edit(_)),
-            "ApplyPatch should produce AccessKind::Edit, got {access:?}"
-        );
+        assert!(matches!(
+            AccessKind::from(&input),
+            AccessKind::Tool(name) if name == "apply_patch"
+        ));
     }
     #[test]
     fn write_tool_maps_to_edit_access() {
@@ -819,7 +887,7 @@ mod tests {
                 model: None,
                 task_id: None,
             })),
-            AccessKind::Edit(p) if p == "task:general-purpose"
+            AccessKind::Tool(name) if name == "task"
         ));
         assert!(matches!(
             AccessKind::from(&ToolInput::Dynamic(serde_json::json!({

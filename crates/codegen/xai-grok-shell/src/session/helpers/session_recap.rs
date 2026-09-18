@@ -159,14 +159,14 @@ pub(crate) const MIN_TURNS_FOR_AUTO_RECAP: usize = 3;
 /// It is written only when a recap commits (success, or an over-long auto recap suppressed from display), never on failure/cancel.
 pub(crate) const RECAP_WATERMARK_FILE: &str = "last_recap_main_turn";
 
-/// Counts real user prompts (`synthetic_reason.is_none()`), not assistant/tool items.
+/// Counts real user prompts (`synthetic_reason.is_human()`), not assistant/tool items.
 pub(crate) fn main_turn_count(conversation: &[ConversationItem]) -> usize {
     conversation
         .iter()
         .filter(|item| {
             matches!(
                 item,
-                ConversationItem::User(u) if u.synthetic_reason.is_none()
+                ConversationItem::User(u) if u.synthetic_reason.is_human()
             )
         })
         .count()
@@ -257,10 +257,11 @@ pub(crate) fn clean_recap_text(raw: &str) -> String {
     // Strip symmetric wrapping quotes around the whole string.
     if out.len() >= 2 {
         let bytes = out.as_bytes();
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            out = out[1..out.len() - 1].trim().to_string();
+        if let (Some(&first), Some(&last)) = (bytes.first(), bytes.last())
+            && ((first == b'"' && last == b'"') || (first == b'\'' && last == b'\''))
+            && let Some(inner) = out.get(1..out.len() - 1)
+        {
+            out = inner.trim().to_string();
         }
     }
 
@@ -378,7 +379,7 @@ mod tests {
                 content: vec![ContentPart::Text {
                     text: Arc::from("injected"),
                 }],
-                synthetic_reason: Some(SyntheticReason::SystemReminder),
+                synthetic_reason: SyntheticReason::SystemReminder,
                 ..Default::default()
             }),
         ];
@@ -660,7 +661,9 @@ mod tests {
 
         // (b) No trailing tool run before the appended instruction.
         assert!(matches!(out.last(), Some(ConversationItem::User(_))));
-        let before = &out[out.len() - 2];
+        let Some(before) = out.len().checked_sub(2).and_then(|i| out.get(i)) else {
+            panic!("expected at least two recap items: {out:?}");
+        };
         assert!(
             !matches!(before, ConversationItem::ToolResult(_)),
             "no tool_result immediately before the appended instruction"
@@ -772,7 +775,7 @@ mod tests {
         ];
         pop_trailing_tool_run(&mut items);
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], ConversationItem::User(_)));
+        assert!(matches!(items.first(), Some(ConversationItem::User(_))));
 
         let mut clean = vec![
             ConversationItem::user("hi"),

@@ -41,8 +41,10 @@ selecting a modern `release-v*` version. The much older
 `v1.0.0-zh.preview.3`, which hardcoded the former repository, requires one
 manual complete-package installation.
 
-To fetch a repository through Grove (NFS on macOS, FUSE on Linux) after
-`[clone] enabled = true` in Grove config:
+To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
+`grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
+or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in
+`~/.grok/config.toml`:
 
 ```bash
 grok clone <url> [dir]
@@ -50,7 +52,7 @@ grok clone <url> [dir]
 
 The default is a depth-1 checkout of the selected branch. Pass `--full-history`
 for a complete clone. Clone enablement is independent of session / `-w` Grove
-worktrees. Git credentials for the remote come from the Grove daemon, not from
+worktrees (the convenience above turns both on; the specific knobs still win).
 the grok.com sign-in below — see [grok clone](27-grok-clone.md#authentication)
 and [Configuration reference](26-config-reference.md).
 

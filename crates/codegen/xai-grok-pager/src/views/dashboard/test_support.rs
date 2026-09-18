@@ -12,7 +12,10 @@ pub(super) fn buf_to_text(buf: &Buffer) -> String {
     for y in buf.area.top()..buf.area.bottom() {
         let mut skip = 0usize;
         for x in buf.area.left()..buf.area.right() {
-            let symbol = buf[(x, y)].symbol();
+            let Some(cell) = buf.cell((x, y)) else {
+                continue;
+            };
+            let symbol = cell.symbol();
             if skip == 0 {
                 content.push_str(symbol);
             }
@@ -23,11 +26,12 @@ pub(super) fn buf_to_text(buf: &Buffer) -> String {
     content
 }
 
-/// Helper for the group-header tests: build a top-level row with the given id and state, all other fields filled with sensible defaults.
+/// A top-level dashboard row with defaults, for chrome and render tests.
 pub(super) fn header_test_row(id: u32, state: RowState, label: &str) -> DashboardRow {
     use crate::app::agent::AgentId;
     DashboardRow {
         id: DashboardRowId::TopLevel(AgentId(id as usize)),
+        session_id: None,
         label: label.to_string(),
         subtitle: None,
         state,

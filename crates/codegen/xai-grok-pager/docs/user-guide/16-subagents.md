@@ -154,12 +154,36 @@ The main agent calls the `spawn_subagent` tool. Its parameters:
 
 When you run a subagent in the background, retrieve its result later with `get_command_or_subagent_output`.
 
-### Sending messages to active subagents
+### Sending messages to subagents
 
-The `send_subagent_message` tool is currently available only to the root session and can target only an active subagent owned by that session. Its optional `queue` parameter controls delivery:
+The `send_subagent_message` tool is off by default. Enable it with `GROK_ACTIVE_AGENT_MESSAGES` or `[features] active_agent_messages`.
 
-- Omitted or `false` uses **Steer**. If the subagent is idle, the message becomes one protected queued turn. If it is running, the message is delivered into the current turn at the next safe point.
-- `true` uses **Queue**, preserving the queued-turn behavior: the message waits as a protected turn instead of entering the active turn.
+The root session can send a follow-up to a subagent it owns. When the flag is on, a granted child also receives the tool:
+
+- `subagent_id: "parent"` targets that child's active parent subagent.
+- A durable agent id targets another local subagent. An eligible completed subagent resumes with the same identity.
+
+A child whose parent is the root session cannot message the root. Curated harness toolsets never receive the tool. A capability mode that excludes this kind also removes it.
+
+Child senders are bounded: 4 in-flight messages per sender-target pair, and 32 outbound messages per sender attempt. A send over the limit returns `QuotaExceeded`.
+
+An inactive subagent always wakes with the message as its next turn. For an active subagent, the optional `delivery` parameter controls how the message lands:
+
+- `steer` (the default) joins the current turn at its next safe point.
+- `queue` waits as a protected later turn instead of entering the active turn.
+- `interject` is urgent: it is delivered ahead of pending steers at the earliest safe point, and it interrupts a subagent that is blocked waiting on background work so the subagent reads the message at once. Only the wait call ends early. The background work keeps running.
+
+If the subagent is active but between turns, `steer` and `interject` each become one protected queued turn and the subagent starts on it. The legacy `queue: true` flag is still accepted and means `delivery: "queue"`. `delivery` wins when both are present.
+
+The transcript shows each send as a one-line `Message` row: a verb for the outcome, then the subagent's label (its type, persona, or role) and its description in curly quotes, as its `Subagent …: “…”` scrollback row quotes it, clamped to the first line and 40 characters. The verb carries the delivery, so a steer stays unmarked:
+
+- `Message sent to Explore “find callers”` (steer)
+- `Message queued for Explore “find callers”` / `Message interjected to Explore “find callers”`
+- `Message sending to …` with an animated bullet while the send is in flight
+- `Message rejected · Explore “find callers”` for a refused send, `Message unconfirmed · Explore “find callers”` for one the shell could not confirm
+- `Message sent to parent` when a child messages its parent
+
+The collapsed row never shows the message or the reason. **Right** (or `l`/`e` in vim mode) expands the row to show the requested delivery, the full message text, and the reason of a rejected or unconfirmed send; **Left** (or `h`) collapses it again. **Enter**, **Ctrl+F**, or a double-click on the row opens that subagent's view, exactly as on its `Subagent` row (Right/Left still fold it). If the subagent was never spawned in this session (a headless `grok export`, or an id from another session), the row names it `subagent …xxxxxxxx` from the last 8 characters of its id, shows the raw `Subagent ID:` when expanded, and cannot open it.
 
 ---
 
@@ -308,17 +332,49 @@ For blocking subagents the single entry updates its bullet color when the child 
 
 ### Tasks pane (Ctrl+G)
 
-As noted above — grouped under "Subagents", with spinners, elapsed times, and quick access to kill or inspect.
+As noted above — grouped under "Subagents", with spinners, elapsed times, and quick access to kill or inspect. Press `h` to toggle hide-completed / show-all.
+
+### Dock (when enabled)
+
+The dock above the prompt lists subagents. With the dock focused, `h` toggles hide-completed / show-all (same filter as the tasks pane). Left / Right collapse and expand a section header.
 
 ### Fullscreen framed view (the child transcript)
 
-When you open a subagent (from a scrollback block or the tasks pane), the parent view is replaced by a bordered frame containing the child's full transcript:
+When you open a subagent (from a scrollback block, the tasks pane, or a dashboard row), a bordered frame replaces the parent view and shows the child's full transcript:
 
 - Title bar inside the frame: status icon (spinner / ✓ / ✗), label + bold description + model, optional "resumed"/"forked" badge, live activity · elapsed time, and [✗] close button.
-- The child's own scrollback, thinking, tool calls, and (limited) prompt area render inside the frame.
-- Subagent views are largely observational — you generally cannot send new top-level prompts directly to them the way you can a parent session.
+- The child's own scrollback, thinking, and tool calls render inside the frame.
+- The parent tasks pane, todos pane, dock, and catalog hide for the duration of the view.
 
-Use `q`, `Esc`, or click the close button to pop back to the parent view. The parent's scrollback continues to show the subagent's status.
+This view is observational. The composer is hidden (zero rows). You cannot focus it, type a prompt, stash a draft, or send a follow-up from here. The parent session still owns prompts. To steer a running child, close the view and use `send_subagent_message` from the parent (see [Sending messages to subagents](#sending-messages-to-subagents)).
+
+**What still works**
+
+- Scroll, fold, copy, open links, and open the block viewer on the child's transcript.
+- `Ctrl+C` cancels **this child's** turn. It does not cancel the parent.
+- `Ctrl+.` / `Ctrl+X` opens the shortcuts cheatsheet for the child's keys.
+- Dashboard controls in the takeover header (`[Dashboard]`, `‹` / `›`) still act on the **parent**.
+- Idle `Enter` in the **block viewer** quotes the selected line into the parent composer and closes the view.
+
+**What does nothing (fail closed)**
+
+Root-only chords never start on this surface. They do not open a modal on the child, and they do not leak to the parent:
+
+- Command palette (`Ctrl+P`), model picker (`Ctrl+M`), session picker (`Ctrl+R`)
+- Settings, extensions, always-approve (`Ctrl+O`), send-to-background (`Ctrl+B`)
+- External prompt editor, Shift+Tab mode cycle
+
+A denied action is a silent redraw. There is no toast.
+
+If a prompt-queue overlay appears, it is a **read-only mirror**. You cannot edit, send-now, or remove rows. Queue RPCs always target the parent session.
+
+**How to leave**
+
+- `q` or `Esc` from bare scrollback, or click [✗].
+- If scrollback search is open, `q` / `Esc` closes search first. A later press closes the view.
+- `Ctrl+Q` always quits Grok. It is never swallowed here.
+
+The parent's scrollback keeps showing the subagent's status after you close.
 
 ---
 

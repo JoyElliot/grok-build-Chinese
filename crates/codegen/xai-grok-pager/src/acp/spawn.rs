@@ -438,8 +438,12 @@ pub(super) async fn spawn_runtime_thread(
     // A caller dropped while it waits for the build drops `start_tx`, so the thread exits instead of running `body` detached.
     let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
     let thread_name = name.to_owned();
+    // `block_on` inlines the agent's async state machine on this stack; a debug build of the
+    // agent worker overflows the 2 MB default at the first prompt (macOS spawns with 512 KB)
+    const RUNTIME_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
     let handle = thread::Builder::new()
         .name(name.to_owned())
+        .stack_size(RUNTIME_THREAD_STACK_SIZE)
         .spawn(move || -> Result<()> {
             let mut builder = tokio::runtime::Builder::new_current_thread();
             let built = xai_tty_utils::runtime::build_with_blocking_pool(builder.enable_all())

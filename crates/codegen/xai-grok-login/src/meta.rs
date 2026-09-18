@@ -40,6 +40,9 @@ pub struct AuthMeta {
     /// Whether `/feedback` may offer a one-shot trace upload; it lives on auth meta so it refreshes with auth changes.
     #[serde(default)]
     pub feedback_trace_offer: bool,
+    /// Whether the agent's backend handles billing itself.
+    #[serde(default)]
+    pub backend_billed: bool,
 }
 
 impl Default for AuthMeta {
@@ -56,6 +59,7 @@ impl Default for AuthMeta {
             gate: None,
             subscription_tier: None,
             feedback_trace_offer: false,
+            backend_billed: false,
         }
     }
 }

@@ -14,6 +14,7 @@
 //! 4. BTRFS snapshot support on Linux for O(1) cloning
 //! 5. Worktree sync API for pre-created worktree pools
 //! 6. SQLite metadata tracking (behind `metadata` feature)
+#![deny(clippy::indexing_slicing)]
 mod api;
 #[cfg(feature = "metadata")]
 mod auto_gc;
@@ -25,13 +26,11 @@ pub mod db;
 #[cfg(feature = "metadata")]
 pub mod discovery;
 mod git;
+mod grove_api;
 mod metrics;
 #[cfg(target_os = "linux")]
 pub(crate) mod mount_info;
-#[cfg(unix)]
-mod nfs;
-#[cfg(not(unix))]
-#[path = "nfs_stub.rs"]
+#[path = "nfs_off.rs"]
 mod nfs;
 #[cfg(target_os = "linux")]
 mod overlay;
@@ -82,12 +81,12 @@ pub use metrics::{
     DisposeMethod, grove_wt_create_count, grove_wt_create_last_duration_ns, record_grove_wt_create,
     record_grove_wt_dispose,
 };
-pub use nfs::create_latency_stamp;
 pub use nfs::{
-    CAP_CANCEL_WORKTREE_CREATE, CleanArtifactsReply, DetachReply, GroveHardFail, NfsAdopted,
-    NfsCreateDecision, NfsStatusView, NfsWorktreeClient, NfsWorktreeOpts, SalvageReply,
-    daemon_capability_class, dest_is_known_unmounted, dest_is_mountpoint, dest_is_nfs_mount,
-    grove_hard_fail, source_is_linked_local_view,
+    CAP_CANCEL_WORKTREE_CREATE, CAP_FORK_FROM_BACKING, CleanArtifactsReply, DetachReply,
+    GroveHardFail, NfsAdopted, NfsCreateDecision, NfsStatusView, NfsWorktreeClient,
+    NfsWorktreeOpts, SalvageReply, daemon_capability_class, dest_is_known_unmounted,
+    dest_is_mountpoint, dest_is_nfs_mount, grove_hard_fail, source_is_linked_local_view,
+    source_keeps_grove_create,
 };
 pub fn local_salvage(
     _dest: &std::path::Path,
@@ -103,7 +102,7 @@ pub use sync::{SourceDirtyState, SyncReport, WorktreeSync, collect_source_dirty_
 pub use worktree::execute::cleanup_snapshot_git_state;
 pub use worktree::{
     ArmSkip, GroveSkip, SKIP_SOURCE_IS_GROVE_MOUNT, STRATEGY_GROVE_FUSE, STRATEGY_GROVE_NFS,
-    STRATEGY_NFS, WorktreeArm, is_grove_strategy, render_arm_skips,
+    STRATEGY_GROVE_PROJFS, STRATEGY_NFS, WorktreeArm, is_grove_strategy, render_arm_skips,
 };
 /// O(1) index-header entry count via `gix` (no directory walk). Used to decide
 /// whether a repo is large enough to benefit from worktree pooling.

@@ -1341,7 +1341,10 @@ mod xai_event_id_stamping_tests {
                     }
                 }
                 assert_eq!(queued.len(), 2, "chunk + mode update must be queued");
-                match &queued[1] {
+                let [_, mode_update] = queued.as_slice() else {
+                    panic!("chunk + mode update must be queued: {queued:?}");
+                };
+                match mode_update {
                     SessionNotification::Acp(n) => {
                         assert!(matches!(n.update, acp::SessionUpdate::CurrentModeUpdate(_)));
                         assert!(
@@ -1382,16 +1385,19 @@ mod xai_event_id_stamping_tests {
                     }
                 }
                 assert_eq!(persisted.len(), 2, "both lines must persist on drain");
+                let [chunk, mode] = persisted.as_slice() else {
+                    panic!("both lines must persist on drain: {persisted:?}");
+                };
                 assert!(matches!(
-                    persisted[0].update,
+                    chunk.update,
                     acp::SessionUpdate::AgentMessageChunk(_)
                 ));
                 assert!(matches!(
-                    persisted[1].update,
+                    mode.update,
                     acp::SessionUpdate::CurrentModeUpdate(_)
                 ));
                 assert!(
-                    numeric_seq(&persisted[0]) < numeric_seq(&persisted[1]),
+                    numeric_seq(chunk) < numeric_seq(mode),
                     "delivery order must match id order — the dedup premise"
                 );
                 actor
@@ -1421,7 +1427,10 @@ mod xai_event_id_stamping_tests {
                     }
                 }
                 assert_eq!(queued.len(), 2, "chunk + exit mode update must be queued");
-                match &queued[1] {
+                let [_, mode_update] = queued.as_slice() else {
+                    panic!("chunk + mode update must be queued: {queued:?}");
+                };
+                match mode_update {
                     SessionNotification::Acp(n) => match &n.update {
                         acp::SessionUpdate::CurrentModeUpdate(cmu) => {
                             assert_eq!(
@@ -1456,13 +1465,15 @@ mod xai_event_id_stamping_tests {
                         persisted.push(*n);
                     }
                 }
-                assert_eq!(persisted.len(), 2, "exit leg must persist both lines");
+                let [first, second] = persisted.as_slice() else {
+                    panic!("exit leg must persist both lines: {persisted:?}");
+                };
                 assert!(matches!(
-                    persisted[1].update,
+                    second.update,
                     acp::SessionUpdate::CurrentModeUpdate(_)
                 ));
                 assert!(
-                    numeric_seq(&persisted[0]) < numeric_seq(&persisted[1]),
+                    numeric_seq(first) < numeric_seq(second),
                     "exit-leg delivery order must match id order too"
                 );
             })

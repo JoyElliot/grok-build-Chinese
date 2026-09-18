@@ -576,41 +576,35 @@ pub(crate) async fn save_mcp_disabled_tools(
     server_name: &str,
     disabled_tools: &[String],
 ) -> Result<()> {
-    let path = config_path();
-    let mut root: TomlValue = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => toml::from_str(&s).unwrap_or(TomlValue::Table(TomlMap::new())),
-        Err(_) => TomlValue::Table(TomlMap::new()),
-    };
-    let table = root
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("config root is not a table"))?;
+    let name = server_name.to_string();
+    let disabled_tools = disabled_tools.to_vec();
+    rmw_mcp_toml(
+        &config_path(),
+        McpMissing::EmptyTable,
+        false,
+        move |table| {
+            let section = table
+                .entry("disabled_mcp_tools")
+                .or_insert_with(|| TomlValue::Table(TomlMap::new()))
+                .as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("disabled_mcp_tools is not a table"))?;
 
-    let section = table
-        .entry("disabled_mcp_tools")
-        .or_insert_with(|| TomlValue::Table(TomlMap::new()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("disabled_mcp_tools is not a table"))?;
-
-    if disabled_tools.is_empty() {
-        section.remove(server_name);
-        if section.is_empty() {
-            table.remove("disabled_mcp_tools");
-        }
-    } else {
-        let arr = disabled_tools
-            .iter()
-            .map(|s| TomlValue::String(s.clone()))
-            .collect();
-        section.insert(server_name.to_string(), TomlValue::Array(arr));
-    }
-
-    let toml_str = toml::to_string_pretty(&root)?;
-    let tmp = path.with_extension("toml.tmp");
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    tokio::fs::write(&tmp, &toml_str).await?;
-    tokio::fs::rename(&tmp, &path).await?;
+            if disabled_tools.is_empty() {
+                section.remove(&name);
+                if section.is_empty() {
+                    table.remove("disabled_mcp_tools");
+                }
+            } else {
+                let arr = disabled_tools
+                    .iter()
+                    .map(|s| TomlValue::String(s.clone()))
+                    .collect();
+                section.insert(name, TomlValue::Array(arr));
+            }
+            Ok(true)
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -625,8 +619,9 @@ pub async fn save_mcp_server_enabled_in(
     let mut modified = Vec::new();
 
     let user_path = config_path();
-    if write_toml_table_if_changed(&user_path, |table| {
-        apply_mcp_server_enabled(table, server_name, enabled);
+    let name = server_name.to_string();
+    if write_toml_table_if_changed(&user_path, move |table| {
+        apply_mcp_server_enabled(table, &name, enabled);
     })
     .await?
     {
@@ -661,8 +656,9 @@ pub async fn save_mcp_server_enabled_in(
 ///
 /// Use after delete (or similar) when the toggle path dirtied `disabled_mcp_servers` but shared project configs must stay untouched.
 pub(crate) async fn save_user_mcp_server_enabled(server_name: &str, enabled: bool) -> Result<()> {
-    write_toml_table_if_changed(&config_path(), |table| {
-        apply_mcp_server_enabled(table, server_name, enabled);
+    let name = server_name.to_string();
+    write_toml_table_if_changed(&config_path(), move |table| {
+        apply_mcp_server_enabled(table, &name, enabled);
     })
     .await
     .map(|_| ())
@@ -694,50 +690,153 @@ fn nearest_project_mcp_definition(cwd: &std::path::Path, server_name: &str) -> O
         .find(|path| mcp_server_defined_at(path, server_name))
 }
 
-/// Apply `f`, write only if the serialized table changed. Returns whether written.
-/// Aligns with [`super::persist::save_config`] safety: refuse unparseable files (no wipe-to-empty).
-/// Writes go through [`super::persist::atomic_write_string`] (unique tmp, mode preserved) under the user-config write lock.
-async fn write_toml_table_if_changed(
-    path: &std::path::Path,
-    f: impl FnOnce(&mut TomlMap<String, TomlValue>),
-) -> Result<bool> {
-    let is_user = path == config_path().as_path();
-    let _guard = if is_user {
-        Some(super::persist::lock_config_writes().await?)
-    } else {
-        None
-    };
+/// User `$GROK_HOME/config.toml`. [`config_path`] is live (`grok_home()` is OnceLock).
+fn is_user_config_path(path: &std::path::Path) -> bool {
+    path == config_path().as_path()
+}
 
-    let original = match tokio::fs::read_to_string(path).await {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && is_user => String::new(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => {
-            return Err(anyhow::anyhow!("failed to read {}: {e}", path.display()));
-        }
-    };
-    let mut root = match super::persist::parse_existing_config_toml(&original) {
-        Ok(v) => v,
-        Err(parse_err) => {
-            return Err(anyhow::anyhow!(
-                "refusing to overwrite unparseable {}: {}; fix the syntax before retrying",
-                path.display(),
-                parse_err
-            ));
-        }
-    };
+/// Missing file: treat as an empty table (create) or skip the write.
+#[derive(Clone, Copy)]
+enum McpMissing {
+    EmptyTable,
+    Skip,
+}
+
+fn parse_mcp_root(path: &std::path::Path, original: &str) -> Result<TomlValue> {
+    super::persist::parse_existing_config_toml(original).map_err(|parse_err| {
+        anyhow::anyhow!(
+            "refusing to overwrite unparseable {}: {}; fix the syntax before retrying",
+            path.display(),
+            parse_err
+        )
+    })
+}
+
+fn apply_mcp_rmw(
+    path: &std::path::Path,
+    original: &str,
+    f: impl FnOnce(&mut TomlMap<String, TomlValue>) -> Result<bool>,
+    skip_if_unchanged: bool,
+    publish: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<bool> {
+    let mut root = parse_mcp_root(path, original)?;
     let before = toml::to_string_pretty(&root)?;
     let table = root
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("config root is not a table"))?;
-    f(table);
-    let toml_str = toml::to_string_pretty(&root)?;
-    if before == toml_str {
+    if !f(table)? {
         return Ok(false);
     }
-    super::persist::atomic_write_string(path, &toml_str)
-        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+    let toml_str = toml::to_string_pretty(&root)?;
+    if skip_if_unchanged && before == toml_str {
+        return Ok(false);
+    }
+    publish(&toml_str).map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(true)
+}
+
+fn rmw_mcp_toml_user(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut TomlMap<String, TomlValue>) -> Result<bool>,
+    skip_if_unchanged: bool,
+) -> Result<bool> {
+    let (dest, original) = super::persist::read_follow_bound(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+    apply_mcp_rmw(path, &original, f, skip_if_unchanged, |s| {
+        super::persist::atomic_write_follow_bound(path, &dest, s)
+    })
+}
+
+fn rmw_mcp_toml_project(
+    path: &std::path::Path,
+    missing: McpMissing,
+    f: impl FnOnce(&mut TomlMap<String, TomlValue>) -> Result<bool>,
+    skip_if_unchanged: bool,
+) -> Result<bool> {
+    let original = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match missing {
+            McpMissing::Skip => return Ok(false),
+            McpMissing::EmptyTable => String::new(),
+        },
+        Err(e) => {
+            return Err(anyhow::anyhow!("failed to read {}: {e}", path.display()));
+        }
+    };
+    apply_mcp_rmw(path, &original, f, skip_if_unchanged, |s| {
+        super::persist::atomic_replace_string(path, s)
+    })
+}
+
+/// Bind dest, load, apply `f`, publish. User path: follow-bound RMW under
+/// [`super::persist::ConfigWriteGuard::run_blocking`]. Unparseable TOML is refused.
+async fn rmw_mcp_toml(
+    path: &std::path::Path,
+    missing: McpMissing,
+    skip_if_unchanged: bool,
+    f: impl FnOnce(&mut TomlMap<String, TomlValue>) -> Result<bool> + Send + 'static,
+) -> Result<bool> {
+    let is_user = is_user_config_path(path);
+    let path = path.to_path_buf();
+    if is_user {
+        let guard = super::persist::lock_config_writes().await?;
+        guard
+            .run_blocking(move || rmw_mcp_toml_user(&path, f, skip_if_unchanged))
+            .await
+            .map_err(|e| anyhow::anyhow!("config write task failed: {e}"))?
+    } else {
+        tokio::task::spawn_blocking(move || {
+            rmw_mcp_toml_project(&path, missing, f, skip_if_unchanged)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("config write task failed: {e}"))?
+    }
+}
+
+/// One-shot publish of already-computed TOML. User path: follow leaf off the
+/// reactor under the write guard. Project slots replace the inode.
+/// Production MCP saves go through [`rmw_mcp_toml`]; this remains for the
+/// follow-symlink regression that pins the one-shot path.
+#[cfg(test)]
+async fn persist_mcp_toml(path: &std::path::Path, toml_str: &str) -> Result<()> {
+    let is_user = is_user_config_path(path);
+    let path = path.to_path_buf();
+    let toml_str = toml_str.to_string();
+    if is_user {
+        let guard = super::persist::lock_config_writes().await?;
+        guard
+            .run_blocking(move || {
+                super::persist::atomic_write_string(&path, &toml_str)
+                    .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("config write task failed: {e}"))?
+    } else {
+        tokio::task::spawn_blocking(move || {
+            super::persist::atomic_replace_string(&path, &toml_str)
+                .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("config write task failed: {e}"))?
+    }
+}
+
+/// Apply `f`, write only if the serialized table changed. Returns whether written.
+/// User: bind dest before load. Unparseable TOML is refused (no wipe-to-empty).
+async fn write_toml_table_if_changed(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut TomlMap<String, TomlValue>) + Send + 'static,
+) -> Result<bool> {
+    let missing = if is_user_config_path(path) {
+        McpMissing::EmptyTable
+    } else {
+        McpMissing::Skip
+    };
+    rmw_mcp_toml(path, missing, true, move |table| {
+        f(table);
+        Ok(true)
+    })
+    .await
 }
 
 /// Flip sticky project `enabled = false` to true with toml_edit (comments kept).
@@ -777,7 +876,7 @@ async fn clear_sticky_project_disabled_at(
     if updated == original {
         return Ok(false);
     }
-    super::persist::atomic_write_string(path, &updated)
+    super::persist::atomic_replace_string(path, &updated)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(true)
 }
@@ -817,7 +916,7 @@ async fn set_sticky_project_disabled_at(path: &std::path::Path, server_name: &st
     if updated == original {
         return Ok(false);
     }
-    super::persist::atomic_write_string(path, &updated)
+    super::persist::atomic_replace_string(path, &updated)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(true)
 }
@@ -887,42 +986,29 @@ pub async fn save_mcp_server_config_at(
     server_name: &str,
     config: &McpServerConfig,
 ) -> Result<()> {
-    let mut root: TomlValue = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => toml::from_str(&s).unwrap_or(TomlValue::Table(TomlMap::new())),
-        Err(_) => TomlValue::Table(TomlMap::new()),
-    };
-    let table = root
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("config root is not a table"))?;
-
-    let servers = table
-        .entry("mcp_servers")
-        .or_insert_with(|| TomlValue::Table(TomlMap::new()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("mcp_servers is not a table"))?;
-
+    let name = server_name.to_string();
     let serialized = toml::Value::try_from(config)
         .map_err(|e| anyhow::anyhow!("failed to serialize MCP server config: {e}"))?;
-    servers.insert(server_name.to_string(), serialized);
+    rmw_mcp_toml(path, McpMissing::EmptyTable, false, move |table| {
+        let servers = table
+            .entry("mcp_servers")
+            .or_insert_with(|| TomlValue::Table(TomlMap::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("mcp_servers is not a table"))?;
+        servers.insert(name.clone(), serialized);
 
-    // Ensure the server isn't in the disabled list.
-    if let Some(arr) = table
-        .get_mut("disabled_mcp_servers")
-        .and_then(|v| v.as_array_mut())
-    {
-        arr.retain(|v| v.as_str() != Some(server_name));
-        if arr.is_empty() {
-            table.remove("disabled_mcp_servers");
+        if let Some(arr) = table
+            .get_mut("disabled_mcp_servers")
+            .and_then(|v| v.as_array_mut())
+        {
+            arr.retain(|v| v.as_str() != Some(name.as_str()));
+            if arr.is_empty() {
+                table.remove("disabled_mcp_servers");
+            }
         }
-    }
-
-    let toml_str = toml::to_string_pretty(&root)?;
-    let tmp = path.with_extension("toml.tmp");
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    tokio::fs::write(&tmp, &toml_str).await?;
-    tokio::fs::rename(&tmp, &path).await?;
+        Ok(true)
+    })
+    .await?;
     Ok(())
 }
 
@@ -939,72 +1025,59 @@ pub async fn delete_mcp_server_config_at(
     path: &std::path::Path,
     server_name: &str,
 ) -> Result<bool> {
-    let mut root: TomlValue = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => toml::from_str(&s).unwrap_or(TomlValue::Table(TomlMap::new())),
-        Err(_) => return Ok(false),
-    };
-    let table = root
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("config root is not a table"))?;
+    let name = server_name.to_string();
+    let wrote = rmw_mcp_toml(path, McpMissing::Skip, false, move |table| {
+        let existed = table
+            .get_mut("mcp_servers")
+            .and_then(|v| v.as_table_mut())
+            .and_then(|servers| servers.remove(&name))
+            .is_some();
 
-    let existed = table
-        .get_mut("mcp_servers")
-        .and_then(|v| v.as_table_mut())
-        .and_then(|servers| servers.remove(server_name))
-        .is_some();
-
-    if !existed {
-        return Ok(false);
-    }
-
-    // Clean up empty mcp_servers table.
-    if table
-        .get("mcp_servers")
-        .and_then(|v| v.as_table())
-        .is_some_and(|t| t.is_empty())
-    {
-        table.remove("mcp_servers");
-    }
-
-    // Remove from disabled_mcp_servers list.
-    if let Some(arr) = table
-        .get_mut("disabled_mcp_servers")
-        .and_then(|v| v.as_array_mut())
-    {
-        arr.retain(|v| v.as_str() != Some(server_name));
-        if arr.is_empty() {
-            table.remove("disabled_mcp_servers");
+        if !existed {
+            return Ok(false);
         }
-    }
 
-    // Remove disabled_mcp_tools entry.
-    if let Some(section) = table
-        .get_mut("disabled_mcp_tools")
-        .and_then(|v| v.as_table_mut())
-    {
-        section.remove(server_name);
-        if section.is_empty() {
-            table.remove("disabled_mcp_tools");
+        if table
+            .get("mcp_servers")
+            .and_then(|v| v.as_table())
+            .is_some_and(|t| t.is_empty())
+        {
+            table.remove("mcp_servers");
         }
-    }
 
-    let toml_str = toml::to_string_pretty(&root)?;
-    let tmp = path.with_extension("toml.tmp");
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    tokio::fs::write(&tmp, &toml_str).await?;
-    tokio::fs::rename(&tmp, &path).await?;
+        if let Some(arr) = table
+            .get_mut("disabled_mcp_servers")
+            .and_then(|v| v.as_array_mut())
+        {
+            arr.retain(|v| v.as_str() != Some(name.as_str()));
+            if arr.is_empty() {
+                table.remove("disabled_mcp_servers");
+            }
+        }
 
-    // Clean up OAuth credentials for the deleted server.
-    if let Ok(mut cred_store) = xai_grok_mcp::credentials::McpCredentialStore::load_default() {
+        if let Some(section) = table
+            .get_mut("disabled_mcp_tools")
+            .and_then(|v| v.as_table_mut())
+        {
+            section.remove(&name);
+            if section.is_empty() {
+                table.remove("disabled_mcp_tools");
+            }
+        }
+        Ok(true)
+    })
+    .await?;
+
+    if wrote
+        && let Ok(mut cred_store) = xai_grok_mcp::credentials::McpCredentialStore::load_default()
+    {
         let removed = cred_store.remove_by_server_name(server_name);
         if removed > 0 {
             let _ = cred_store.save_default();
         }
     }
 
-    Ok(true)
+    Ok(wrote)
 }
 
 /// Load disabled_tools for all MCP servers from `[disabled_mcp_tools]` in config.toml.
@@ -1684,7 +1757,10 @@ pub fn load_cli_plugin_registry(cwd: &std::path::Path) -> xai_grok_agent::plugin
 }
 
 fn config_path() -> PathBuf {
-    crate::util::grok_home::grok_home().join("config.toml")
+    // Live `$GROK_HOME` first: `grok_home()` is OnceLock and misses EnvGuard/tests.
+    xai_dirs::resolve_grok_home()
+        .unwrap_or_else(crate::util::grok_home::grok_home)
+        .join("config.toml")
 }
 
 /// Path to the user-level config file (`~/.grok/config.toml`).
@@ -1965,7 +2041,7 @@ args = ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]
             "transport-less entry is dropped, not kept"
         );
         assert!(servers.contains_key("linear"));
-        assert!(servers["linear"].enabled);
+        assert!(servers.get("linear").is_some_and(|s| s.enabled));
         let problem = problems
             .iter()
             .find(|p| p.server == "github")
@@ -2031,7 +2107,7 @@ command = ""
         let config = mcp_config_from_json_value(&value);
         assert!(!config.mcp_servers.contains_key("bad"));
         assert!(config.mcp_servers.contains_key("good"));
-        assert!(config.mcp_servers["good"].enabled);
+        assert!(config.mcp_servers.get("good").is_some_and(|s| s.enabled));
     }
 
     #[test]
@@ -2498,7 +2574,10 @@ expose_image_base64 = true
 
         let servers = load_mcp_json_file(&mcp_path);
         assert_eq!(servers.len(), 1);
-        match &servers[0] {
+        let Some(server) = servers.first() else {
+            panic!("expected one server: {servers:?}");
+        };
+        match server {
             acp::McpServer::Http(acp::McpServerHttp { url, .. }) => {
                 assert_eq!(url, "https://fallback.example.com/mcp");
             }
@@ -2583,14 +2662,12 @@ enabled = false
         std::fs::remove_file(&path).unwrap();
         save_mcp_preferences_to(&path, &prefs).await.unwrap();
         let loaded = load_mcp_preferences_from(&path).file();
-        assert_eq!(loaded.servers["acme"].values["site"], "us5");
+        let Some(acme) = loaded.servers.get("acme") else {
+            panic!("expected acme server: {:?}", loaded.servers);
+        };
+        assert_eq!(acme.values.get("site").map(String::as_str), Some("us5"));
         assert_eq!(
-            loaded.servers["acme"]
-                .source
-                .as_ref()
-                .unwrap()
-                .plugin
-                .as_deref(),
+            acme.source.as_ref().and_then(|s| s.plugin.as_deref()),
             Some("acme")
         );
     }
@@ -2613,7 +2690,7 @@ enabled = true
             .and_then(|v| v.as_array())
             .expect("disabled_mcp_servers array");
         assert_eq!(disabled.len(), 1);
-        assert_eq!(disabled[0].as_str(), Some("local"));
+        assert_eq!(disabled.first().and_then(|v| v.as_str()), Some("local"));
         assert_eq!(
             table
                 .get("mcp_servers")
@@ -2650,7 +2727,10 @@ enabled = true
             .and_then(|v| v.as_array())
             .expect("disabled_mcp_servers array");
         assert_eq!(disabled.len(), 1);
-        assert_eq!(disabled[0].as_str(), Some("grok_com_slack"));
+        assert_eq!(
+            disabled.first().and_then(|v| v.as_str()),
+            Some("grok_com_slack")
+        );
         assert!(table.get("mcp_servers").is_none());
 
         apply_mcp_server_enabled(table, "grok_com_slack", true);
@@ -2777,6 +2857,236 @@ enabled = false
         let project_body = std::fs::read_to_string(&project_cfg).unwrap();
         assert!(project_body.contains("enabled = false"), "{project_body}");
         assert!(project_body.contains("# keep me"), "{project_body}");
+    }
+
+    /// `grok mcp enable` must replace a project `.grok/config.toml` symlink,
+    /// not rewrite the external referent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_enable_replaces_config_symlink_not_referent() {
+        let tmp = tempfile::tempdir().unwrap();
+        git2::Repository::init(tmp.path()).unwrap();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        let outside = tmp.path().join("outside.toml");
+        std::fs::write(
+            &outside,
+            r#"
+[mcp_servers.svc]
+command = "true"
+enabled = false
+"#,
+        )
+        .unwrap();
+        let project_cfg = grok.join("config.toml");
+        std::os::unix::fs::symlink(&outside, &project_cfg).unwrap();
+
+        assert!(
+            clear_sticky_project_disabled_at(&project_cfg, "svc")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !std::fs::symlink_metadata(&project_cfg)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "project slot must become a regular file"
+        );
+        let body = std::fs::read_to_string(&project_cfg).unwrap();
+        assert!(body.contains("enabled = true"), "{body}");
+        assert!(
+            std::fs::read_to_string(&outside)
+                .unwrap()
+                .contains("enabled = false"),
+            "external referent must stay sticky-disabled"
+        );
+    }
+
+    /// User `config.toml` symlink must keep the slot; add/edit/delete MCP writes the referent.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn persist_mcp_toml_follows_user_config_symlink() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let outside = home.path().join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "[mcp_servers.keep]\ncommand = \"true\"\n").unwrap();
+        let slot = home.path().join("config.toml");
+        std::os::unix::fs::symlink(&outside, &slot).unwrap();
+
+        persist_mcp_toml(
+            &config_path(),
+            "[mcp_servers.keep]\ncommand = \"true\"\nenabled = false\n",
+        )
+        .await
+        .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&slot)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "user slot must stay a symlink"
+        );
+        assert_eq!(outside, std::fs::read_link(&slot).unwrap());
+        assert!(
+            std::fs::read_to_string(&outside)
+                .unwrap()
+                .contains("enabled = false")
+        );
+    }
+
+    fn test_stdio_server() -> McpServerConfig {
+        toml::from_str("command = \"true\"\n").expect("stdio fixture")
+    }
+
+    /// Unparseable user config must not be wiped to an empty table on MCP save.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn save_mcp_server_config_at_refuses_unparseable() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let slot = home.path().join("config.toml");
+        std::fs::write(&slot, "not = [valid\n").unwrap();
+        let err = save_mcp_server_config_at(&config_path(), "svc", &test_stdio_server())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unparseable"),
+            "expected refuse, got {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&slot).unwrap(),
+            "not = [valid\n",
+            "file must be left intact"
+        );
+    }
+
+    /// Bind dest before load: a user symlink is followed, not replaced.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn save_mcp_server_config_at_follows_user_symlink() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let outside = home.path().join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "[mcp_servers.keep]\ncommand = \"true\"\n").unwrap();
+        let slot = home.path().join("config.toml");
+        std::os::unix::fs::symlink(&outside, &slot).unwrap();
+
+        save_mcp_server_config_at(&config_path(), "svc", &test_stdio_server())
+            .await
+            .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&slot)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "user slot must stay a symlink"
+        );
+        let body = std::fs::read_to_string(&outside).unwrap();
+        assert!(body.contains("[mcp_servers.svc]"), "{body}");
+        assert!(body.contains("[mcp_servers.keep]"), "{body}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn save_mcp_disabled_tools_follows_user_symlink() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let outside = home.path().join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "[mcp_servers.keep]\ncommand = \"true\"\n").unwrap();
+        let slot = home.path().join("config.toml");
+        std::os::unix::fs::symlink(&outside, &slot).unwrap();
+
+        save_mcp_disabled_tools("keep", &["tool_a".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&slot)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "user slot must stay a symlink"
+        );
+        let body = std::fs::read_to_string(&outside).unwrap();
+        assert!(body.contains("[mcp_servers.keep]"), "{body}");
+        assert!(body.contains("disabled_mcp_tools"), "{body}");
+        assert!(body.contains("tool_a"), "{body}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn save_mcp_disabled_tools_refuses_unparseable() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let slot = home.path().join("config.toml");
+        std::fs::write(&slot, "not = [valid\n").unwrap();
+        let err = save_mcp_disabled_tools("svc", &["tool_a".to_string()])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unparseable"),
+            "expected refuse, got {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&slot).unwrap(), "not = [valid\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn delete_mcp_server_config_at_follows_user_symlink() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let outside = home.path().join("dotfiles").join("config.toml");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(
+            &outside,
+            "[mcp_servers.keep]\ncommand = \"true\"\n[mcp_servers.svc]\ncommand = \"true\"\n",
+        )
+        .unwrap();
+        let slot = home.path().join("config.toml");
+        std::os::unix::fs::symlink(&outside, &slot).unwrap();
+
+        assert!(
+            delete_mcp_server_config_at(&config_path(), "svc")
+                .await
+                .unwrap()
+        );
+        assert!(
+            std::fs::symlink_metadata(&slot)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "user slot must stay a symlink"
+        );
+        let body = std::fs::read_to_string(&outside).unwrap();
+        assert!(!body.contains("[mcp_servers.svc]"), "{body}");
+        assert!(body.contains("[mcp_servers.keep]"), "{body}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn delete_mcp_server_config_at_refuses_unparseable() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+        let slot = home.path().join("config.toml");
+        std::fs::write(&slot, "not = [valid\n").unwrap();
+        let err = delete_mcp_server_config_at(&config_path(), "svc")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unparseable"),
+            "expected refuse, got {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&slot).unwrap(), "not = [valid\n");
     }
 
     #[tokio::test]

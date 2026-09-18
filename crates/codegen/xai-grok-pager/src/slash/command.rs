@@ -254,12 +254,7 @@ pub trait SlashCommand: Send + Sync {
     }
 
     /// Refuse before the submit path mutates the composer or stops voice input.
-    fn submission_refusal(
-        &self,
-        _args: &str,
-        _is_minimal: bool,
-        _voice_owns_prompt: bool,
-    ) -> Option<&'static str> {
+    fn submission_refusal(&self, _args: &str, _voice_owns_prompt: bool) -> Option<&'static str> {
         None
     }
 
@@ -315,6 +310,12 @@ pub trait SlashCommand: Send + Sync {
     /// [`Self::session_scoped`]. `/cd` changes where the dashboard dispatches new agents, so it is meaningless in an
     /// agent session and hidden there.
     fn dashboard_only(&self) -> bool {
+        false
+    }
+
+    /// A mid-text `/name` token runs this command with the whole message as its args: `prose /name q` is `/name prose q`.
+    /// Opt in only when the whole message is the argument; `submission_refusal` only sees a leading `/` and is bypassed.
+    fn can_hoist_from_mid_text(&self) -> bool {
         false
     }
 
@@ -411,6 +412,7 @@ macro_rules! slash_meta {
         $(session_scoped: $session_scoped:expr,)?
         $(offered_when_session_less: $offered_when_session_less:expr,)?
         $(dashboard_only: $dashboard_only:expr,)?
+        $(can_hoist_from_mid_text: $can_hoist_from_mid_text:expr,)?
         $(mode_support: $mode_support:expr,)?
         $(arg_placeholder: $arg_placeholder:expr,)?
         $(required_tools: $required_tools:expr,)?
@@ -449,6 +451,10 @@ macro_rules! slash_meta {
 
         $(fn dashboard_only(&self) -> bool {
             $dashboard_only
+        })?
+
+        $(fn can_hoist_from_mid_text(&self) -> bool {
+            $can_hoist_from_mid_text
         })?
 
         $(fn mode_support(&self) -> crate::slash::mode_support::ModeSupport {

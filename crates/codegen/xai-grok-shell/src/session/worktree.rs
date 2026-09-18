@@ -429,6 +429,8 @@ pub(crate) async fn rehydrate_session_in_worktree(
     req: &RehydrateSessionRequest,
     #[allow(unused_variables)] ops: &xai_grok_workspace::WorkspaceOps,
     registry_client: Option<&crate::agent::session_registry_client::SessionRegistryClient>,
+    grove_worktree: bool,
+    grove_gate_source: &'static str,
 ) -> Result<RehydrateSessionResponse> {
     let worktree_path_str = req.worktree_path.as_deref().unwrap_or(&req.source_cwd);
     let repo_root = Path::new(&req.repo_root);
@@ -470,7 +472,7 @@ pub(crate) async fn rehydrate_session_in_worktree(
         let session_id = req.session_id.clone();
         let btrfs_delegate = btrfs_delegate_from_env();
         let _recreate = region!("worktree.cwd_recreate", Parent::Inherit);
-        tokio::task::spawn_blocking(move || {
+        let created = tokio::task::spawn_blocking(move || {
             use xai_fast_worktree::{
                 CreationMode, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder,
             };
@@ -480,13 +482,27 @@ pub(crate) async fn rehydrate_session_in_worktree(
                 .creation_mode(CreationMode::Linked)
                 .worktree_kind(xai_fast_worktree::WorktreeKind::Fork)
                 .session_id(session_id);
+            if let Some(opts) = crate::util::config::grove_worktree_opts_if_enabled(grove_worktree)
+            {
+                builder = builder.grove_worktree(opts);
+            }
             if let Some(delegate) = btrfs_delegate {
                 builder = builder.btrfs_delegate(delegate);
             }
             builder.create()
         })
         .await
-        .map_err(|e| anyhow::anyhow!("worktree creation task failed: {e}"))??;
+        .map_err(|e| anyhow::anyhow!("worktree creation task failed: {e}"))?;
+        let report = created?;
+        tracing::info!(
+            session_id = %req.session_id,
+            worktree_path = %report.worktree_path.display(),
+            resolved_strategy = report.resolved_strategy,
+            skipped = %xai_fast_worktree::render_arm_skips(&report.skipped),
+            grove_worktree,
+            grove_gate_source,
+            "rehydrate: created worktree"
+        );
     }
     let client = registry_client.ok_or_else(|| {
         anyhow::anyhow!(

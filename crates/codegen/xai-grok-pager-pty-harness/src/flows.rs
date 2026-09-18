@@ -5,6 +5,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::content::LogEntry;
 use crate::{ContentController, PtyHarness};
 
 /// Pump PTY output until every label is absent from the visible screen.
@@ -38,18 +39,23 @@ pub fn submit_turn(h: &mut PtyHarness, prompt: &str, sentinel: &str, timeout: Du
     }
 }
 
-/// Count only inference requests (chat completions / responses / messages), ignoring incidental GETs like /v1/models and /v1/settings.
-/// A replay invariant then means "no turn was re-driven" rather than "no HTTP at all".
-pub fn inference_request_count(content: &ContentController) -> usize {
+/// Only inference requests (chat completions / responses / messages), ignoring incidental GETs like /v1/models and /v1/settings.
+/// A "never reached the model" invariant then inspects exactly the bodies the model saw.
+pub fn inference_requests(content: &ContentController) -> Vec<LogEntry> {
     content
         .requests()
-        .iter()
+        .into_iter()
         .filter(|e| {
             e.path.contains("/chat/completions")
                 || e.path.contains("/responses")
                 || e.path.contains("/messages")
         })
-        .count()
+        .collect()
+}
+
+/// Number of [`inference_requests`]. A replay invariant then means "no turn was re-driven" rather than "no HTTP at all".
+pub fn inference_request_count(content: &ContentController) -> usize {
+    inference_requests(content).len()
 }
 
 /// `XAI_API_KEY` never enters the auth manager. Scope is `<issuer>::<client_id>`, oidc, far-future expiry so no refresh.

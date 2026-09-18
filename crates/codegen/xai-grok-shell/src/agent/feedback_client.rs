@@ -691,8 +691,11 @@ mod tests {
         );
         assert_eq!(delta.turn_duration_ms, Some(1500));
         assert_eq!(
-            serde_json::to_value(&delta).unwrap()["turnOutcome"],
-            "completed"
+            serde_json::to_value(&delta)
+                .unwrap()
+                .get("turnOutcome")
+                .and_then(|v| v.as_str()),
+            Some("completed")
         );
         assert_eq!(delta.model_fingerprint.as_deref(), Some("fp_test_123"));
     }

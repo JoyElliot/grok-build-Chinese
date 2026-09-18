@@ -494,12 +494,12 @@ impl WorkspaceHandle {
             crate::upload::environment::WorkspaceIdentity::default(),
         )
     }
-    /// Construct a handle with an explicit `$GROK_WORKSPACE_HOME` and a pre-spawned [`UploadQueue`](xai_file_utils::queue::UploadQueue).
-    /// [`connect_local_workspace`] calls this so the queue is backed by the proxy storage config. [`Self::new`] takes the queue-less path for tests and local mode.
+    /// Construct a handle with an explicit `$GROK_WORKSPACE_HOME` and a pre-spawned [`UploadQueue`](xai_file_utils::queue::UploadQueue),
+    /// or none for a host that cannot upload. [`connect_local_workspace`] calls this; [`Self::new`] takes the queue-less path for tests and local mode.
     pub(crate) fn new_with_data_collection(
         config: WorkspaceConfig,
         workspace_home: std::path::PathBuf,
-        upload_queue: Arc<xai_file_utils::queue::UploadQueue>,
+        upload_queue: Option<Arc<xai_file_utils::queue::UploadQueue>>,
         upload_queue_enabled: bool,
         data_collection_disabled: bool,
         identity: crate::upload::environment::WorkspaceIdentity,
@@ -507,7 +507,7 @@ impl WorkspaceHandle {
         Self::build(
             config,
             workspace_home,
-            Some(upload_queue),
+            upload_queue,
             upload_queue_enabled,
             data_collection_disabled,
             events_enabled(),
@@ -627,6 +627,8 @@ impl WorkspaceHandle {
             default_tool_config: config.default_tool_config,
             require_explicit_toolset: config.require_explicit_toolset,
             confine_fs_to_workspace_root: config.confine_fs_to_workspace_root,
+            tool_approval: config.tool_approval,
+            host_kind: config.host_kind,
             root_cwd: config.root_cwd.clone(),
             sessions: parking_lot::RwLock::new(sessions),
             session_factory: config.session_factory,
@@ -2260,10 +2262,15 @@ impl WorkspaceHandle {
                 "done": data.done,
                 "generation": data.generation,
             });
-            if !target_client_id.is_none() {
-                params["_meta"] = serde_json::json!({
-                    "targetClientId": serde_json::to_value(&target_client_id).unwrap_or_default(),
-                });
+            if !target_client_id.is_none()
+                && let Some(obj) = params.as_object_mut()
+            {
+                obj.insert(
+                    "_meta".to_owned(),
+                    serde_json::json!({
+                            "targetClientId": serde_json::to_value(&target_client_id).unwrap_or_default(),
+                        }),
+                );
             }
             self.emit_client_ext("x.ai/search/fuzzy/status".to_string(), params);
             if data.done {
@@ -2312,28 +2319,27 @@ impl WorkspaceHandle {
     ) -> Option<Arc<xai_codebase_graph::IndexManagerHandle>> {
         self.shared.codebase_indexes.lock().get_covering(path)
     }
-    pub fn ensure_codebase_indexes(&self, roots: &[std::path::PathBuf]) {
-        self.shared.codebase_indexes.lock().ensure_all(roots);
-    }
     fn spawn_codebase_index_event_forwarder(&self) -> tokio::task::JoinHandle<()> {
         let shared = self.shared.clone();
         let root_cwd = self.shared.root_cwd.clone();
         let index_root =
             crate::session::git::find_git_root_from_path(&root_cwd).unwrap_or(root_cwd.clone());
+        let watch_root = dunce::canonicalize(&root_cwd).unwrap_or(root_cwd);
         tokio::spawn(async move {
             let mut rx = shared.events.subscribe();
             loop {
                 match rx.recv().await {
-                    Ok(xai_grok_workspace_types::WorkspaceEvent::FsChanged { ref path, kind }) => {
-                        let idx = {
+                    Ok(xai_grok_workspace_types::WorkspaceEvent::FsChanged { paths, kind }) => {
+                        let paths: Vec<_> = paths.iter().map(|p| watch_root.join(p)).collect();
+                        let events = {
                             let indexes = shared.codebase_indexes.lock();
-                            indexes
-                                .get_covering(path)
-                                .or_else(|| indexes.get(&index_root))
+                            crate::fs_notify::codebase_graph_events_for_batch(paths, kind, |path| {
+                                indexes
+                                    .get_covering(path)
+                                    .or_else(|| indexes.get(&index_root))
+                            })
                         };
-                        if let Some(idx) = idx {
-                            let event =
-                                crate::fs_notify::ws_event_to_codebase_graph_event(path, kind);
+                        for (idx, event) in events {
                             if let Err(e) = idx.send_event(event) {
                                 tracing::debug!(error = %e, "codebase graph: fs event forward failed");
                             }
@@ -2965,6 +2971,46 @@ impl WorkspaceHandle {
         self.finalize_dropped_session(&session, session_id);
         Ok(())
     }
+    /// [`Self::drop_session`] only while `bound`, the caller's earlier capture, is still the session's
+    /// toolset. Compare and unmap share the map's write lock, so a swap cannot land between them.
+    /// The teardown hooks run after the guard drops; a successor that creates the id in that gap
+    /// keeps its binding and only loses lazily re-created side entries.
+    pub(crate) fn drop_session_if_bound(
+        &self,
+        session_id: &str,
+        bound: &Arc<xai_grok_tools::registry::types::FinalizedToolset>,
+    ) -> bool {
+        let session = {
+            let mut sessions = self.shared.sessions.write();
+            if !sessions
+                .get(session_id)
+                .is_some_and(|session| Arc::ptr_eq(&session.toolset(), bound))
+            {
+                return false;
+            }
+            sessions.remove(session_id)
+        };
+        let Some(session) = session else {
+            return false;
+        };
+        self.on_session_ended(session_id);
+        self.finalize_dropped_session(&session, session_id);
+        true
+    }
+    /// Swap a mapped session's toolset under the map's read lock; `false` when the id is not mapped.
+    /// Holding the lock keeps the swap out of [`Self::drop_session_if_bound`]'s compare-and-remove.
+    pub(crate) fn replace_session_toolset_if_mapped(
+        &self,
+        session_id: &str,
+        toolset: Arc<xai_grok_tools::registry::types::FinalizedToolset>,
+    ) -> bool {
+        let sessions = self.shared.sessions.read();
+        let Some(session) = sessions.get(session_id) else {
+            return false;
+        };
+        session.replace(session.effective_tool_config(), toolset);
+        true
+    }
     /// Authorize and remove the session from the map, returning the Arc so the caller can finish teardown on it. Split from [`Self::finalize_dropped_session`] so the MCP drop path can tear down between the two (unmap first — see `drop_session_with_teardown`).
     fn unmap_session(
         &self,
@@ -3195,6 +3241,9 @@ impl WorkspaceHandle {
                         Ok(session) => {
                             session.set_yolo_mode(yolo_mode);
                             session
+                                .approval
+                                .set_policy(bind_config.tool_approval_policy);
+                            session
                                 .set_bind_tool_config_fingerprint_if_unset(
                                     bind_fingerprint.clone(),
                                 );
@@ -3216,23 +3265,27 @@ impl WorkspaceHandle {
                             session
                         }
                         Err(crate::error::WorkspaceError::SessionAlreadyExists(_)) => {
-                            if let Some(existing) = ws.session(&sid_str)
-                                && let Some(mapping) = path_virt.clone()
-                            {
-                                if let Some(cwd) = bind_cwd_for_rebind.clone()
-                                    && let Err(e) = existing
-                                        .set_cwd_for_virtualization(cwd)
-                                        .await
-                                {
-                                    return Err(
-                                        xai_tool_runtime::ToolError::service_unavailable(
-                                            format!(
-                                            "path-virt remount failed for `{sid_str}`: {e}"
-                                        ),
-                                        ),
-                                    );
+                            if let Some(existing) = ws.session(&sid_str) {
+                                existing.set_yolo_mode(yolo_mode);
+                                existing
+                                    .approval
+                                    .set_policy(bind_config.tool_approval_policy);
+                                if let Some(mapping) = path_virt.clone() {
+                                    if let Some(cwd) = bind_cwd_for_rebind.clone()
+                                        && let Err(e) = existing
+                                            .set_cwd_for_virtualization(cwd)
+                                            .await
+                                    {
+                                        return Err(
+                                            xai_tool_runtime::ToolError::service_unavailable(
+                                                format!(
+                                                    "path-virt remount failed for `{sid_str}`: {e}"
+                                                ),
+                                            ),
+                                        );
+                                    }
+                                    existing.set_path_virtualization(mapping);
                                 }
-                                existing.set_path_virtualization(mapping);
                             }
                             match ws
                                 .rebind_existing_hub_session(
@@ -3896,13 +3949,11 @@ impl WorkspaceHandle {
             }));
         }
         handle.set_codebase_index_forwarder_task(self.spawn_codebase_index_event_forwarder());
-        {
-            let ws = self.clone();
-            tokio::spawn(async move {
-                if let Ok(roots) = crate::workspace_ops::materialized_git_roots(&ws).await {
-                    ws.ensure_codebase_indexes(&roots);
-                }
-            });
+        if self.shared.host_kind.streams_fs_changes() {
+            handle.set_fs_change_producer_task(crate::fs_notify::spawn_fs_change_producer(
+                self.shared.root_cwd.clone(),
+                self.shared.events.clone(),
+            ));
         }
         if let Some(task) = self.spawn_tool_definitions_event_forwarder() {
             handle.set_tool_defs_forwarder_task(task);
@@ -3945,7 +3996,6 @@ fn build_session_routed_handlers(
         match crate::hub::SessionRoutedToolHandler::new(
             def.function.name.clone(),
             desc,
-            semantic_kind,
             Some(def.function.parameters.clone()),
             ws.clone(),
         ) {
@@ -4125,13 +4175,15 @@ pub(crate) async fn stream_hash_and_range(
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
+        hasher.update(buf.get(..n).unwrap_or(&[]));
         let start = pos.max(offset);
         let end = (pos + n as u64).min(req_end);
         if start < end {
             let local_start = (start - pos) as usize;
             let local_end = (end - pos) as usize;
-            chunk.extend_from_slice(&buf[local_start..local_end]);
+            if let Some(slice) = buf.get(local_start..local_end) {
+                chunk.extend_from_slice(slice);
+            }
         }
         pos += n as u64;
     }
@@ -4157,7 +4209,8 @@ pub struct LocalWorkspaceConnectOptions {
     /// Diagnostics server handle, when the embedder runs one.
     pub diag: Option<DiagHandle>,
     /// Fail binds without an explicit toolset closed instead of widening to
-    /// the default catalog (sandbox-launched standalone servers).
+    /// the default catalog (sandbox-launched standalone servers). A hub-only
+    /// `host_kind` fails them closed whatever this says.
     pub require_explicit_toolset: bool,
     /// Confine `x.ai/fs/*` resolution to the workspace root (remote
     /// sandboxes, where the root is a tenant boundary).
@@ -4165,6 +4218,13 @@ pub struct LocalWorkspaceConnectOptions {
     /// MCP servers every admitted hub session binds; hot-swappable via
     /// [`WorkspaceHandle::reload_bind_mcp`].
     pub bind_mcp: Option<crate::config::BindMcpConfig>,
+    /// See [`crate::hub::HubConfig::on_handshake_refused`].
+    pub on_handshake_refused: Option<crate::hub::HandshakeRefused>,
+    /// Which host runs this server. Picks the advertised catalog, whether a
+    /// bind without a toolset fails closed, and whether the credential reaches
+    /// the gen and search tools and the upload queue; the default (`Daemon`)
+    /// is hub-only.
+    pub host_kind: crate::host_kind::WorkspaceHostKind,
 }
 /// Create a [`WorkspaceHandle`] and connect it to the hub. Sessions are bound dynamically by clients calling `bind_server`.
 pub async fn connect_local_workspace(
@@ -4173,7 +4233,29 @@ pub async fn connect_local_workspace(
     auth: xai_computer_hub_sdk::SharedAuthProvider,
     options: LocalWorkspaceConnectOptions,
 ) -> WorkspaceResult<WorkspaceHandle> {
-    use crate::session::tool_config::WorkspaceSessionContextFactory;
+    let time_to_ready_started = std::time::Instant::now();
+    let ws_handle = Box::pin(build_local_workspace(cwd, hub_url, auth, options)).await?;
+    let connect_result = Box::pin(ws_handle.connect_hub()).await;
+    observe_startup_stage(
+        STARTUP_STAGE_TIME_TO_READY,
+        if connect_result.is_ok() {
+            STARTUP_OUTCOME_OK
+        } else {
+            STARTUP_OUTCOME_ERROR
+        },
+        time_to_ready_started.elapsed().as_secs_f64(),
+    );
+    connect_result?;
+    Ok(ws_handle)
+}
+/// Everything [`connect_local_workspace`] builds short of the hub connection: the catalog, session
+/// factory, bind policy, credential reach and upload machinery `options.host_kind` decides.
+pub(crate) async fn build_local_workspace(
+    cwd: std::path::PathBuf,
+    hub_url: url::Url,
+    auth: xai_computer_hub_sdk::SharedAuthProvider,
+    options: LocalWorkspaceConnectOptions,
+) -> WorkspaceResult<WorkspaceHandle> {
     let LocalWorkspaceConnectOptions {
         metadata,
         server_id,
@@ -4186,8 +4268,9 @@ pub async fn connect_local_workspace(
         require_explicit_toolset,
         confine_fs_to_workspace_root,
         bind_mcp,
+        on_handshake_refused,
+        host_kind,
     } = options;
-    let time_to_ready_started = std::time::Instant::now();
     let identity: crate::upload::environment::WorkspaceIdentity =
         auth.identity().map(Into::into).unwrap_or_default();
     let workspace_home = resolve_workspace_home();
@@ -4201,7 +4284,7 @@ pub async fn connect_local_workspace(
         .unwrap_or_else(|_| "https://cli-chat-proxy.grok.com/v1".to_string());
     let data_collection_disabled =
         std::env::var("GROK_WORKSPACE_DATA_COLLECTION_DISABLED").as_deref() != Ok("false");
-    let mut factory = WorkspaceSessionContextFactory::with_auth(auth.clone(), api_base_url.clone());
+    let mut factory = host_kind.session_context_factory(auth.clone(), api_base_url.clone());
     if crate::session::tool_config::tool_state_enabled() {
         factory = factory.with_tool_state_home(workspace_home.clone());
     }
@@ -4213,8 +4296,9 @@ pub async fn connect_local_workspace(
         alpha_test_key,
         allow_insecure_ws,
         diag,
+        on_handshake_refused,
     };
-    let tool_config = xai_grok_agent::workspace_grok_build_toolset();
+    let tool_config = host_kind.default_toolset();
     let mut ws_config = WorkspaceConfig::new_for_proxy(
         cwd,
         Arc::new(factory),
@@ -4225,9 +4309,14 @@ pub async fn connect_local_workspace(
         tool_config,
     );
     ws_config.project_lsp_trusted = project_lsp_trusted;
-    ws_config.require_explicit_toolset = require_explicit_toolset;
+    ws_config.require_explicit_toolset = require_explicit_toolset || host_kind.is_hub_only();
     ws_config.confine_fs_to_workspace_root = confine_fs_to_workspace_root;
     ws_config.bind_mcp = bind_mcp;
+    if host_kind.is_hub_only() {
+        ws_config.auth_provider = None;
+    }
+    ws_config.tool_approval = crate::permission::approval_gate_for(host_kind);
+    ws_config.host_kind = host_kind;
     if let Ok(dir) = std::env::var("GROK_WORKSPACE_SERVER_SKILLS_DIR")
         && !dir.is_empty()
     {
@@ -4243,27 +4332,34 @@ pub async fn connect_local_workspace(
             .extend(bundled_allowlist_ignore_dirs(&dir, allowlist.as_deref()));
         ws_config.skills_config.bundled_skill_dirs = vec![dir];
     }
-    let proxy_storage = Arc::new(crate::upload::ProxyStorageConfig::new(
-        auth.clone(),
-        api_base_url.clone(),
-        identity.clone(),
-    ));
-    let trace_source: Arc<dyn xai_file_utils::queue::TraceExportSource> = Arc::new(
-        crate::upload::WorkspaceTraceExportSource::new(proxy_storage.clone()),
-    );
-    let upload_queue = Arc::new(xai_file_utils::queue::UploadQueue::spawn(
-        &workspace_home,
-        trace_source,
-        xai_file_utils::queue::UploadRetryPolicy::default(),
-    ));
+    let proxy_storage = (!host_kind.is_hub_only()).then(|| {
+        Arc::new(crate::upload::ProxyStorageConfig::new(
+            auth.clone(),
+            api_base_url.clone(),
+            identity.clone(),
+        ))
+    });
+    let upload_queue = proxy_storage.as_ref().map(|proxy_storage| {
+        let trace_source: Arc<dyn xai_file_utils::queue::TraceExportSource> = Arc::new(
+            crate::upload::WorkspaceTraceExportSource::new(proxy_storage.clone()),
+        );
+        Arc::new(xai_file_utils::queue::UploadQueue::spawn(
+            &workspace_home,
+            trace_source,
+            xai_file_utils::queue::UploadRetryPolicy::default(),
+        ))
+    });
     {
         let recovery_started = std::time::Instant::now();
-        if data_collection_disabled {
-            crate::recovery::purge_spilled_items(&workspace_home);
-        } else {
-            let report =
-                crate::recovery::run_startup_recovery(&workspace_home, &upload_queue).await;
-            tracing::info!(?report, "workspace startup restart-recovery scan complete");
+        match &upload_queue {
+            Some(upload_queue) if !data_collection_disabled => {
+                let report =
+                    crate::recovery::run_startup_recovery(&workspace_home, upload_queue).await;
+                tracing::info!(?report, "workspace startup restart-recovery scan complete");
+            }
+            _ => {
+                crate::recovery::purge_spilled_items(&workspace_home);
+            }
         }
         observe_startup_stage(
             STARTUP_STAGE_STARTUP_RECOVERY,
@@ -4271,11 +4367,13 @@ pub async fn connect_local_workspace(
             recovery_started.elapsed().as_secs_f64(),
         );
     }
-    upload_queue.cleanup_orphans(xai_file_utils::queue::DEFAULT_MAX_AGE);
-    crate::upload::spawn_queue_stats_sampler(
-        upload_queue.clone(),
-        std::time::Duration::from_secs(15),
-    );
+    if let Some(upload_queue) = &upload_queue {
+        upload_queue.cleanup_orphans(xai_file_utils::queue::DEFAULT_MAX_AGE);
+        crate::upload::spawn_queue_stats_sampler(
+            upload_queue.clone(),
+            std::time::Duration::from_secs(15),
+        );
+    }
     if crate::session::tool_config::tool_state_enabled() {
         let home = workspace_home.clone();
         tokio::spawn(async move {
@@ -4298,17 +4396,6 @@ pub async fn connect_local_workspace(
         identity,
     )
     .map_err(|e| WorkspaceError::HubError(format!("failed to create workspace: {e}")))?;
-    let connect_result = ws_handle.connect_hub().await;
-    observe_startup_stage(
-        STARTUP_STAGE_TIME_TO_READY,
-        if connect_result.is_ok() {
-            STARTUP_OUTCOME_OK
-        } else {
-            STARTUP_OUTCOME_ERROR
-        },
-        time_to_ready_started.elapsed().as_secs_f64(),
-    );
-    connect_result?;
     Ok(ws_handle)
 }
 /// Resolve `$GROK_WORKSPACE_HOME`, the workspace-owned on-disk state root. `<grok_home>/workspace`, where `<grok_home>` honours `$GROK_HOME` and otherwise falls back to `~/.grok` (see [`xai_grok_config::grok_home`]).
@@ -4800,6 +4887,8 @@ impl WorkspaceHandle {
             require_explicit_toolset: false,
             confine_fs_to_workspace_root: false,
             bind_mcp: None,
+            tool_approval: crate::permission::ToolApprovalGate::Off,
+            host_kind: Default::default(),
         };
         Self::build(
             config,
@@ -4843,6 +4932,8 @@ impl WorkspaceHandle {
             require_explicit_toolset: false,
             confine_fs_to_workspace_root: false,
             bind_mcp: None,
+            tool_approval: crate::permission::ToolApprovalGate::Off,
+            host_kind: Default::default(),
         }
     }
     /// Test handle backed by a temp dir. Zero sessions; `TempDir` kept alive via `Arc`.

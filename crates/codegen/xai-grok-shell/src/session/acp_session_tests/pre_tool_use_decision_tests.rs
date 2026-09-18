@@ -45,8 +45,13 @@ async fn hook_annotations(updates: &std::sync::Mutex<Vec<serde_json::Value>>) ->
         .lock()
         .unwrap()
         .iter()
-        .filter(|update| update["sessionUpdate"] == "hook_annotation")
-        .map(|update| update["message"].as_str().unwrap_or_default().to_string())
+        .filter(|update| j(update, "sessionUpdate") == "hook_annotation")
+        .map(|update| {
+            j(update, "message")
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
         .collect()
 }
 
@@ -74,7 +79,8 @@ async fn pre_tool_use_updated_input_rewrites_prepared_call() {
                 .await
                 .expect("hook rewrite must prepare");
             assert_eq!(
-                prepared.parsed_args["target_file"], "/tmp/rewritten.txt",
+                j(&prepared.parsed_args, "target_file"),
+                "/tmp/rewritten.txt",
                 "hook updatedInput must replace the tool input; got {}",
                 prepared.raw_arguments
             );
@@ -112,9 +118,9 @@ async fn pre_tool_use_rewrite_runs_silently_and_is_telemetry_tagged() {
             let completed = events
                 .lines()
                 .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-                .find(|e| e["type"] == "tool_completed")
+                .find(|e| j(e, "type") == "tool_completed")
                 .unwrap_or_else(|| panic!("a tool_completed row must be written; got:\n{events}"));
-            assert_eq!(completed["rewriting_hook"], "test/pretooluse");
+            assert_eq!(j(&completed, "rewriting_hook"), "test/pretooluse");
 
             let annotations = hook_annotations(&updates).await;
             assert!(
@@ -682,10 +688,12 @@ async fn pre_tool_use_additional_context_reaches_the_model_after_the_tool_result
                 "context lands in hook call order: {conversation:?}"
             );
             assert!(
-                conversation[second].text_content().contains("<\\/system-reminder>"),
+                at(&conversation, second)
+                    .text_content()
+                    .contains("<\\/system-reminder>"),
                 "hook text must not be able to close the reminder envelope: {conversation:?}"
             );
-            let note = conversation[first].text_content();
+            let note = at(&conversation, first).text_content();
             assert!(
                 note.contains("from PreToolUse hook") && !note.contains("pre_tool_use"),
                 "the model-facing note must spell the event in CamelCase: {note}"

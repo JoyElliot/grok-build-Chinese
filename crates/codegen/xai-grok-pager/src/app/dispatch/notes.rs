@@ -1,6 +1,8 @@
 //! Feedback, remember-note, btw, and recap dispatchers.
 
 use super::ctx::{NO_SESSION_NOTICE, with_active_agent};
+use agent_client_protocol as acp;
+
 use crate::app::actions::{Effect, FeedbackSendOrigin, FeedbackTraceChoice};
 use crate::app::agent::AgentId;
 use crate::app::agent_view::{AgentView, PromptInputMode};
@@ -20,6 +22,9 @@ fn note_text(locale: &crate::locale::LocaleContext, id: &str, english: &str) -> 
     locale.named_text(id, english).into_owned()
 }
 use std::sync::atomic::{AtomicU64, Ordering};
+use xai_grok_feedback::{
+    FeedbackDraftStore, FeedbackSource, FeedbackTaxonomy, derive_title, structured_feedback,
+};
 
 /// Monotonic counter for correlating async rewrite responses with the modal that requested them.
 /// It prevents stale results from populating a different note's review modal when the user closes and re-opens quickly.
@@ -46,8 +51,8 @@ fn feedback_notice(app: &mut AppView, message: &str) {
     }
 }
 
-/// Open the centered feedback modal.
-/// Every refusal is visible (minimal-mode notice, blocker notice, or no-session notice); the state is never set invisibly.
+/// Open the feedback modal (every screen mode; minimal hosts it in its live band).
+/// Every refusal is visible (voice notice, blocker notice, or no-session notice); the state is never set invisibly.
 /// Early exits drop `open`, whose image owner cleans up the staged temp files.
 pub(super) fn dispatch_open_feedback_modal(
     app: &mut AppView,
@@ -62,16 +67,6 @@ pub(super) fn dispatch_open_feedback_modal(
         }
         return vec![];
     };
-    // Minimal mode has no renderer for the modal; an invisible input owner would swallow every key.
-    if app.screen_mode.is_minimal() {
-        with_active_agent(app, |agent| {
-            agent.scrollback.push_block(RenderBlock::system(
-                "Use `/feedback <text>` in minimal mode, or run without --minimal to open the feedback form."
-                    .to_string(),
-            ));
-        });
-        return vec![];
-    }
     if matches!(
         app.voice_recording_target(),
         Some(crate::app::app_view::VoiceTarget::Agent(target)) if target == id
@@ -404,8 +399,10 @@ pub(crate) fn feedback_send_effect(
             None => "NotOffered".to_string(),
         }),
     });
-    if matches!(origin, FeedbackSendOrigin::Modal { .. }) {
-        payload["modal"] = serde_json::Value::Bool(true);
+    if matches!(origin, FeedbackSendOrigin::Modal { .. })
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("modal".into(), serde_json::Value::Bool(true));
     }
     crate::unified_log::info("feedback.send", Some(session_id.0.as_ref()), Some(payload));
     Effect::SendFeedback {
@@ -473,12 +470,65 @@ pub(crate) fn commit_feedback(
         encoded_images,
         trace,
         /*trace_log*/ None,
-        // Direct actions carry no taxonomy enums.
-        /*metadata*/ None,
+        // Inline text is composed like a Write-tab report, minus the taxonomy enums.
+        Some(structured_feedback(
+            FeedbackSource::Write,
+            FeedbackTaxonomy::default(),
+        )),
         /* request_trace_upload_token */ false,
         /*draft*/ None,
         FeedbackSendOrigin::Immediate,
     ))
+}
+
+/// A report that did not reach the backend.
+pub(super) struct UnsentFeedbackReport<'a> {
+    pub(super) text: &'a str,
+    /// Attachments are not carried into the draft, so the notice says how many were lost.
+    pub(super) image_count: usize,
+    /// Leading clause of the notice, e.g. "Couldn't send feedback: offline".
+    pub(super) failure: &'a str,
+}
+
+/// The composer was cleared at send time, so the predraft written here is the only copy left;
+/// without a session directory the text is echoed instead. The store write is sync and on the
+/// failure path only: the effect task has no session dir to write from.
+pub(super) fn keep_unsent_feedback_report(agent: &mut AgentView, report: UnsentFeedbackReport<'_>) {
+    let UnsentFeedbackReport {
+        text,
+        image_count,
+        failure,
+    } = report;
+    let attachments = match image_count {
+        0 => String::new(),
+        1 => " (its image was dropped)".to_owned(),
+        count => format!(" (its {count} images were dropped)"),
+    };
+    // An image-only report has nothing the store could keep.
+    if text.trim().is_empty() {
+        agent.scrollback.push_block(RenderBlock::system(format!(
+            "{failure}. Not sent{attachments}."
+        )));
+        return;
+    }
+    let saved = agent.session.ensure_local_session_dir().map(|session_dir| {
+        let session_dir = session_dir.map_err(|error| error.to_string())?;
+        FeedbackDraftStore::new(session_dir)
+            .append_predraft(&derive_title(text), text)
+            .map_err(|error| error.to_string())
+    });
+    let notice = match saved {
+        Some(Ok(_)) => {
+            format!("{failure}. Saved to Drafts{attachments}; open `/feedback` to retry.")
+        }
+        Some(Err(error)) => {
+            format!(
+                "{failure}. Could not save it as a draft ({error}). Not sent{attachments}: {text}"
+            )
+        }
+        None => format!("{failure}. Not sent{attachments}: {text}"),
+    };
+    agent.scrollback.push_block(RenderBlock::system(notice));
 }
 
 /// Thank-you is shown immediately; POST is a background effect.
@@ -507,7 +557,15 @@ pub(super) fn dispatch_send_feedback(
     agent.ephemeral_tip.clear_on_submit();
 
     let Some(session_id) = agent.session.session_id.clone() else {
-        agent.scrollback.push_block(RenderBlock::system(no_session));
+        // The slash path already cleared the composer, so the report has nowhere else to live.
+        keep_unsent_feedback_report(
+            agent,
+            UnsentFeedbackReport {
+                text: text.trim(),
+                image_count: images.len(),
+                failure: &no_session,
+            },
+        );
         return vec![];
     };
 
@@ -591,13 +649,13 @@ fn encode_feedback_image_slice(
     let encoded = accepted
         .into_iter()
         .filter_map(|index| {
-            let (bytes, mime_type) = loaded[index].as_ref()?;
+            let (bytes, mime_type) = loaded.get(index).and_then(Option::as_ref)?;
             Some(xai_grok_shell::session::FeedbackImage {
                 data: base64::engine::general_purpose::STANDARD.encode(bytes),
                 mime_type: mime_type.clone(),
-                file_name: images[index]
-                    .source_path
-                    .as_deref()
+                file_name: images
+                    .get(index)
+                    .and_then(|img| img.source_path.as_deref())
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned()),
             })
@@ -758,7 +816,10 @@ fn extract_session_context(agent: &AgentView) -> String {
                             .take_while(|&i| i <= 200)
                             .last()
                             .unwrap_or(0);
-                        format!("{}...", &prompt.text[..end])
+                        match prompt.text.get(..end) {
+                            Some(prefix) => format!("{prefix}..."),
+                            None => prompt.text.clone(),
+                        }
                     } else {
                         prompt.text.clone()
                     };
@@ -823,7 +884,16 @@ fn extract_session_context(agent: &AgentView) -> String {
 /// Send a /btw side question.
 /// Bypasses the prompt queue, so it works even while the agent is mid-turn.
 /// Fires an ACP ext method and shows a loading overlay.
-pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effect> {
+pub(super) fn dispatch_send_btw(
+    app: &mut AppView,
+    question: String,
+    images: Vec<crate::prompt_images::PastedImage>,
+) -> Vec<Effect> {
+    // Drop deletes staged and session files. A side question does not keep them.
+    let images = BtwImages::new(images);
+    // Slash submit strips image chips before the command runs. Put `[Image]`
+    // back so the panel title shows the attachment.
+    let question = question_with_image_chips(&question, images.as_slice());
     let no_session = note_static(
         app.locale.as_ref(),
         "session.no_active",
@@ -833,7 +903,7 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
         return vec![];
     };
     let minimal = app.screen_mode.is_minimal();
-    let (session_id, minimal_request_id) = {
+    let (session_id, minimal_request_id, cwd) = {
         let Some(agent) = app.agents.get_mut(&id) else {
             return vec![];
         };
@@ -847,6 +917,7 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
             }
             return vec![];
         };
+        let cwd = std::path::PathBuf::from(&agent.session.cwd);
 
         // Composer clearing belongs to the submit funnel: `dispatch_send_prompt_inner` clears it when `consume_input` is set
         // Draft-preserving callers (the palette, an edited queue row) keep theirs
@@ -864,15 +935,153 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
             agent.btw_focused = false;
             None
         };
-        (session_id, minimal_request_id)
+        (session_id, minimal_request_id, cwd)
     };
 
     vec![Effect::SendBtw {
         agent_id: id,
         session_id,
         question,
+        images: images.into_inner(),
+        cwd,
         minimal_request_id,
     }]
+}
+
+/// Owns `/btw` attachments until they are handed to the send effect.
+/// Drop unlinks staged temps and session copies.
+struct BtwImages(Vec<crate::prompt_images::PastedImage>);
+
+impl BtwImages {
+    fn new(images: Vec<crate::prompt_images::PastedImage>) -> Self {
+        Self(images)
+    }
+
+    fn as_slice(&self) -> &[crate::prompt_images::PastedImage] {
+        &self.0
+    }
+
+    fn into_inner(mut self) -> Vec<crate::prompt_images::PastedImage> {
+        std::mem::take(&mut self.0)
+    }
+}
+
+/// Prefix a single `[Image]` chip. The `/btw` title does not number attachments.
+/// Text-only questions are returned unchanged so newlines survive.
+fn question_with_image_chips(
+    question: &str,
+    images: &[crate::prompt_images::PastedImage],
+) -> String {
+    if images.is_empty() {
+        return question.to_string();
+    }
+    let question = strip_numbered_image_chips(question.trim());
+    if question.contains("[Image]") {
+        return question;
+    }
+    if question.is_empty() {
+        "[Image]".to_string()
+    } else {
+        format!("[Image] {question}")
+    }
+}
+
+/// Remove `[Image #N]` tokens without collapsing newlines.
+fn strip_numbered_image_chips(question: &str) -> String {
+    let mut out = String::new();
+    let mut rest = question;
+    while let Some(start) = rest.find("[Image #") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "[Image #".len()..];
+        let Some(end) = after.find(']') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        rest = &after[end + 1..];
+        if out.ends_with(' ') && rest.starts_with(' ') {
+            rest = rest.trim_start_matches(' ');
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+impl Drop for BtwImages {
+    fn drop(&mut self) {
+        crate::prompt_images::drain_and_cleanup(
+            crate::prompt_images::SessionPathPolicy::Delete,
+            &mut self.0,
+        );
+    }
+}
+
+/// Side-question payload cap. Matches the per-image send limit so one screenshot
+/// under 50MB is never dropped; extra images past this total are omitted.
+const BTW_IMAGE_AGGREGATE_CAP: usize = 50_000_000;
+
+pub(crate) struct BtwImageEncode {
+    pub blocks: Option<Vec<acp::ContentBlock>>,
+    pub omitted: usize,
+}
+
+/// Encode composer images into `x.ai/btw` content blocks.
+/// `blocks: None` keeps the text-only wire. `omitted` is how many attachments did not encode.
+/// Caller unlinks the image files after this returns.
+pub(crate) fn encode_btw_images(
+    question: &str,
+    images: &[crate::prompt_images::PastedImage],
+    cwd: &std::path::Path,
+) -> BtwImageEncode {
+    if images.is_empty() {
+        return BtwImageEncode {
+            blocks: None,
+            omitted: 0,
+        };
+    }
+    let kept = images_within_aggregate_cap(images);
+    let omitted_by_cap = images.len() - kept.len();
+    if kept.is_empty() {
+        return BtwImageEncode {
+            blocks: None,
+            omitted: images.len(),
+        };
+    }
+    let blocks = crate::prompt_images::build_content_blocks_with_workspace_ref(
+        question.to_string(),
+        &kept,
+        Some(cwd),
+    );
+    let produced = blocks
+        .iter()
+        .filter(|block| matches!(block, acp::ContentBlock::Image(_)))
+        .count();
+    let omitted = omitted_by_cap + kept.len().saturating_sub(produced);
+    BtwImageEncode {
+        blocks: (produced > 0).then_some(blocks),
+        omitted,
+    }
+}
+
+fn images_within_aggregate_cap(
+    images: &[crate::prompt_images::PastedImage],
+) -> Vec<crate::prompt_images::PastedImage> {
+    let mut kept = Vec::new();
+    let mut total = 0usize;
+    for image in images {
+        let size = image.byte_len;
+        if total.saturating_add(size) > BTW_IMAGE_AGGREGATE_CAP {
+            tracing::warn!(
+                bytes = size,
+                total,
+                cap = BTW_IMAGE_AGGREGATE_CAP,
+                "skipping /btw image: aggregate payload cap"
+            );
+            continue;
+        }
+        total += size;
+        kept.push(image.clone());
+    }
+    kept
 }
 
 /// Toast when a manual `/recap` produces no summary.
@@ -1026,12 +1235,21 @@ pub(super) fn handle_btw_response(
     agent_id: AgentId,
     result: Result<String, String>,
     minimal_request_id: Option<uuid::Uuid>,
+    image_notice: Option<String>,
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         use crate::views::btw_overlay::BtwOverlayState;
         if let Some(request_id) = minimal_request_id {
-            crate::minimal_api::finish_minimal_btw(agent, request_id, result);
+            // A dismissed or stale request ignores the answer. Don't toast either.
+            if crate::minimal_api::finish_minimal_btw(agent, request_id, result)
+                && let Some(notice) = image_notice.as_deref()
+            {
+                agent.show_toast(notice);
+            }
             return vec![];
+        }
+        if let Some(notice) = image_notice.as_deref() {
+            agent.show_toast(notice);
         }
         let question = match &agent.btw_state {
             Some(BtwOverlayState::Loading { question }) => question.clone(),

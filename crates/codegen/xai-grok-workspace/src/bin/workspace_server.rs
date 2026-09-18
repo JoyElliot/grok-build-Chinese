@@ -2,12 +2,16 @@
 //!
 //! Reads OIDC credentials from `~/.grok/auth.json`, connects to a
 //! server, exposes workspace tools, and refreshes tokens automatically.
+#![deny(clippy::indexing_slicing)]
 use clap::Parser;
 use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
 use xai_grok_diag_server::{self as diag_server, DiagHandle, ErrorClass};
-use xai_grok_workspace::config::{merge_host_identity_metadata, merge_session_metadata};
+use xai_grok_workspace::WorkspaceHostKind;
+use xai_grok_workspace::config::{
+    WorkspaceServerMetadata, merge_host_identity_metadata, merge_session_metadata,
+};
 use xai_grok_workspace::error::WorkspaceError;
 use xai_grok_workspace_daemon::daemonize;
 use xai_grok_workspace_daemon::preview_supervisor::{
@@ -277,6 +281,20 @@ fn main() -> anyhow::Result<()> {
     let rt = xai_tty_utils::runtime::build_with_blocking_pool(&mut builder)?;
     rt.block_on(run(args, cwd, oom_protection, oom_protect_applied))
 }
+/// The same binary serves sandbox containers and headless user machines. Only the sandbox launcher
+/// passes a `sandbox_id` in `--metadata`, so that is the opt-in to the sandbox's full catalog and
+/// credential reach; the environment is not a policy input (a `grok --local-workspace` spawned by a
+/// hook or MCP child inherits `GROK_SESSION_ID`). Pickers label the server by the same kind.
+fn host_kind_for(metadata: Option<&serde_json::Value>) -> WorkspaceHostKind {
+    let is_sandbox = metadata
+        .map(WorkspaceServerMetadata::from_metadata)
+        .is_some_and(|identity| identity.sandbox_id.is_some_and(|id| !id.is_empty()));
+    if is_sandbox {
+        WorkspaceHostKind::Sandbox
+    } else {
+        WorkspaceHostKind::Daemon
+    }
+}
 /// Whether to set `GROK_TOOLS_RESET_CHILD_OOM` after the always-on protect attempt.
 /// Always-on success must set it so children do not inherit -900.
 /// `--oom-protect` forces the env even when the early write failed (pre-unshare may still have left the score at -900).
@@ -393,14 +411,10 @@ async fn run(
         ),
         None => None,
     };
-    let host_kind = if session_id.as_deref().is_some_and(|s| !s.is_empty()) {
-        xai_tool_protocol::HOST_KIND_SANDBOX
-    } else {
-        xai_tool_protocol::HOST_KIND_DAEMON
-    };
+    let host_kind = host_kind_for(parsed_metadata.as_ref());
     let metadata = merge_host_identity_metadata(
         merge_session_metadata(parsed_metadata, session_id),
-        host_kind,
+        host_kind.as_wire_str(),
     );
     let launch_id = metadata
         .as_ref()
@@ -466,7 +480,9 @@ async fn run(
             diag: Some(diag_handle.clone()),
             require_explicit_toolset: args.require_explicit_toolset,
             confine_fs_to_workspace_root: args.confine_fs_to_workspace_root,
+            on_handshake_refused: None,
             bind_mcp: None,
+            host_kind,
         },
     )
     .await
@@ -569,6 +585,30 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Only the launcher's `sandbox_id` opts in; a session id alone (which a hook- or MCP-spawned
+    /// server inherits from its environment) or no metadata at all is a daemon.
+    #[test]
+    fn only_a_launcher_supplied_sandbox_id_makes_a_sandbox() {
+        assert_eq!(
+            WorkspaceHostKind::Sandbox,
+            host_kind_for(Some(
+                &serde_json::json!({ "sandbox_id": "sb-1", "session_id": "s-1" })
+            ))
+        );
+        for metadata in [
+            None,
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({ "session_id": "s-1" })),
+            Some(serde_json::json!({ "sandbox_id": "" })),
+            Some(serde_json::json!("not an object")),
+        ] {
+            assert_eq!(
+                WorkspaceHostKind::Daemon,
+                host_kind_for(metadata.as_ref()),
+                "{metadata:?}"
+            );
+        }
+    }
     /// The env-resolved discovery refresh must reach the proxy argv only when set.
     /// `None` (env unset or 0) leaves `--discovery-refresh-ms` out of the argv.
     #[test]
@@ -635,9 +675,10 @@ mod tests {
     }
     #[test]
     fn classify_from_client_error_display_round_trip() {
-        let handshake = WorkspaceError::HubError(
-            xai_computer_hub_sdk::ClientError::HandshakeAuthFailed { status: 401 }.to_string(),
-        );
+        let handshake = WorkspaceError::HubRefused {
+            status: 401,
+            refusal: None,
+        };
         let handshake_msg = handshake.to_string();
         assert_eq!(
             classify_hub_connect_failure(&handshake_msg),
@@ -772,10 +813,19 @@ mod tests {
             .expect("request");
         assert_eq!(response.status().as_u16(), 503);
         let body: serde_json::Value = response.json().await.expect("json");
-        assert_eq!(body["state"], "failed");
-        assert_eq!(body["error_class"], "hub_auth");
-        assert_eq!(body["error_detail"], "handshake auth failed: HTTP 401");
-        assert_eq!(body["launch_id"], "nonce-auth");
+        assert_eq!(body.get("state").and_then(|v| v.as_str()), Some("failed"));
+        assert_eq!(
+            body.get("error_class").and_then(|v| v.as_str()),
+            Some("hub_auth")
+        );
+        assert_eq!(
+            body.get("error_detail").and_then(|v| v.as_str()),
+            Some("handshake auth failed: HTTP 401")
+        );
+        assert_eq!(
+            body.get("launch_id").and_then(|v| v.as_str()),
+            Some("nonce-auth")
+        );
     }
     #[tokio::test(start_paused = true)]
     async fn report_hub_connect_failure_sets_ready_failed_hub_connect() {
@@ -804,9 +854,15 @@ mod tests {
             .expect("request");
         assert_eq!(response.status().as_u16(), 503);
         let body: serde_json::Value = response.json().await.expect("json");
-        assert_eq!(body["state"], "failed");
-        assert_eq!(body["error_class"], "hub_connect");
-        assert_eq!(body["error_detail"], "network error: connection refused");
+        assert_eq!(body.get("state").and_then(|v| v.as_str()), Some("failed"));
+        assert_eq!(
+            body.get("error_class").and_then(|v| v.as_str()),
+            Some("hub_connect")
+        );
+        assert_eq!(
+            body.get("error_detail").and_then(|v| v.as_str()),
+            Some("network error: connection refused")
+        );
     }
     #[test]
     fn capabilities_flag_parses_and_defaults_off() {

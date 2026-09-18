@@ -510,12 +510,14 @@ mod stop_gate_snapshot_tests {
             },
         ]);
 
+        let [ok, failed, skipped] = results.as_slice() else {
+            panic!("expected three hook results: {results:?}");
+        };
         assert!(
-            matches!(&results[0], HookRunResult::Success { hook_name, .. } if hook_name == "gate"),
-            "a discarded decision must read as success, got {:?}",
-            results[0]
+            matches!(ok, HookRunResult::Success { hook_name, .. } if hook_name == "gate"),
+            "a discarded decision must read as success, got {ok:?}"
         );
-        assert!(matches!(&results[1], HookRunResult::Failed { .. }));
-        assert!(matches!(&results[2], HookRunResult::Skipped { .. }));
+        assert!(matches!(failed, HookRunResult::Failed { .. }));
+        assert!(matches!(skipped, HookRunResult::Skipped { .. }));
     }
 }

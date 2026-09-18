@@ -312,11 +312,14 @@ Priority for `[mcp_servers]` and `[plugins]`: `.grok/config.toml` (current dir) 
 
 ### Memory
 
-Persist knowledge across sessions. Enable memory with `GROK_MEMORY=1`, `[memory] enabled = true`, or managed remote settings.
+Persist knowledge across sessions. Enable it with `[memory] enabled = true` or
+`GROK_MEMORY=1`; an explicit `[memory] enabled = false` turns it off even when a
+managed remote setting enables it. Notes recorded by earlier versions are
+carried over automatically. See [13-memory.md](13-memory.md).
 
 ```toml
 [memory]
-enabled = false                       # enable memory
+enabled = true
 
 [memory.session]
 save_on_end = true                    # write metadata summary on session end
@@ -835,6 +838,14 @@ The key ones. See the README for the complete list.
 | `.grok/agents/` | Project-scoped agent definitions |
 | `.grok/hooks/` | Project-scoped hooks |
 | `.grok/lsp.json` | LSP server configuration |
+
+### How Grok saves `config.toml`
+
+Writes to **`~/.grok/config.toml`** (`/settings`, `/vim-mode`, and other user-config saves) follow a leaf symlink. The atomic rename writes the referent (a file in your dotfiles repo). The link stays a link. If the link is dangling, the write creates the referent as a regular file.
+
+Writes to a **project** `.grok/config.toml` (MCP / plugin / permission edits) **replace** a leaf symlink with a regular file. That keeps a later save from following the link out of the repository.
+
+A user `config.toml` that cannot be parsed is not overwritten. Fix the syntax (or restore a backup) and save again.
 
 ---
 

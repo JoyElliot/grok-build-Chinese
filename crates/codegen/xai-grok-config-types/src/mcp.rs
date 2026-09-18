@@ -255,16 +255,27 @@ fn render_setup_template(
     while let Some(start) = rest.find("{{") {
         let (prefix, after_start) = rest.split_at(start);
         out.push_str(prefix);
-        let after_start = &after_start[2..];
+        let Some(after_start) = after_start.strip_prefix("{{") else {
+            return Err("unterminated setup variable template".to_string());
+        };
         let Some(end) = after_start.find("}}") else {
             return Err("unterminated setup variable template".to_string());
         };
-        let key = after_start[..end].trim();
+        let Some(key) = after_start.get(..end) else {
+            return Err("unterminated setup variable template".to_string());
+        };
+        let key = key.trim();
         let Some(value) = variables.get(key) else {
             return Err(format!("unresolved setup variable '{key}'"));
         };
         out.push_str(value);
-        rest = &after_start[end + 2..];
+        let Some(remaining) = after_start.get(end..) else {
+            return Err("unterminated setup variable template".to_string());
+        };
+        let Some(remaining) = remaining.strip_prefix("}}") else {
+            return Err("unterminated setup variable template".to_string());
+        };
+        rest = remaining;
     }
     out.push_str(rest);
     Ok(out)
@@ -316,12 +327,11 @@ impl McpServerConfig {
             return McpSetupResolution::Resolved(Box::new(self.clone()));
         };
 
-        if setup.fields.len() != 1 {
+        let [field] = setup.fields.as_slice() else {
             return McpSetupResolution::Invalid(
                 "setup schema must declare exactly one select field (v0)".to_string(),
             );
-        }
-        let field = &setup.fields[0];
+        };
         if !matches!(field.field_type, McpSetupFieldType::Select) || field.options.is_empty() {
             return McpSetupResolution::Invalid(
                 "setup field must be a non-empty select (v0)".to_string(),
@@ -439,13 +449,12 @@ impl McpServerConfig {
                     })
                     .unwrap_or_default();
 
-                // Add bearer token from environment variable if specified
                 if let Some(env_var) = bearer_token_env_var {
                     match std::env::var(env_var) {
                         Ok(token) => {
                             http_headers.push(acp::HttpHeader::new(
                                 "Authorization",
-                                format!("Bearer {}", token),
+                                format!("Bearer {token}"),
                             ));
                         }
                         Err(_) => {
@@ -673,8 +682,11 @@ mod tests {
         let config: McpConfig = serde_json::from_str(site_select_setup_json()).unwrap();
         let server = config.mcp_servers.get("acme").unwrap();
         let setup = server.setup.as_ref().unwrap();
-        assert_eq!(setup.fields[0].id, "site");
-        assert_eq!(setup.fields[0].default.as_deref(), Some("us1"));
+        let [field] = setup.fields.as_slice() else {
+            panic!("expected exactly one setup field: {:?}", setup.fields);
+        };
+        assert_eq!(field.id, "site");
+        assert_eq!(field.default.as_deref(), Some("us1"));
         assert!(setup.variables.contains_key("url"));
         assert!(matches!(
             server.resolve_setup(None),

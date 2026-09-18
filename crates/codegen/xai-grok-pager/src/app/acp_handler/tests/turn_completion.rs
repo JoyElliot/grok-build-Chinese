@@ -291,7 +291,7 @@
     fn silent_wake_turn_completed_is_markerless() {
         let mut app = make_app_with_agent("sess-wake");
         seed_two_bg_tasks(&mut app, "sess-wake");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let affected = handle_ext_notification(
             &xai_wake_turn_completed_notif(
@@ -329,7 +329,7 @@
             make_viewer_chunk_with_turn_start("sess-wake", "task-completed-bg1", 5_000),
             &mut app,
         );
-        assert_eq!(count_turn_markers(&app.agents[&AgentId(0)]), 0);
+        assert_eq!(count_turn_markers(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"))), 0);
 
         let affected = handle_ext_notification(
             &xai_wake_turn_completed_notif("sess-wake", "task-completed-bg1", None),
@@ -363,14 +363,14 @@
             &xai_wake_turn_completed_notif("sess-wake", "task-completed-bg1", None),
             &mut app,
         );
-        assert_eq!(count_turn_markers(&app.agents[&AgentId(0)]), 1);
+        assert_eq!(count_turn_markers(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"))), 1);
 
         let _ = handle_ext_notification(
             &xai_wake_turn_completed_notif("sess-wake", "task-completed-bg1", None),
             &mut app,
         );
         assert_eq!(
-            count_turn_markers(&app.agents[&AgentId(0)]),
+            count_turn_markers(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"))),
             1,
             "a duplicate wake terminal must not push a second marker"
         );
@@ -427,7 +427,7 @@
             &mut app,
         );
         assert!(
-            app.agents[&AgentId(0)].running_wake_turn.is_none(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).running_wake_turn.is_none(),
             "a late delta after the terminal must not revive the stop affordance"
         );
 
@@ -445,7 +445,7 @@
             &mut app,
         );
         assert!(
-            app.agents[&AgentId(0)].running_wake_turn.is_none(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).running_wake_turn.is_none(),
             "an earlier finished wake stays finished after later terminals"
         );
     }
@@ -477,7 +477,7 @@
             app.pending_effects
         );
         assert!(
-            app.agents[&AgentId(0)].session.pending_prompts.is_empty(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).session.pending_prompts.is_empty(),
             "the parked row must leave the local queue"
         );
     }
@@ -510,7 +510,7 @@
             app.pending_effects
         );
         assert_eq!(
-            app.agents[&AgentId(0)].session.pending_prompts.len(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).session.pending_prompts.len(),
             1,
             "the parked row must stay queued until reconnect drains"
         );
@@ -525,7 +525,7 @@
             &mut app,
         );
         assert!(
-            app.agents[&AgentId(0)].scrollback.has_running_entries(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.has_running_entries(),
             "the streamed wake chunk opens a live entry"
         );
 
@@ -534,7 +534,7 @@
             &mut app,
         );
         assert!(
-            !app.agents[&AgentId(0)].scrollback.has_running_entries(),
+            !app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.has_running_entries(),
             "the wake terminal must finish the streamed entry"
         );
     }
@@ -549,8 +549,8 @@
             make_replay_chunk_with_turn_start("sess-wake", "task-completed-bg1", 5_000),
             &mut app,
         );
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
-        let started_at = app.agents[&AgentId(0)].turn_started_at;
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
+        let started_at = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).turn_started_at;
 
         let affected = handle_ext_notification(
             &xai_turn_completed_replay(
@@ -584,7 +584,7 @@
     fn scheduler_fired_turn_completed_keeps_adopted_path() {
         // `/loop` turns are client-driven with a real finalize path, never the wake shortcut
         let mut app = make_app_with_agent("sess-cron");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let affected = handle_ext_notification(
             &xai_wake_turn_completed_notif("sess-cron", "scheduler-fired-abc", Some(1_000)),
@@ -593,7 +593,7 @@
 
         assert!(!affected);
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.len(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             len_before,
             "a scheduler-fired terminal must not push a wake marker"
         );
@@ -603,7 +603,7 @@
     fn silent_errored_wake_pushes_failure_marker() {
         // Failures are shown even when the wake is invisible: the standing instruction silently stopped
         let mut app = make_app_with_agent("sess-wake");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "error", false),
@@ -726,7 +726,7 @@
                     },
                 ));
         }
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "error", false),
@@ -765,7 +765,7 @@
                     },
                 ));
         }
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "error", false),
@@ -817,7 +817,7 @@
             &xai_turn_completed_notif("sess-wake", "goal-summary-g1", "end_turn", false),
             &mut app,
         );
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "end_turn", false),
@@ -840,7 +840,7 @@
 
         let mut app = make_app_with_agent("sess-wake");
         app.agents.get_mut(&AgentId(0)).unwrap().session.state = AgentState::TurnRunning;
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         for _ in 0..2 {
             let _ = handle_ext_notification(
@@ -878,7 +878,7 @@
             &mut app,
         );
         app.agents.get_mut(&AgentId(0)).unwrap().session.state = AgentState::Idle;
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg2", "end_turn", false),
@@ -943,7 +943,7 @@
     fn duplicate_errored_wake_terminal_pushes_one_failure_marker() {
         // Failures bypass the output-epoch dedupe, so duplicates are deduped by prompt id.
         let mut app = make_app_with_agent("sess-wake");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         for _ in 0..2 {
             let _ = handle_ext_notification(
@@ -953,7 +953,7 @@
         }
 
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.len(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             len_before + 1,
             "one failure marker for the wake, duplicates dropped"
         );
@@ -963,7 +963,7 @@
     fn silent_cancelled_or_rate_limited_wake_stays_markerless() {
         // Rate limits arrive through the retry notifications instead, matching the real-turn rails
         let mut app = make_app_with_agent("sess-wake");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         for stop_reason in ["cancelled", "rate_limit"] {
             let _ = handle_ext_notification(
@@ -973,7 +973,7 @@
         }
 
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.len(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             len_before,
             "cancelled/rate-limited silent wake terminals push nothing"
         );
@@ -989,7 +989,7 @@
             make_viewer_chunk_with_turn_start("sess-wake", "task-completed-bg1", 5_000),
             &mut app,
         );
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif_with_cancel_trigger(
@@ -1112,7 +1112,7 @@
     fn dead_wake_pushes_no_status_line() {
         let mut app = make_app_with_agent("sess-wake");
         seed_two_bg_tasks(&mut app, "sess-wake");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "cancelled", false),
@@ -1146,7 +1146,7 @@
             agent.session.start_turn(&mut agent.scrollback);
             agent.session.current_prompt_id = Some("pid-local".into());
         }
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
 
         let affected = handle_ext_notification(
             &xai_wake_turn_completed_notif("sess-wake", "task-completed-bg1", Some(6_000)),
@@ -1170,8 +1170,8 @@
     fn between_turns_completion_pushes_chip_only() {
         let mut app = make_app_with_agent("sess-chip-only");
         seed_two_bg_tasks(&mut app, "sess-chip-only");
-        assert!(app.agents[&AgentId(0)].session.state.is_idle());
-        assert_eq!(app.agents[&AgentId(0)].watchers().commands, 2);
+        assert!(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).session.state.is_idle());
+        assert_eq!(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).watchers().commands, 2);
 
         let _ = handle_ext_notification(
             &make_task_completed_notif("sess-chip-only", "task-1", "sleep 98", Some(0)),
@@ -1212,7 +1212,7 @@
             &mut app,
         );
         assert!(
-            work_status_lines(&app.agents[&AgentId(0)].scrollback).is_empty(),
+            work_status_lines(&app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback).is_empty(),
             "a completion inside an active turn pushes its chip only"
         );
     }
@@ -1273,7 +1273,7 @@
             &make_task_backgrounded_notif("child-1", "tc-c2", "task-c2", "sleep 98"),
             &mut app,
         );
-        assert!(app.agents[&AgentId(0)].session.state.is_idle());
+        assert!(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).session.state.is_idle());
 
         let _ = handle_ext_notification(
             &make_task_completed_notif("child-1", "task-c1", "sleep 97", Some(0)),
@@ -1301,7 +1301,7 @@
             &mut app,
         );
         assert!(
-            work_status_lines(&app.agents[&AgentId(0)].scrollback).is_empty(),
+            work_status_lines(&app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback).is_empty(),
             "nested subagent traffic must not spawn root status lines"
         );
     }
@@ -1327,7 +1327,7 @@
             "a replayed terminal records adoption state, not a redraw"
         );
         assert!(
-            app.agents[&id].replayed_terminal_prompts.contains("p-run"),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).replayed_terminal_prompts.contains("p-run"),
             "a replayed TurnCompleted must record its prompt id"
         );
 
@@ -1336,6 +1336,7 @@
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -1344,7 +1345,7 @@
             &mut app,
         );
 
-        let agent = &app.agents[&id];
+        let agent = &app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry"));
         assert!(
             agent.session.current_prompt_id.is_none(),
             "a terminal-in-replay prompt must NOT be adopted on load"
@@ -1409,7 +1410,7 @@
             &mut app,
         );
         assert!(
-            app.agents[&id]
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry"))
                 .replayed_terminal_prompts
                 .contains("p-first")
         );
@@ -1426,7 +1427,7 @@
                 trigger: crate::app::actions::CancelTrigger::DashboardStop,
             });
         app.agents.get_mut(&id).unwrap().begin_session_reload(1);
-        let agent = &app.agents[&id];
+        let agent = &app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry"));
         assert!(
             agent.replayed_terminal_prompts.is_empty(),
             "the second load must not inherit the first load's terminal set"
@@ -1513,8 +1514,38 @@
         let agent = app.agents.get(&AgentId(0)).unwrap();
         assert!(matches!(
             last_session_event(&agent.scrollback),
-            Some(SessionEvent::TurnCancelled { .. })
+            Some(SessionEvent::TurnCancelled {
+                cause: crate::scrollback::blocks::CancelledBy::Unspecified,
+                ..
+            })
         ));
+    }
+
+    #[test]
+    fn replay_session_close_names_session_closed() {
+        let mut app = make_app_with_agent("sess-1");
+        begin_replay(&mut app);
+        let _ = handle_ext_notification(
+            &xai_turn_completed_replay(
+                "sess-1",
+                "p1",
+                "cancelled",
+                Some(800),
+                None,
+                serde_json::json!({ "cancelTrigger": "session_close" }),
+            ),
+            &mut app,
+        );
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        match last_session_event(&agent.scrollback) {
+            Some(ev @ SessionEvent::TurnCancelled { .. }) => {
+                assert_eq!(
+                    ev.message(),
+                    "Turn cancelled because the session closed in 0.8s."
+                );
+            }
+            other => panic!("expected named session-close cancel, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1598,7 +1629,7 @@
             );
         }
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1619,7 +1650,7 @@
     fn replay_rate_limit_records_pid_no_marker() {
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1645,7 +1676,7 @@
             make_replay_chunk_with_turn_start("sess-wake", "task-completed-bg1", 5_000),
             &mut app,
         );
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-wake",
@@ -1674,7 +1705,7 @@
     fn replay_silent_rate_limited_wake_stays_markerless() {
         let mut app = make_app_with_agent("sess-wake");
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "rate_limit", true),
             &mut app,
@@ -1689,7 +1720,7 @@
     fn replay_send_now_records_pid_no_marker() {
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1789,7 +1820,7 @@
     fn replay_silent_wake_records_pid_no_marker() {
         let mut app = make_app_with_agent("sess-wake");
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_notif("sess-wake", "task-completed-bg1", "end_turn", true),
             &mut app,
@@ -1804,7 +1835,7 @@
         let mut app = make_app_with_agent("sess-wake");
         begin_replay(&mut app);
         send_replay_suppressed_tool_call(&mut app, "sess-wake", "task-completed-bg1");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-wake",
@@ -1829,7 +1860,7 @@
     fn replay_goal_summary_error_stays_markerless() {
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1851,7 +1882,7 @@
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
         send_replay_bash_tool_call(&mut app, "sess-1", "p-bash");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1878,7 +1909,7 @@
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
         send_replay_bash_tool_call(&mut app, "sess-1", "p-bash");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1909,7 +1940,7 @@
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
         send_replay_bash_tool_call(&mut app, "sess-1", "p-bash");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",
@@ -1939,7 +1970,7 @@
     fn replay_empty_prompt_id_records_no_marker() {
         let mut app = make_app_with_agent("sess-1");
         begin_replay(&mut app);
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle_ext_notification(
             &xai_turn_completed_replay(
                 "sess-1",

@@ -1200,10 +1200,18 @@ mod tests {
         // Only the new rule is added; the existing one is deduped
         assert_eq!(count, 1);
 
-        let arr = table["permission"]["allow"].as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0].as_str().unwrap(), "Bash(npm test)");
-        assert_eq!(arr[1].as_str().unwrap(), "Bash(npm run build)");
+        let Some(arr) = table
+            .get("permission")
+            .and_then(|p| p.get("allow"))
+            .and_then(|a| a.as_array())
+        else {
+            panic!("expected permission.allow: {table:?}");
+        };
+        let [a0, a1] = arr.as_slice() else {
+            panic!("expected two allow rules: {arr:?}");
+        };
+        assert_eq!(a0.as_str(), Some("Bash(npm test)"));
+        assert_eq!(a1.as_str(), Some("Bash(npm run build)"));
     }
 
     #[test]
@@ -1223,13 +1231,18 @@ mod tests {
         // Only NEW_VAR is added
         assert_eq!(count, 1);
 
-        let env_table = table["env"].as_table().unwrap();
+        let Some(env_table) = table.get("env").and_then(|v| v.as_table()) else {
+            panic!("expected env table: {table:?}");
+        };
         assert_eq!(
-            env_table["EXISTING"].as_str().unwrap(),
-            "old_value",
+            env_table.get("EXISTING").and_then(|v| v.as_str()),
+            Some("old_value"),
             "existing key should NOT be overwritten"
         );
-        assert_eq!(env_table["NEW_VAR"].as_str().unwrap(), "value");
+        assert_eq!(
+            env_table.get("NEW_VAR").and_then(|v| v.as_str()),
+            Some("value")
+        );
     }
 
     #[test]
@@ -1237,7 +1250,13 @@ mod tests {
         let mut table = TomlMap::new();
         let count = merge_env_vars(&mut table, &[("FOO", "bar")]);
         assert_eq!(count, 1);
-        assert_eq!(table["env"]["FOO"].as_str().unwrap(), "bar");
+        assert_eq!(
+            table
+                .get("env")
+                .and_then(|e| e.get("FOO"))
+                .and_then(|v| v.as_str()),
+            Some("bar")
+        );
     }
 
     #[test]
@@ -1293,12 +1312,28 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         let parsed: TomlValue = toml::from_str(&content).unwrap();
-        assert_eq!(parsed["other"]["key"].as_str().unwrap(), "value");
         assert_eq!(
-            parsed["mcp_servers"]["foo"]["command"].as_str().unwrap(),
-            "x"
+            parsed
+                .get("other")
+                .and_then(|o| o.get("key"))
+                .and_then(|v| v.as_str()),
+            Some("value")
         );
-        assert!(parsed["claude_compat"]["imported"].as_bool().unwrap());
+        assert_eq!(
+            parsed
+                .get("mcp_servers")
+                .and_then(|m| m.get("foo"))
+                .and_then(|f| f.get("command"))
+                .and_then(|v| v.as_str()),
+            Some("x")
+        );
+        assert_eq!(
+            parsed
+                .get("claude_compat")
+                .and_then(|c| c.get("imported"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1349,14 +1384,14 @@ mod tests {
         .unwrap();
         let items = extract_hooks_from_settings_file(&path);
         assert_eq!(items.len(), 1);
-        let ImportableItem::Hook {
+        let Some(ImportableItem::Hook {
             event,
             matcher,
             command,
             timeout,
-        } = &items[0]
+        }) = items.first()
         else {
-            panic!("expected Hook variant");
+            panic!("expected Hook variant: {items:?}");
         };
         assert_eq!(event, "PreToolUse");
         assert_eq!(matcher.as_deref(), Some("Bash"));
@@ -1419,10 +1454,25 @@ mod tests {
         let target = hooks_dir.join("imported-from-claude.json");
         let content = std::fs::read_to_string(&target).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let groups = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0]["matcher"].as_str().unwrap(), "Bash");
-        assert_eq!(groups[0]["hooks"][0]["command"].as_str().unwrap(), "echo x");
+        let Some(groups) = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+        else {
+            panic!("expected PreToolUse hooks: {parsed:?}");
+        };
+        let [group] = groups.as_slice() else {
+            panic!("expected one group: {groups:?}");
+        };
+        assert_eq!(group.get("matcher").and_then(|v| v.as_str()), Some("Bash"));
+        assert_eq!(
+            group
+                .get("hooks")
+                .and_then(|h| h.get(0))
+                .and_then(|h| h.get("command"))
+                .and_then(|v| v.as_str()),
+            Some("echo x")
+        );
     }
 
     #[test]
@@ -1462,7 +1512,13 @@ mod tests {
 
         let content = std::fs::read_to_string(&target).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let groups = parsed["hooks"]["PreToolUse"].as_array().unwrap();
+        let Some(groups) = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+        else {
+            panic!("expected PreToolUse hooks: {parsed:?}");
+        };
         assert_eq!(groups.len(), 2);
     }
 
@@ -1748,7 +1804,7 @@ mod tests {
         .unwrap();
         let items = extract_hooks_from_settings_file(&path);
         assert_eq!(items.len(), 1);
-        if let ImportableItem::Hook { command, .. } = &items[0] {
+        if let Some(ImportableItem::Hook { command, .. }) = items.first() {
             assert_eq!(command, "");
         } else {
             panic!("expected Hook variant");
@@ -1782,10 +1838,26 @@ mod tests {
 
         let content = std::fs::read_to_string(&target).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let groups = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(groups.len(), 1);
-        let handlers = groups[0]["hooks"].as_array().unwrap();
-        assert_eq!(handlers[0]["timeout"].as_u64(), Some(60));
+        let Some(groups) = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+        else {
+            panic!("expected PreToolUse hooks: {parsed:?}");
+        };
+        let [group] = groups.as_slice() else {
+            panic!("expected one group: {groups:?}");
+        };
+        let Some(handlers) = group.get("hooks").and_then(|h| h.as_array()) else {
+            panic!("expected handlers: {group:?}");
+        };
+        assert_eq!(
+            handlers
+                .first()
+                .and_then(|h| h.get("timeout"))
+                .and_then(|v| v.as_u64()),
+            Some(60)
+        );
     }
 
     #[test]
@@ -1815,10 +1887,16 @@ mod tests {
 
         let content = std::fs::read_to_string(&target).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let handlers = parsed["hooks"]["PreToolUse"][0]["hooks"]
-            .as_array()
-            .unwrap();
-        assert!(handlers[0].get("timeout").is_none());
+        let Some(handlers) = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.get(0))
+            .and_then(|g| g.get("hooks"))
+            .and_then(|h| h.as_array())
+        else {
+            panic!("expected handlers: {parsed:?}");
+        };
+        assert!(handlers.first().is_some_and(|h| h.get("timeout").is_none()));
     }
 
     #[test]
@@ -1826,10 +1904,18 @@ mod tests {
         let mut table = TomlMap::new();
         let count = merge_paths(&mut table, "extra_skill_dirs", &["/a", "/b"]).unwrap();
         assert_eq!(count, 2);
-        let arr = table["paths"]["extra_skill_dirs"].as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0].as_str().unwrap(), "/a");
-        assert_eq!(arr[1].as_str().unwrap(), "/b");
+        let Some(arr) = table
+            .get("paths")
+            .and_then(|p| p.get("extra_skill_dirs"))
+            .and_then(|a| a.as_array())
+        else {
+            panic!("expected extra_skill_dirs: {table:?}");
+        };
+        let [a0, a1] = arr.as_slice() else {
+            panic!("expected two dirs: {arr:?}");
+        };
+        assert_eq!(a0.as_str(), Some("/a"));
+        assert_eq!(a1.as_str(), Some("/b"));
     }
 
     #[test]
@@ -1844,7 +1930,13 @@ mod tests {
 
         let count = merge_paths(&mut table, "extra_skill_dirs", &["/existing", "/new"]).unwrap();
         assert_eq!(count, 1, "existing entry should be deduped");
-        let arr = table["paths"]["extra_skill_dirs"].as_array().unwrap();
+        let Some(arr) = table
+            .get("paths")
+            .and_then(|p| p.get("extra_skill_dirs"))
+            .and_then(|a| a.as_array())
+        else {
+            panic!("expected extra_skill_dirs: {table:?}");
+        };
         assert_eq!(arr.len(), 2);
     }
 
@@ -1889,12 +1981,20 @@ extra_rule_dirs = ["/c/rules"]
         let content = std::fs::read_to_string(&path).unwrap();
         let parsed: TomlValue = toml::from_str(&content).unwrap();
         assert_eq!(
-            parsed["paths"]["extra_skill_dirs"][0].as_str().unwrap(),
-            "/foo/skills"
+            parsed
+                .get("paths")
+                .and_then(|p| p.get("extra_skill_dirs"))
+                .and_then(|a| a.get(0))
+                .and_then(|v| v.as_str()),
+            Some("/foo/skills")
         );
         assert_eq!(
-            parsed["paths"]["extra_rule_dirs"][0].as_str().unwrap(),
-            "/bar/rules"
+            parsed
+                .get("paths")
+                .and_then(|p| p.get("extra_rule_dirs"))
+                .and_then(|a| a.get(0))
+                .and_then(|v| v.as_str()),
+            Some("/bar/rules")
         );
     }
 

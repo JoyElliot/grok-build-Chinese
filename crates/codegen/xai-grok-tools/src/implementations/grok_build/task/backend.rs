@@ -13,8 +13,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use super::types::{
-    ActiveAgentMessageOutcome, ActiveAgentMessageRequest, SpawnedSubagentRef,
-    SubagentActiveMessageRequest, SubagentCancelOutcome, SubagentCancelRequest,
+    ActiveAgentMessageOutcome, ActiveAgentMessageRequest, ActiveMessageSenderContext,
+    SpawnedSubagentRef, SubagentActiveMessageRequest, SubagentCancelOutcome, SubagentCancelRequest,
     SubagentCancelTarget, SubagentDescribeOutcome, SubagentDescribeRequest, SubagentEvent,
     SubagentEventSender, SubagentInspectRequest, SubagentInspection, SubagentListRunningRequest,
     SubagentQueryRequest, SubagentRegistryCounts, SubagentRegistryCountsRequest, SubagentRequest,
@@ -212,6 +212,7 @@ impl ChannelBackendSender {
 pub struct ChannelBackend {
     tx: ChannelBackendSender,
     parent_session_id: Option<Arc<str>>,
+    root_targets: bool,
 }
 
 impl ChannelBackend {
@@ -219,6 +220,7 @@ impl ChannelBackend {
         Self {
             tx: ChannelBackendSender::Legacy(SubagentEventSender(tx)),
             parent_session_id: None,
+            root_targets: false,
         }
     }
 
@@ -226,6 +228,7 @@ impl ChannelBackend {
         Self {
             tx: ChannelBackendSender::Coordinator(sender),
             parent_session_id: None,
+            root_targets: false,
         }
     }
 
@@ -237,6 +240,7 @@ impl ChannelBackend {
         Self {
             tx: ChannelBackendSender::Legacy(SubagentEventSender(tx)),
             parent_session_id: Some(parent_session_id.into()),
+            root_targets: false,
         }
     }
 
@@ -247,7 +251,14 @@ impl ChannelBackend {
         Self {
             tx: ChannelBackendSender::Coordinator(sender),
             parent_session_id: Some(parent_session_id.into()),
+            root_targets: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_root_targets(mut self) -> Self {
+        self.root_targets = true;
+        self
     }
 
     fn parent_session_id(&self) -> Option<String> {
@@ -524,13 +535,37 @@ impl SubagentBackend for ChannelBackend {
         &self,
         request: ActiveAgentMessageRequest,
     ) -> ActiveAgentMessageOutcome {
+        if matches!(request.target(), super::types::ActiveMessageTarget::Parent)
+            || matches!(
+                request.target(),
+                super::types::ActiveMessageTarget::Agent { .. }
+            ) && !self.root_targets
+        {
+            return ActiveAgentMessageOutcome::Unsupported;
+        }
         let Some(parent_session_id) = self.parent_session_id() else {
             return ActiveAgentMessageOutcome::NotFoundOrNotOwned;
         };
         let (respond_to, response_rx) = oneshot::channel();
+        let sender_context = match request.target() {
+            super::types::ActiveMessageTarget::Address(_) => {
+                ActiveMessageSenderContext::HumanRoot {
+                    session_id: Arc::from(parent_session_id),
+                }
+            }
+            super::types::ActiveMessageTarget::ChildId(_)
+            | super::types::ActiveMessageTarget::Agent { .. } => {
+                ActiveMessageSenderContext::RootSession {
+                    session_id: Arc::from(parent_session_id),
+                }
+            }
+            super::types::ActiveMessageTarget::Parent => {
+                return ActiveAgentMessageOutcome::Unsupported;
+            }
+        };
         let command = SubagentActiveMessageRequest {
             request,
-            parent_session_id,
+            sender_context,
             respond_to,
         };
         match self.tx.send_active_message(command) {

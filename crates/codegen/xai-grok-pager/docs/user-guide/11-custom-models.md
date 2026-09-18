@@ -94,6 +94,7 @@ description = "Model description"          # Optional description
 api_key = "sk-..."                        # API key for this provider (optional)
 env_key = "XAI_API_KEY"                   # Env var holding the API key (optional; string or array)
 api_backend = "chat_completions"          # "chat_completions", "responses", or "messages"
+reasoning_summary = "concise"             # Responses API only: "none", "auto", "concise", or "detailed"
 temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
@@ -247,6 +248,27 @@ base_url = "https://api.openai.com/v1"
 name = "GPT-4o (Responses)"
 api_backend = "responses"
 env_key = "OPENAI_API_KEY"
+```
+
+On the Responses API, Grok asks for a `concise` reasoning summary by default; that is what the reasoning text shown in the UI comes from. `reasoning_summary` changes the request: `detailed` or `auto` for a fuller summary, or `none` to omit the field for gateways that reject it.
+
+### AWS Bedrock (Mantle)
+
+Bedrock's OpenAI-compatible gateway rejects `reasoning.summary`, so set `reasoning_summary = "none"`. It authenticates with a Bedrock API key as a bearer token; the example below mints a short-lived one through a named auth provider:
+
+```toml
+[auth_provider.bedrock]
+command = "aws-bedrock-token"   # prints a Bedrock API key on stdout (e.g. via aws-bedrock-token-generator)
+token_ttl_secs = 3600
+
+[model."bedrock-grok-4.6"]
+model = "xai.grok-4.6"
+base_url = "https://bedrock-mantle.us-west-2.api.aws/openai/v1"
+name = "Grok 4.6 (Bedrock)"
+api_backend = "responses"
+reasoning_summary = "none"
+auth_provider = "bedrock"
+context_window = 500000
 ```
 
 ### Ollama (Local Models)

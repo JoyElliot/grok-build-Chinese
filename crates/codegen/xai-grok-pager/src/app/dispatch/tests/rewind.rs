@@ -2,6 +2,13 @@
 
 use super::*;
 
+fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
+}
+
 #[test]
 fn cancel_does_not_rewind_when_in_flight_block_committed() {
     // Minimal-mode regression: a user-prompt block commits to native scrollback immediately (it is never `is_running`)
@@ -11,17 +18,20 @@ fn cancel_does_not_rewind_when_in_flight_block_committed() {
     let id = AgentId(0);
 
     dispatch(Action::SendPrompt("queued prompt".into()), &mut app);
-    assert!(app.agents[&id].session.in_flight_prompt.is_some());
-    assert_eq!(app.agents[&id].scrollback.len(), 1);
+    assert!(agent_ref(&app, id).session.in_flight_prompt.is_some());
+    assert_eq!(agent_ref(&app, id).scrollback.len(), 1);
 
     // Simulate minimal's commit pass printing the user block into native scrollback (sets the entry's `committed` flag)
-    let entry_id = app.agents[&id]
+    let entry_id = agent_ref(&app, id)
         .session
         .in_flight_prompt
         .as_ref()
         .unwrap()
         .scrollback_entry;
-    let idx = app.agents[&id].scrollback.index_of_id(entry_id).unwrap();
+    let idx = agent_ref(&app, id)
+        .scrollback
+        .index_of_id(entry_id)
+        .unwrap();
     app.agents
         .get_mut(&id)
         .unwrap()
@@ -30,19 +40,19 @@ fn cancel_does_not_rewind_when_in_flight_block_committed() {
 
     let effects = dispatch(Action::CancelTurn, &mut app);
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::CancelTurn { .. }));
+    assert!(matches!(effects.first(), Some(Effect::CancelTurn { .. })));
 
     // Standard cancel, not the rewind: the prompt is not restored to the input and the committed block stays in scrollback (no duplicate)
     assert!(
-        app.agents[&id].prompt.text().is_empty(),
+        agent_ref(&app, id).prompt.text().is_empty(),
         "committed in-flight block must not be rewound into the input"
     );
     assert_eq!(
-        app.agents[&id].scrollback.len(),
+        agent_ref(&app, id).scrollback.len(),
         1,
         "committed block must stay in scrollback (it's already printed)"
     );
-    assert!(app.agents[&id].session.state.is_cancelling());
+    assert!(agent_ref(&app, id).session.state.is_cancelling());
 }
 
 #[test]
@@ -52,18 +62,18 @@ fn rewind_then_resubmit_drains_immediately_and_discards_orphan() {
     let id = AgentId(0);
 
     dispatch(Action::SendPrompt("first".into()), &mut app);
-    let first_pid = app.agents[&id].session.current_prompt_id.clone();
+    let first_pid = agent_ref(&app, id).session.current_prompt_id.clone();
     assert!(first_pid.is_some());
     dispatch(Action::CancelTurn, &mut app);
-    assert!(app.agents[&id].session.state.is_idle());
-    assert!(app.agents[&id].session.current_prompt_id.is_none());
+    assert!(agent_ref(&app, id).session.state.is_idle());
+    assert!(agent_ref(&app, id).session.current_prompt_id.is_none());
 
     // User edits and re-submits without waiting.
     let effects = dispatch(Action::SendPrompt("second".into()), &mut app);
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "second"));
-    assert!(app.agents[&id].session.state.is_turn_running());
-    let second_pid = app.agents[&id].session.current_prompt_id.clone();
+    assert!(matches!(effects.first(), Some(Effect::SendPrompt { text, .. }) if text == "second"));
+    assert!(agent_ref(&app, id).session.state.is_turn_running());
+    let second_pid = agent_ref(&app, id).session.current_prompt_id.clone();
     assert!(second_pid.is_some());
     assert_ne!(first_pid, second_pid);
 
@@ -82,8 +92,8 @@ fn rewind_then_resubmit_drains_immediately_and_discards_orphan() {
         }),
         &mut app,
     );
-    assert!(app.agents[&id].session.state.is_turn_running());
-    assert_eq!(app.agents[&id].session.current_prompt_id, second_pid);
+    assert!(agent_ref(&app, id).session.state.is_turn_running());
+    assert_eq!(agent_ref(&app, id).session.current_prompt_id, second_pid);
 }
 
 /// Ctrl+C rewind cancel carries the rewound turn's prompt id.
@@ -93,7 +103,7 @@ fn cancel_rewind_effect_carries_the_rewound_prompt_id() {
     let id = AgentId(0);
 
     dispatch(Action::SendPrompt("rewind me".into()), &mut app);
-    let pid = app.agents[&id]
+    let pid = agent_ref(&app, id)
         .session
         .current_prompt_id
         .clone()
@@ -110,7 +120,7 @@ fn cancel_rewind_effect_carries_the_rewound_prompt_id() {
         ),
         "rewind cancel must carry the captured prompt id, got {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.session.state.is_idle());
     assert_eq!(agent.prompt.text(), "rewind me");
     assert!(agent.is_rewound_prompt(&pid));
@@ -123,7 +133,7 @@ fn cancel_without_prompt_id_skips_rewind_and_sends_normal_cancel() {
     let id = AgentId(0);
 
     dispatch(Action::SendPrompt("cannot rewind".into()), &mut app);
-    assert!(app.agents[&id].session.in_flight_prompt.is_some());
+    assert!(agent_ref(&app, id).session.in_flight_prompt.is_some());
     // Simulate the id being gone while the stash survives.
     app.agents.get_mut(&id).unwrap().session.current_prompt_id = None;
 
@@ -138,7 +148,7 @@ fn cancel_without_prompt_id_skips_rewind_and_sends_normal_cancel() {
         ),
         "id-less cancel must not request a rewind, got {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(
         agent.prompt.text().is_empty(),
         "no optimistic composer restore without an id"
@@ -214,13 +224,13 @@ fn drive_inline_submit_to_execute(app: &mut AppView) -> Vec<Effect> {
     let id = AgentId(0);
     let effects = dispatch(Action::InlineEditSubmit, app);
     assert!(
-        matches!(&effects[0], Effect::FetchRewindPoints { .. }),
+        matches!(effects.first(), Some(Effect::FetchRewindPoints { .. })),
         "got {effects:?}"
     );
     dispatch(points_loaded(id), app);
     // Confirm-before-rewind (default on) gates every target, including 0.
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm { .. }
     ));
     dispatch(Action::RewindConfirm(0), app)
@@ -236,8 +246,11 @@ fn inline_edit_submit_enters_rewind_flow_via_points_fetch() {
     let effects = dispatch(Action::InlineEditSubmit, &mut app);
 
     assert_eq!(effects.len(), 1);
-    assert!(matches!(&effects[0], Effect::FetchRewindPoints { .. }));
-    let agent = &app.agents[&id];
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::FetchRewindPoints { .. })
+    ));
+    let agent = agent_ref(&app, id);
     let state = agent.rewind_state.as_ref().expect("rewind flow entered");
     assert!(matches!(
         state.phase,
@@ -264,7 +277,7 @@ fn inline_edit_submit_with_unchanged_text_closes_editor() {
     let effects = dispatch(Action::InlineEditSubmit, &mut app);
 
     assert!(effects.is_empty());
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.inline_edit.is_none(), "editor closed");
     assert!(agent.rewind_state.is_none(), "no rewind flow entered");
     assert!(agent.scrollback.inline_edit_height().is_none());
@@ -283,7 +296,7 @@ fn inline_edit_points_loaded_opens_target_zero_confirm_over_open_editor() {
         "confirm setting on waits for Yes/No, got {effects:?}"
     );
 
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(matches!(
         agent.rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
@@ -314,7 +327,7 @@ fn classic_rewind_target_zero_opens_confirm() {
 
     let effects = dispatch(Action::Rewind, &mut app);
     assert!(
-        matches!(&effects[0], Effect::FetchRewindPoints { .. }),
+        matches!(effects.first(), Some(Effect::FetchRewindPoints { .. })),
         "got {effects:?}"
     );
     let effects = dispatch(points_loaded(id), &mut app);
@@ -324,7 +337,7 @@ fn classic_rewind_target_zero_opens_confirm() {
     );
 
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
             target_prompt_index: 0,
             ..
@@ -341,12 +354,12 @@ fn set_confirm_before_rewind_updates_live_value() {
     let effects = dispatch(Action::SetConfirmBeforeRewind(false), &mut app);
     assert!(
         matches!(
-            &effects[0],
-            Effect::PersistSetting {
+            effects.first(),
+            Some(Effect::PersistSetting {
                 key: "confirm_before_rewind",
                 value: crate::settings::SettingValue::Bool(false),
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
@@ -396,23 +409,23 @@ fn picker_select_nonzero_target_executes_immediately_when_confirm_off() {
         &mut app,
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Picker { .. }
     ));
 
     let effects = dispatch(Action::RewindPickerSelect(1), &mut app);
     assert!(
         matches!(
-            &effects[0],
-            Effect::RewindExecute {
+            effects.first(),
+            Some(Effect::RewindExecute {
                 target_prompt_index: 1,
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
             target_prompt_index: 1
         }
@@ -441,7 +454,7 @@ fn picker_select_nonzero_target_opens_confirm_when_setting_on() {
         "confirm setting on waits, got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
             target_prompt_index: 1,
             active_idx: 0,
@@ -471,7 +484,7 @@ fn picker_select_target_zero_opens_confirm() {
         "confirm setting on waits for Yes/No, got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
             target_prompt_index: 0,
             active_idx: 0,
@@ -496,7 +509,7 @@ fn confirm_yes_executes_rewind() {
     );
     dispatch(Action::RewindPickerSelect(1), &mut app);
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
             target_prompt_index: 1,
             ..
@@ -506,16 +519,16 @@ fn confirm_yes_executes_rewind() {
     let effects = dispatch(Action::RewindConfirm(1), &mut app);
     assert!(
         matches!(
-            &effects[0],
-            Effect::RewindExecute {
+            effects.first(),
+            Some(Effect::RewindExecute {
                 target_prompt_index: 1,
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
             target_prompt_index: 1
         }
@@ -564,12 +577,12 @@ fn confirm_never_ask_persists_setting_off_and_executes() {
     assert!(!app.current_ui.confirm_before_rewind_enabled());
     assert_eq!(app.current_ui.confirm_before_rewind, Some(false));
     assert!(
-        app.agents[&id].toast.is_none(),
+        agent_ref(&app, id).toast.is_none(),
         "never-ask must not toast settings checkmark, got {:?}",
-        app.agents[&id].toast
+        agent_ref(&app, id).toast
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
             target_prompt_index: 1
         }
@@ -595,16 +608,16 @@ fn picker_select_target_zero_executes_immediately_when_confirm_off() {
     let effects = dispatch(Action::RewindPickerSelect(0), &mut app);
     assert!(
         matches!(
-            &effects[0],
-            Effect::RewindExecute {
+            effects.first(),
+            Some(Effect::RewindExecute {
                 target_prompt_index: 0,
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
             target_prompt_index: 0
         }
@@ -616,7 +629,7 @@ fn picker_select_target_zero_executes_immediately_when_confirm_off() {
 fn rewind_success_nonzero_target_keeps_prefix_and_toasts() {
     let mut app = app_with_two_turns();
     let id = AgentId(0);
-    let len_before = app.agents[&id].scrollback.len();
+    let len_before = agent_ref(&app, id).scrollback.len();
 
     dispatch(
         Action::TaskComplete(TaskResult::RewindExecuteComplete {
@@ -626,7 +639,7 @@ fn rewind_success_nonzero_target_keeps_prefix_and_toasts() {
         &mut app,
     );
 
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(
         agent.scrollback.len() < len_before,
         "tail from target 1 must drop"
@@ -660,20 +673,20 @@ fn inline_edit_conversation_only_success_resubmits_and_closes_editor() {
     dispatch(Action::InlineEditSubmit, &mut app);
     dispatch(points_loaded(id), &mut app);
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm { .. }
     ));
 
     let effects = dispatch(Action::RewindConfirm(0), &mut app);
     assert!(matches!(
-        &effects[0],
-        Effect::RewindExecute {
+        effects.first(),
+        Some(Effect::RewindExecute {
             target_prompt_index: 0,
             ..
-        }
+        })
     ));
     {
-        let agent = &app.agents[&id];
+        let agent = agent_ref(&app, id);
         assert_eq!(
             agent.pending_inline_resubmit.as_deref(),
             Some("fix the bug properly"),
@@ -699,7 +712,7 @@ fn inline_edit_conversation_only_success_resubmits_and_closes_editor() {
         ),
         "edited prompt must be sent, got {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.inline_edit.is_none(), "editor closed on success");
     assert!(agent.scrollback.inline_edit_height().is_none());
     assert!(agent.pending_inline_resubmit.is_none());
@@ -724,13 +737,13 @@ fn inline_edit_dismiss_from_confirm_keeps_editor() {
     dispatch(Action::InlineEditSubmit, &mut app);
     dispatch(points_loaded(id), &mut app);
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm { .. }
     ));
 
     dispatch(Action::RewindDismiss, &mut app);
 
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.rewind_state.is_none(), "overlay dismissed");
     assert_eq!(
         agent
@@ -779,7 +792,10 @@ fn inline_edit_nonzero_target_points_loaded_executes_immediately_when_confirm_of
     }
 
     let effects = dispatch(Action::InlineEditSubmit, &mut app);
-    assert!(matches!(&effects[0], Effect::FetchRewindPoints { .. }));
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::FetchRewindPoints { .. })
+    ));
 
     let effects = dispatch(
         Action::TaskComplete(TaskResult::RewindPointsLoaded {
@@ -790,15 +806,15 @@ fn inline_edit_nonzero_target_points_loaded_executes_immediately_when_confirm_of
     );
     assert!(
         matches!(
-            &effects[0],
-            Effect::RewindExecute {
+            effects.first(),
+            Some(Effect::RewindExecute {
                 target_prompt_index: 1,
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(matches!(
         agent.rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
@@ -852,14 +868,14 @@ fn inline_edit_nonzero_target_opens_confirm_when_setting_on() {
     );
     assert!(effects.is_empty(), "confirm setting on, got {effects:?}");
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
             target_prompt_index: 1,
             active_idx: 0,
             ..
         }
     ));
-    assert!(app.agents[&id].pending_inline_resubmit.is_none());
+    assert!(agent_ref(&app, id).pending_inline_resubmit.is_none());
 }
 
 /// Points-loaded begin_rewind path: confirm off executes immediately.
@@ -873,22 +889,22 @@ fn inline_edit_target_zero_executes_immediately_when_confirm_off() {
     let effects = dispatch(points_loaded(id), &mut app);
     assert!(
         matches!(
-            &effects[0],
-            Effect::RewindExecute {
+            effects.first(),
+            Some(Effect::RewindExecute {
                 target_prompt_index: 0,
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
             target_prompt_index: 0
         }
     ));
     assert_eq!(
-        app.agents[&id].pending_inline_resubmit.as_deref(),
+        agent_ref(&app, id).pending_inline_resubmit.as_deref(),
         Some("fix the bug properly")
     );
 }
@@ -915,16 +931,16 @@ fn classic_points_loaded_target_zero_executes_when_confirm_off() {
     let effects = dispatch(points_loaded(id), &mut app);
     assert!(
         matches!(
-            &effects[0],
-            Effect::RewindExecute {
+            effects.first(),
+            Some(Effect::RewindExecute {
                 target_prompt_index: 0,
                 ..
-            }
+            })
         ),
         "got {effects:?}"
     );
     assert!(matches!(
-        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        agent_ref(&app, id).rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
             target_prompt_index: 0
         }
@@ -941,7 +957,7 @@ fn inline_edit_dismiss_from_confirm_returns_to_editor() {
 
     dispatch(Action::RewindDismiss, &mut app);
 
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.rewind_state.is_none());
     assert!(agent.pending_inline_resubmit.is_none());
     assert_eq!(
@@ -966,7 +982,7 @@ fn inline_edit_busy_submit_cancel_offer_confirm_cancels_and_fetches_points() {
     let effects = dispatch(Action::InlineEditSubmit, &mut app);
     assert!(effects.is_empty(), "no effects yet: {effects:?}");
     {
-        let agent = &app.agents[&id];
+        let agent = agent_ref(&app, id);
         let state = agent.rewind_state.as_ref().unwrap();
         assert!(matches!(
             state.phase,
@@ -978,14 +994,14 @@ fn inline_edit_busy_submit_cancel_offer_confirm_cancels_and_fetches_points() {
     }
 
     let effects = dispatch(Action::RewindCancelOffer, &mut app);
-    assert!(matches!(&effects[0], Effect::CancelTurn { .. }));
+    assert!(matches!(effects.first(), Some(Effect::CancelTurn { .. })));
     assert!(
         effects
             .iter()
             .any(|e| matches!(e, Effect::FetchRewindPoints { .. })),
         "got {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     let state = agent.rewind_state.as_ref().unwrap();
     assert!(matches!(
         state.phase,
@@ -1009,7 +1025,7 @@ fn inline_edit_busy_cancel_offer_dismiss_returns_to_editor() {
 
     dispatch(Action::RewindDismiss, &mut app);
 
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.rewind_state.is_none());
     assert_eq!(
         agent
@@ -1029,7 +1045,7 @@ fn inline_edit_execute_failure_keeps_editor_open() {
     let mut app = app_mid_inline_edit("fix the bug properly");
     let id = AgentId(0);
     drive_inline_submit_to_execute(&mut app);
-    assert!(app.agents[&id].pending_inline_resubmit.is_some());
+    assert!(agent_ref(&app, id).pending_inline_resubmit.is_some());
 
     let effects = dispatch(
         Action::TaskComplete(TaskResult::RewindExecuteFailed {
@@ -1040,7 +1056,7 @@ fn inline_edit_execute_failure_keeps_editor_open() {
     );
 
     assert!(effects.is_empty());
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(
         agent.pending_inline_resubmit.is_none(),
         "stash dies with its rewind"
@@ -1082,7 +1098,7 @@ fn inline_edit_unsuccessful_response_keeps_editor_open() {
     );
 
     assert!(effects.is_empty());
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.pending_inline_resubmit.is_none());
     match &agent.rewind_state.as_ref().unwrap().phase {
         crate::views::rewind::RewindPhase::Error { message } => {
@@ -1141,7 +1157,7 @@ fn inline_edit_rewind_success_after_view_switch_appends_to_draft() {
             .all(|e| !matches!(e, Effect::SendPrompt { .. })),
         "no resubmit while the view is elsewhere, got {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert_eq!(
         agent.prompt.text(),
         "composer draft\nfix the bug properly",
@@ -1205,8 +1221,14 @@ fn inline_edit_view_switch_preserves_image_draft_when_appending_resubmit() {
     );
     let images = agent.prompt.drain_images();
     assert_eq!(images.len(), 1, "reconciliation must retain the image");
+    let Some(image) = images.first() else {
+        panic!("expected restored image: {images:?}");
+    };
+    let Some(&restored_id) = restored_image_ids.first() else {
+        panic!("expected restored chip id: {restored_image_ids:?}");
+    };
     assert_eq!(
-        images[0].element_id, restored_image_ids[0],
+        image.element_id, restored_id,
         "restored image must bind to the re-registered chip element",
     );
 }
@@ -1219,13 +1241,13 @@ fn stacked_rewinds_each_get_their_own_pid_and_orphans_drop_independently() {
     let id = AgentId(0);
 
     dispatch(Action::SendPrompt("a".into()), &mut app);
-    let pid_a = app.agents[&id].session.current_prompt_id.clone();
+    let pid_a = agent_ref(&app, id).session.current_prompt_id.clone();
     dispatch(Action::CancelTurn, &mut app);
     dispatch(Action::SendPrompt("b".into()), &mut app);
-    let pid_b = app.agents[&id].session.current_prompt_id.clone();
+    let pid_b = agent_ref(&app, id).session.current_prompt_id.clone();
     dispatch(Action::CancelTurn, &mut app);
     assert_ne!(pid_a, pid_b);
-    assert!(app.agents[&id].session.current_prompt_id.is_none());
+    assert!(agent_ref(&app, id).session.current_prompt_id.is_none());
 
     let pr = |pid: &Option<String>| {
         Action::TaskComplete(TaskResult::PromptResponse {
@@ -1238,8 +1260,8 @@ fn stacked_rewinds_each_get_their_own_pid_and_orphans_drop_independently() {
     };
     dispatch(pr(&pid_a), &mut app);
     dispatch(pr(&pid_b), &mut app);
-    assert_eq!(app.agents[&id].scrollback.len(), 0);
-    assert!(app.agents[&id].session.state.is_idle());
+    assert_eq!(agent_ref(&app, id).scrollback.len(), 0);
+    assert!(agent_ref(&app, id).session.state.is_idle());
 }
 
 fn user_block(text: &str, pi: Option<usize>) -> RenderBlock {
@@ -1271,7 +1293,7 @@ fn rewind_success_truncation_releases_retained_memory() {
         agent.scrollback.push_block(user_block("alpha", Some(0)));
         agent.scrollback.push_block(RenderBlock::agent_message("a"));
     }
-    let len_before = app.agents[&id].scrollback.len();
+    let len_before = agent_ref(&app, id).scrollback.len();
     let before = test_support::calls();
     dispatch(
         Action::TaskComplete(TaskResult::RewindExecuteComplete {
@@ -1281,7 +1303,7 @@ fn rewind_success_truncation_releases_retained_memory() {
         &mut app,
     );
     assert!(
-        app.agents[&id].scrollback.len() < len_before,
+        agent_ref(&app, id).scrollback.len() < len_before,
         "fixture sanity: the conversation rewind must truncate entries"
     );
     assert_eq!(
@@ -1319,11 +1341,11 @@ fn rewind_success_toasts_in_full_tui_and_commits_system_block_in_minimal() {
         &mut app,
     );
     assert_eq!(
-        app.agents[&id].toast.as_ref().map(|(m, _)| m.as_str()),
+        agent_ref(&app, id).toast.as_ref().map(|(m, _)| m.as_str()),
         Some("Reverted conversation")
     );
     assert_eq!(
-        app.agents[&id].scrollback.len(),
+        agent_ref(&app, id).scrollback.len(),
         0,
         "the confirmation must not land in scrollback in the full TUI"
     );
@@ -1341,7 +1363,7 @@ fn rewind_success_toasts_in_full_tui_and_commits_system_block_in_minimal() {
         }),
         &mut app,
     );
-    assert!(app.agents[&id].toast.is_none());
+    assert!(agent_ref(&app, id).toast.is_none());
     assert_eq!(last_system_text(&app, id), "Reverted conversation");
 }
 

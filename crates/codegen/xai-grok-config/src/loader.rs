@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::paths::{system_config_dir, user_grok_home};
 use crate::version_overrides::{self, apply_version_overrides};
+use xai_dirs::resolve_grok_home;
 
 /// Read and parse a TOML file WITHOUT `$VAR` expansion (empty table if absent).
 /// Shared core of [`load_toml_file`] and the hook-layer read.
@@ -82,7 +83,10 @@ pub fn load_config_file(path: &Path) -> std::io::Result<toml::Value> {
 }
 
 pub fn load_from_disk() -> std::io::Result<toml::Value> {
-    load_user_config_layer(user_grok_home().as_deref(), USER_CONFIG_FILENAME)
+    // Live `$GROK_HOME`: `user_grok_home()` / `grok_home()` are OnceLock and miss
+    // EnvGuard/tests (same reason user `config.toml` persist resolves live). A
+    // stale cache would read a different file than the last settings write.
+    load_user_config_layer(resolve_grok_home().as_deref(), USER_CONFIG_FILENAME)
 }
 
 /// User config filename (`$GROK_HOME/config.toml`), shared by the loaders here.
@@ -567,12 +571,20 @@ mod tests {
         // Highest authority first, each layer keeping its own provenance.
         let names: Vec<_> = layers.iter().map(|l| l.source_name().to_string()).collect();
         assert_eq!(names, vec!["requirements/system", "user", "managed"]);
-        assert_eq!(layers[1].provenance(), HookProvenance::User);
+        let Some(user_layer) = layers.get(1) else {
+            panic!("expected user hook layer at index 1: {names:?}");
+        };
+        assert_eq!(user_layer.provenance(), HookProvenance::User);
         // Unmerged, and `${HOME}` stays literal (the runner expands, not the loader).
-        let cmd = layers[1].hooks()["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap();
-        assert_eq!(cmd, "${HOME}/u.sh");
+        let cmd = user_layer
+            .hooks()
+            .get("PreToolUse")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("hooks"))
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("command"))
+            .and_then(toml::Value::as_str);
+        assert_eq!(cmd, Some("${HOME}/u.sh"));
     }
 
     /// The user-writable `$GROK_HOME/requirements.toml` stamps `UserRequirements`, never the exempt `Requirements`.
@@ -587,9 +599,12 @@ mod tests {
         .unwrap();
         let layers = hook_config_layers_at(None, Some(user_home.path()));
         assert_eq!(layers.len(), 1);
-        assert_eq!(layers[0].provenance(), HookProvenance::UserRequirements);
-        assert_eq!(layers[0].source_name(), "requirements/user");
-        assert!(!layers[0].provenance().is_managed_policy());
+        let Some(layer) = layers.first() else {
+            panic!("expected user requirements layer: {layers:?}");
+        };
+        assert_eq!(layer.provenance(), HookProvenance::UserRequirements);
+        assert_eq!(layer.source_name(), "requirements/user");
+        assert!(!layer.provenance().is_managed_policy());
     }
 
     #[test]
@@ -637,21 +652,34 @@ mod tests {
         deep_merge_toml(&mut base, &overrides);
 
         assert_eq!(
-            base["features"]["telemetry"]["enabled"].as_bool(),
+            base.get("features")
+                .and_then(|f| f.get("telemetry"))
+                .and_then(|t| t.get("enabled"))
+                .and_then(toml::Value::as_bool),
             Some(true)
         );
         assert_eq!(
-            base["features"]["telemetry"]["sample_rate"].as_float(),
+            base.get("features")
+                .and_then(|f| f.get("telemetry"))
+                .and_then(|t| t.get("sample_rate"))
+                .and_then(toml::Value::as_float),
             Some(0.0)
         );
-        let arr: Vec<_> = base["server"]["allowed"]
-            .as_array()
-            .unwrap()
-            .iter()
+        let arr: Vec<_> = base
+            .get("server")
+            .and_then(|s| s.get("allowed"))
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
             .filter_map(|v| v.as_str())
             .collect();
         assert_eq!(arr, vec!["c"]);
-        assert_eq!(base["brand_new"]["x"].as_integer(), Some(1));
+        assert_eq!(
+            base.get("brand_new")
+                .and_then(|b| b.get("x"))
+                .and_then(toml::Value::as_integer),
+            Some(1)
+        );
     }
 
     fn ws_layer(body: &str) -> toml::Value {
@@ -770,7 +798,12 @@ mod tests {
         )
         .unwrap();
         apply_version_overrides(&mut user, &cli_version).unwrap();
-        assert_eq!(user["telemetry"]["mode"].as_str(), Some("enabled"));
+        assert_eq!(
+            user.get("telemetry")
+                .and_then(|t| t.get("mode"))
+                .and_then(toml::Value::as_str),
+            Some("enabled")
+        );
 
         let requirements: toml::Value = toml::from_str(
             r#"
@@ -782,7 +815,13 @@ mod tests {
 
         let mut merged = user;
         deep_merge_toml(&mut merged, &requirements);
-        assert_eq!(merged["telemetry"]["mode"].as_str(), Some("disabled"));
+        assert_eq!(
+            merged
+                .get("telemetry")
+                .and_then(|t| t.get("mode"))
+                .and_then(toml::Value::as_str),
+            Some("disabled")
+        );
     }
 
     #[test]
@@ -812,7 +851,12 @@ mod tests {
         writeln!(f, "[telemetry]\nmode = \"from_file\"\n").unwrap();
 
         let v = load_user_config_layer(Some(&dir), "config.toml").unwrap();
-        assert_eq!(v["telemetry"]["mode"].as_str(), Some("from_file"));
+        assert_eq!(
+            v.get("telemetry")
+                .and_then(|t| t.get("mode"))
+                .and_then(toml::Value::as_str),
+            Some("from_file")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

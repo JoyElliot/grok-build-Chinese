@@ -399,7 +399,7 @@ impl ProcessState {
                 .nth(half)
                 .map(|(i, _)| i)
                 .unwrap_or(s.len());
-            self.front_buffer = Some(s[..front_end].as_bytes().to_vec());
+            self.front_buffer = Some(s.get(..front_end).unwrap_or("").as_bytes().to_vec());
         }
 
         let tail_start_char = char_count.saturating_sub(half);
@@ -408,7 +408,7 @@ impl ProcessState {
             .nth(tail_start_char)
             .map(|(i, _)| i)
             .unwrap_or(s.len());
-        self.output_buffer = s[tail_start_byte..].as_bytes().to_vec();
+        self.output_buffer = s.get(tail_start_byte..).unwrap_or("").as_bytes().to_vec();
         self.truncated = true;
     }
 
@@ -1667,7 +1667,7 @@ impl LocalTerminalActor {
             if let Some(waiters) = self.completion_waiters.get_mut(&task_id) {
                 let mut i = 0;
                 while i < waiters.len() {
-                    if now >= waiters[i].deadline {
+                    if waiters.get(i).is_some_and(|w| now >= w.deadline) {
                         let waiter = waiters.swap_remove(i);
                         let _ = waiter.reply.send(snapshot.clone());
                         timed_out_tasks.push(task_id.clone());
@@ -1852,7 +1852,9 @@ impl LocalTerminalActor {
                         break;
                     }
                     Some(Ok(n)) => {
-                        new_bytes.extend_from_slice(&buf[..n]);
+                        if let Some(read) = buf.get(..n) {
+                            new_bytes.extend_from_slice(read);
+                        }
                     }
                     Some(Err(_)) => {
                         stdout_eof = true;
@@ -1873,7 +1875,9 @@ impl LocalTerminalActor {
                         break;
                     }
                     Some(Ok(n)) => {
-                        new_bytes.extend_from_slice(&buf[..n]);
+                        if let Some(read) = buf.get(..n) {
+                            new_bytes.extend_from_slice(read);
+                        }
                     }
                     Some(Err(_)) => {
                         stderr_eof = true;
@@ -2833,7 +2837,7 @@ fn spawn_detached_drain(
                 loop {
                     match stdout.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => output.extend_from_slice(&buf[..n]),
+                        Ok(n) => output.extend_from_slice(buf.get(..n).unwrap_or(&[])),
                     }
                 }
             }
@@ -2842,7 +2846,7 @@ fn spawn_detached_drain(
                 loop {
                     match stderr.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => output.extend_from_slice(&buf[..n]),
+                        Ok(n) => output.extend_from_slice(buf.get(..n).unwrap_or(&[])),
                     }
                 }
             }
@@ -2870,10 +2874,12 @@ async fn drain_remaining_output(process: &mut ProcessState) {
                 match stdout.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        process.output_buffer.extend_from_slice(&buf[..n]);
+                        process
+                            .output_buffer
+                            .extend_from_slice(buf.get(..n).unwrap_or(&[]));
                         process.total_bytes += n;
                         if let Some(ref mut file) = process.file_handle {
-                            let _ = file.write_all(&buf[..n]).await;
+                            let _ = file.write_all(buf.get(..n).unwrap_or(&[])).await;
                         }
                     }
                 }
@@ -2886,10 +2892,12 @@ async fn drain_remaining_output(process: &mut ProcessState) {
                 match stderr.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        process.output_buffer.extend_from_slice(&buf[..n]);
+                        process
+                            .output_buffer
+                            .extend_from_slice(buf.get(..n).unwrap_or(&[]));
                         process.total_bytes += n;
                         if let Some(ref mut file) = process.file_handle {
-                            let _ = file.write_all(&buf[..n]).await;
+                            let _ = file.write_all(buf.get(..n).unwrap_or(&[])).await;
                         }
                     }
                 }
@@ -2942,7 +2950,7 @@ fn read_available(reader: &mut (impl tokio::io::AsyncRead + Unpin), out: &mut Ve
     loop {
         match try_read_nonblocking(reader, &mut buf) {
             Some(Ok(0)) | Some(Err(_)) | None => return,
-            Some(Ok(n)) => out.extend_from_slice(&buf[..n]),
+            Some(Ok(n)) => out.extend_from_slice(buf.get(..n).unwrap_or(&[])),
         }
     }
 }
@@ -3693,7 +3701,10 @@ mod tests {
             1,
             "the running command was backgrounded"
         );
-        assert_eq!(backgrounded[0].tool_call_id, tool_call_id);
+        assert_eq!(
+            backgrounded.first().map(|t| t.tool_call_id.as_str()),
+            Some(tool_call_id)
+        );
 
         let result = run.await.unwrap().unwrap();
         assert_eq!(
@@ -4086,7 +4097,9 @@ mod tests {
             chunks.len()
         );
 
-        let initial = &chunks[0];
+        let Some(initial) = chunks.first() else {
+            panic!("expected an initial chunk");
+        };
         assert_eq!(initial.base.tool_call_id, "test-call-123");
         assert!(!initial.base.command.is_empty());
         assert!(
@@ -4094,7 +4107,9 @@ mod tests {
             "Initial chunk should have empty output"
         );
 
-        let first_with_output = &chunks[1];
+        let Some(first_with_output) = chunks.get(1) else {
+            panic!("expected a follow-up chunk");
+        };
         assert!(!first_with_output.base.output.is_empty());
 
         assert!(
@@ -4146,11 +4161,12 @@ mod tests {
         }
 
         for w in chunks.windows(2) {
+            let [a, b] = w else { continue };
             assert!(
-                w[1].base.total_bytes >= w[0].base.total_bytes,
+                b.base.total_bytes >= a.base.total_bytes,
                 "total_bytes regressed: {} < {}",
-                w[1].base.total_bytes,
-                w[0].base.total_bytes
+                b.base.total_bytes,
+                a.base.total_bytes
             );
         }
 

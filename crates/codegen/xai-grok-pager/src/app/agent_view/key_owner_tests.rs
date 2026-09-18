@@ -850,8 +850,14 @@ fn blanking_a_free_text_answer_unmarks_it_from_the_nav_buttons_too() {
     // Mark a free-text answer, then blank the composer and leave by clicking the nav bar's "next question" button
     let qv = agent.question_view.as_mut().expect("card open");
     qv.focus = QuestionFocus::InputMode;
-    qv.per_question_freeform[0] = "typed then deleted".into();
-    qv.per_question_freeform_selected[0] = true;
+    let Some(slot) = qv.per_question_freeform.get_mut(0) else {
+        panic!("missing freeform slot");
+    };
+    *slot = "typed then deleted".into();
+    let Some(selected) = qv.per_question_freeform_selected.get_mut(0) else {
+        panic!("missing freeform selected slot");
+    };
+    *selected = true;
     agent.prompt.set_text("   ");
 
     let _ = agent.handle_question_mouse(&crossterm::event::MouseEvent {
@@ -868,7 +874,10 @@ fn blanking_a_free_text_answer_unmarks_it_from_the_nav_buttons_too() {
         "the draft is committed"
     );
     assert!(
-        !qv.per_question_freeform_selected[0],
+        !qv.per_question_freeform_selected
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         "a blank answer is not an answer, so its mark goes with it"
     );
     // The text itself is a draft, not an answer
@@ -1095,7 +1104,15 @@ fn elicitation_keys_win_over_rewind() {
     );
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "y");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "y"
+    );
     assert!(agent.rewind_state.is_some());
 }
 
@@ -1140,11 +1157,27 @@ fn elicitation_form_printable_keys_enter_edit() {
     let _ = agent.handle_elicitation_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "y");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "y"
+    );
     let _ = agent.handle_elicitation_key(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "yd");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "yd"
+    );
 }
 
 #[test]
@@ -1159,7 +1192,15 @@ fn elicitation_paste_on_fields_enters_edit() {
     let _ = agent.handle_elicitation_paste("user@example.com");
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "user@example.com");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "user@example.com"
+    );
 }
 
 #[test]
@@ -1173,7 +1214,9 @@ fn elicitation_paste_strips_control_chars() {
         .unwrap()
         .form()
         .unwrap()
-        .fields[0]
+        .fields
+        .first()
+        .unwrap_or_else(|| panic!("missing field"))
         .draft();
     assert!(
         !draft.chars().any(char::is_control),
@@ -1195,7 +1238,9 @@ fn elicitation_draft_stops_at_named_cap() {
         .unwrap()
         .form()
         .unwrap()
-        .fields[0]
+        .fields
+        .first()
+        .unwrap_or_else(|| panic!("missing field"))
         .draft();
     assert_eq!(draft.chars().count(), MAX_ELICIT_DRAFT_CHARS);
 }

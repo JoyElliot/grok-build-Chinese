@@ -592,9 +592,12 @@ mod tests {
                 .iter()
                 .all(|e| e.target == crate::telemetry::TELEMETRY_TARGET)
         );
-        assert_eq!(events[0].level, tracing::Level::INFO);
-        assert_eq!(events[0].message, "constant info message");
-        assert_eq!(events[1].level, tracing::Level::WARN);
+        let [e0, e1] = events.as_slice() else {
+            panic!("expected two events, got {}", events.len());
+        };
+        assert_eq!(e0.level, tracing::Level::INFO);
+        assert_eq!(e0.message, "constant info message");
+        assert_eq!(e1.level, tracing::Level::WARN);
         for e in &events {
             for f in &e.fields {
                 assert!(
@@ -635,7 +638,9 @@ mod tests {
             !snaps.is_empty(),
             "the sampler must emit at least one snapshot"
         );
-        let e = &snaps[0];
+        let Some(e) = snaps.first() else {
+            panic!("expected queue-stats snapshot");
+        };
         assert_eq!(e.level, tracing::Level::INFO);
         let mut fields = e.fields.clone();
         fields.sort();

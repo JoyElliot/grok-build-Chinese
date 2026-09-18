@@ -21,6 +21,8 @@
 //!    - [`mcp_http_client`]: backoff wrapper around the HTTP client handed to rmcp's streamable-HTTP transport.
 //!      It works around rmcp's zero-backoff SSE reconnect loop.
 
+#![deny(clippy::indexing_slicing)]
+
 pub use rmcp;
 
 #[doc(hidden)]
@@ -41,6 +43,7 @@ pub fn isolate_grok_home_for_tests() {
 
 pub mod acp_transport;
 mod auth_status;
+mod call_result;
 pub mod credentials;
 pub mod elicitation;
 mod generation;
@@ -51,4 +54,5 @@ pub mod oauth_config;
 pub mod owned_clients;
 pub mod servers;
 pub mod shared_mcp_state;
+mod tool_name;
 pub mod wire;

@@ -245,12 +245,13 @@ fn replace_path_prefix_in_text<'a>(text: &'a str, from: &str, to: &str) -> Cow<'
     let mut out: Option<String> = None;
     let mut i = 0;
     while i < bytes.len() {
-        if text[i..].starts_with(from) {
+        if text.get(i..).is_some_and(|rest| rest.starts_with(from)) {
             let end = i + from.len();
-            let ok_before = i == 0 || !is_path_token_char(bytes[i - 1]);
-            let ok_after = end == bytes.len() || !is_path_token_char(bytes[end]);
+            let ok_before = i == 0 || bytes.get(i - 1).is_none_or(|b| !is_path_token_char(*b));
+            let ok_after =
+                end == bytes.len() || bytes.get(end).is_none_or(|b| !is_path_token_char(*b));
             if ok_before && ok_after {
-                let buf = out.get_or_insert_with(|| text[..i].to_owned());
+                let buf = out.get_or_insert_with(|| text.get(..i).unwrap_or("").to_owned());
                 buf.push_str(to);
                 i = end;
                 continue;
@@ -277,9 +278,13 @@ fn rewrite_text_inbound<'a>(virt: &PathVirtualization, text: &'a str) -> Cow<'a,
     let mut out: Option<String> = None;
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'/' && (i == 0 || !is_path_token_char(bytes[i - 1])) {
+        if bytes.get(i) == Some(&b'/')
+            && (i == 0 || bytes.get(i - 1).is_none_or(|b| !is_path_token_char(*b)))
+        {
             let end = path_token_end(bytes, i);
-            let token = &text[i..end];
+            let Some(token) = text.get(i..end) else {
+                break;
+            };
             match virt.to_guest(token) {
                 Cow::Borrowed(_) => {
                     if let Some(buf) = &mut out {
@@ -287,7 +292,7 @@ fn rewrite_text_inbound<'a>(virt: &PathVirtualization, text: &'a str) -> Cow<'a,
                     }
                 }
                 Cow::Owned(mapped) => {
-                    out.get_or_insert_with(|| text[..i].to_owned())
+                    out.get_or_insert_with(|| text.get(..i).unwrap_or("").to_owned())
                         .push_str(&mapped);
                 }
             }
@@ -319,7 +324,10 @@ fn push_char_at(text: &str, i: usize, buf: Option<&mut String>) -> usize {
 
 fn path_token_end(bytes: &[u8], start: usize) -> usize {
     let mut end = start + 1;
-    while end < bytes.len() && (bytes[end] == b'/' || is_path_token_char(bytes[end])) {
+    while bytes
+        .get(end)
+        .is_some_and(|b| *b == b'/' || is_path_token_char(*b))
+    {
         end += 1;
     }
     end
@@ -449,9 +457,7 @@ fn rewrite_chat_completion_output(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Bind-time mount hook (probe-then-mount; unbind must not unmount)
-// ---------------------------------------------------------------------------
 
 /// Context passed to bind/unbind lifecycle hooks.
 #[derive(Debug, Clone, Copy)]

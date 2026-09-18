@@ -206,28 +206,29 @@ pub(crate) fn ordered_marketplace_view(
             )
         })
         .collect();
-    source_order.sort_by(|&a, &b| match (source_keys[a].0, source_keys[b].0) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => source_keys[a]
-            .1
-            .cmp(&source_keys[b].1)
-            .then_with(|| a.cmp(&b)),
+    source_order.sort_by(|&a, &b| match (source_keys.get(a), source_keys.get(b)) {
+        (Some(ka), Some(kb)) => match (ka.0, kb.0) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => ka.1.cmp(&kb.1).then_with(|| a.cmp(&b)),
+        },
+        _ => a.cmp(&b),
     });
     source_order
         .into_iter()
-        .map(|si| {
-            let names: Vec<String> = sources[si]
+        .filter_map(|si| {
+            let source = sources.get(si)?;
+            let names: Vec<String> = source
                 .plugins
                 .iter()
                 .map(|p| p.name.to_lowercase())
                 .collect();
-            let mut plugin_order: Vec<usize> = (0..sources[si].plugins.len()).collect();
-            plugin_order.sort_by(|&a, &b| names[a].cmp(&names[b]).then_with(|| a.cmp(&b)));
-            MarketplaceSourceView {
+            let mut plugin_order: Vec<usize> = (0..source.plugins.len()).collect();
+            plugin_order.sort_by(|&a, &b| names.get(a).cmp(&names.get(b)).then_with(|| a.cmp(&b)));
+            Some(MarketplaceSourceView {
                 source_index: si,
                 plugin_indices: plugin_order,
-            }
+            })
         })
         .collect()
 }
@@ -534,23 +535,32 @@ fn build_hook_groups<'a>(
         .map(|((dir, _), meta)| hook_group_sort_key(dir, meta))
         .collect();
     let mut group_order: Vec<usize> = (0..groups.len()).collect();
-    group_order.sort_by(|&a, &b| group_keys[a].cmp(&group_keys[b]));
+    group_order.sort_by(|&a, &b| group_keys.get(a).cmp(&group_keys.get(b)));
     let mut ordered: Vec<HookGroupView<'a>> = Vec::with_capacity(groups.len());
     for gi in group_order {
-        let (source_dir, mut indices) = std::mem::take(&mut groups[gi]);
-        indices.sort_by_cached_key(|&i| (hook_row_label(&hooks[i]).to_lowercase(), i));
+        let Some((source_dir, mut indices)) = groups.get_mut(gi).map(std::mem::take) else {
+            continue;
+        };
+        indices.sort_by_cached_key(|&i| {
+            (
+                hooks
+                    .get(i)
+                    .map(|h| hook_row_label(h).to_lowercase())
+                    .unwrap_or_default(),
+                i,
+            )
+        });
         ordered.push(HookGroupView {
             source_dir,
-            label: std::mem::take(&mut metas[gi].label),
+            label: metas
+                .get_mut(gi)
+                .map(|m| std::mem::take(&mut m.label))
+                .unwrap_or_default(),
             indices,
         });
     }
     ordered
 }
-
-// ---------------------------------------------------------------------------
-// Tab enum
-// ---------------------------------------------------------------------------
 
 /// Which tab is active in the hooks/plugins modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -626,10 +636,6 @@ impl ExtensionsTab {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Status filter
-// ---------------------------------------------------------------------------
-
 /// Group toggle direction for a collapsed hooks group.
 /// Pinned (managed-policy) hooks always report enabled, so only unpinned hooks drive the direction.
 /// A group with no unpinned hooks reads enabled (everything in it always runs), never "off".
@@ -686,10 +692,6 @@ impl StatusFilter {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Button actions
-// ---------------------------------------------------------------------------
 
 /// What a button does when activated (clicked or keyboard shortcut).
 #[derive(Debug, Clone)]
@@ -934,7 +936,11 @@ impl ModalInput {
                     return ModalInputOutcome::Changed;
                 }
                 let completed = self.focused_field_mut().and_then(|field| {
-                    let partial = field.text()[..field.cursor_byte()].to_owned();
+                    let partial = field
+                        .text()
+                        .get(..field.cursor_byte())
+                        .unwrap_or("")
+                        .to_owned();
                     tab_complete_path(&partial)
                 });
                 if let Some(completed) = completed {
@@ -2122,8 +2128,12 @@ fn longest_common_prefix(strings: &[String]) -> String {
     if strings.is_empty() {
         return String::new();
     }
-    let first = &strings[0];
-    let last = &strings[strings.len() - 1];
+    let Some(first) = strings.first() else {
+        return String::new();
+    };
+    let Some(last) = strings.last() else {
+        return String::new();
+    };
     first
         .chars()
         .zip(last.chars())
@@ -2263,10 +2273,6 @@ fn parse_mcp_add_fields(name: &str, url_or_cmd: &str) -> Option<ButtonAction> {
         }),
     })
 }
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
 
 /// Per-tab data fetch state.
 #[derive(Debug)]
@@ -2975,10 +2981,12 @@ fn classify_hook_source(source_dir: &str) -> HookSourceMeta {
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        comps
-            .windows(3)
-            .find(|w| w[0] == ".grok" && w[1] == subdir && !w[2].is_empty())
-            .map(|w| w[2].clone())
+        comps.windows(3).find_map(|w| {
+            let [a, b, c] = w else {
+                return None;
+            };
+            (a == ".grok" && b == subdir && !c.is_empty()).then(|| c.clone())
+        })
     };
     if let Some(name) = plugin_name("plugins").or_else(|| plugin_name("installed-plugins")) {
         return HookSourceMeta {
@@ -3038,10 +3046,6 @@ fn classify_hook_source(source_dir: &str) -> HookSourceMeta {
         kind: HookSourceKind::Custom,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Entry builders: convert tab data into Vec<PickerEntry> for render_picker
-// ---------------------------------------------------------------------------
 
 /// One skill row after the filter and the group-then-A–Z sort.
 #[derive(Debug, Clone)]
@@ -3114,7 +3118,10 @@ fn filter_and_sort_skills(
             m.group_label.to_lowercase(),
             m.group_label.clone(),
             !m.name_hit,
-            skills[m.skill_index].label().to_lowercase(),
+            skills
+                .get(m.skill_index)
+                .map(|s| s.label().to_lowercase())
+                .unwrap_or_default(),
             m.skill_index,
         )
     });
@@ -3324,10 +3331,6 @@ fn marketplace_components_summary_with_locale(
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
 /// Render the hooks/plugins modal popup as a centered overlay.
 const SPINNER_DIVISOR: u64 = 4;
 
@@ -3486,7 +3489,9 @@ pub fn render_extensions_modal_with_locale(
                         }
                         for m in members {
                             let si = m.skill_index;
-                            let skill = &skills[si];
+                            let Some(skill) = skills.get(si) else {
+                                continue;
+                            };
                             let source = localized_source_display(locale, &skill_source_str(skill));
                             entry_labels.push(skill.label().to_string());
                             let right = match &skill.author {
@@ -3723,7 +3728,9 @@ pub fn render_extensions_modal_with_locale(
                             continue;
                         }
                         for &hi in indices {
-                            let hook = &data.hooks[hi];
+                            let Some(hook) = data.hooks.get(hi) else {
+                                continue;
+                            };
                             let event_str = hook.event.to_string();
                             let matcher_str = hook
                                 .matcher
@@ -3797,7 +3804,9 @@ pub fn render_extensions_modal_with_locale(
                     for view in ordered_marketplace_view(&data.sources) {
                         let si = view.source_index;
                         let plugin_order = &view.plugin_indices;
-                        let source = &data.sources[si];
+                        let Some(source) = data.sources.get(si) else {
+                            continue;
+                        };
                         // Force all marketplace sources open while searching so their plugins are considered for matching and displayed
                         let searching = !state.picker_state.query().is_empty();
                         let collapsed =
@@ -3834,7 +3843,9 @@ pub fn render_extensions_modal_with_locale(
                             continue;
                         }
                         for &pi in plugin_order {
-                            let plugin = &source.plugins[pi];
+                            let Some(plugin) = source.plugins.get(pi) else {
+                                continue;
+                            };
                             if !fuzzy_matches(&plugin.name, state.picker_state.query()) {
                                 continue;
                             }
@@ -4309,10 +4320,11 @@ pub fn render_extensions_modal_with_locale(
     let mut shortcuts: Vec<Shortcut<'_>> = Vec::new();
     if matches!(modal_msg_kind, Some(ModalMsgKind::ConnectorsWait)) {
         // Same label and id as the list footer's refresh entry, so the binding cannot drift.
-        if let Some(&(i, ref label)) = action_labels
-            .iter()
-            .find(|&&(i, _)| action_keys[i].0 == MCP_SERVERS_REFRESH_KEY)
-        {
+        if let Some(&(i, ref label)) = action_labels.iter().find(|&&(i, _)| {
+            action_keys
+                .get(i)
+                .is_some_and(|k| k.0 == MCP_SERVERS_REFRESH_KEY)
+        }) {
             shortcuts.push(Shortcut {
                 label,
                 clickable: true,
@@ -4548,7 +4560,7 @@ pub fn render_extensions_modal_with_locale(
         .iter()
         .enumerate()
         .map(|(i, label)| {
-            if entry_is_header[i] {
+            if entry_is_header.get(i).copied().unwrap_or(false) {
                 picker::PickerEntry::Header {
                     label: label.as_str(),
                 }
@@ -4564,13 +4576,16 @@ pub fn render_extensions_modal_with_locale(
                 };
                 picker::PickerEntry::Row(picker::PickerRow {
                     label: label.as_str(),
-                    right_label: entry_right_labels[i].as_str(),
+                    right_label: entry_right_labels.get(i).map(|s| s.as_str()).unwrap_or(""),
                     // Stays painted while the tab bar holds focus: row-scoped action keys still act on this row there
                     selected: !state.picker_state.search_active && i == state.picker_state.selected,
                     expanded: is_expanded,
-                    fields: &field_slices[i],
-                    description_lines: &desc_line_refs[i],
-                    summary_lines: &summary_line_refs[i],
+                    fields: field_slices.get(i).map(|s| s.as_slice()).unwrap_or(&[]),
+                    description_lines: desc_line_refs.get(i).map(|s| s.as_slice()).unwrap_or(&[]),
+                    summary_lines: summary_line_refs
+                        .get(i)
+                        .map(|s| s.as_slice())
+                        .unwrap_or(&[]),
                     dimmed: entry_dimmed.get(i).copied().unwrap_or(false),
                     indent: entry_indent.get(i).copied().unwrap_or(0),
                     badge: entry_badge_text.get(i).map(|s| s.as_str()).unwrap_or(""),
@@ -4667,7 +4682,7 @@ pub fn render_extensions_modal_with_locale(
         );
         let frames = crate::glyphs::braille_spinner_frames();
         let frame_idx = (tick / SPINNER_DIVISOR) as usize % frames.len();
-        let display = format!("{} {label}", frames[frame_idx]);
+        let display = format!("{} {label}", frames.get(frame_idx).copied().unwrap_or(""));
         fill_overlay_content(buf, msg_area, &theme);
         let text_style = Style::reset().fg(theme.accent_tool).bg(theme.bg_base);
         let msg_y = msg_area.y + msg_area.height / 2;
@@ -5039,7 +5054,10 @@ fn render_input_form_with_locale(
             }
         } else {
             let viewport = field.viewport(max_text_w);
-            let visible = &field.text()[viewport.visible_byte_range];
+            let visible = field
+                .text()
+                .get(viewport.visible_byte_range.clone())
+                .unwrap_or("");
             buf.set_string(text_x, content_y, visible, text_style);
 
             if is_focused {
@@ -5151,13 +5169,16 @@ mod tests {
                 None,
             ],
         );
+        let [a, b, c] = mask.as_slice() else {
+            panic!("expected 3 mask rows: {mask:?}");
+        };
         assert!(
-            !mask[0],
+            !*a,
             "MCP section label row is keyboard-selectable so j/k can land on it \
              and Enter / l toggles its collapsed state"
         );
-        assert!(!mask[1]);
-        assert!(mask[2], "static header rows stay non-selectable");
+        assert!(!*b);
+        assert!(*c, "static header rows stay non-selectable");
     }
 
     #[test]
@@ -5322,7 +5343,10 @@ mod tests {
         server.setup_values.insert("site".into(), "us5".into());
         let form = McpSetupFormState::new(&server).unwrap();
         assert_eq!(form.selected_value().as_deref(), Some("us5"));
-        assert_eq!(form.values().unwrap()["site"], "us5");
+        assert_eq!(
+            form.values().unwrap().get("site").map(String::as_str),
+            Some("us5")
+        );
     }
 
     #[test]
@@ -5765,8 +5789,6 @@ mod tests {
         assert_eq!(state.selected_mcp_tool(), None);
     }
 
-    // ── fuzzy_matches ────────────────────────────────────────────────
-
     #[test]
     fn fuzzy_matches_empty_query_matches_everything() {
         assert!(fuzzy_matches("anything", ""));
@@ -5790,8 +5812,6 @@ mod tests {
         assert!(!fuzzy_matches("hello", "xyz"));
         assert!(!fuzzy_matches("abc", "abdc")); // query longer than would match
     }
-
-    // ── Skills search: substring-only, title-first ordering ─────────
 
     fn make_skill(
         name: &str,
@@ -5856,7 +5876,7 @@ mod tests {
 
         // Only "pdf" should match, not "product-design-framework".
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0], (0, true));
+        assert_eq!(matches.first().copied(), Some((0, true)));
     }
 
     /// Title matches should sort before description-only matches.
@@ -5890,12 +5910,19 @@ mod tests {
 
         assert_eq!(matches.len(), 3);
         // Name matches first (check, rust-check), then desc-only (some-tool).
-        assert!(matches[0].1, "first result should be a name match");
-        assert!(matches[1].1, "second result should be a name match");
-        assert!(!matches[2].1, "third result should be a desc-only match");
+        assert!(
+            matches.first().is_some_and(|m| m.1),
+            "first result should be a name match"
+        );
+        assert!(
+            matches.get(1).is_some_and(|m| m.1),
+            "second result should be a name match"
+        );
+        assert!(
+            matches.get(2).is_some_and(|m| !m.1),
+            "third result should be a desc-only match"
+        );
     }
-
-    // ── Hooks: search forces groups expanded ─────────────────────────
 
     #[test]
     fn hooks_collapsed_groups_ignored_during_search() {
@@ -5912,8 +5939,6 @@ mod tests {
         let is_collapsed_with_query = collapsed.contains("global/hooks") && query.is_empty();
         assert!(!is_collapsed_with_query);
     }
-
-    // ── Skills: plugin skills appear in filter results ─────────────
 
     fn make_plugin_skill(
         name: &str,
@@ -5977,7 +6002,7 @@ mod tests {
         ];
         let result = filter_and_sort_skills(&skills, "hello", StatusFilter::All);
         assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].skill_index, 1); // index of hello
+        assert_eq!(result.matches.first().map(|m| m.skill_index), Some(1)); // index of hello
     }
 
     #[test]
@@ -5991,8 +6016,6 @@ mod tests {
         assert_eq!(by_label.matches.len(), 1);
         assert_eq!(by_name.matches.len(), 1);
     }
-
-    // ── Skills: selection clamping after filter ──────────────────────
 
     #[test]
     fn skills_selection_clamped_after_filter() {
@@ -6140,8 +6163,8 @@ mod tests {
     #[test]
     fn mcps_tab_loading_spinner_advances_with_tick() {
         let frames = crate::glyphs::dot_spinner_frames();
-        let frame0 = frames[0];
-        let frame2 = frames[2];
+        let frame0 = frames.first().copied().unwrap_or("");
+        let frame2 = frames.get(2).copied().unwrap_or("");
         assert_ne!(
             frame0, frame2,
             "dot spinner must change across an 8-tick stride (divisor 4)"
@@ -6180,8 +6203,6 @@ mod tests {
         ));
     }
 
-    // ── Plugin fixtures ─────────────────────────────────────────────
-
     fn make_plugin(name: &str) -> xai_hooks_plugins_types::PluginInfo {
         test_plugin_info(name, None)
     }
@@ -6192,8 +6213,6 @@ mod tests {
     ) -> xai_hooks_plugins_types::PluginInfo {
         test_plugin_info(name, Some(origin))
     }
-
-    // ── StatusFilter unit tests ─────────────────────────────────────
 
     #[test]
     fn status_filter_next_cycles() {
@@ -6481,8 +6500,6 @@ mod tests {
         );
     }
 
-    // ── Tab navigation ──────────────────────────────────────────────
-
     #[test]
     fn tab_next_wraps_around() {
         assert_eq!(ExtensionsTab::Hooks.next(), ExtensionsTab::Plugins);
@@ -6508,8 +6525,6 @@ mod tests {
         assert_eq!(ExtensionsTab::ALL.len(), 6);
     }
 
-    // ── Modal state init ────────────────────────────────────────────
-
     #[test]
     fn modal_state_starts_loading() {
         let state = ExtensionsModalState::new(ExtensionsTab::McpServers);
@@ -6525,8 +6540,6 @@ mod tests {
         assert!(state.skills_expanded.is_empty());
         assert_eq!(state.skills_selected, 0);
     }
-
-    // ── Bracketed paste ─────────────────────────────────────────────
 
     fn single_field_input(prefix: &str) -> ModalInput {
         ModalInput::from_specs(
@@ -6665,8 +6678,6 @@ mod tests {
         assert_eq!(input.focused_index(), 0);
     }
 
-    // ── build_action_from_input / parse_mcp_add_fields ──────────────
-
     // Field order in submission: [URL / Command, Name]. URL is required.
 
     #[test]
@@ -6743,8 +6754,6 @@ mod tests {
         let texts = vec!["foo".into()];
         assert!(build_action_from_input("unknown", &texts).is_none());
     }
-
-    // ── Key dispatch (ModalInput::handle_key) ───────────────────────
 
     fn key_event(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -7050,14 +7059,23 @@ mod tests {
         let prompt_width = crate::glyphs::prompt_arrow().width();
         let editor_width = (area.width as usize - 8 - prompt_width).max(1);
         let viewport = input.field(0).unwrap().viewport(editor_width);
-        let visible = &input.field(0).unwrap().text()[viewport.visible_byte_range.clone()];
+        let Some(visible) = input
+            .field(0)
+            .unwrap()
+            .text()
+            .get(viewport.visible_byte_range.clone())
+        else {
+            panic!("form viewport out of range: {viewport:?}");
+        };
         assert!(visible.contains('中'));
         assert!(visible.contains("e\u{301}"));
         assert!(visible.contains(grapheme));
 
         render_input_form(&mut buffer, area, &input, &theme);
         let rendered = (0..area.width).fold(String::new(), |mut line, x| {
-            line.push_str(buffer[(x, 2)].symbol());
+            if let Some(cell) = buffer.cell((x, 2)) {
+                line.push_str(cell.symbol());
+            }
             line
         });
         assert!(rendered.contains('中'));
@@ -7065,10 +7083,11 @@ mod tests {
         assert!(rendered.contains(grapheme));
         let text_x = 4 + prompt_width as u16;
         let cursor_x = text_x + viewport.cursor_display_column as u16;
-        assert_eq!(buffer[(cursor_x, 2)].bg, theme.text_primary);
+        assert_eq!(
+            buffer.cell((cursor_x, 2)).map(|c| c.bg),
+            Some(theme.text_primary)
+        );
     }
-
-    // ── Hook helpers with StatusFilter ───────────────────────────────
 
     fn make_hook(
         name: &str,
@@ -7120,16 +7139,20 @@ mod tests {
         ];
         let groups = build_hook_groups(&hooks, StatusFilter::Enabled, "");
         // Two custom groups, ordered A–Z by display label: /other before /src.
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].source_dir, "/other");
-        assert_eq!(groups[0].indices, vec![2]);
-        assert_eq!(groups[1].source_dir, "/src");
-        assert_eq!(groups[1].indices, vec![0]);
+        let [other, src] = groups.as_slice() else {
+            panic!("expected two hook groups");
+        };
+        assert_eq!(other.source_dir, "/other");
+        assert_eq!(other.indices, vec![2]);
+        assert_eq!(src.source_dir, "/src");
+        assert_eq!(src.indices, vec![0]);
 
         let groups_disabled = build_hook_groups(&hooks, StatusFilter::Disabled, "");
         // One group: /src with [1].
-        assert_eq!(groups_disabled.len(), 1);
-        assert_eq!(groups_disabled[0].indices, vec![1]);
+        let [disabled] = groups_disabled.as_slice() else {
+            panic!("expected one disabled hook group");
+        };
+        assert_eq!(disabled.indices, vec![1]);
     }
 
     #[test]
@@ -7139,8 +7162,6 @@ mod tests {
         assert_eq!(state.plugins_filter, StatusFilter::All);
         assert_eq!(state.mcps_filter, StatusFilter::All);
     }
-
-    // ── Marketplace tests (obra/superpowers as sample) ──────────────
 
     /// Build a realistic marketplace source modelled on obra/superpowers.
     fn superpowers_source() -> xai_hooks_plugins_types::MarketplaceScanResult {
@@ -7260,8 +7281,6 @@ mod tests {
         }
     }
 
-    // ── Marketplace: resolve_marketplace_selection ───────────────────
-
     #[test]
     fn resolve_selection_on_source_header() {
         let sources = vec![superpowers_source()];
@@ -7306,8 +7325,6 @@ mod tests {
         assert_eq!(result, Some((0, Some(3)))); // source 0, plugin index 3
     }
 
-    // ── Marketplace: build_action_from_input ─────────────────────────
-
     #[test]
     fn marketplace_add_source_builds_action() {
         let texts = vec!["https://github.com/obra/superpowers".into()];
@@ -7335,8 +7352,6 @@ mod tests {
             other => panic!("expected MarketplaceAction::AddSource, got {other:?}"),
         }
     }
-
-    // ── Marketplace: resolve_key dispatch ────────────────────────────
 
     #[test]
     fn marketplace_key_i_dispatches_install() {
@@ -7379,8 +7394,11 @@ mod tests {
             }) => {
                 assert_eq!(command_prefix, "marketplace_add_source");
                 assert_eq!(fields.len(), 1);
-                assert_eq!(fields[0].label, "Source");
-                assert!(fields[0].required);
+                let Some(field) = fields.first() else {
+                    panic!("expected a field: {fields:?}");
+                };
+                assert_eq!(field.label, "Source");
+                assert!(field.required);
             }
             other => panic!("expected StartInput for marketplace_add_source, got {other:?}"),
         }
@@ -7451,8 +7469,6 @@ mod tests {
         }
     }
 
-    // ── Marketplace: fuzzy search over obra/superpowers plugins ──────
-
     #[test]
     fn marketplace_fuzzy_matches_superpowers_plugins() {
         let source = superpowers_source();
@@ -7481,8 +7497,6 @@ mod tests {
             .collect();
         assert!(matches.contains(&"subagent-driven-development"));
     }
-
-    // ── Marketplace: modal state with loaded marketplace data ────────
 
     #[test]
     fn marketplace_modal_state_with_loaded_data() {
@@ -7525,8 +7539,6 @@ mod tests {
         // During search, collapsed sources are forced open.
         assert!(state.is_group_expanded(0, "0"));
     }
-
-    // ── Marketplace: error source rendering ─────────────────────────
 
     /// The footer advertises only what the selected Marketplace row can do: source verbs on a
     /// source header, install-status-matched plugin verbs on a plugin row, never the other set.
@@ -7608,8 +7620,6 @@ mod tests {
         assert!(buffer_count(&buf, "broken-source") >= 1);
         assert!(buffer_count(&buf, "[error]") >= 1);
     }
-
-    // ── Marketplace: components rendering + search ──────────────────
 
     fn component(name: &str, desc: Option<&str>) -> xai_hooks_plugins_types::ComponentItem {
         xai_hooks_plugins_types::ComponentItem::new(name, desc.map(str::to_string))
@@ -7715,9 +7725,12 @@ mod tests {
         };
         let fields = render_components_fields(&components);
         assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].0, "skills");
+        let Some((kind, names)) = fields.first() else {
+            panic!("expected a skills field: {fields:?}");
+        };
+        assert_eq!(kind, "skills");
         assert_eq!(
-            fields[0].1,
+            names,
             "skill-0, skill-1, skill-2, skill-3, skill-4, skill-5, skill-6, skill-7 +4 more"
         );
     }
@@ -7747,8 +7760,6 @@ mod tests {
         );
     }
 
-    // ── Marketplace: collapsed/expanded row rendering ────────────────
-
     fn render_marketplace_into_buffer(state: &mut ExtensionsModalState, w: u16, h: u16) -> Buffer {
         let area = Rect::new(0, 0, w, h);
         let mut buf = Buffer::empty(area);
@@ -7762,7 +7773,9 @@ mod tests {
         for y in area.top()..area.bottom() {
             let mut row = String::new();
             for x in area.left()..area.right() {
-                row.push_str(buf[(x, y)].symbol());
+                if let Some(cell) = buf.cell((x, y)) {
+                    row.push_str(cell.symbol());
+                }
             }
             count += row.matches(needle).count();
         }
@@ -7783,7 +7796,9 @@ mod tests {
     #[test]
     fn marketplace_collapsed_row_shows_component_summary() {
         let mut source = superpowers_source();
-        source.plugins[0].components = Some(sample_components());
+        if let Some(plugin) = source.plugins.get_mut(0) {
+            plugin.components = Some(sample_components());
+        }
         let mut state = marketplace_modal_state(source);
         let buf = render_marketplace_into_buffer(&mut state, 100, 40);
         assert!(
@@ -7829,7 +7844,9 @@ mod tests {
     fn marketplace_catalog_summary_not_duplicated_when_expanded() {
         let mut source = superpowers_source();
         source.plugins.truncate(1);
-        source.plugins[0].components = Some(sample_components());
+        if let Some(plugin) = source.plugins.get_mut(0) {
+            plugin.components = Some(sample_components());
+        }
         let mut state = marketplace_modal_state(source);
         let summary = "2 skills \u{b7} 1 command \u{b7} 1 hook";
 
@@ -7853,8 +7870,6 @@ mod tests {
             "expanded view enumerates component names once"
         );
     }
-
-    // ── Plugins: origin grouping ─────────────────────────────────────
 
     fn plugins_modal_state(
         plugins: Vec<xai_hooks_plugins_types::PluginInfo>,
@@ -8033,10 +8048,13 @@ mod tests {
         let area = *buf.area();
         (area.top()..area.bottom()).find_map(|y| {
             let row: String = (area.left()..area.right())
-                .map(|x| buf[(x, y)].symbol())
+                .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol()))
                 .collect();
             let col = row.find(needle)?;
-            let x = row[..col].chars().count() as u16;
+            let x = row
+                .get(..col)
+                .map(|s| s.chars().count() as u16)
+                .unwrap_or(0);
             Some((area.left() + x, y))
         })
     }
@@ -8054,11 +8072,13 @@ mod tests {
         let (px, py) = find_text(&buf, "user-tool").expect("plugin row");
         // The picker bolds only the selected row's label (both the banded and the embedded look)
         assert!(
-            !buf[(hx, hy)].style().add_modifier.contains(Modifier::BOLD),
+            !buf.cell((hx, hy))
+                .is_some_and(|c| c.style().add_modifier.contains(Modifier::BOLD)),
             "unselected header row is the control"
         );
         assert!(
-            buf[(px, py)].style().add_modifier.contains(Modifier::BOLD),
+            buf.cell((px, py))
+                .is_some_and(|c| c.style().add_modifier.contains(Modifier::BOLD)),
             "selected row must keep the selection highlight under tab focus"
         );
     }
@@ -8184,13 +8204,22 @@ mod tests {
     fn marketplace_placeholders_render_only_when_expanded() {
         let mut source = superpowers_source();
         source.plugins.truncate(2);
-        source.plugins[0].components = Some(xai_hooks_plugins_types::PluginComponents::default());
-        source.plugins[1].components = None;
-        source.plugins[1].skill_count = 0;
-        source.plugins[1].has_hooks = false;
-        source.plugins[1].has_agents = false;
-        source.plugins[1].has_mcp = false;
-        assert!(source.plugins[1].remote_url.is_some());
+        if let Some(plugin) = source.plugins.get_mut(0) {
+            plugin.components = Some(xai_hooks_plugins_types::PluginComponents::default());
+        }
+        if let Some(plugin) = source.plugins.get_mut(1) {
+            plugin.components = None;
+            plugin.skill_count = 0;
+            plugin.has_hooks = false;
+            plugin.has_agents = false;
+            plugin.has_mcp = false;
+        }
+        assert!(
+            source
+                .plugins
+                .get(1)
+                .is_some_and(|p| p.remote_url.is_some())
+        );
         let mut state = marketplace_modal_state(source);
 
         let collapsed_buf = render_marketplace_into_buffer(&mut state, 100, 40);
@@ -8425,7 +8454,7 @@ mod tests {
             .iter()
             .map(|rect| {
                 (rect.x..rect.x.saturating_add(rect.width))
-                    .map(|x| buf[(x, rect.y)].symbol().to_string())
+                    .filter_map(|x| buf.cell((x, rect.y)).map(|c| c.symbol().to_string()))
                     .collect::<String>()
             })
             .collect();
@@ -8661,13 +8690,20 @@ mod tests {
         let view = ordered_marketplace_view(&sources);
         let names: Vec<_> = view
             .iter()
-            .map(|v| sources[v.source_index].source_name.as_str())
+            .filter_map(|v| sources.get(v.source_index).map(|s| s.source_name.as_str()))
             .collect();
         assert_eq!(names, ["xAI Official", "alpha-mp", "zeta-mp"]);
-        let plugin_names: Vec<_> = view[0]
-            .plugin_indices
-            .iter()
-            .map(|&pi| sources[view[0].source_index].plugins[pi].name.as_str())
+        let plugin_names: Vec<_> = view
+            .first()
+            .into_iter()
+            .flat_map(|v| {
+                v.plugin_indices.iter().filter_map(|&pi| {
+                    sources
+                        .get(v.source_index)
+                        .and_then(|s| s.plugins.get(pi))
+                        .map(|p| p.name.as_str())
+                })
+            })
             .collect();
         assert_eq!(plugin_names, ["alpha", "zeta"]);
     }
@@ -8701,7 +8737,7 @@ mod tests {
         let labels: Vec<_> = result
             .matches
             .iter()
-            .map(|m| skills[m.skill_index].label().to_string())
+            .filter_map(|m| skills.get(m.skill_index).map(|s| s.label().to_string()))
             .collect();
         assert_eq!(labels, ["alpha-proj", "zeta-proj", "alpha-user", "pb"]);
 
@@ -8738,8 +8774,22 @@ mod tests {
         let b = make_skill("mmm", "desc b");
         let skills = vec![a, b];
         let result = filter_and_sort_skills(&skills, "", StatusFilter::All);
-        assert_eq!(skills[result.matches[0].skill_index].label(), "aaa");
-        assert_eq!(skills[result.matches[1].skill_index].label(), "mmm");
+        assert_eq!(
+            result
+                .matches
+                .first()
+                .and_then(|m| skills.get(m.skill_index))
+                .map(|s| s.label()),
+            Some("aaa")
+        );
+        assert_eq!(
+            result
+                .matches
+                .get(1)
+                .and_then(|m| skills.get(m.skill_index))
+                .map(|s| s.label()),
+            Some("mmm")
+        );
     }
 
     #[test]
@@ -8805,7 +8855,7 @@ mod tests {
         let labels: Vec<_> = custom_group
             .indices
             .iter()
-            .map(|&i| hook_row_label(&hooks[i]))
+            .filter_map(|&i| hooks.get(i).map(hook_row_label))
             .collect();
         assert_eq!(
             labels,

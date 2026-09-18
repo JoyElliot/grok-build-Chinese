@@ -218,7 +218,10 @@ async fn pump_frames(
             }
             if plan.sever_mid_frame == Some(frame_index) {
                 // Half a length prefix, then a hard close of the whole connection: the reader sees a short read, never a body
-                let _ = writer.write_all(&len_prefix[..2]).await;
+                let Some(half) = len_prefix.get(..2) else {
+                    break;
+                };
+                let _ = writer.write_all(half).await;
                 let _ = writer.flush().await;
                 cancel.cancel();
                 break;

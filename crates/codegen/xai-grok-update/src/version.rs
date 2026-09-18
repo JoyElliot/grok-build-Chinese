@@ -42,11 +42,14 @@ pub(crate) fn cli_base_urls() -> Vec<String> {
 
 /// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
 /// loopback prefix but its host is `evil.com` (userinfo trick).
+/// `https` loopback is allowed so merge CI can smoke rustls/aws-lc against a
+/// local SHA-512 server (GB-6134); non-loopback https is still rejected.
 fn is_loopback_base(base: &str) -> bool {
     let Ok(u) = url::Url::parse(base) else {
         return false;
     };
-    if u.scheme() != "http" || !u.username().is_empty() || u.password().is_some() {
+    if !matches!(u.scheme(), "http" | "https") || !u.username().is_empty() || u.password().is_some()
+    {
         return false;
     }
     match u.host() {
@@ -653,6 +656,8 @@ mod tests {
         assert!(is_loopback_base("http://127.0.0.1:8971"));
         assert!(is_loopback_base("http://localhost:8971"));
         assert!(is_loopback_base("http://[::1]:8971"));
+        assert!(is_loopback_base("https://127.0.0.1:8971"));
+        assert!(is_loopback_base("https://localhost:8971"));
         // Prefix-check bypass vectors.
         assert!(!is_loopback_base("http://127.0.0.1:9@evil.com"));
         assert!(!is_loopback_base("http://localhost.evil.com:80"));

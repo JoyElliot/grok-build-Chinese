@@ -202,7 +202,8 @@ fn dispatch_load_session_ungated(
         )
     };
     let loading_placeholder_id = scrollback.push_block(RenderBlock::system(loading_msg));
-    let agent = AgentView::new(
+    let agent = AgentView::from_app(
+        app,
         AgentSession {
             id: agent_id,
             acp_tx: app.acp_tx.clone(),
@@ -685,10 +686,10 @@ pub(in crate::app::dispatch) fn reanchor_grouped_selection<T>(
         return;
     }
     let mut sel = state.selected.min(map.len() - 1);
-    while sel > 0 && map[sel].is_none() {
+    while sel > 0 && map.get(sel).is_none_or(Option::is_none) {
         sel -= 1;
     }
-    if map[sel].is_none() {
+    if map.get(sel).is_none_or(Option::is_none) {
         sel = map.iter().position(|e| e.is_some()).unwrap_or(0);
     }
     state.selected = sel;
@@ -1145,7 +1146,8 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         &[("{session_id}", &session_id)],
     );
     scrollback.push_block(RenderBlock::system(restoring_message));
-    let agent = AgentView::new(
+    let agent = AgentView::from_app(
+        app,
         AgentSession {
             id: agent_id,
             acp_tx: app.acp_tx.clone(),
@@ -1251,6 +1253,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
     agent_id: AgentId,
     session_id: acp::SessionId,
     new_models: Option<acp::SessionModelState>,
+    modes: Option<acp::SessionModeState>,
     code_restored: bool,
     restore_summary: Option<String>,
     restore_degree: Option<xai_grok_workspace::session::git::RestoreDegree>,
@@ -1286,6 +1289,10 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         if let Some(m) = new_models {
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
+        }
+        if agent.apply_session_modes(modes) {
+            app.default_yolo = false;
+            app.current_ui.permission_mode = Some("ask".into());
         }
         let deferred =
             crate::app::dispatch::session::lifecycle::apply_deferred_model_switch_with_locale(

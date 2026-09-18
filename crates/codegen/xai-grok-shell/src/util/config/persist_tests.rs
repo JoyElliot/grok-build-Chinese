@@ -1281,3 +1281,333 @@ custom_unknown_key = 42
         "unmodeled (unknown to the schema) field must survive"
     );
 }
+#[cfg(unix)]
+fn project_slot_symlink(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let outside = dir.join("outside.toml");
+    std::fs::write(&outside, "keep\n").unwrap();
+    let link = dir.join(".grok").join("config.toml");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    (link, outside)
+}
+#[cfg(unix)]
+fn dotfiles_config_symlink(
+    dir: &std::path::Path,
+    contents: Option<&str>,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let repo = dir.join("dotfiles");
+    std::fs::create_dir_all(&repo).unwrap();
+    let target = repo.join("config.toml");
+    if let Some(contents) = contents {
+        std::fs::write(&target, contents).unwrap();
+    }
+    let link = dir.join("config.toml");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    (link, target)
+}
+#[cfg(unix)]
+fn assert_still_symlink(path: &std::path::Path) {
+    assert!(
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+/// Project `.grok/config.toml` must replace a leaf symlink, not follow it.
+#[cfg(unix)]
+#[test]
+fn atomic_replace_string_replaces_project_config_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, outside) = project_slot_symlink(dir.path());
+    atomic_replace_string(&link, "[mcp_servers]\n").unwrap();
+    let meta = std::fs::symlink_metadata(&link).unwrap();
+    assert!(
+        !meta.file_type().is_symlink(),
+        "project config symlink must be replaced: {:?}",
+        meta.file_type()
+    );
+    assert_eq!("[mcp_servers]\n", std::fs::read_to_string(&link).unwrap());
+    assert_eq!("keep\n", std::fs::read_to_string(&outside).unwrap());
+}
+/// No user grok home: persist must resolve the cwd `.grok/config.toml` as a
+/// slot (replace), not follow an external referent.
+#[cfg(unix)]
+#[test]
+fn no_home_cwd_config_resolves_slot_not_follow() {
+    let dir = tempfile::tempdir().unwrap();
+    let (link, outside) = project_slot_symlink(dir.path());
+    let followed = bind_user_config_dest_with(&link, true, true).unwrap();
+    let slot = bind_user_config_dest_with(&link, true, false).unwrap();
+    assert_eq!(
+        outside,
+        followed.as_path(),
+        "with a user home, follow the referent"
+    );
+    assert_eq!(
+        link,
+        slot.as_path(),
+        "without a user home, replace the slot inode"
+    );
+    xai_grok_config::fs_atomic::require_same_follow_destination(&link, slot.as_path())
+        .expect_err("follow check rejects a slot bind");
+    let dest = require_same_user_config_dest_with(&link, &slot, false).unwrap();
+    atomic_write_resolved_string(&dest, "new\n").unwrap();
+    assert_eq!("new\n", std::fs::read_to_string(&link).unwrap());
+    assert_eq!("keep\n", std::fs::read_to_string(&outside).unwrap());
+}
+/// A 0600 referent must not be published via a 0644 temp (chmod-ignored).
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_preserves_0600_referent_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "old\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    atomic_write_string(&path, "new\n").unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(0o600, mode, "must not publish 0644 over a 0600 referent");
+    assert_eq!("new\n", std::fs::read_to_string(&path).unwrap());
+}
+/// A retarget after bind refuses the write.
+#[cfg(unix)]
+#[test]
+fn follow_bound_rmw_refuses_retarget_between_read_and_write() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let a = dir.path().join("a.toml");
+    let b = dir.path().join("b.toml");
+    std::fs::write(&a, "from_a = true\n").unwrap();
+    std::fs::write(&b, "from_b = true\n").unwrap();
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink(&a, &link).unwrap();
+    let (dest, content) = read_follow_bound(&link).unwrap();
+    assert_eq!("from_a = true\n", content);
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&b, &link).unwrap();
+    let err = atomic_write_follow_bound(&link, &dest, "from_a = true\nmerged = true\n")
+        .expect_err("retarget");
+    assert_eq!(std::io::ErrorKind::InvalidInput, err.kind());
+    assert_eq!("from_a = true\n", std::fs::read_to_string(&a).unwrap());
+    assert_eq!("from_b = true\n", std::fs::read_to_string(&b).unwrap());
+}
+/// Same-path inode replace after bind must refuse.
+#[cfg(unix)]
+#[test]
+fn follow_bound_rmw_refuses_same_path_inode_replace() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_file = dir.path().join("a.toml");
+    std::fs::write(&dest_file, "from_a = true\n").unwrap();
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink(&dest_file, &link).unwrap();
+    let (dest, content) = read_follow_bound(&link).unwrap();
+    assert_eq!("from_a = true\n", content);
+    std::fs::remove_file(&dest_file).unwrap();
+    std::fs::write(&dest_file, "from_b = true\n").unwrap();
+    let err = atomic_write_follow_bound(&link, &dest, "from_a = true\nmerged = true\n")
+        .expect_err("inode replace");
+    assert_eq!(std::io::ErrorKind::InvalidInput, err.kind());
+    assert_eq!(
+        "from_b = true\n",
+        std::fs::read_to_string(&dest_file).unwrap()
+    );
+}
+/// Bind missing dest, then swap the parent directory for a symlink to B.
+#[cfg(unix)]
+#[test]
+fn follow_bound_rmw_refuses_absent_dest_ancestor_retarget() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let a = dir.path().join("A");
+    let b = dir.path().join("B");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let dest_path = a.join("config.toml");
+    let bound = bind_user_config_dest_with(&dest_path, true, true).unwrap();
+    std::fs::remove_dir(&a).unwrap();
+    std::os::unix::fs::symlink(&b, &a).unwrap();
+    let err = atomic_write_resolved_string(&bound, "from_a\n").expect_err("ancestor");
+    assert_eq!(std::io::ErrorKind::InvalidInput, err.kind());
+    assert!(!b.join("config.toml").exists(), "must not write B");
+}
+/// `config.toml` as a symlink into a repo file: tmp+rename must write the referent.
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_preserves_config_toml_symlink() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (link, target) = dotfiles_config_symlink(dir.path(), Some("[ui]\nsimple_mode = false\n"));
+    atomic_write_string(&link, "[ui]\nsimple_mode = true\n").unwrap();
+    assert_still_symlink(&link);
+    assert_eq!(target, std::fs::read_link(&link).unwrap());
+    assert_eq!(
+        "[ui]\nsimple_mode = true\n",
+        std::fs::read_to_string(&target).unwrap()
+    );
+}
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_creates_dangling_symlink_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (link, target) = dotfiles_config_symlink(dir.path(), None);
+    atomic_write_string(&link, "created\n").unwrap();
+    assert_still_symlink(&link);
+    assert_eq!("created\n", std::fs::read_to_string(&target).unwrap());
+}
+/// Trailing `/` on a dangling target must not create a regular sibling that later
+/// reads through the symlink see as `ENOTDIR`.
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_refuses_trailing_slash_dangling_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing-target");
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink("missing-target/", &link).unwrap();
+    let err = atomic_write_string(&link, "created\n").expect_err("ENOTDIR");
+    assert_eq!(std::io::ErrorKind::NotADirectory, err.kind());
+    assert!(!missing.exists(), "must not create a regular sibling");
+    assert_still_symlink(&link);
+}
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_refuses_trailing_dot_dangling_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing-target");
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink("missing-target/.", &link).unwrap();
+    let err = atomic_write_string(&link, "created\n").expect_err("ENOTDIR");
+    assert_eq!(std::io::ErrorKind::NotADirectory, err.kind());
+    assert!(!missing.exists(), "must not create a regular sibling");
+}
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_follows_relative_symlink() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path().join("dotfiles");
+    std::fs::create_dir_all(&repo).unwrap();
+    let target = repo.join("config.toml");
+    std::fs::write(&target, "before\n").unwrap();
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink("dotfiles/config.toml", &link).unwrap();
+    atomic_write_string(&link, "after\n").unwrap();
+    assert_still_symlink(&link);
+    assert_eq!("after\n", std::fs::read_to_string(&target).unwrap());
+}
+/// `file/../config.toml` must not resolve to the sibling (kernel `ENOTDIR`).
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_refuses_parent_through_regular_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("file");
+    let victim = dir.path().join("config.toml");
+    std::fs::write(&file, "file").unwrap();
+    std::fs::write(&victim, "keep\n").unwrap();
+    let err = atomic_write_string(&file.join("..").join("config.toml"), "clobber\n")
+        .expect_err("ENOTDIR");
+    assert_eq!(std::io::ErrorKind::NotADirectory, err.kind());
+    assert_eq!("keep\n", std::fs::read_to_string(&victim).unwrap());
+}
+/// `missing/../config.toml` must not create `missing` then rename over the symlink.
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_refuses_parent_through_missing_then_symlink() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing");
+    let target = dir.path().join("dotfiles.toml");
+    let link = dir.path().join("config.toml");
+    std::fs::write(&target, "keep\n").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let err = atomic_write_string(&missing.join("..").join("config.toml"), "clobber\n")
+        .expect_err("ENOENT");
+    assert_eq!(std::io::ErrorKind::NotFound, err.kind());
+    assert!(!missing.exists(), "must not create_dir_all the missing hop");
+    assert_still_symlink(&link);
+    assert_eq!("keep\n", std::fs::read_to_string(&target).unwrap());
+}
+/// Directory squat at the destination: fail closed, do not replace with a file.
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_refuses_existing_directory_destination() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let squat = dir.path().join("config.toml");
+    std::fs::create_dir(&squat).unwrap();
+    let err = atomic_write_string(&squat, "clobber\n").expect_err("EISDIR");
+    assert_eq!(std::io::ErrorKind::IsADirectory, err.kind());
+    assert!(squat.is_dir(), "directory squat must remain a directory");
+}
+/// Trailing `/` or `/.` on the destination path itself (not a symlink target).
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_refuses_trailing_slash_on_destination() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let victim = dir.path().join("config.toml");
+    std::fs::write(&victim, "keep\n").unwrap();
+    let slash = {
+        let mut p = victim.clone().into_os_string();
+        p.push("/");
+        std::path::PathBuf::from(p)
+    };
+    let err = atomic_write_string(&slash, "clobber\n").expect_err("ENOTDIR");
+    assert_eq!(std::io::ErrorKind::NotADirectory, err.kind());
+    assert_eq!("keep\n", std::fs::read_to_string(&victim).unwrap());
+    let dot = {
+        let mut p = victim.into_os_string();
+        p.push("/.");
+        std::path::PathBuf::from(p)
+    };
+    let err = atomic_write_string(&dot, "clobber\n").expect_err("ENOTDIR");
+    assert_eq!(std::io::ErrorKind::NotADirectory, err.kind());
+}
+/// On Unix `\` is a valid filename character; save through `target\` must work.
+#[cfg(unix)]
+#[test]
+fn atomic_write_string_follows_unix_backslash_filename_symlink() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let target = dir.path().join("target\\");
+    std::fs::write(&target, "before\n").unwrap();
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    atomic_write_string(&link, "after\n").unwrap();
+    assert_still_symlink(&link);
+    assert_eq!("after\n", std::fs::read_to_string(&target).unwrap());
+}
+/// Cancelling the `run_blocking` await must not drop the write guard before the worker finishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_blocking_save_holds_write_guard_until_worker_finishes() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    let guard = tokio::time::timeout(Duration::from_secs(5), lock_config_writes())
+        .await
+        .expect("first lock timed out")
+        .expect("first lock");
+    let started = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let started_w = started.clone();
+    let finished_w = finished.clone();
+    let task = tokio::spawn(async move {
+        guard
+            .run_blocking(move || {
+                started_w.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(250));
+                finished_w.store(true, Ordering::SeqCst);
+                Ok::<(), std::io::Error>(())
+            })
+            .await
+    });
+    let wait_started = tokio::time::timeout(Duration::from_secs(2), async {
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(wait_started.is_ok(), "blocking worker never started");
+    task.abort();
+    let _ = task.await;
+    let _g2 = tokio::time::timeout(Duration::from_secs(2), lock_config_writes())
+        .await
+        .expect("second lock timed out")
+        .expect("second lock");
+    assert!(
+        finished.load(Ordering::SeqCst),
+        "second writer acquired locks before the detached save released them"
+    );
+}

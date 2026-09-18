@@ -4,6 +4,8 @@
 //! It is never exposed through the sandbox port mapping.
 //! `/logs` returns the raw daemon log: treat its output as sensitive and keep the log stream free of secrets.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -304,7 +306,7 @@ fn truncate_error_detail(detail: String) -> String {
     while end > 0 && !detail.is_char_boundary(end) {
         end -= 1;
     }
-    detail[..end].to_owned()
+    detail.get(..end).unwrap_or("").to_owned()
 }
 
 fn now_ms() -> u64 {
@@ -479,6 +481,10 @@ mod tests {
         (status, serde_json::from_str(&body).expect("json body"))
     }
 
+    fn at<'a>(v: &'a Value, k: &str) -> &'a Value {
+        v.get(k).unwrap_or(&Value::Null)
+    }
+
     #[tokio::test]
     async fn ready_response_contract_is_frozen() {
         let handle = DiagHandle::new(Some("nonce-1".to_owned()));
@@ -499,9 +505,9 @@ mod tests {
         ] {
             assert!(obj.contains_key(key), "missing frozen key {key}");
         }
-        assert_eq!(body["launch_id"], "nonce-1");
-        assert_eq!(body["state"], "starting");
-        assert_eq!(body["connected_at"], Value::Null);
+        assert_eq!(at(&body, "launch_id"), "nonce-1");
+        assert_eq!(at(&body, "state"), "starting");
+        assert_eq!(at(&body, "connected_at"), &Value::Null);
         assert!(
             obj.get("last_close_code").is_none(),
             "last_close_code must be omitted unless a terminal close was recorded"
@@ -518,13 +524,17 @@ mod tests {
 
         let (status, body) = get_json(port, "/statusz").await;
         assert_eq!(status, 200);
-        assert_eq!(body["state"], "starting", "/ready fields stay flattened in");
         assert_eq!(
-            body["image_capabilities"],
-            serde_json::json!([]),
+            at(&body, "state"),
+            "starting",
+            "/ready fields stay flattened in"
+        );
+        assert_eq!(
+            at(&body, "image_capabilities"),
+            &serde_json::json!([]),
             "an unpublished snapshot is empty, not absent"
         );
-        assert_eq!(body["image_capabilities_declared"], false);
+        assert_eq!(at(&body, "image_capabilities_declared"), false);
 
         handle.set_image_capabilities(
             vec!["capabilities.v1".to_owned(), "playwright.v1".to_owned()],
@@ -533,10 +543,10 @@ mod tests {
         let (status, body) = get_json(port, "/statusz").await;
         assert_eq!(status, 200);
         assert_eq!(
-            body["image_capabilities"],
-            serde_json::json!(["capabilities.v1", "playwright.v1"])
+            at(&body, "image_capabilities"),
+            &serde_json::json!(["capabilities.v1", "playwright.v1"])
         );
-        assert_eq!(body["image_capabilities_declared"], true);
+        assert_eq!(at(&body, "image_capabilities_declared"), true);
     }
 
     #[tokio::test]
@@ -550,29 +560,31 @@ mod tests {
         handle.set_connected();
         let (status, connected) = get_json(port, "/ready").await;
         assert_eq!(status, 200);
-        assert_eq!(connected["state"], "connected");
-        assert!(connected["connected_at"].is_u64());
-        assert_eq!(connected["launch_id"], Value::Null);
+        assert_eq!(at(&connected, "state"), "connected");
+        assert!(at(&connected, "connected_at").is_u64());
+        assert_eq!(at(&connected, "launch_id"), &Value::Null);
 
         handle.set_disconnected();
         let (status, disconnected) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(disconnected["state"], "disconnected");
+        assert_eq!(at(&disconnected, "state"), "disconnected");
         assert!(
             disconnected.get("last_close_code").is_none(),
             "plain disconnect must omit last_close_code"
         );
         assert_eq!(
-            disconnected["connected_at"], connected["connected_at"],
+            at(&disconnected, "connected_at"),
+            at(&connected, "connected_at"),
             "connected_at is frozen at first connect and echoed on disconnect"
         );
 
         handle.set_connected();
         let (status, reconnected) = get_json(port, "/ready").await;
         assert_eq!(status, 200);
-        assert_eq!(reconnected["state"], "connected");
+        assert_eq!(at(&reconnected, "state"), "connected");
         assert_eq!(
-            reconnected["connected_at"], connected["connected_at"],
+            at(&reconnected, "connected_at"),
+            at(&connected, "connected_at"),
             "reconnect must not re-mint connected_at"
         );
     }
@@ -592,7 +604,7 @@ mod tests {
 
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["state"], "disconnected");
+        assert_eq!(at(&body, "state"), "disconnected");
     }
 
     #[tokio::test]
@@ -608,8 +620,8 @@ mod tests {
         handle.set_disconnected();
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["state"], "disconnected");
-        assert_eq!(body["last_close_code"], 4103);
+        assert_eq!(at(&body, "state"), "disconnected");
+        assert_eq!(at(&body, "last_close_code"), 4103);
     }
 
     #[tokio::test]
@@ -628,8 +640,8 @@ mod tests {
 
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["state"], "disconnected");
-        assert_eq!(body["last_close_code"], 4103);
+        assert_eq!(at(&body, "state"), "disconnected");
+        assert_eq!(at(&body, "last_close_code"), 4103);
     }
 
     #[test]
@@ -712,13 +724,13 @@ mod tests {
         handle.set_connected();
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["last_close_code"], 4103);
+        assert_eq!(at(&body, "last_close_code"), 4103);
 
         handle.clear_terminal_close();
         handle.set_connected();
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 200);
-        assert_eq!(body["state"], "connected");
+        assert_eq!(at(&body, "state"), "connected");
         assert!(
             body.get("last_close_code").is_none(),
             "revival must omit last_close_code: {body}"
@@ -774,19 +786,19 @@ mod tests {
         let (status, body) = get_json(port, "/ready").await;
 
         assert_eq!(status, 503, "failed is not ready");
-        assert_eq!(body["launch_id"], "nonce-fail");
-        assert_eq!(body["state"], "failed");
-        assert_eq!(body["error_class"], "hub_auth");
-        assert_eq!(body["error_detail"], "handshake auth failed: HTTP 401");
-        assert!(body["state_changed_at"].is_u64());
-        assert!(body["pid"].is_u64());
-        assert!(body["version"].is_string());
+        assert_eq!(at(&body, "launch_id"), "nonce-fail");
+        assert_eq!(at(&body, "state"), "failed");
+        assert_eq!(at(&body, "error_class"), "hub_auth");
+        assert_eq!(at(&body, "error_detail"), "handshake auth failed: HTTP 401");
+        assert!(at(&body, "state_changed_at").is_u64());
+        assert!(at(&body, "pid").is_u64());
+        assert!(at(&body, "version").is_string());
         let starting = DiagHandle::new(None);
         let bound2 = serve(DiagListener::Tcp(0), starting, None)
             .await
             .expect("bind");
         let (_, start_body) = get_json(bound2.port.expect("tcp port"), "/ready").await;
-        assert_eq!(start_body["state"], "starting");
+        assert_eq!(at(&start_body, "state"), "starting");
         assert!(
             start_body.get("error_class").is_none(),
             "error_class must be omitted unless failed"
@@ -808,16 +820,19 @@ mod tests {
         handle.set_failed(ErrorClass::HubConnect, "network error: connection refused");
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["state"], "failed");
-        assert_eq!(body["error_class"], "hub_connect");
-        assert_eq!(body["error_detail"], "network error: connection refused");
+        assert_eq!(at(&body, "state"), "failed");
+        assert_eq!(at(&body, "error_class"), "hub_connect");
+        assert_eq!(
+            at(&body, "error_detail"),
+            "network error: connection refused"
+        );
 
         handle.set_failed(ErrorClass::Unknown, "something else");
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["state"], "failed");
-        assert_eq!(body["error_class"], "unknown");
-        assert_eq!(body["error_detail"], "something else");
+        assert_eq!(at(&body, "state"), "failed");
+        assert_eq!(at(&body, "error_class"), "unknown");
+        assert_eq!(at(&body, "error_detail"), "something else");
     }
 
     #[tokio::test]
@@ -836,9 +851,9 @@ mod tests {
 
         let (status, body) = get_json(port, "/ready").await;
         assert_eq!(status, 503);
-        assert_eq!(body["state"], "failed");
-        assert_eq!(body["error_class"], "hub_auth");
-        assert_eq!(body["error_detail"], "handshake auth failed: HTTP 401");
+        assert_eq!(at(&body, "state"), "failed");
+        assert_eq!(at(&body, "error_class"), "hub_auth");
+        assert_eq!(at(&body, "error_detail"), "handshake auth failed: HTTP 401");
         assert!(
             body.get("last_close_code").is_none(),
             "failed must not advertise last_close_code after set_terminal_close"
@@ -915,9 +930,12 @@ mod tests {
         let body = response.split("\r\n\r\n").nth(1).expect("body");
         let json_start = body.find('{').expect("json start");
         let json_end = body.rfind('}').expect("json end");
-        let parsed: Value = serde_json::from_str(&body[json_start..=json_end]).expect("json");
-        assert_eq!(parsed["launch_id"], "nonce-uds");
-        assert_eq!(parsed["state"], "connected");
+        let Some(json) = body.get(json_start..=json_end) else {
+            panic!("json slice out of range: {body:?}");
+        };
+        let parsed: Value = serde_json::from_str(json).expect("json");
+        assert_eq!(at(&parsed, "launch_id"), "nonce-uds");
+        assert_eq!(at(&parsed, "state"), "connected");
     }
 
     #[tokio::test]

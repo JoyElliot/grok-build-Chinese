@@ -16,10 +16,13 @@ use super::protocol::{
 };
 use super::transport::{LeaderListener, LeaderStream};
 use crate::agent::activity::AgentActivity;
+use crate::agent::config::CursorWorkerConfig;
 use crate::cpu_profile::{
     ControlError, ControlErrorCode, CpuProfileManager, CpuProfileStartOptions, CpuProfileStatus,
     ShutdownStopDisposition,
 };
+use crate::leader::cursor_worker::{self, CursorWorkerControl};
+use crate::leader::roster_merge::ExternalRoster;
 use agent_client_protocol::AGENT_METHOD_NAMES;
 use kanal::{AsyncReceiver, AsyncSender};
 use parking_lot::Mutex;
@@ -57,12 +60,13 @@ type BufferedLive = (Arc<str>, Option<u64>);
 enum ClientOutbound {
     /// An ACP payload, shared (refcounted) across fan-out targets.
     Acp(Arc<str>),
-    /// Everything else (registration, control results, ping, shutdown, errors).
-    Message(ServerMessage),
+    /// Everything else (registration, control results, ping, shutdown, errors). Boxed: a
+    /// control result carrying a full cursor worker status dwarfs the `Acp` variant.
+    Message(Box<ServerMessage>),
 }
 impl From<ServerMessage> for ClientOutbound {
     fn from(msg: ServerMessage) -> Self {
-        Self::Message(msg)
+        Self::Message(Box::new(msg))
     }
 }
 /// Serialize-only mirror of [`ServerMessage`]'s `Acp` variant that borrows the payload.
@@ -168,6 +172,7 @@ pub struct LeaderServerControlState {
     pub metadata: LeaderServerMetadata,
     pub cpu_profile: Arc<Mutex<CpuProfileManager>>,
     pub workspace: Arc<WorkspaceControl>,
+    pub(crate) cursor_worker: Arc<CursorWorkerControl>,
 }
 impl LeaderServerControlState {
     pub fn new(metadata: LeaderServerMetadata) -> Self {
@@ -175,10 +180,34 @@ impl LeaderServerControlState {
             metadata,
             cpu_profile: Arc::new(Mutex::new(CpuProfileManager::new())),
             workspace: Arc::new(WorkspaceControl::new(None)),
+            cursor_worker: Arc::new(CursorWorkerControl::new(
+                CursorWorkerConfig::default(),
+                None,
+                crate::util::grok_home::grok_home(),
+                ExternalRoster::new(),
+            )),
         }
     }
     pub(crate) fn with_default_hub_url(mut self, default_hub_url: Option<String>) -> Self {
         self.workspace = Arc::new(WorkspaceControl::new(default_hub_url));
+        self
+    }
+    /// The worker door reads `[cursor_worker]`, falls back to `hub.url` for the hub
+    /// origin, keeps its worktrees under `grok_home`, and publishes its claims into `roster`
+    /// (owned by `run_leader`).
+    pub(crate) fn with_cursor_worker(
+        mut self,
+        config: CursorWorkerConfig,
+        leader_hub_url: Option<String>,
+        grok_home: std::path::PathBuf,
+        roster: ExternalRoster,
+    ) -> Self {
+        self.cursor_worker = Arc::new(CursorWorkerControl::new(
+            config,
+            leader_hub_url,
+            grok_home,
+            roster,
+        ));
         self
     }
     fn leader_capabilities(&self) -> LeaderCapabilities {
@@ -189,6 +218,7 @@ impl LeaderServerControlState {
             profile_formats: manager.profile_formats().to_vec(),
             workspace_exposure: true,
             relaunch_v1: true,
+            cursor_worker: cursor_worker::COMPILED_IN,
         }
     }
 }
@@ -297,6 +327,52 @@ struct WorkspaceExposure {
     cwd: PathBuf,
     started_at: Instant,
     paused: std::sync::atomic::AtomicBool,
+    /// Drained before the hub connection closes and re-armed on resume, since the pump is
+    /// bound to one hub connection. `None` when the connect left no hub handle.
+    metric_donation: Mutex<Option<xai_computer_hub_sdk::MetricDonationPump>>,
+}
+/// Service name the hub allowlists for the leader's metric donation.
+const LEADER_METRIC_SERVICE: &str = "grok_leader";
+/// Bound on arming and draining the metric pump: both wait on the hub connection, and pause,
+/// stop, resume, start, and shutdown hold the workspace lock while they do.
+const METRIC_DONATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Start exporting the process-wide Prometheus registry (workspace and worker families)
+/// over the hub connection `handle` just opened. Only runs while that connection is up.
+async fn arm_metric_donation(
+    handle: &WorkspaceHandle,
+) -> Option<xai_computer_hub_sdk::MetricDonationPump> {
+    let pump = match tokio::time::timeout(
+        METRIC_DONATION_TIMEOUT,
+        handle.metric_donation_reporter(LEADER_METRIC_SERVICE),
+    )
+    .await
+    {
+        Ok(pump) => pump,
+        Err(_elapsed) => {
+            warn!(
+                timeout_secs = METRIC_DONATION_TIMEOUT.as_secs(),
+                "leader metric export not armed: the hub connection did not answer in time"
+            );
+            return None;
+        }
+    };
+    if pump.is_none() {
+        debug!("leader metric export not armed: workspace has no hub connection");
+    }
+    pump
+}
+/// Flush what the pump has queued before its hub connection closes; an unresponsive hub is
+/// abandoned after [`METRIC_DONATION_TIMEOUT`] so teardown never waits on it.
+async fn drain_metric_donation(pump: xai_computer_hub_sdk::MetricDonationPump) {
+    if tokio::time::timeout(METRIC_DONATION_TIMEOUT, pump.drain())
+        .await
+        .is_err()
+    {
+        warn!(
+            timeout_secs = METRIC_DONATION_TIMEOUT.as_secs(),
+            "leader metric export drain timed out; disconnecting hub anyway"
+        );
+    }
 }
 /// Rewrite JSON-RPC request ID **in place** by prefixing with client ID to avoid collisions. Only rewrites IDs for **requests** (messages with a "method" field).
 /// Responses (messages with "result" or "error" but no "method") are left untouched so the agent can match them to its pending requests. Returns `None` otherwise (no mutation).
@@ -309,7 +385,9 @@ fn rewrite_request_id(
     let original_id = json.get("id").cloned()?;
     let original_json = serde_json::to_string(&original_id).unwrap_or_default();
     let namespaced_id = format!("{}{}{}", client_id.0, ID_NAMESPACE_SEP, original_json);
-    json["id"] = serde_json::json!(namespaced_id);
+    if let Some(slot) = json.get_mut("id") {
+        *slot = serde_json::json!(namespaced_id);
+    }
     Some((namespaced_id, original_id))
 }
 /// Parse a namespaced response ID to find the target client, restoring the original ID **in place**.
@@ -322,7 +400,9 @@ fn parse_response_id(json: &mut serde_json::Value) -> Option<(ClientId, String)>
     let client_id: u64 = client_part.parse().ok()?;
     let original_id: serde_json::Value = serde_json::from_str(original_json).ok()?;
     let namespaced_id = id_str.to_string();
-    json["id"] = original_id;
+    if let Some(slot) = json.get_mut("id") {
+        *slot = original_id;
+    }
     Some((ClientId(client_id), namespaced_id))
 }
 /// Extract session_id from a message's params (for session-based routing).
@@ -399,7 +479,7 @@ fn is_machine_wide_broadcast_notification(json: &serde_json::Value) -> bool {
 /// The namespaced method a leader payload carries, normalizing the two ext wire forms the gateway produces: direct: `{"method":"x.ai/foo", ...}` -> `x.ai/foo` wrapped: `{"method":"_x.ai/foo","params":{"method":"x.ai/foo",...}}` -> `x.ai/foo`
 /// Gateway-forwarded ext methods/notifications (`ext_method` / `ext_notification`) arrive WRAPPED. Examples: `ask_user_question`, `exit_plan_mode`, `session_notification`.
 /// A wrapped payload has a top-level `_`-prefixed method with the real method and params nested one level under `params`. Anything that classifies a payload by method name MUST use this: matching the raw top-level `method` misses the wrapped form.
-fn method_of(json: &serde_json::Value) -> Option<&str> {
+pub(super) fn method_of(json: &serde_json::Value) -> Option<&str> {
     let top = json.get("method")?.as_str()?;
     if let Some(stripped) = top.strip_prefix('_') {
         return Some(
@@ -817,8 +897,9 @@ fn patch_initialize_response_model(
         .and_then(|v| v.as_str())
         .is_some_and(|current| current != model.as_str());
     if needs_patch {
-        json["result"]["meta"]["modelState"]["currentModelId"] =
-            serde_json::Value::String(model.clone());
+        if let Some(slot) = json.pointer_mut("/result/meta/modelState/currentModelId") {
+            *slot = serde_json::Value::String(model.clone());
+        }
         debug!(patched_model = %model, "Patched initialize response currentModelId");
         return true;
     }
@@ -915,6 +996,7 @@ fn leader_info_payload(control_state: &LeaderServerControlState) -> ControlPaylo
         cpu_profile_stopping,
         profile_started_at,
         profile_formats: manager.profile_formats().to_vec(),
+        cursor_worker: Some(control_state.cursor_worker.info_summary()),
     }
 }
 use crate::env::PROD_COMPUTER_HUB_WS_URL as PROD_COMPUTER_HUB_URL;
@@ -969,7 +1051,8 @@ fn workspace_server_id() -> String {
         name.to_string()
     }
 }
-async fn drain_and_disconnect(handle: &WorkspaceHandle) {
+async fn drain_and_disconnect(exposure: &WorkspaceExposure) {
+    let handle = &exposure.handle;
     let tracker = handle.activity_tracker().clone();
     tracker.set_draining();
     if tokio::time::timeout(WORKSPACE_DRAIN_TIMEOUT, tracker.wait_until_drained())
@@ -980,6 +1063,10 @@ async fn drain_and_disconnect(handle: &WorkspaceHandle) {
             active = tracker.total_active(),
             "workspace drain timed out; disconnecting hub anyway"
         );
+    }
+    let metric_donation = exposure.metric_donation.lock().take();
+    if let Some(pump) = metric_donation {
+        drain_metric_donation(pump).await;
     }
     handle.shutdown_hub().await;
 }
@@ -1079,16 +1166,18 @@ async fn handle_workspace_start(
     )
     .await
     .map_err(|e| workspace_err(format!("failed to connect workspace to hub: {e}")))?;
+    let metric_donation = arm_metric_donation(&handle).await;
     let exposure = Arc::new(WorkspaceExposure {
         handle,
         hub_url: url_str,
         cwd: cwd_path,
         started_at: Instant::now(),
         paused: AtomicBool::new(false),
+        metric_donation: Mutex::new(metric_donation),
     });
     let payload = build_workspace_status(&control_state.metadata, Some(exposure.as_ref()));
     if let Some(old) = ws.exposure.swap(Some(exposure)) {
-        drain_and_disconnect(&old.handle).await;
+        drain_and_disconnect(&old).await;
     }
     Ok(payload)
 }
@@ -1101,7 +1190,7 @@ async fn handle_workspace_pause(
         return Err(workspace_err("no workspace exposure is running"));
     };
     if !exp.paused.load(Ordering::Relaxed) {
-        drain_and_disconnect(&exp.handle).await;
+        drain_and_disconnect(&exp).await;
         exp.paused.store(true, Ordering::Relaxed);
     }
     Ok(build_workspace_status(
@@ -1123,6 +1212,8 @@ async fn handle_workspace_resume(
             exp.handle.activity_tracker().set_draining();
             return Err(workspace_err(format!("failed to reconnect to hub: {e}")));
         }
+        let metric_donation = arm_metric_donation(&exp.handle).await;
+        *exp.metric_donation.lock() = metric_donation;
         exp.paused.store(false, Ordering::Relaxed);
     }
     Ok(build_workspace_status(
@@ -1136,7 +1227,7 @@ async fn handle_workspace_stop(
     let ws = &control_state.workspace;
     let _serialize = ws.lock.lock().await;
     if let Some(exp) = ws.exposure.swap(None) {
-        drain_and_disconnect(&exp.handle).await;
+        drain_and_disconnect(&exp).await;
     }
     Ok(build_workspace_status(&control_state.metadata, None))
 }
@@ -1154,7 +1245,7 @@ async fn finalize_workspace_on_shutdown(control_state: LeaderServerControlState)
     let _serialize = ws.lock.lock().await;
     if let Some(exp) = ws.exposure.swap(None) {
         info!("Draining workspace exposure on leader shutdown");
-        drain_and_disconnect(&exp.handle).await;
+        drain_and_disconnect(&exp).await;
     }
 }
 fn handle_control_command(
@@ -1210,6 +1301,11 @@ fn handle_control_command(
         | ControlCommand::WorkspaceStop
         | ControlCommand::WorkspaceStatus => {
             unreachable!("workspace control commands are handled asynchronously")
+        }
+        ControlCommand::CursorWorkerStart(_)
+        | ControlCommand::CursorWorkerStop
+        | ControlCommand::CursorWorkerStatus => {
+            unreachable!("cursor worker control commands are handled asynchronously")
         }
         ControlCommand::RelaunchForUpdate { .. } => {
             unreachable!("RelaunchForUpdate must be handled asynchronously")
@@ -1650,6 +1746,24 @@ pub async fn run_leader_server(
                                 }
                                 ControlCommand::WorkspaceStatus => {
                                     handle_workspace_status(control_state).await
+                                }
+                                ControlCommand::CursorWorkerStart(args) => {
+                                    control_state
+                                        .cursor_worker
+                                        .start(args, &cancel, control_state.metadata.pid)
+                                        .await
+                                }
+                                ControlCommand::CursorWorkerStop => {
+                                    control_state
+                                        .cursor_worker
+                                        .stop(control_state.metadata.pid)
+                                        .await
+                                }
+                                ControlCommand::CursorWorkerStatus => {
+                                    control_state
+                                        .cursor_worker
+                                        .status(control_state.metadata.pid)
+                                        .await
                                 }
                                 ControlCommand::RelaunchForUpdate { to_version } => {
                                     decide_relaunch_for_update(
@@ -2207,6 +2321,7 @@ pub async fn run_leader_server(
             }
         }
     }
+    control_state.cursor_worker.finalize_on_shutdown().await;
     finalize_workspace_on_shutdown(control_state.clone()).await;
     finalize_cpu_profile_on_shutdown(control_state).await;
     let _ = std::fs::remove_file(&socket_path);

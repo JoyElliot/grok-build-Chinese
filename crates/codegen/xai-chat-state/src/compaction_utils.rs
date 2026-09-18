@@ -17,7 +17,7 @@ impl ModelRequestHistory {
                 .into_iter()
                 .map(|item| match item {
                     ConversationItem::User(mut user)
-                        if user.synthetic_reason == Some(SyntheticReason::AgentMessage) =>
+                        if user.synthetic_reason == SyntheticReason::AgentMessage =>
                     {
                         user.content.insert(
                             0,
@@ -157,15 +157,15 @@ pub fn fit_conversation_to_budget(
     let budget = max_tokens.saturating_sub(head.iter().map(estimate_item_tokens).sum::<u64>());
     let mut remaining = budget;
     let mut start = body.len();
-    for i in (0..body.len()).rev() {
-        let cost = estimate_item_tokens(&body[i]);
+    for (i, item) in body.iter().enumerate().rev() {
+        let cost = estimate_item_tokens(item);
         if cost > remaining {
             break;
         }
         remaining -= cost;
         start = i;
     }
-    while start < body.len() && matches!(body[start], ConversationItem::ToolResult(_)) {
+    while matches!(body.get(start), Some(ConversationItem::ToolResult(_))) {
         start += 1;
     }
     if start < body.len() {
@@ -252,7 +252,7 @@ fn truncate_text_to_bytes(s: &str, max_bytes: usize) -> Option<std::sync::Arc<st
     let dropped = s.len() - end;
     Some(std::sync::Arc::<str>::from(format!(
         "{}\n[... truncated {dropped} bytes to fit the compaction window ...]",
-        &s[..end]
+        s.get(..end)?
     )))
 }
 /// Tags injected by the runtime that should be stripped from user queries.
@@ -278,7 +278,7 @@ fn strip_system_tags(text: &str) -> String {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
         while let Some(start) = result.find(&open) {
-            if let Some(rel_end) = result[start..].find(&close) {
+            if let Some(rel_end) = result.get(start..).and_then(|rest| rest.find(&close)) {
                 let end_pos = start + rel_end + close.len();
                 result.replace_range(start..end_pos, "");
             } else {
@@ -294,8 +294,13 @@ pub fn extract_user_query(text: &str) -> String {
     let stripped = strip_system_tags(text);
     if let Some(start) = stripped.find("<user_query>") {
         let content_start = start + "<user_query>".len();
-        if let Some(end) = stripped[content_start..].find("</user_query>") {
-            return stripped[content_start..content_start + end]
+        if let Some(end) = stripped
+            .get(content_start..)
+            .and_then(|rest| rest.find("</user_query>"))
+        {
+            return stripped
+                .get(content_start..content_start + end)
+                .unwrap_or("")
                 .trim()
                 .to_string();
         }
@@ -336,7 +341,7 @@ pub fn is_synthetic_extracted_query(text: &str) -> bool {
 pub fn is_real_user_turn(item: &ConversationItem) -> bool {
     match item {
         ConversationItem::User(u) => {
-            if u.synthetic_reason.is_some() {
+            if !u.synthetic_reason.is_human() {
                 return false;
             }
             let has_images = u
@@ -405,8 +410,9 @@ pub fn extract_messages_since_last_real_user(
         Some(idx) => idx + 1,
         None => 0,
     };
-    conversation[start..]
+    conversation
         .iter()
+        .skip(start)
         .filter_map(|item| match item {
             ConversationItem::Assistant(a) => Some(ConversationItem::Assistant(a.clone())),
             ConversationItem::ToolResult(t) => Some(ConversationItem::ToolResult(ToolResultItem {
@@ -435,7 +441,7 @@ fn extract_latest_agent_message(conversation: &[ConversationItem]) -> Option<Age
         matches!(
             item,
             ConversationItem::User(user)
-                if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                if user.synthetic_reason == SyntheticReason::AgentMessage
         )
     })?;
     let position = match conversation.iter().rposition(is_real_user_turn) {
@@ -444,7 +450,7 @@ fn extract_latest_agent_message(conversation: &[ConversationItem]) -> Option<Age
         None => AgentMessagePosition::Only,
     };
     Some(AgentMessageAnchor {
-        item: conversation[agent_message_index].clone(),
+        item: conversation.get(agent_message_index)?.clone(),
         position,
     })
 }
@@ -456,25 +462,26 @@ fn extract_messages_since_last_compaction_anchor(
             || matches!(
                 item,
                 ConversationItem::User(user)
-                    if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                    if user.synthetic_reason == SyntheticReason::AgentMessage
             )
     });
     let start = boundary.map_or(0, |idx| {
         if matches!(
-            &conversation[idx],
-            ConversationItem::User(user)
-                if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+            conversation.get(idx),
+            Some(ConversationItem::User(user))
+                if user.synthetic_reason == SyntheticReason::AgentMessage
         ) {
             idx
         } else {
             idx + 1
         }
     });
-    conversation[start..]
+    conversation
         .iter()
+        .skip(start)
         .filter_map(|item| match item {
             ConversationItem::User(user)
-                if user.synthetic_reason == Some(SyntheticReason::AgentMessage) =>
+                if user.synthetic_reason == SyntheticReason::AgentMessage =>
             {
                 Some(ConversationItem::User(user.clone()))
             }
@@ -622,17 +629,22 @@ pub struct CompactionInputs {
     pub scheduled_loops: Vec<ScheduledLoopSummary>,
     pub workflows: Vec<WorkflowRunSummary>,
     pub workflow_tool_name: Option<String>,
+    /// When set, used as `last_user_query` so compact cannot revive a stale pre-goal prompt.
+    pub goal_objective: Option<String>,
 }
 impl CompactionStateContext {
     /// Build the state context from current session state.
-    /// Uses a typed compaction boundary for the retained tail while keeping the last-query field human-only.
+    /// Uses a typed compaction boundary; `last_user_query` prefers `inputs.goal_objective` when set.
     pub async fn build(conversation: &[ConversationItem], inputs: CompactionInputs) -> Self {
         Self {
             cwd_generation: inputs.cwd_generation,
             destination_project_instructions: inputs.destination_project_instructions,
             agent_message_anchor: extract_latest_agent_message(conversation),
             recent_messages: extract_messages_since_last_compaction_anchor(conversation),
-            last_user_query: extract_last_real_user_query(conversation),
+            last_user_query: inputs
+                .goal_objective
+                .filter(|objective| !objective.trim().is_empty())
+                .or_else(|| extract_last_real_user_query(conversation)),
             agent_edited_paths: inputs.agent_edited_paths.into_iter().collect(),
             running_tasks: inputs.running_tasks,
             running_subagents: inputs.running_subagents,
@@ -688,22 +700,39 @@ pub fn format_compact_summary(summary: &str) -> String {
     let mut result = summary.to_string();
     while let Some(start) = result.find("<analysis>") {
         let is_leading = match result.find("<summary>") {
-            Some(sp) => start < sp || result[sp + "<summary>".len()..start].trim().is_empty(),
-            None => result[..start].trim().is_empty(),
+            Some(sp) => {
+                start < sp
+                    || result
+                        .get(sp + "<summary>".len()..start)
+                        .is_some_and(|s| s.trim().is_empty())
+            }
+            None => result.get(..start).is_some_and(|s| s.trim().is_empty()),
         };
         if !is_leading {
             break;
         }
-        match result[start..].find("</analysis>") {
+        match result
+            .get(start..)
+            .and_then(|rest| rest.find("</analysis>"))
+        {
             Some(rel) => {
                 let end = start + rel + "</analysis>".len();
-                result = format!("{}{}", &result[..start], &result[end..]);
+                result = format!(
+                    "{}{}",
+                    result.get(..start).unwrap_or(""),
+                    result.get(end..).unwrap_or("")
+                );
             }
             None => {
-                let drop_to = result[start..]
-                    .find("<summary>")
+                let drop_to = result
+                    .get(start..)
+                    .and_then(|rest| rest.find("<summary>"))
                     .map_or(result.len(), |rel| start + rel);
-                result = format!("{}{}", &result[..start], &result[drop_to..]);
+                result = format!(
+                    "{}{}",
+                    result.get(..start).unwrap_or(""),
+                    result.get(drop_to..).unwrap_or("")
+                );
                 break;
             }
         }
@@ -712,9 +741,17 @@ pub fn format_compact_summary(summary: &str) -> String {
         && let Some(end) = result.rfind("</summary>")
         && end > start
     {
-        let before = result[..start].to_string();
-        let after = result[end + "</summary>".len()..].to_string();
-        let inner = strip_leading_scratchpad(result[start + "<summary>".len()..end].trim());
+        let before = result.get(..start).unwrap_or("").to_string();
+        let after = result
+            .get(end + "</summary>".len()..)
+            .unwrap_or("")
+            .to_string();
+        let inner = strip_leading_scratchpad(
+            result
+                .get(start + "<summary>".len()..end)
+                .unwrap_or("")
+                .trim(),
+        );
         result = format!("{before}Summary:\n{inner}{after}");
     }
     result = neutralize_compaction_control_tokens(&result);
@@ -732,7 +769,10 @@ fn strip_leading_scratchpad(inner: &str) -> String {
     if !lead.starts_with(|c: char| c.is_ascii_digit())
         && let Some(pos) = s.rfind("</analysis>")
     {
-        s = s[pos + "</analysis>".len()..].trim_start();
+        s = s
+            .get(pos + "</analysis>".len()..)
+            .unwrap_or("")
+            .trim_start();
     }
     if let Some(rest) = s.strip_prefix("<summary>") {
         s = rest.trim_start();
@@ -894,7 +934,7 @@ pub fn build_compacted_history(input: CompactedHistoryInput<'_>) -> Vec<Conversa
                 matches!(
                     item,
                     ConversationItem::User(user)
-                        if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                        if user.synthetic_reason == SyntheticReason::AgentMessage
                 )
             })
         });

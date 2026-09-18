@@ -23,6 +23,8 @@
 //!                                     └──────────────────────────────────────┘
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod actor;
 pub mod commands;
 pub mod compaction_mode;

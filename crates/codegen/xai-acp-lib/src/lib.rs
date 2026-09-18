@@ -1,3 +1,5 @@
+#![deny(clippy::indexing_slicing)]
+
 mod channel;
 mod common;
 mod gateway;

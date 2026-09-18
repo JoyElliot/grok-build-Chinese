@@ -51,10 +51,13 @@
 //! }
 //! ```
 mod client;
+#[path = "cursor_worker_stub.rs"]
+pub(crate) mod cursor_worker;
 #[cfg(feature = "test-support")]
 pub mod in_process;
 mod lock;
 pub mod protocol;
+pub(crate) mod roster_merge;
 mod server;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -67,7 +70,9 @@ pub use lock::{
     ws_url_suffix_from_paths,
 };
 pub use protocol::{
-    ClientCapabilities, ClientId, ClientMode, ControlCommand, ControlPayload,
+    CURSOR_WORKER_DOOR_OPEN_TIMEOUT, CURSOR_WORKER_HUB_REFUSAL_PREFIX, ClientCapabilities,
+    ClientId, ClientMode, ControlCommand, ControlPayload, CursorWorkerClaim,
+    CursorWorkerDoorStatus, CursorWorkerDoorSummary, CursorWorkerStartArgs, CursorWorkerSummary,
     LEADER_PROTOCOL_VERSION, LeaderCapabilities, ShutdownReason,
 };
 use serde::{Deserialize, Serialize};
@@ -1274,10 +1279,13 @@ fn parse_flock_holder(proc_locks: &str, major: u64, minor: u64, inode: u64) -> O
         if f.get(1) == Some(&"->") {
             continue;
         }
-        if f.len() < 6 || f[1] != "FLOCK" || f[3] != "WRITE" {
+        let [_, ty, _, mode, pid, dev_inode, ..] = f.as_slice() else {
+            continue;
+        };
+        if *ty != "FLOCK" || *mode != "WRITE" {
             continue;
         }
-        let mut dev_inode = f[5].split(':');
+        let mut dev_inode = dev_inode.split(':');
         let (Some(maj), Some(min), Some(ino)) =
             (dev_inode.next(), dev_inode.next(), dev_inode.next())
         else {
@@ -1291,7 +1299,7 @@ fn parse_flock_holder(proc_locks: &str, major: u64, minor: u64, inode: u64) -> O
             continue;
         };
         if maj == major && min == minor && ino == inode {
-            return f[4].parse::<u32>().ok();
+            return pid.parse::<u32>().ok();
         }
     }
     None

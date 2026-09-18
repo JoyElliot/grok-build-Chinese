@@ -327,8 +327,14 @@ fn print_sessions_grouped(sessions: &[MergedSession], locale: &LocaleContext) {
                 locale.named_static_text("sessions.list.no_summary", "(no summary)")
             };
             let truncated: String = summary.chars().take(50).collect();
-            let created = &s.created_at[..s.created_at.len().min(10)];
-            let updated = &s.updated_at[..s.updated_at.len().min(10)];
+            let created = s
+                .created_at
+                .get(..s.created_at.len().min(10))
+                .unwrap_or(s.created_at.as_str());
+            let updated = s
+                .updated_at
+                .get(..s.updated_at.len().min(10))
+                .unwrap_or(s.updated_at.as_str());
             let source = match s.source.as_str() {
                 "local" => locale.named_static_text("sessions.source.local", "local"),
                 "remote" => locale.named_static_text("sessions.source.remote", "remote"),

@@ -253,7 +253,7 @@
             ))
         };
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.get_by_id(id).unwrap().display_mode,
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(id).unwrap().display_mode,
             DisplayMode::Expanded,
             "flag off materializes expanded"
         );
@@ -268,7 +268,7 @@
             return;
         }
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.get_by_id(id).unwrap().display_mode,
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(id).unwrap().display_mode,
             DisplayMode::Collapsed,
             "remote enable must collapse the on-default Edit row"
         );
@@ -294,7 +294,7 @@
             sb.set_selected(Some(0));
             assert!(sb.toggle_group_expansion());
             sb.prepare_layout(80, 40);
-            let info = sb.get_cached_entry_layouts().unwrap()[0];
+            let info = sb.get_cached_entry_layouts().unwrap().first().unwrap_or_else(|| panic!("missing index"));
             assert!(info.group_collapse_header, "expanded verb slot armed");
         }
 
@@ -309,7 +309,7 @@
         }
         let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
         sb.prepare_layout(80, 40);
-        let info = sb.get_cached_entry_layouts().unwrap()[0];
+        let info = sb.get_cached_entry_layouts().unwrap().first().unwrap_or_else(|| panic!("missing index"));
         assert!(
             !info.group_collapse_header,
             "remote flip must drop the stale expansion"
@@ -381,7 +381,7 @@
         assert!(!app.auto_mode_gate, "gate must be off after kill-switch");
         // Sibling always-approve is untouched: the kill-switch clears only auto
         assert!(
-            app.agents[&AgentId(2)].session.is_yolo(),
+            app.agents.get(&AgentId(2)).unwrap_or_else(|| panic!("missing map entry")).session.is_yolo(),
             "sibling always-approve must stay yolo after the auto kill-switch"
         );
 
@@ -393,8 +393,14 @@
                 }
                 let params: serde_json::Value =
                     serde_json::from_str(args.request.params.get()).unwrap();
-                assert_eq!(params["auto_mode"], serde_json::json!(false));
-                assert_eq!(params["permission_mode"], serde_json::json!("ask"));
+                assert_eq!(
+                    params.get("auto_mode").cloned(),
+                    Some(serde_json::json!(false))
+                );
+                assert_eq!(
+                    params.get("permission_mode").cloned(),
+                    Some(serde_json::json!("ask"))
+                );
                 assert!(
                     params.get("yolo_mode").is_none(),
                     "yolo_mode must be omitted so a sibling always-approve session is preserved"

@@ -488,14 +488,14 @@ fn verification_armed_with_embedded_key() {
     // Armed: prod v1 key compiled in.
     assert!(verification_active());
     assert_eq!(EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS.len(), 1);
-    assert_eq!(EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS[0].0, "v1");
+    let Some((key_id, pubkey)) = EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS.first() else {
+        panic!("expected the compiled-in v1 key: {EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS:?}");
+    };
+    assert_eq!(*key_id, "v1");
     assert!(embedded_key_id_trusted("v1"));
     assert!(!embedded_key_id_trusted("v0"));
     // Fingerprint pin against silent typos.
-    let digest = ring::digest::digest(
-        &ring::digest::SHA256,
-        EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS[0].1,
-    );
+    let digest = ring::digest::digest(&ring::digest::SHA256, pubkey);
     let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
         hex, EMBEDDED_V1_PUBKEY_SHA256_HEX,

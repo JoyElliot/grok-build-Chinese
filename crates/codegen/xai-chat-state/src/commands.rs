@@ -266,6 +266,12 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<SamplingConfig>,
     },
 
+    /// Soft-trim / hard-clear old tool results the same way a turn request does.
+    ApplyTurnRequestPruning {
+        items: Vec<ConversationItem>,
+        reply: oneshot::Sender<Vec<ConversationItem>>,
+    },
+
     /// Get the set of agent-edited file paths.
     GetAgentEditedPaths {
         reply: oneshot::Sender<BTreeSet<String>>,
@@ -429,22 +435,8 @@ mod tests {
         let _ = ChatStateCommand::IncrementPromptIndex;
         let _ = ChatStateCommand::UpdateSamplingConfig {
             config: Box::new(SamplingConfig {
-                base_url: String::new(),
-                mtls_cert_dir: None,
-                model: String::new(),
-                max_completion_tokens: None,
-                temperature: None,
-                top_p: None,
-                max_retries: None,
-                rate_limit_retry_threshold: None,
-                api_backend: Default::default(),
-                extra_headers: Default::default(),
-                conversation_group_id: None,
-                query_params: Default::default(),
-                env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
-                reasoning_effort: None,
-                stream_tool_calls: None,
+                ..Default::default()
             }),
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {
@@ -484,6 +476,12 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetSamplingConfig { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::ApplyTurnRequestPruning {
+            items: vec![],
+            reply: tx,
+        };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetAgentEditedPaths { reply: tx };

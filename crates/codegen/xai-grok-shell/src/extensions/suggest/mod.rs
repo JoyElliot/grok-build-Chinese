@@ -87,7 +87,7 @@ impl SuggestContext {
     }
 
     pub(crate) fn prefix(&self) -> &str {
-        &self.text[..self.cursor]
+        self.text.get(..self.cursor).unwrap_or("")
     }
 }
 
@@ -143,7 +143,12 @@ fn stamp_whole_line_range(results: &mut [RankedSuggestion], text_len: usize) {
 fn splice_token_into_line(results: &mut [RankedSuggestion], text: &str, range: (usize, usize)) {
     for s in results {
         let token = std::mem::take(&mut s.insert_text);
-        s.insert_text = format!("{}{}{}", &text[..range.0], token, &text[range.1..]);
+        s.insert_text = format!(
+            "{}{}{}",
+            text.get(..range.0).unwrap_or(""),
+            token,
+            text.get(range.1..).unwrap_or("")
+        );
         s.token_text = Some(token);
     }
 }
@@ -335,10 +340,10 @@ fn aggregate(
 
 /// Determines whether AI suggestions can be skipped based on history quality.
 pub(crate) fn should_skip_ai(history_matches: &[RankedSuggestion], prefix: &str) -> bool {
-    if history_matches.is_empty() {
+    let Some(first) = history_matches.first() else {
         return false;
-    }
-    if history_matches[0].priority >= 30 {
+    };
+    if first.priority >= 30 {
         return true;
     }
     !prefix.is_empty() && history_matches.len() >= 3
@@ -377,9 +382,12 @@ mod tests {
         ];
         let path = vec![ranked(0, SuggestionSource::Path, false, "git")];
         let (_, completions) = aggregate(history, path, vec![], vec![], "git", 10);
-        assert_eq!(completions[0].priority, 10);
-        assert_eq!(completions[1].priority, 5);
-        assert_eq!(completions[2].priority, 0);
+        let [a, b, c, ..] = completions.as_slice() else {
+            panic!("expected three completions");
+        };
+        assert_eq!(a.priority, 10);
+        assert_eq!(b.priority, 5);
+        assert_eq!(c.priority, 0);
     }
 
     #[test]
@@ -438,9 +446,12 @@ mod tests {
         )];
         let (_, completions) = aggregate(history, vec![], vec![], ai, "git", 10);
         assert_eq!(completions.len(), 2);
-        assert_eq!(completions[0].source, "history");
-        assert_eq!(completions[1].source, "ai");
-        assert_eq!(completions[1].priority, -10);
+        let [a, b] = completions.as_slice() else {
+            panic!("expected two completions");
+        };
+        assert_eq!(a.source, "history");
+        assert_eq!(b.source, "ai");
+        assert_eq!(b.priority, -10);
     }
 
     #[test]
@@ -529,10 +540,13 @@ mod tests {
         s.replace_range = Some((5, 7));
         s.token_text = Some("grep".into());
         let json = serde_json::to_value(CompletionItem::from(s)).unwrap();
-        assert_eq!(json["replaceRange"], serde_json::json!([5, 7]));
-        assert_eq!(json["tokenText"], "grep");
+        assert_eq!(json.get("replaceRange"), Some(&serde_json::json!([5, 7])));
+        assert_eq!(json.get("tokenText"), Some(&serde_json::json!("grep")));
         // Whole-line compat field for range-unaware pagers.
-        assert_eq!(json["insertText"], "ls | grep");
+        assert_eq!(
+            json.get("insertText"),
+            Some(&serde_json::json!("ls | grep"))
+        );
     }
 
     #[test]
@@ -555,7 +569,7 @@ mod tests {
         let mut s = ranked(0, SuggestionSource::File, false, "notes.md");
         s.truncated = true;
         let json = serde_json::to_value(CompletionItem::from(s)).unwrap();
-        assert_eq!(json["truncated"], true);
+        assert_eq!(json.get("truncated"), Some(&serde_json::json!(true)));
     }
 
     #[test]
@@ -575,8 +589,11 @@ mod tests {
     fn splice_token_into_line_builds_compat_pair() {
         let mut results = vec![ranked(0, SuggestionSource::Path, false, "grep")];
         splice_token_into_line(&mut results, "ls | gr | wc -l", (5, 7));
-        assert_eq!(results[0].insert_text, "ls | grep | wc -l");
-        assert_eq!(results[0].token_text.as_deref(), Some("grep"));
+        let Some(r) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(r.insert_text, "ls | grep | wc -l");
+        assert_eq!(r.token_text.as_deref(), Some("grep"));
     }
 
     /// Equal-priority items must keep their provider-internal order. The file provider ships pre-ranked rows (fuzzy tier/score/dirs-first) at ONE shared priority. Its ranking reaches the wire only through this sort's stability.
@@ -607,7 +624,9 @@ mod tests {
         assert_eq!(file_order, expected);
         // The boosted file rows all sort ahead of the priority-0 path rows.
         assert_eq!(
-            completions[..32]
+            completions
+                .get(..32)
+                .unwrap_or(&[])
                 .iter()
                 .filter(|c| c.source == "file")
                 .count(),
@@ -634,8 +653,11 @@ mod tests {
         let file = vec![ranked(5, SuggestionSource::File, false, ".bashrc")];
         let (_, completions) = aggregate(history, vec![], file, vec![], "cat", 10);
         assert_eq!(completions.len(), 2);
-        assert_eq!(completions[0].priority, 10);
-        assert_eq!(completions[1].priority, 5);
-        assert_eq!(completions[1].source, "file");
+        let [a, b] = completions.as_slice() else {
+            panic!("expected two completions");
+        };
+        assert_eq!(a.priority, 10);
+        assert_eq!(b.priority, 5);
+        assert_eq!(b.source, "file");
     }
 }

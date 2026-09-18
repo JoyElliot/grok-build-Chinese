@@ -205,7 +205,9 @@ mod tests {
         let x0 = area.width - PANEL_WIDTH;
         for y in 0..10u16 {
             for x in x0..area.width {
-                let cell = &buf[(x, y)];
+                let Some(cell) = buf.cell((x, y)) else {
+                    panic!("cell ({x},{y})");
+                };
                 assert_eq!(
                     cell.bg,
                     Color::Black,
@@ -225,7 +227,10 @@ mod tests {
             }
         }
         // The overlay stays inside its rect: cells outside it keep the theme
-        assert_eq!(buf[(0, 0)].bg, Color::Rgb(3, 3, 4));
-        assert_eq!(buf[(x0 - 1, 3)].modifier, Modifier::ITALIC);
+        assert_eq!(buf.cell((0, 0)).map(|c| c.bg), Some(Color::Rgb(3, 3, 4)));
+        assert_eq!(
+            buf.cell((x0 - 1, 3)).map(|c| c.modifier),
+            Some(Modifier::ITALIC)
+        );
     }
 }

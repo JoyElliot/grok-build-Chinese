@@ -155,12 +155,12 @@ impl Thresholds {
     /// Feed a footprint observation; returns the buckets that fire on it.
     fn observe(&mut self, footprint: u64) -> Vec<u64> {
         let mut fired = Vec::new();
-        for (i, &bucket) in self.buckets.iter().enumerate() {
-            if self.armed[i] && footprint >= bucket {
-                self.armed[i] = false;
+        for (armed, &bucket) in self.armed.iter_mut().zip(&self.buckets) {
+            if *armed && footprint >= bucket {
+                *armed = false;
                 fired.push(bucket);
-            } else if !self.armed[i] && footprint < bucket / 2 {
-                self.armed[i] = true;
+            } else if !*armed && footprint < bucket / 2 {
+                *armed = true;
             }
         }
         fired
@@ -725,8 +725,12 @@ mod tests {
             let body = std::fs::read_to_string(p).unwrap();
             for line in body.lines() {
                 let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
-                assert_eq!(v["kind"], "sample");
-                assert!(v["ts_ms"].as_u64().unwrap() > 0);
+                assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("sample"));
+                assert!(
+                    v.get("ts_ms")
+                        .and_then(|t| t.as_u64())
+                        .is_some_and(|n| n > 0)
+                );
             }
         }
     }
@@ -744,14 +748,30 @@ mod tests {
         let purge_line = body
             .lines()
             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-            .find(|v| v["kind"] == "purge" && v["reason"] == "unit-test-cliff")
+            .find(|v| {
+                v.get("kind").and_then(|k| k.as_str()) == Some("purge")
+                    && v.get("reason").and_then(|r| r.as_str()) == Some("unit-test-cliff")
+            })
             .expect("a purge event tagged with the calling cliff");
-        assert!(purge_line["purge_us"].as_u64().is_some());
-        assert!(purge_line["hook_installed"].as_bool().is_some());
+        assert!(
+            purge_line
+                .get("purge_us")
+                .and_then(|u| u.as_u64())
+                .is_some()
+        );
+        assert!(
+            purge_line
+                .get("hook_installed")
+                .and_then(|h| h.as_bool())
+                .is_some()
+        );
         // The before-gauge must exist on every supported platform (footprint on macOS, RSS fallback on Linux) or purge deltas are uncomputable
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(
-            purge_line["gauge_before_bytes"].as_u64().unwrap_or(0) > 0,
+            purge_line
+                .get("gauge_before_bytes")
+                .and_then(|g| g.as_u64())
+                .is_some_and(|n| n > 0),
             "purge events must carry a before-gauge for delta analysis"
         );
     }
@@ -782,7 +802,7 @@ mod tests {
 
         let body = std::fs::read_to_string(&path).unwrap();
         let event: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
-        assert_eq!(event["kind"], "crash");
+        assert_eq!(event.get("kind").and_then(|k| k.as_str()), Some("crash"));
     }
 
     #[test]

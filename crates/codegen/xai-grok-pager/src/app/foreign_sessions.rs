@@ -870,7 +870,7 @@ mod tests {
 
         let entries = entries.unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "native");
+        assert_eq!(entries.first().map(|e| e.id.as_str()), Some("native"));
     }
 
     #[test]

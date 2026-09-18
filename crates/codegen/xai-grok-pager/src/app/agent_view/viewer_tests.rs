@@ -749,9 +749,7 @@ fn block_viewer_enter_from_fullscreen_child_quotes_into_parent() {
     let mut parent = make_agent();
     parent.prompt.set_text("parent-draft");
     parent.prompt.set_cursor(parent.prompt.text().len());
-    parent
-        .subagent_views
-        .insert("child-sid".into(), Box::new(child));
+    parent.insert_test_child("child-sid".into(), Box::new(child));
     parent.open_subagent_fullscreen("child-sid".into());
     let registry = ActionRegistry::defaults();
     let outcome = parent.handle_input(&Event::Key(enter_key()), &registry);

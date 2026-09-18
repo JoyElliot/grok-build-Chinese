@@ -332,7 +332,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                             return vec![];
                         }
                         state.expanded.insert(idx);
-                        let entry = &entries[idx];
+                        let Some(entry) = entries.get(idx) else {
+                            return vec![];
+                        };
                         if native_source && entry.card_detail.is_none() {
                             return vec![Effect::LoadCardDetail {
                                 host: SessionPickerHost::AgentModal,
@@ -408,11 +410,18 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::SendPrompt(text) => dispatch_send_prompt(app, text),
+        Action::RevisePlan(text) => super::prompt::dispatch_revise_plan(app, text),
         Action::SubmitFollowUp(text) => dispatch_send_prompt_inner(app, text, false, true, true),
         Action::SendSlashCommandPreservingDraft(text) => {
             dispatch_send_prompt_inner(app, text, false, false, false)
         }
-        Action::Interject { text, images } => dispatch_interject(app, text, images),
+        Action::Interject { text, images } => {
+            super::queue::with_held_queue_flush(app, |app| dispatch_interject(app, text, images))
+        }
+        Action::ExecutePlan {
+            plan_file_content,
+            plan_file_uri,
+        } => super::prompt::dispatch_execute_plan(app, plan_file_content, plan_file_uri),
         Action::SendPromptNow { text, images } => {
             super::interject::dispatch_send_prompt_now(app, text, images)
         }
@@ -1087,7 +1096,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::EnterRememberMode => dispatch_enter_remember_mode(app),
         Action::SendRememberNote(text) => dispatch_send_remember_note(app, text),
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
-        Action::SendBtw(question) => dispatch_send_btw(app, question),
+        Action::SendBtw { question, images } => dispatch_send_btw(app, question, images),
         Action::SendRecap { auto } => dispatch_send_recap(app, auto),
         Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(
             app,
@@ -1388,19 +1397,57 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PersistMemoryFullscreen(fs) => {
             vec![Effect::PersistMemoryFullscreen { fullscreen: fs }]
         }
+        Action::MemoryForget {
+            path,
+            expected_content_hash,
+        } => {
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get(&id)
+                && let Some(session_id) = agent.session.session_id.clone()
+            {
+                return vec![Effect::MemoryForget {
+                    agent_id: id,
+                    session_id,
+                    path,
+                    expected_content_hash,
+                }];
+            }
+            vec![]
+        }
         Action::OpenMemoryModal => {
             if let ActiveView::Agent(id) = app.active_view
                 && let Some(agent) = app.agents.get(&id)
                 && let Some(session_id) = agent.session.session_id.clone()
             {
-                return vec![Effect::SendPrompt {
+                return vec![Effect::FetchMemoryList {
                     agent_id: id,
                     session_id,
-                    text: "/memory".to_string(),
-                    prompt_id: uuid::Uuid::new_v4().to_string(),
-                    skill_token_ranges: Vec::new(),
                 }];
             }
+            vec![]
+        }
+        Action::MemoryToggle { enabled } => {
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get(&id)
+                && let Some(session_id) = agent.session.session_id.clone()
+            {
+                return vec![Effect::MemoryToggle {
+                    agent_id: id,
+                    session_id,
+                    enabled,
+                }];
+            }
+            vec![]
+        }
+        Action::MemoryCopy { text } => {
+            let delivery = crate::clipboard::copy_text_or_file(&text);
+            with_active_agent(app, |agent| {
+                if let Some(crate::views::modal::ActiveModal::MemoryBrowser { state }) =
+                    agent.active_modal.as_mut()
+                {
+                    state.report_copy(&delivery);
+                }
+            });
             vec![]
         }
         Action::OpenGboom => dispatch_open_gboom(app),

@@ -143,12 +143,15 @@ mod tests {
 
         let entries = state.timeline_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].turn_idx, 0);
-        assert_eq!(state.index_of_id(entries[0].prompt_entry_id), Some(1));
-        assert_eq!(entries[0].preview, "first question");
-        assert_eq!(entries[1].turn_idx, 1);
-        assert_eq!(state.index_of_id(entries[1].prompt_entry_id), Some(3));
-        assert_eq!(entries[1].preview, "second question");
+        let [first, second] = entries.as_slice() else {
+            panic!("expected two timeline entries: {entries:?}");
+        };
+        assert_eq!(first.turn_idx, 0);
+        assert_eq!(state.index_of_id(first.prompt_entry_id), Some(1));
+        assert_eq!(first.preview, "first question");
+        assert_eq!(second.turn_idx, 1);
+        assert_eq!(state.index_of_id(second.prompt_entry_id), Some(3));
+        assert_eq!(second.preview, "second question");
     }
 
     #[test]
@@ -160,9 +163,12 @@ mod tests {
         state.prepare_layout(80, 10);
 
         let entries = state.timeline_entries();
-        assert_eq!(entries[0].preview, "leading blanks skipped");
-        assert_eq!(entries[1].preview.chars().count(), 120);
-        assert!(entries[1].preview.ends_with('\u{2026}'));
+        let [first, second, ..] = entries.as_slice() else {
+            panic!("expected two timeline entries: {entries:?}");
+        };
+        assert_eq!(first.preview, "leading blanks skipped");
+        assert_eq!(second.preview.chars().count(), 120);
+        assert!(second.preview.ends_with('\u{2026}'));
     }
 
     #[test]
@@ -264,7 +270,9 @@ mod tests {
         assert_eq!(state.scroll_offset(), 0, "▲ walk reaches the top");
         assert_eq!(up_visits.last(), Some(&0), "▲ walk ends at the first turn");
         assert!(
-            up_visits.windows(2).all(|w| w[0] - w[1] == 1),
+            up_visits
+                .windows(2)
+                .all(|w| matches!(w, [a, b] if *a - *b == 1)),
             "one boundary per click: {up_visits:?}"
         );
         assert_eq!(click_chevron(&mut state, 12, true), None, "▲ dim at top");

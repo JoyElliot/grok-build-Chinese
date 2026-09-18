@@ -1,4 +1,4 @@
-//! [`AgentStatusBar`] collects items as `Line<'static>` spans, lays them out right-aligned with dim `│` separators, and renders into a buffer row.
+//! [`AgentStatusBar`] collects items as `Line<'static>` spans, lays them out right-aligned with faint `│` separators, and renders into a buffer row.
 //! Returns hit-test areas keyed by item ID.
 //!
 //! # Example
@@ -103,14 +103,27 @@ impl<'a> AgentStatusBar<'a> {
         self.items.push(StatusEntry { id, line, width });
     }
 
-    /// Build a separator span: ` │ ` in dim color.
-    fn separator(&self) -> Span<'static> {
-        Span::styled(
-            format!(" {SEPARATOR} "),
-            Style::default()
-                .fg(self.theme.gray_dim)
-                .bg(self.theme.bg_base),
-        )
+    /// Prepend an item sized with [`Self::room_for_front`], so it can never push the items already pushed off the row.
+    pub fn push_front(&mut self, id: &'static str, line: Line<'static>) {
+        let width = line.width() as u16;
+        self.items.insert(0, StatusEntry { id, line, width });
+    }
+
+    /// Columns a prepended item may take in a row `area_width` wide: what the current group and its joining separator leave.
+    pub fn room_for_front(&self, area_width: u16) -> u16 {
+        let joining_sep = if self.items.is_empty() {
+            0
+        } else {
+            SEPARATOR_WIDTH
+        };
+        area_width.saturating_sub(self.right_pad + self.width() + joining_sep)
+    }
+
+    /// Columns the group occupies: items plus the separators between them.
+    fn width(&self) -> u16 {
+        let items: u16 = self.items.iter().map(|e| e.width).sum();
+        let seps = (self.items.len() as u16).saturating_sub(1);
+        items + seps * SEPARATOR_WIDTH
     }
 
     /// Render all items right-aligned into the given area. Layout: `··· item0 │ item1 │ item2`;
@@ -123,18 +136,13 @@ impl<'a> AgentStatusBar<'a> {
 
         buf.set_style(area, Style::default().bg(self.theme.bg_base));
 
-        let sep = self.separator();
-        let sep_w = sep.width() as u16; // 3
-
-        // Total width: items plus the separators *between* them only; no leading separator before the first item or trailing one after the last
-        let items_width: u16 = self.items.iter().map(|e| e.width).sum();
-        let num_seps = (self.items.len() as u16).saturating_sub(1);
-        let total_width = items_width + num_seps * sep_w;
+        let sep = separator(self.theme);
+        let sep_w = SEPARATOR_WIDTH;
 
         // Right-align: compute starting x
         let start_x = area
             .x
-            .saturating_add(area.width.saturating_sub(self.right_pad + total_width));
+            .saturating_add(area.width.saturating_sub(self.right_pad + self.width()));
 
         let mut x = start_x;
         let mut areas = HashMap::new();
@@ -163,6 +171,15 @@ impl<'a> AgentStatusBar<'a> {
         areas
     }
 }
+
+/// ` │ ` a step fainter than the chips it divides — the divider between status-bar items and between the header's title and
+/// location.
+pub(crate) fn separator(theme: &Theme) -> Span<'static> {
+    Span::styled(format!(" {SEPARATOR} "), theme.faint().bg(theme.bg_base))
+}
+
+/// Display width of [`separator`].
+const SEPARATOR_WIDTH: u16 = 3;
 
 pub(crate) fn task_status_line(
     counts: TaskStatusCounts,
@@ -398,7 +415,7 @@ pub fn goal_status_line_with_locale(
         .replace("{label}", &label);
     let goal_text = if is_active {
         let frames = crate::glyphs::dot_spinner_frames();
-        let frame = frames[(tick / 4) % frames.len()];
+        let frame = frames.get((tick / 4) % frames.len()).copied().unwrap_or("");
         format!("{frame} {chip}")
     } else {
         chip
@@ -416,9 +433,8 @@ pub fn goal_status_line_with_locale(
 // MCP connecting indicator
 // ---------------------------------------------------------------------------
 
-/// That state renders `⠋ Starting session…` above the prompt (see [`crate::views::turn_status`])
-/// rather than as a chip here. The top-bar chip only shows real server counts once the shell
-/// reports `total > 0`.
+/// The chip shows real server counts only. "Starting session…" is the turn-status row's job
+/// (see [`crate::views::turn_status`]).
 pub fn mcp_status_line(
     progress: &McpInitProgress,
     tick: u64,
@@ -431,7 +447,10 @@ pub fn mcp_status_line(
     let frame_idx = (tick / SPINNER_DIVISOR) as usize % frames.len();
     let style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
     Some(Line::from(vec![
-        Span::styled(format!("{} ", frames[frame_idx]), style),
+        Span::styled(
+            format!("{} ", frames.get(frame_idx).copied().unwrap_or("")),
+            style,
+        ),
         Span::styled(
             format!("MCP ({}/{})", progress.connected, progress.total),
             style,
@@ -915,7 +934,6 @@ mod tests {
         let progress = McpInitProgress {
             total: 4,
             connected: 1,
-            started_at: std::time::Instant::now(),
         };
         let t = Theme::current();
         let line = mcp_status_line(&progress, 0, &t).expect("total > 0 must render a line");
@@ -933,7 +951,6 @@ mod tests {
         let progress = McpInitProgress {
             total: 2,
             connected: 0,
-            started_at: std::time::Instant::now(),
         };
         let line = mcp_status_line(&progress, 0, &t).expect("total > 0 must render a line");
         for span in &line.spans {
@@ -947,11 +964,10 @@ mod tests {
 
     #[test]
     fn mcp_status_line_hidden_for_zero_total() {
-        // total == 0 (startup seed) renders nothing in the top bar; that state shows "Starting session…" above the prompt instead
+        // A 0-server report renders no chip
         let progress = McpInitProgress {
             total: 0,
             connected: 0,
-            started_at: std::time::Instant::now(),
         };
         let t = Theme::current();
         assert!(mcp_status_line(&progress, 0, &t).is_none());
@@ -970,7 +986,9 @@ mod tests {
         let mut buf = Buffer::empty(area);
         bar.render(&mut buf, area);
 
-        let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol()))
+            .collect();
         let trimmed = row.trim();
 
         // Exactly two dividers (between the three items), none at the ends.
@@ -997,7 +1015,9 @@ mod tests {
         let mut buf = Buffer::empty(area);
         bar.render(&mut buf, area);
 
-        let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol()))
+            .collect();
         assert_eq!(row.trim(), "XX");
         assert!(!row.contains(SEPARATOR));
     }

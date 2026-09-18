@@ -160,14 +160,39 @@ The title always includes the MCP server name.
 | `Shift+X` | Dismiss the question (the agent continues without an answer) |
 | `Ctrl+F` | Fullscreen the card |
 
-The `/feedback` pane is the one exception to this table: the report box has no
-answers to walk, `Enter` sends the report, and `Esc` dismisses the pane. When a
-trace upload can be offered, `Enter` on the report first shows an upload
-question (`↑`/`↓` choose, `Enter` sends with your choice, `Esc` skips the
-upload and still sends the report).
+The `/feedback` form is the one exception to this table: its report box has no
+answers to walk, so it has its own keys (below).
 
 While typing a free-text answer, `Enter` submits and `Esc` returns to the
 answer rows; every other key goes to the text field.
+
+### `/feedback` form
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch between the Write and Drafts tabs |
+| `Esc` | Close the form (a focused label row or an open confirm is dismissed first) |
+
+Write tab:
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send the report |
+| `Tab` | Focus the type/task/failure label rows (shown when a draft supplied them); `Tab` again returns to the report box |
+| `←` / `→` | Pick a value on the focused label row |
+
+Drafts tab:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓`, `j` / `k` | Select a saved draft |
+| `Enter` | Load the selected draft into Write |
+| `d` | Delete the selected draft (confirm with `y`) |
+| `/` | Search the drafts |
+
+When a trace upload can be offered, `Enter` on the report first shows an upload
+question (`↑`/`↓` choose, `Enter` sends with your choice, `Esc` skips the
+upload and still sends the report).
 
 ### Permission prompt
 
@@ -207,7 +232,7 @@ sends it and `Esc` returns to the options.
 
 **Mid-turn Esc grace:** for about a second after a mid-turn Esc, the idle rewind arm stays suppressed — mashing Esc at a turn that then ends cannot silently open the rewind picker. Only the rewind arm is held; every other Esc behavior is unaffected.
 
-**Steal-Esc (runs before the mid-turn hint and clear / rewind):** overlays, modals, slash/file/completion dropdowns, history search, scrollback search, text selection, link highlight, voice, and **Bash / Remember mode exit** when the prompt is empty (Esc leaves `!` / `#` mode and returns to the normal prompt, even while a turn is running). Bare `/feedback` opens the report pane; Esc dismisses it.
+**Steal-Esc (runs before the mid-turn hint and clear / rewind):** overlays, modals, slash/file/completion dropdowns, history search, scrollback search, text selection, link highlight, voice, and **Bash / Remember mode exit** when the prompt is empty (Esc leaves `!` / `#` mode and returns to the normal prompt, even while a turn is running). Bare `/feedback` opens the feedback form; Esc closes it.
 
 **Ctrl+C vs Esc:** with a non-empty draft while a turn is running, Ctrl+C clears the draft and keeps the turn; a second Ctrl+C on an empty prompt cancels. Esc never cancels: mid-turn it only points you at Ctrl+C and leaves the draft alone. Idle non-empty Ctrl+C clears in one press; Esc requires two presses within 800ms. The two clears differ in what they leave behind: `Esc Esc` stashes the draft, so `Ctrl+S` brings it back, while `Ctrl+C` discards it (its text is still in the `↑` history).
 
@@ -238,6 +263,8 @@ Actions that affect the agent session, available from the agent screen.
 | `!` | Prompt focused | Enter shell mode (type `!` on an empty prompt) |
 | `Ctrl+.` (alt: `Ctrl+X`) | Agent screen | Open the keyboard shortcuts help |
 | `F2` (alt: `Ctrl+,` / `Cmd+,`) | Agent screen | Open the settings modal |
+
+**Note:** While a **subagent fullscreen view** is open, the composer is hidden. Root-only chords (`Ctrl+P`, `Ctrl+M`, `Ctrl+R`, `Ctrl+O`, `Ctrl+B`, settings, extensions, Shift+Tab) do nothing. `Ctrl+C` cancels the **child's** turn. `q` / `Esc` closes the view. `Ctrl+Q` still quits (`Ctrl+D` on VS Code family). See [Viewing Subagents in the TUI](16-subagents.md#fullscreen-framed-view-the-child-transcript).
 
 **Note:** `Ctrl+M` is context-dependent. When the prompt is focused, it toggles multiline input mode. Otherwise, it opens the model picker.
 
@@ -434,6 +461,24 @@ Cancel (running): Ctrl+C (empty prompt; non-empty draft clears first)
 Clear (idle):     Esc Esc within 800ms (non-empty prompt)
 Rewind (idle):    Esc Esc within 800ms (empty prompt + messages)
 ```
+
+The composer footer shows the newline chord next to `Enter:send` (or
+`Enter:queue` while a turn is running) once the draft is non-empty
+(including `/btw` and other arg-required slash commands). Over SSH, old
+tmux, or terminals that cannot tell Shift+Enter from Enter, the footer
+prefers `Alt+Enter`.
+
+`Cmd+Enter` is not an advertised send or newline chord. Many terminals
+bind it to fullscreen, so `SUPER` is excluded from the Shift/Alt newline
+matcher and from the agent's bare-Enter send binding. When a terminal
+that speaks the Kitty keyboard protocol delivers `SUPER+Enter`, the
+composer still inserts a newline: the key misses send and lands in the
+textarea, which treats any Enter as a line break. Apple Terminal is a
+separate local path: CoreGraphics rescue treats held Cmd as modified
+Enter and inserts a newline on what arrives as bare Enter. Over SSH the
+Cmd/`SUPER` modifier never arrives (iTerm2 + tmux included), so the
+chord looks like bare Enter and sends. Remotely, use `Alt+Enter`, a
+trailing `\` then Enter, or `/ml`.
 
 With a selection active, typing / `Enter` / paste replace it, delete and
 word-kill chords delete just the selection, arrows collapse it to the

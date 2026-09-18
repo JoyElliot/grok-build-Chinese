@@ -236,11 +236,7 @@ pub fn print_show_with_locale(
         write_show_field(out, locale, "worktree.show.git_ref", "Git Ref", git_ref)?;
     }
     if let Some(ref commit) = rec.head_commit {
-        let short = if commit.len() > 12 {
-            &commit[..12]
-        } else {
-            commit
-        };
+        let short = commit.get(..12).unwrap_or(commit);
         write_show_field(out, locale, "worktree.show.head", "HEAD", short)?;
     }
     write_show_field(

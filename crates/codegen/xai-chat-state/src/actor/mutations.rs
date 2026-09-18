@@ -126,7 +126,7 @@ impl ChatStateActor {
             self.state.conversation.last(),
             Some(xai_grok_sampling_types::ConversationItem::User(u))
                 if u.synthetic_reason
-                    == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                    == xai_grok_sampling_types::SyntheticReason::LengthContinue
         ) {
             return;
         }
@@ -136,7 +136,7 @@ impl ChatStateActor {
                 conversation.last(),
                 Some(xai_grok_sampling_types::ConversationItem::User(u))
                     if u.synthetic_reason
-                        == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                        == xai_grok_sampling_types::SyntheticReason::LengthContinue
             ) {
                 conversation.pop();
                 stranded += 1;
@@ -279,16 +279,14 @@ impl ChatStateActor {
             if matches!(
                 &item,
                 ConversationItem::User(u)
-                    if u.synthetic_reason.as_ref().is_none_or(|r| r.starts_prompt_turn())
+                    if u.synthetic_reason.starts_prompt_turn()
                         || matches!(
                             u.synthetic_reason,
-                            Some(
-                                R::AutoRecovery
-                                    | R::StopHookFeedback
-                                    | R::GoalSummary
-                                    | R::WorkingDirectorySwitch
-                                    | R::Interjection
-                            )
+                            R::AutoRecovery
+                                | R::StopHookFeedback
+                                | R::GoalSummary
+                                | R::WorkingDirectorySwitch
+                                | R::Interjection
                         )
             ) {
                 self.pop_stranded_continue_reminder();
@@ -342,8 +340,8 @@ impl ChatStateActor {
             let mut turn_from_end: usize = 0;
             let mut seen_first_user = false;
 
-            for i in (0..conversation.len()).rev() {
-                if matches!(&conversation[i], ConversationItem::User(_)) {
+            for item in conversation.iter_mut().rev() {
+                if matches!(item, ConversationItem::User(_)) {
                     if seen_first_user {
                         turn_from_end += 1;
                     }
@@ -351,7 +349,7 @@ impl ChatStateActor {
                     continue;
                 }
 
-                let ConversationItem::ToolResult(tr) = &mut conversation[i] else {
+                let ConversationItem::ToolResult(tr) = item else {
                     continue;
                 };
 

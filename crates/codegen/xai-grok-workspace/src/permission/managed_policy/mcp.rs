@@ -119,19 +119,25 @@ fn mcp_entry_matches(entry: &AllowedMcpServer, server: &agent_client_protocol::M
     }
 }
 
-/// Whether an entry restricts `server`'s transport at all.
-/// `McpServer` is `#[non_exhaustive]`: a transport this build can't inspect is restricted by every entry so a new acp variant cannot slip a lockdown.
-fn mcp_entry_restricts(
-    entry: &AllowedMcpServer,
-    server: &agent_client_protocol::McpServer,
-) -> bool {
-    let known = matches!(
+/// `McpServer` is `#[non_exhaustive]`: Http / Sse / Stdio are the only
+/// transports this build can inspect. A new ACP variant must fail closed.
+pub(super) fn mcp_transport_known(server: &agent_client_protocol::McpServer) -> bool {
+    matches!(
         server,
         agent_client_protocol::McpServer::Http(_)
             | agent_client_protocol::McpServer::Sse(_)
             | agent_client_protocol::McpServer::Stdio(_)
-    );
-    if !known {
+    )
+}
+
+/// Whether an entry restricts `server`'s transport at all.
+/// A transport this build can't inspect is restricted by every entry so a new
+/// ACP variant cannot slip a lockdown.
+fn mcp_entry_restricts(
+    entry: &AllowedMcpServer,
+    server: &agent_client_protocol::McpServer,
+) -> bool {
+    if !mcp_transport_known(server) {
         return true;
     }
     match entry {
@@ -258,7 +264,19 @@ impl McpServerAllowlist {
 
     /// Explicit `deniedMcpServers` match (vs merely missing from the
     /// allowlist); URL denies are host-normalized via [`DenyUrlMatcher`].
+    /// Unrecognized ACP transports fail closed when this source has deny entries.
     pub fn is_server_denied(&self, server: &agent_client_protocol::McpServer) -> bool {
+        self.is_server_denied_known(server, mcp_transport_known(server))
+    }
+
+    pub(super) fn is_server_denied_known(
+        &self,
+        server: &agent_client_protocol::McpServer,
+        known: bool,
+    ) -> bool {
+        if !known {
+            return !self.deny_entries.is_empty();
+        }
         self.deny_entries
             .iter()
             .any(|compiled| match &compiled.url_matcher {
@@ -297,7 +315,7 @@ pub(super) fn mcp_name_matches(pattern: &str, name: &str) -> bool {
     fn truncate(key: String) -> String {
         let max_bare = MANAGED_MCP_NAME_MAX_CHARS - MANAGED_MCP_PREFIX.len();
         match key.char_indices().nth(max_bare) {
-            Some((i, _)) => key[..i].to_string(),
+            Some((i, _)) => key.get(..i).map(str::to_string).unwrap_or(key),
             None => key,
         }
     }

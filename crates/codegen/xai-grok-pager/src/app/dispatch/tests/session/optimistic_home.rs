@@ -150,7 +150,7 @@ fn welcome_keystroke_reveals_home_session_and_types() {
         assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
         assert!(app.home_session_agent.is_none());
         assert_eq!(app.agents.len(), 1);
-        assert_eq!(app.agents[&home].prompt.text(), "h");
+        assert_eq!(app.agents.get(&home).map(|a| a.prompt.text()), Some("h"));
         assert!(app.welcome_menu_index.is_none());
     }
 }
@@ -164,7 +164,10 @@ fn welcome_paste_reveals_home_session() {
     let effects = leave_home_with(&mut app, &Event::Paste("fix the bug".into()));
     assert!(!creates_session(&effects));
     assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
-    assert_eq!(app.agents[&home].prompt.text(), "fix the bug");
+    assert_eq!(
+        app.agents.get(&home).map(|a| a.prompt.text()),
+        Some("fix the bug")
+    );
 }
 
 #[test]
@@ -176,7 +179,9 @@ fn welcome_shift_tab_reveals_home_session_in_plan_mode() {
     let effects = leave_home_with(&mut app, &key_event(KeyCode::BackTab, KeyModifiers::SHIFT));
     assert!(!creates_session(&effects));
     assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
-    let agent = &app.agents[&home];
+    let Some(agent) = app.agents.get(&home) else {
+        panic!("expected agent {home:?}");
+    };
     assert!(
         agent.plan_mode_pending.unwrap_or(agent.plan_mode_active),
         "the forwarded Shift+Tab must enter Plan on the revealed session"
@@ -184,7 +189,8 @@ fn welcome_shift_tab_reveals_home_session_in_plan_mode() {
 
     // Bind after a queued prompt: the mode must go out before that prompt.
     let _ = dispatch(Action::SendPrompt("go".into()), &mut app);
-    let effects = handle_session_created(&mut app, home, acp::SessionId::new("plan-home"), None);
+    let effects =
+        handle_session_created(&mut app, home, acp::SessionId::new("plan-home"), None, None);
     let mode_at = effects
         .iter()
         .position(|e| matches!(e, Effect::SetSessionMode { .. }));
@@ -233,7 +239,9 @@ fn welcome_shift_tab_honors_always_worktree() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("Shift+Tab must leave home, got {:?}", app.active_view);
     };
-    let agent = &app.agents[&id];
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
     assert!(agent.plan_mode_pending.unwrap_or(agent.plan_mode_active));
 }
 
@@ -254,12 +262,12 @@ fn skills_on_the_hidden_home_session_reach_the_revealed_composer() {
 
     let _ = leave_home_with(&mut app, &key_event(KeyCode::Char('/'), KeyModifiers::NONE));
     assert!(
-        app.agents[&home]
+        app.agents.get(&home).is_some_and(|a| a
             .prompt
             .slash_controller
             .registry()
             .get("my-skill")
-            .is_some(),
+            .is_some()),
         "reveal must sync the husk's ACP commands into the composer"
     );
 }
@@ -287,7 +295,10 @@ fn worktree_from_welcome_abandons_home_and_keeps_draft() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("Ctrl+W must leave home, got {:?}", app.active_view);
     };
-    assert_eq!(app.agents[&id].prompt.text(), "draft from home");
+    assert_eq!(
+        app.agents.get(&id).map(|a| a.prompt.text()),
+        Some("draft from home")
+    );
 }
 
 #[test]
@@ -500,7 +511,7 @@ fn load_session_does_not_abandon_empty_new_session() {
             app.active_view
         );
     };
-    let _ = handle_session_created(&mut app, new_id, acp::SessionId::new("new-sid"), None);
+    let _ = handle_session_created(&mut app, new_id, acp::SessionId::new("new-sid"), None, None);
 
     let _ = dispatch(
         Action::LoadSession("resume-me".into(), None, false),
@@ -535,7 +546,7 @@ fn load_session_keeps_revealed_husk_with_composer_draft() {
         app.agents.contains_key(&home),
         "LoadSession must not delete the revealed husk while it has an unsaved composer draft"
     );
-    assert_eq!(app.agents[&home].prompt.text(), "unsaved notes");
+    assert_eq!(test_agent(&app, home).prompt.text(), "unsaved notes");
 }
 
 #[test]
@@ -620,7 +631,11 @@ fn welcome_empty_enter_reveals_home_session() {
         let effects = dispatch(Action::LeaveHome, &mut app);
         assert!(!creates_session(&effects));
         assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
-        assert!(app.agents[&home].session.pending_prompts.is_empty());
+        assert!(
+            app.agents
+                .get(&home)
+                .is_some_and(|a| a.session.pending_prompts.is_empty())
+        );
     }
 }
 
@@ -756,7 +771,9 @@ fn welcome_enter_with_text_sends_prompt_and_leaves_home() {
         app.active_view
     );
     assert!(app.home_session_agent.is_none());
-    let agent = &app.agents[&AgentId(0)];
+    let Some(agent) = app.agents.get(&AgentId(0)) else {
+        panic!("expected agent 0");
+    };
     assert!(
         agent
             .session
@@ -853,7 +870,8 @@ fn session_created_after_abandon_unregisters() {
     let _ = dispatch(Action::NewSession, &mut app);
     assert!(!app.agents.contains_key(&home));
 
-    let effects = handle_session_created(&mut app, home, acp::SessionId::new("late-home"), None);
+    let effects =
+        handle_session_created(&mut app, home, acp::SessionId::new("late-home"), None, None);
     assert!(
         effects.iter().any(|e| matches!(
             e,
@@ -908,6 +926,7 @@ fn home_session_create_failure_clears_placeholder_keeps_draft_and_warns() {
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: home,
             error: "No space left on device".into(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -935,7 +954,10 @@ fn home_session_create_failure_clears_placeholder_keeps_draft_and_warns() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("retry must leave home, got {:?}", app.active_view);
     };
-    let text = app.agents[&id].prompt.text();
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    let text = agent.prompt.text();
     assert!(
         text.contains("keep me") && text.contains('!'),
         "got {text:?}"
@@ -952,6 +974,7 @@ fn send_after_home_session_create_failure_creates_and_sends() {
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: home,
             error: "create failed".into(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -972,7 +995,7 @@ fn send_after_home_session_create_failure_creates_and_sends() {
 
 fn bind_home_session(app: &mut AppView) {
     let home = app.home_session_agent.expect("home session");
-    let _ = handle_session_created(app, home, acp::SessionId::new("home-sid"), None);
+    let _ = handle_session_created(app, home, acp::SessionId::new("home-sid"), None, None);
 }
 
 #[test]
@@ -1023,10 +1046,10 @@ fn session_free_slash_from_home_works_before_session_created() {
         panic!("/help must reveal home, got {:?}", app.active_view);
     };
     assert!(
-        matches!(
-            app.agents[&id].active_modal,
+        app.agents.get(&id).is_some_and(|a| matches!(
+            a.active_modal,
             Some(crate::views::modal::ActiveModal::CommandPalette { .. })
-        ),
+        )),
         "/help must open the palette without a bound session_id"
     );
 }
@@ -1041,10 +1064,10 @@ fn settings_slash_from_home_opens_settings() {
         panic!("/settings must reveal home, got {:?}", app.active_view);
     };
     assert!(
-        matches!(
-            app.agents[&id].active_modal,
+        app.agents.get(&id).is_some_and(|a| matches!(
+            a.active_modal,
             Some(crate::views::modal::ActiveModal::Settings { .. })
-        ),
+        )),
         "/settings must open the modal"
     );
 }
@@ -1103,12 +1126,15 @@ fn welcome_slash_then_tab_completes_on_revealed_session() {
     app.welcome_prompt_focused = true;
 
     let _ = leave_home_with(&mut app, &key_event(KeyCode::Char('/'), KeyModifiers::NONE));
-    assert!(app.agents[&home].prompt.slash_open());
+    assert!(app.agents.get(&home).is_some_and(|a| a.prompt.slash_open()));
 
     let _ = app.handle_input(&key_event(KeyCode::Char('h'), KeyModifiers::NONE));
     let _ = app.handle_input(&key_event(KeyCode::Char('e'), KeyModifiers::NONE));
     let _ = app.handle_input(&key_event(KeyCode::Tab, KeyModifiers::NONE));
-    let text = app.agents[&home].prompt.text();
+    let Some(agent) = app.agents.get(&home) else {
+        panic!("expected agent {home:?}");
+    };
+    let text = agent.prompt.text();
     assert!(
         text.starts_with("/he"),
         "Tab must accept a completion, got {text:?}"
@@ -1133,7 +1159,9 @@ fn reveal_home_session_keeps_agent_composer_setup() {
     maybe_create_home_session(&mut app);
     app.welcome_prompt.set_text("keep draft");
     assert!(
-        app.agents[&AgentId(0)].prompt.compact(),
+        app.agents
+            .get(&AgentId(0))
+            .is_some_and(|a| a.prompt.compact()),
         "new-session setup stamps compact on the hidden agent"
     );
     assert!(!app.welcome_prompt.compact());
@@ -1142,7 +1170,9 @@ fn reveal_home_session_keeps_agent_composer_setup() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("send must reveal the home session");
     };
-    let agent = &app.agents[&id];
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
     assert!(
         agent.prompt.compact(),
         "reveal must not drop compact onto the welcome widget"
@@ -1203,7 +1233,10 @@ fn explicit_new_session_from_welcome_takes_home_draft() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("Ctrl+N must leave home");
     };
-    assert_eq!(app.agents[&id].prompt.text(), "keep me");
+    assert_eq!(
+        app.agents.get(&id).map(|a| a.prompt.text()),
+        Some("keep me")
+    );
     assert!(app.welcome_prompt.text().is_empty());
 }
 
@@ -1262,7 +1295,7 @@ fn keystroke_from_welcome_honors_always_worktree_under_vim() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("keystroke must leave home, got {:?}", app.active_view);
     };
-    assert_eq!(app.agents[&id].prompt.text(), "h");
+    assert_eq!(app.agents.get(&id).map(|a| a.prompt.text()), Some("h"));
 }
 
 #[test]
@@ -1285,7 +1318,7 @@ fn keystroke_from_welcome_in_chat_mode_creates_chat_session() {
     let ActiveView::Agent(id) = app.active_view else {
         panic!("keystroke must leave home, got {:?}", app.active_view);
     };
-    assert_eq!(app.agents[&id].prompt.text(), "h");
+    assert_eq!(app.agents.get(&id).map(|a| a.prompt.text()), Some("h"));
 }
 
 #[test]
@@ -1375,7 +1408,7 @@ fn worktree_create_failure_restores_queued_prompt_to_welcome() {
         panic!("Always send must leave home");
     };
 
-    let _ = handle_worktree_session_failed(&mut app, id, "worktree add failed".into());
+    let _ = handle_worktree_session_failed(&mut app, id, "worktree add failed".into(), None, false);
     assert!(matches!(app.active_view, ActiveView::Welcome));
     assert_eq!(app.welcome_prompt.text(), "keep the worktree prompt");
     assert!(
@@ -1396,7 +1429,11 @@ fn welcome_shift_tab_off_yolo_notifies_after_session_created() {
     app.default_yolo = true;
     maybe_create_home_session(&mut app);
     let home_id = app.home_session_agent.expect("home session");
-    assert!(app.agents[&home_id].session.is_yolo());
+    assert!(
+        app.agents
+            .get(&home_id)
+            .is_some_and(|a| a.session.is_yolo())
+    );
 
     let persist = leave_home_with(&mut app, &key_event(KeyCode::BackTab, KeyModifiers::SHIFT));
     assert!(
@@ -1410,13 +1447,21 @@ fn welcome_shift_tab_off_yolo_notifies_after_session_created() {
         )),
         "pre-bind cycle persists ask without a session id, got {persist:?}"
     );
-    let home = &app.agents[&home_id];
+    let Some(home) = app.agents.get(&home_id) else {
+        panic!("expected agent {home_id:?}");
+    };
     assert!(!home.session.is_yolo());
     assert_eq!(home.deferred_permission_mode, Some("ask"));
 
     // A destructive prompt queued before the bind must not reach the shell ahead of the mode change.
     let _ = dispatch(Action::SendPrompt("rm -rf build".into()), &mut app);
-    let effects = handle_session_created(&mut app, home_id, acp::SessionId::new("yolo-home"), None);
+    let effects = handle_session_created(
+        &mut app,
+        home_id,
+        acp::SessionId::new("yolo-home"),
+        None,
+        None,
+    );
     let notify_at = effects.iter().position(|e| {
         matches!(
             e,
@@ -1434,7 +1479,11 @@ fn welcome_shift_tab_off_yolo_notifies_after_session_created() {
         matches!((notify_at, send_at), (Some(n), Some(s)) if n < s),
         "yolo_mode_changed must precede the drained SendPrompt, got {effects:?}"
     );
-    assert!(app.agents[&home_id].deferred_permission_mode.is_none());
+    assert!(
+        app.agents
+            .get(&home_id)
+            .is_some_and(|a| a.deferred_permission_mode.is_none())
+    );
 }
 
 #[test]
@@ -1454,10 +1503,10 @@ fn session_free_slash_from_always_welcome_keeps_create_effect() {
         panic!("/help must leave home, got {:?}", app.active_view);
     };
     assert!(
-        matches!(
-            app.agents[&id].active_modal,
+        app.agents.get(&id).is_some_and(|a| matches!(
+            a.active_modal,
             Some(crate::views::modal::ActiveModal::CommandPalette { .. })
-        ),
+        )),
         "/help must open the palette"
     );
 }
@@ -1498,7 +1547,7 @@ fn create_fail_restores_all_queued_prompts_and_draft() {
         agent.prompt.set_text("third");
     }
 
-    let _ = handle_session_failed(&mut app, id, "disk full".into());
+    let _ = handle_session_failed(&mut app, id, "disk full".into(), false);
     assert!(matches!(app.active_view, ActiveView::Welcome));
     let restored = app.welcome_prompt.text();
     assert!(

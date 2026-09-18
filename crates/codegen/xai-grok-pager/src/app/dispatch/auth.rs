@@ -24,10 +24,6 @@ fn localized_template(
     message
 }
 
-// ---------------------------------------------------------------------------
-// Auth dispatch
-// ---------------------------------------------------------------------------
-
 /// `/logout`: ask the shell to clear auth, then return to the login screen.
 pub(super) fn dispatch_logout(_app: &mut AppView) -> Vec<Effect> {
     vec![Effect::Logout]

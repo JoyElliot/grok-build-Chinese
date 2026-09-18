@@ -227,8 +227,15 @@ async fn responses_large_tool_result_images_fit_transport_limit() {
     assert!(wire.contains("call-0"));
     assert!(wire.contains("call-5"));
     assert!(wire.contains(LARGE_CONTEXT));
-    let tools = body["tools"].as_array().expect("tools must be attached");
-    assert!(tools.iter().any(|tool| tool["name"] == "read_file"));
+    let tools = body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .expect("tools must be attached");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("name") == Some(&json!("read_file")))
+    );
     assert_eq!(
         source
             .iter()

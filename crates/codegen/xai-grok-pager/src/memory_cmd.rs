@@ -65,17 +65,20 @@ fn global_target(storage: &MemoryStorage) -> ClearTarget {
     }
 }
 
-pub fn run(args: MemoryArgs) -> Result<()> {
-    run_with_locale(args, &LocaleContext::default())
+pub fn run(args: MemoryArgs, mode: xai_grok_shell::config::MemoryMode) -> Result<()> {
+    run_with_locale(args, mode, &LocaleContext::default())
 }
 
-pub fn run_with_locale(args: MemoryArgs, locale: &LocaleContext) -> Result<()> {
+pub fn run_with_locale(
+    args: MemoryArgs,
+    mode: xai_grok_shell::config::MemoryMode,
+    locale: &LocaleContext,
+) -> Result<()> {
     match args.command {
         MemoryCommand::Clear {
             global, all, yes, ..
         } => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-            let mode = xai_grok_shell::config::load_memory_mode()?;
             let storage = MemoryStorage::new_for_mode(&cwd, None, mode);
 
             let targets = if all {

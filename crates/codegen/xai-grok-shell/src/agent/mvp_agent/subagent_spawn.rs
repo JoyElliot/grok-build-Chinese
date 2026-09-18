@@ -246,6 +246,7 @@ impl MvpAgent {
         let inherited_tool_overrides = parent_handle
             .as_ref()
             .and_then(|ps| ps.resolved_tool_overrides.load_full().map(|o| (*o).clone()));
+        let memory_config = self.memory_config_snapshot();
         let mut ctx = crate::agent::subagent::SubagentSpawnContext {
             lsp: parent_lsp,
             process_scope: parent_process_scope,
@@ -291,12 +292,17 @@ impl MvpAgent {
             fs,
             terminal,
             session_env,
-            memory_config: self.memory_config.clone(),
-            memory_mode: self
-                .memory_config
+            memory_config: memory_config.clone(),
+            memory_mode: memory_config
                 .as_ref()
                 .map(|config| config.mode)
-                .unwrap_or_else(|| self.cfg.borrow().memory.mode.unwrap_or_default()),
+                .unwrap_or_else(|| {
+                    if self.cfg.borrow().memory_v2.enabled == Some(true) {
+                        crate::config::MemoryMode::V2
+                    } else {
+                        crate::config::MemoryMode::Legacy
+                    }
+                }),
             web_search_sampling_config: self.prepare_web_search_sampling_config(),
             web_fetch_config: self.prepare_web_fetch_config(),
             image_gen_config: self.prepare_image_gen_config(),
@@ -306,6 +312,10 @@ impl MvpAgent {
                 .cfg
                 .borrow()
                 .is_feature_enabled(crate::agent::config::Feature::WriteFile),
+            active_agent_messages_enabled: self
+                .cfg
+                .borrow()
+                .is_feature_enabled(crate::agent::config::Feature::ActiveAgentMessages),
             goal_enabled: self.cfg.borrow().resolve_goal().value,
             background_workflows_enabled: self.cfg.borrow().resolve_workflows().value,
             ask_user_question_enabled: false,
@@ -385,6 +395,7 @@ impl MvpAgent {
             parent_skills: None,
             parent_skills_config: self.cfg.borrow().skills.clone(),
             parent_compat: self.cfg.borrow().compat_resolved,
+            parent_paths_config: self.cfg.borrow().paths.clone(),
             synthetic_trace_tx: parent_handle
                 .as_ref()
                 .and_then(|h| h.tool_context.synthetic_trace_tx.clone()),

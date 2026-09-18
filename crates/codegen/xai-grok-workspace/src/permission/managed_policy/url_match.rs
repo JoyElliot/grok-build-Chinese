@@ -182,7 +182,7 @@ const ALLOW_PATH_GLOB_OPTS: glob::MatchOptions = glob::MatchOptions {
 /// Split `authority/path…` at the first `/` into `(authority, path)`.
 fn split_authority_path(s: &str) -> (&str, &str) {
     match s.find('/') {
-        Some(i) => (&s[..i], &s[i..]),
+        Some(i) => s.split_at_checked(i).unwrap_or((s, "")),
         None => (s, ""),
     }
 }
@@ -448,22 +448,32 @@ fn decode_unreserved_escapes(path: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%'
+        let Some(&b) = bytes.get(i) else {
+            break;
+        };
+        if b == b'%'
             && i + 2 < bytes.len()
-            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).copied().and_then(hex_val),
+                bytes.get(i + 2).copied().and_then(hex_val),
+            )
         {
             let decoded = hi * 16 + lo;
             if decoded.is_ascii_alphanumeric() || matches!(decoded, b'-' | b'.' | b'_' | b'~') {
                 out.push(decoded);
             } else {
                 out.push(b'%');
-                out.push(bytes[i + 1].to_ascii_uppercase());
-                out.push(bytes[i + 2].to_ascii_uppercase());
+                if let Some(&hi_b) = bytes.get(i + 1) {
+                    out.push(hi_b.to_ascii_uppercase());
+                }
+                if let Some(&lo_b) = bytes.get(i + 2) {
+                    out.push(lo_b.to_ascii_uppercase());
+                }
             }
             i += 3;
             continue;
         }
-        out.push(bytes[i]);
+        out.push(b);
         i += 1;
     }
     // Only ASCII bytes were substituted, so the result stays valid UTF-8.
@@ -602,8 +612,8 @@ fn ipv6_authorities_equal(a: &str, b: &str) -> bool {
     fn parse(authority: &str) -> Option<(std::net::Ipv6Addr, &str)> {
         let rest = authority.strip_prefix('[')?;
         let end = rest.find(']')?;
-        let addr: std::net::Ipv6Addr = rest[..end].parse().ok()?;
-        Some((addr, &rest[end + 1..]))
+        let addr: std::net::Ipv6Addr = rest.get(..end)?.parse().ok()?;
+        Some((addr, rest.get(end + 1..)?))
     }
     fn ports_equal(a: &str, b: &str) -> bool {
         match (
@@ -625,7 +635,10 @@ fn ipv6_authorities_equal(a: &str, b: &str) -> bool {
 /// Split `scheme://rest` into `(Some(scheme), rest)`, or `(None, s)`.
 fn split_scheme(s: &str) -> (Option<&str>, &str) {
     match s.find("://") {
-        Some(i) => (Some(&s[..i]), &s[i + 3..]),
+        Some(i) => match (s.get(..i), s.get(i + 3..)) {
+            (Some(scheme), Some(rest)) => (Some(scheme), rest),
+            _ => (None, s),
+        },
         None => (None, s),
     }
 }
@@ -765,11 +778,13 @@ fn parse_ip_host(host: &str) -> Option<std::net::IpAddr> {
 /// Runtime URLs must use [`RuntimeUrl`]: hand-splitting diverges from the connect target.
 fn split_host_path(s: &str) -> (Option<String>, String) {
     let after_scheme = match s.find("://") {
-        Some(i) => &s[i + 3..],
+        Some(i) => s.get(i + 3..).unwrap_or(s),
         None => s,
     };
     let (authority, path) = match after_scheme.find('/') {
-        Some(i) => (&after_scheme[..i], &after_scheme[i..]),
+        Some(i) => after_scheme
+            .split_at_checked(i)
+            .unwrap_or((after_scheme, "")),
         None => (after_scheme, ""),
     };
     // Drop userinfo then port; IPv6 keeps its colons. A decimal suffix is also a hextet, but `host:port` wins so `…::1:443` does not under-block
@@ -777,7 +792,7 @@ fn split_host_path(s: &str) -> (Option<String>, String) {
     let authority = authority.rsplit('@').next().unwrap_or(authority);
     let bracket_ipv6 = authority.strip_prefix('[').and_then(|rest| {
         let content = match rest.find(']') {
-            Some(i) => &rest[..i],
+            Some(i) => rest.get(..i).unwrap_or(rest),
             None => rest,
         };
         content

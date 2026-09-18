@@ -248,6 +248,19 @@ impl AgentView {
                         xai_grok_telemetry::events::AnnouncementCtaSurface::Header,
                     ));
                 }
+                if self.hit_dashboard.contains(mouse.column, mouse.row) {
+                    return InputOutcome::Action(if self.in_dashboard_overlay {
+                        Action::DashboardOverlayExit
+                    } else {
+                        Action::OpenDashboard
+                    });
+                }
+                if self.hit_overlay_prev.contains(mouse.column, mouse.row) {
+                    return InputOutcome::Action(Action::DashboardOverlayPrev);
+                }
+                if self.hit_overlay_next.contains(mouse.column, mouse.row) {
+                    return InputOutcome::Action(Action::DashboardOverlayNext);
+                }
                 if self.hit_cwd.contains(mouse.column, mouse.row) {
                     let path = self.session.cwd.display().to_string();
                     self.copy_to_clipboard(&path);
@@ -445,12 +458,22 @@ impl AgentView {
                             }
                             return InputOutcome::Action(action);
                         }
-                        self.set_active_pane(AgentPane::Dock, false);
                         match item {
                             Some(item) => {
-                                let items = self.dock_items();
-                                if let Some(idx) = items.iter().position(|it| *it == item) {
-                                    self.dock_cursor = idx;
+                                let collapsing_header = matches!(
+                                    item,
+                                    crate::views::dock::DockItem::Header(section)
+                                        if self.is_dock_section_expanded(section)
+                                );
+                                if !collapsing_header {
+                                    self.set_active_pane(AgentPane::Dock, false);
+                                    if let Some(idx) =
+                                        self.dock_items().iter().position(|it| *it == item)
+                                    {
+                                        self.dock_cursor = idx;
+                                    }
+                                } else if self.active_pane == AgentPane::Dock {
+                                    self.set_active_pane(AgentPane::Prompt, false);
                                 }
                                 self.activate_dock_item(item);
                                 self.dock_hovered =
@@ -458,7 +481,10 @@ impl AgentView {
                                 self.cache_dock_stop_button();
                                 InputOutcome::Changed
                             }
-                            None => InputOutcome::Changed,
+                            None => {
+                                self.set_active_pane(AgentPane::Dock, false);
+                                InputOutcome::Changed
+                            }
                         }
                     }
                     Some(AgentPane::Todo) => {
@@ -1084,6 +1110,9 @@ impl AgentView {
                 changed |= self.hit_bg_close.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_catalog_close.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_cwd.update_hover(mouse.column, mouse.row);
+                changed |= self.hit_dashboard.update_hover(mouse.column, mouse.row);
+                changed |= self.hit_overlay_prev.update_hover(mouse.column, mouse.row);
+                changed |= self.hit_overlay_next.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_upgrade_cta.update_hover(mouse.column, mouse.row);
                 {
                     let new_kill = self
@@ -1243,6 +1272,25 @@ impl AgentView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected index {i}, len {}", xs.len());
+        };
+        x
+    }
+    fn front_nth<T>(xs: &std::collections::VecDeque<T>, i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected index {i}, len {}", xs.len());
+        };
+        x
+    }
+    fn front_nth_mut<T>(xs: &mut std::collections::VecDeque<T>, i: usize) -> &mut T {
+        let len = xs.len();
+        let Some(x) = xs.get_mut(i) else {
+            panic!("expected index {i}, len {len}");
+        };
+        x
+    }
     use crate::app::agent::AgentState;
     use crate::app::agent_view::PromptMode;
     use crate::app::agent_view::test_fixtures::{
@@ -1307,7 +1355,7 @@ mod tests {
             prompt_id: "task-completed-bg1".into(),
             cancel_sent: false,
         });
-        let id = active.queue.entry_ids()[0];
+        let id = *nth(&active.queue.entry_ids(), 0);
         assert!(matches!(
             click_send_now(&mut active, id),
             InputOutcome::Action(Action::SendPromptNow { .. })
@@ -1321,7 +1369,7 @@ mod tests {
         cancelling
             .queue
             .list_state
-            .select_by_id(cancelling.queue.entry_ids()[0]);
+            .select_by_id(*nth(&cancelling.queue.entry_ids(), 0));
         let area = Rect::new(0, 0, 80, 6);
         let mut buf = Buffer::empty(area);
         cancelling.queue.render(
@@ -1343,11 +1391,11 @@ mod tests {
     fn mouse_send_now_last_local_row_keeps_pane_open_when_server_remains() {
         let mut agent = make_running_agent();
         agent.active_pane = AgentPane::Queue;
-        agent.session.pending_prompts[0]
+        front_nth_mut(&mut agent.session.pending_prompts, 0)
             .images
             .push(test_pasted_image());
         let ids = agent.queue.entry_ids();
-        let outcome = click_send_now(&mut agent, ids[1]);
+        let outcome = click_send_now(&mut agent, *nth(&ids, 1));
         match outcome {
             InputOutcome::Action(Action::SendPromptNow { text, images }) => {
                 assert_eq!(text, "local one");
@@ -1367,7 +1415,7 @@ mod tests {
         let mut agent = running_agent_local_only();
         let ids = agent.queue.entry_ids();
         assert_eq!(ids.len(), 1);
-        let outcome = click_send_now(&mut agent, ids[0]);
+        let outcome = click_send_now(&mut agent, *nth(&ids, 0));
         match outcome {
             InputOutcome::Action(Action::SendPromptNow { text, .. }) => {
                 assert_eq!(text, "local one")
@@ -1394,13 +1442,13 @@ mod tests {
             image_undo_stash: Vec::new(),
         });
         agent.prompt_mode = PromptMode::EditingQueued {
-            id: ids[0],
+            id: *nth(&ids, 0),
             original: "local one".into(),
             server_id: None,
             kind: crate::app::agent::QueueEntryKind::Prompt,
         };
         agent.prompt.set_text("local one EDITED");
-        let outcome = click_send_now(&mut agent, ids[0]);
+        let outcome = click_send_now(&mut agent, *nth(&ids, 0));
         match outcome {
             InputOutcome::Action(Action::SendPromptNow { text, .. }) => {
                 assert_eq!(text, "local one")
@@ -1440,19 +1488,22 @@ mod tests {
             image_undo_stash: Vec::new(),
         });
         agent.prompt_mode = PromptMode::EditingQueued {
-            id: ids[0],
+            id: *nth(&ids, 0),
             original: "local one".into(),
             server_id: None,
             kind: crate::app::agent::QueueEntryKind::Prompt,
         };
         agent.prompt.set_text("local one EDITED");
-        let outcome = click_delete(&mut agent, ids[0]);
+        let outcome = click_delete(&mut agent, *nth(&ids, 0));
         assert!(
             matches!(outcome, InputOutcome::Action(Action::DrainQueue)),
             "deleting the edited front row must kick the drain, got {outcome:?}"
         );
         assert_eq!(agent.session.pending_prompts.len(), 1);
-        assert_eq!(agent.session.pending_prompts[0].text, "local two");
+        assert_eq!(
+            front_nth(&agent.session.pending_prompts, 0).text,
+            "local two"
+        );
         assert!(matches!(agent.prompt_mode, PromptMode::Normal));
         assert!(agent.active_modal.is_none());
         assert_eq!(agent.prompt.text(), "draft");
@@ -1463,7 +1514,7 @@ mod tests {
     fn mouse_edit_click_enters_queued_edit_mode() {
         let mut agent = running_agent_local_only();
         let ids = agent.queue.entry_ids();
-        let outcome = click_edit(&mut agent, ids[0]);
+        let outcome = click_edit(&mut agent, *nth(&ids, 0));
         assert!(
             matches!(outcome, InputOutcome::Changed),
             "edit click redraws without dispatching an action, got {outcome:?}"
@@ -1475,7 +1526,7 @@ mod tests {
                 server_id,
                 ..
             } => {
-                assert_eq!(*id, ids[0]);
+                assert_eq!(*id, *nth(&ids, 0));
                 assert_eq!(original, "local one");
                 assert!(
                     server_id.is_none(),
@@ -1504,18 +1555,22 @@ mod tests {
             image_undo_stash: Vec::new(),
         });
         agent.prompt_mode = PromptMode::EditingQueued {
-            id: ids[1],
+            id: *nth(&ids, 1),
             original: "local one".into(),
             server_id: None,
             kind: crate::app::agent::QueueEntryKind::Prompt,
         };
         agent.prompt.set_text("local one EDITED");
         agent.active_pane = AgentPane::Prompt;
-        let outcome = click_edit(&mut agent, ids[0]);
+        let outcome = click_edit(&mut agent, *nth(&ids, 0));
         assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
         match &agent.prompt_mode {
             PromptMode::EditingQueued { id, original, .. } => {
-                assert_eq!(*id, ids[1], "the first edit's target row must survive");
+                assert_eq!(
+                    *id,
+                    *nth(&ids, 1),
+                    "the first edit's target row must survive"
+                );
                 assert_eq!(original, "local one");
             }
             other => panic!("expected the first edit to stay active, got {other:?}"),
@@ -1538,18 +1593,22 @@ mod tests {
         let mut agent = make_running_agent();
         let ids = agent.queue.entry_ids();
         agent.prompt_mode = PromptMode::EditingQueued {
-            id: ids[0],
+            id: *nth(&ids, 0),
             original: "server one".into(),
             server_id: Some("p1".into()),
             kind: crate::app::agent::QueueEntryKind::Prompt,
         };
         agent.prompt.set_text("server one EDITED");
         agent.active_pane = AgentPane::Prompt;
-        let outcome = click_edit(&mut agent, ids[1]);
+        let outcome = click_edit(&mut agent, *nth(&ids, 1));
         assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
         match &agent.prompt_mode {
             PromptMode::EditingQueued { id, server_id, .. } => {
-                assert_eq!(*id, ids[0], "the held server row must stay the edit target");
+                assert_eq!(
+                    *id,
+                    *nth(&ids, 0),
+                    "the held server row must stay the edit target"
+                );
                 assert_eq!(server_id.as_deref(), Some("p1"));
             }
             other => panic!("expected the server edit to stay active, got {other:?}"),
@@ -1576,14 +1635,14 @@ mod tests {
             image_undo_stash: Vec::new(),
         });
         agent.prompt_mode = PromptMode::EditingQueued {
-            id: ids[0],
+            id: *nth(&ids, 0),
             original: "server one".into(),
             server_id: Some("p1".into()),
             kind: crate::app::agent::QueueEntryKind::Prompt,
         };
         agent.prompt.set_text("server one");
         agent.active_pane = AgentPane::Prompt;
-        let outcome = click_edit(&mut agent, ids[1]);
+        let outcome = click_edit(&mut agent, *nth(&ids, 1));
         assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
         match &agent.prompt_mode {
             PromptMode::EditingQueued {
@@ -1592,7 +1651,11 @@ mod tests {
                 server_id,
                 ..
             } => {
-                assert_eq!(*id, ids[1], "one click must open the clicked row's edit");
+                assert_eq!(
+                    *id,
+                    *nth(&ids, 1),
+                    "one click must open the clicked row's edit"
+                );
                 assert_eq!(original, "local one");
                 assert!(server_id.is_none());
             }
@@ -1619,7 +1682,7 @@ mod tests {
         let mut agent = make_running_agent();
         agent.optimistic_queue_ids.insert("p1".into());
         let ids = agent.queue.entry_ids();
-        let outcome = click_edit(&mut agent, ids[0]);
+        let outcome = click_edit(&mut agent, *nth(&ids, 0));
         assert!(matches!(outcome, InputOutcome::Changed), "got {outcome:?}");
         assert!(
             matches!(agent.prompt_mode, PromptMode::Normal),
@@ -1647,7 +1710,7 @@ mod tests {
         let suggestions = agent.follow_ups.as_ref().unwrap().suggestions.clone();
         agent.follow_up_chips =
             crate::views::agent::render_follow_ups(area, &mut buf, &theme, &suggestions, None);
-        let r = agent.follow_up_chips[0];
+        let r = *nth(&agent.follow_up_chips, 0);
         let outcome = agent.handle_mouse(&MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: r.x + 1,

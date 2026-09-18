@@ -19,10 +19,6 @@ use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, ModalWindowState, Shortcut,
 };
 
-// ---------------------------------------------------------------------------
-// Field enum
-// ---------------------------------------------------------------------------
-
 /// Navigable fields in the persona detail view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersonaField {
@@ -68,12 +64,18 @@ impl PersonaField {
 
     fn next(self) -> Self {
         let idx = Self::ALL.iter().position(|&f| f == self).unwrap_or(0);
-        Self::ALL[(idx + 1) % Self::ALL.len()]
+        Self::ALL
+            .get((idx + 1) % Self::ALL.len())
+            .copied()
+            .unwrap_or(self)
     }
 
     fn prev(self) -> Self {
         let idx = Self::ALL.iter().position(|&f| f == self).unwrap_or(0);
-        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+        Self::ALL
+            .get((idx + Self::ALL.len() - 1) % Self::ALL.len())
+            .copied()
+            .unwrap_or(self)
     }
 
     /// True for fields that support inline text editing.
@@ -97,10 +99,6 @@ fn persona_text(locale: Option<&LocaleContext>, id: &str, english: &str) -> Stri
         .unwrap_or_else(|| english.to_owned())
 }
 
-// ---------------------------------------------------------------------------
-// Mode state machine
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 enum PersonaDetailMode {
     Browse,
@@ -110,10 +108,6 @@ enum PersonaDetailMode {
         original: String,
     },
 }
-
-// ---------------------------------------------------------------------------
-// Outcome
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub enum PersonaDetailOutcome {
@@ -127,10 +121,6 @@ pub enum PersonaDetailOutcome {
     EditInEditor { path: PathBuf },
 }
 
-// ---------------------------------------------------------------------------
-// I/O entry
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct PersonaIOEntry {
     pub name: String,
@@ -138,10 +128,6 @@ pub struct PersonaIOEntry {
     pub required: bool,
     pub description: String,
 }
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
 
 pub struct PersonaDetailState {
     pub window: ModalWindowState,
@@ -379,7 +365,7 @@ impl PersonaDetailState {
             if value.is_empty() {
                 doc.remove(key);
             } else {
-                doc[key] = toml_edit::value(value);
+                doc.insert(key, toml_edit::value(value));
             }
         }
 
@@ -395,10 +381,6 @@ impl PersonaDetailState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
 fn render_detail_editor(
     buf: &mut Buffer,
     x: u16,
@@ -409,7 +391,7 @@ fn render_detail_editor(
     theme: &Theme,
 ) {
     let viewport = editor.viewport(width);
-    let visible = &editor.text()[viewport.visible_byte_range];
+    let visible = editor.text().get(viewport.visible_byte_range).unwrap_or("");
     buf.set_string(x, y, visible, style);
     if width > 0 {
         let cursor_x = x + viewport.cursor_display_column as u16;
@@ -591,7 +573,9 @@ pub fn render_persona_detail_with_locale(
                         .instructions_scroll
                         .min(total.saturating_sub(viewport_h));
                     state.instructions_scroll = scroll;
-                    let visible = &lines[scroll..total.min(scroll + viewport_h)];
+                    let visible = lines
+                        .get(scroll..total.min(scroll + viewport_h))
+                        .unwrap_or(&[]);
                     for (i, line) in visible.iter().enumerate() {
                         let x_pos = if i == 0 && scroll == 0 {
                             value_x
@@ -821,10 +805,6 @@ fn build_shortcuts_with_locale(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Input handling
-// ---------------------------------------------------------------------------
-
 pub fn handle_persona_detail_key(
     state: &mut PersonaDetailState,
     key: &KeyEvent,
@@ -1039,10 +1019,6 @@ pub fn handle_persona_detail_mouse(
         _ => PersonaDetailOutcome::Unchanged,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn word_wrap_lines(text: &str, max_width: usize) -> Vec<String> {
     let mut lines = Vec::new();

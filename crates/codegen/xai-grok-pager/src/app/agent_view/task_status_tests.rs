@@ -52,7 +52,6 @@ fn draw_frame(agent: &mut AgentView, registry: &ActionRegistry) -> Buffer {
         },
         &bundle,
         false,
-        false,
         &mut Vec::new(),
         AppRenderParams::default(),
     );
@@ -86,7 +85,11 @@ fn paused_status_has_one_click_target_that_clears_when_terminal() {
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(!agent.tasks.overlay.visible && !agent.tasks.overlay.focused);
     assert_eq!(agent.active_pane, AgentPane::Scrollback);
-    agent.workflow_runs[0].status = "complete".to_owned();
+    agent
+        .workflow_runs
+        .first_mut()
+        .unwrap_or_else(|| panic!("missing index"))
+        .status = "complete".to_owned();
     let _ = draw_frame(&mut agent, &registry);
     assert!(agent.hit_bg_status.rect.is_none());
 }

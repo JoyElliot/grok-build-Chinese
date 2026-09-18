@@ -10,10 +10,19 @@ use std::path::{Component, Path, PathBuf};
 
 use xai_grok_tools::types::memory_v2::{MemoryV2Access, MemoryV2Write};
 
-use crate::v2::{V2ManifestBudget, V2MemoryScope, V2StorageError, regenerate_scope_manifest};
+use crate::v2::{
+    V2ManifestBudget, V2MemoryScope, V2StorageError, bump_manifest_revision,
+    bump_manifest_revision_in_transaction, is_durably_excluded, regenerate_scope_manifest,
+};
 
 const MAX_PREVIOUS_CONTENT_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_WRITE_CONTENT_BYTES: usize = crate::v2::MAX_MANUAL_OBSERVATION_BYTES;
+/// Largest topic a write may produce. Dream's `read_topics` and forget both
+/// refuse larger files, so accepting one here would make every later Dream fail.
+pub(crate) const MAX_TOPIC_FILE_BYTES: u64 = 256 * 1024;
+/// Largest inbox observation a write may produce. Mirrors the private
+/// `MAX_OBSERVATION_FILE_BYTES` in `v2_capture.rs`, which is the source of
+/// truth for what capture recovery and Dream are willing to read back.
+const MAX_WRITE_OBSERVATION_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V2PathClass {
@@ -21,6 +30,10 @@ pub enum V2PathClass {
     Manifest(V2MemoryScope),
     Topic(V2MemoryScope),
     Observation(V2MemoryScope),
+    ArchivedObservation(V2MemoryScope),
+    /// A path nested below `topics/` or `observations/_inbox/`. Manifest
+    /// generation, browse, Dream input, and capture recovery only list
+    /// immediate children, so such files would be invisible.
     Nested(V2MemoryScope),
     Protected(V2MemoryScope),
 }
@@ -33,6 +46,7 @@ impl V2PathClass {
             | Self::Topic(scope)
             | Self::Observation(scope)
             | Self::Nested(scope)
+            | Self::ArchivedObservation(scope)
             | Self::Protected(scope) => Some(scope),
         }
     }
@@ -70,6 +84,18 @@ pub enum V2AccessError {
     Stale(PathBuf),
     #[error("memory v2 file is too large to edit safely (limit: {limit_bytes} bytes): {path}")]
     TooLarge { path: PathBuf, limit_bytes: u64 },
+    #[error("memory v2 path is durably excluded and cannot be recreated: {0}")]
+    Excluded(PathBuf),
+    #[error(
+        "memory v2 observations are append-only; create a new observation file or record the correction in a topic instead of editing {0}"
+    )]
+    ImmutableObservation(PathBuf),
+    #[error("failed to inspect memory v2 durable exclusions for {path}: {source}")]
+    ExclusionState {
+        path: PathBuf,
+        #[source]
+        source: V2StorageError,
+    },
     #[error("failed to atomically write memory v2 file {path}: {source}")]
     Write {
         path: PathBuf,
@@ -144,6 +170,12 @@ impl V2MemoryAccessPolicy {
         ]
         .into_iter()
         .find_map(|(root, scope)| classify_against_root(path, root, scope));
+        let configured_scope = [
+            (&self.workspace_root, V2MemoryScope::Workspace),
+            (&self.global_root, V2MemoryScope::Global),
+        ]
+        .into_iter()
+        .find_map(|(root, scope)| path.strip_prefix(root).ok().map(|_| scope));
         let resolved = resolve_nearest_existing(path)?;
         let resolved_class = [
             (&self.workspace_canonical_root, V2MemoryScope::Workspace),
@@ -153,6 +185,15 @@ impl V2MemoryAccessPolicy {
         .find_map(|(root, scope)| classify_against_root(&resolved, root, scope));
 
         if let Some(resolved_class) = resolved_class {
+            if configured_class.is_none()
+                && let Some(scope) = configured_scope
+            {
+                return Ok(if matches!(resolved_class, V2PathClass::Manifest(_)) {
+                    resolved_class
+                } else {
+                    V2PathClass::Protected(scope)
+                });
+            }
             if configured_class
                 .and_then(V2PathClass::scope)
                 .is_some_and(|scope| Some(scope) != resolved_class.scope())
@@ -162,6 +203,131 @@ impl V2MemoryAccessPolicy {
             return Ok(resolved_class);
         }
         Ok(configured_class.unwrap_or(V2PathClass::Outside))
+    }
+
+    /// Remove a previously read topic file with the same containment and stale
+    /// snapshot checks used by ordinary v2 writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`V2AccessError::Protected`] unless `path` is a topic Markdown
+    /// file, or [`V2AccessError::ReadRequired`] / [`V2AccessError::Stale`] when
+    /// the caller has not observed the current bytes.
+    pub fn remove_topic_file(&self, path: &Path) -> V2AccessResult<()> {
+        self.remove_topic_file_inner(path, None)
+    }
+
+    pub(crate) fn remove_topic_file_in_transaction(
+        &self,
+        path: &Path,
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> V2AccessResult<()> {
+        self.remove_topic_file_inner(path, Some(transaction))
+    }
+
+    fn remove_topic_file_inner(
+        &self,
+        path: &Path,
+        transaction: Option<&rusqlite::Transaction<'_>>,
+    ) -> V2AccessResult<()> {
+        let _write_guard = self.write_lock.lock();
+        let class = self.classify_path(path)?;
+        if matches!(class, V2PathClass::Nested(_)) {
+            return Err(V2AccessError::NestedPath(path.to_path_buf()));
+        }
+        if !matches!(class, V2PathClass::Topic(_)) {
+            return Err(V2AccessError::Protected(path.to_path_buf()));
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            return Err(V2AccessError::NonMarkdown(path.to_path_buf()));
+        }
+        let canonical = self.validate_containment(path, class)?;
+        let metadata =
+            std::fs::symlink_metadata(&canonical).map_err(|source| V2AccessError::Inspect {
+                path: canonical.clone(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() || metadata.len() > MAX_TOPIC_FILE_BYTES {
+            return Err(V2AccessError::Inspect {
+                path: canonical.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "topic is not a bounded regular file",
+                ),
+            });
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        std::fs::File::open(&canonical)
+            .and_then(|mut file| {
+                std::io::Read::by_ref(&mut file)
+                    .take(MAX_TOPIC_FILE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .map_err(|source| V2AccessError::Inspect {
+                path: canonical.clone(),
+                source,
+            })?;
+        if bytes.len() as u64 > MAX_TOPIC_FILE_BYTES {
+            return Err(V2AccessError::Inspect {
+                path: canonical.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "topic exceeds its read limit",
+                ),
+            });
+        }
+        let observed_hash = blake3::hash(&bytes);
+        let snapshots = self.snapshots.lock();
+        let Some(expected) = snapshots.get(&canonical) else {
+            return Err(V2AccessError::ReadRequired(canonical));
+        };
+        if *expected != observed_hash {
+            return Err(V2AccessError::Stale(canonical));
+        }
+        drop(snapshots);
+        std::fs::remove_file(&canonical).map_err(|source| V2AccessError::Write {
+            path: canonical.clone(),
+            source,
+        })?;
+        self.snapshots.lock().remove(&canonical);
+        let scope = class
+            .scope()
+            .ok_or_else(|| V2AccessError::EscapesScope(path.to_path_buf()))?;
+        self.refresh_manifest(scope, transaction)
+            .map_err(|source| {
+                // The manifest makes deletion observable. Restore the topic on a refresh
+                // failure so the caller can retry from the same snapshot.
+                match persist_atomically(&canonical, &bytes, true) {
+                    Ok(()) => {
+                        self.snapshots
+                            .lock()
+                            .insert(canonical.clone(), observed_hash);
+                        V2AccessError::ManifestRefresh { source }
+                    }
+                    Err(rollback) => V2AccessError::ManifestRefreshRollback {
+                        source,
+                        rollback: Box::new(rollback),
+                    },
+                }
+            })?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_read_typed(&self, path: &Path) -> V2AccessResult<bool> {
+        self.validate_read_inner(path)
+    }
+
+    pub(crate) fn record_read_typed(&self, path: &Path, contents: &[u8]) -> V2AccessResult<()> {
+        self.record_read_inner(path, contents)
+    }
+
+    pub(crate) fn write_file_typed_in_transaction(
+        &self,
+        path: &Path,
+        contents: &[u8],
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> V2AccessResult<MemoryV2Write> {
+        self.write_file_inner_with_transaction(path, contents, Some(transaction))
     }
 
     fn root_for_scope(&self, scope: V2MemoryScope) -> &Path {
@@ -176,6 +342,21 @@ impl V2MemoryAccessPolicy {
             V2MemoryScope::Global => &self.global_canonical_root,
             V2MemoryScope::Workspace => &self.workspace_canonical_root,
         }
+    }
+
+    fn refresh_manifest(
+        &self,
+        scope: V2MemoryScope,
+        transaction: Option<&rusqlite::Transaction<'_>>,
+    ) -> std::result::Result<(), V2StorageError> {
+        let root = self.root_for_scope(scope);
+        match transaction {
+            Some(transaction) => bump_manifest_revision_in_transaction(root, transaction),
+            None => bump_manifest_revision(root),
+        }
+        .and_then(|()| {
+            regenerate_scope_manifest(root, scope, V2ManifestBudget::default()).map(|_| ())
+        })
     }
 
     fn validate_containment(&self, path: &Path, class: V2PathClass) -> V2AccessResult<PathBuf> {
@@ -203,7 +384,21 @@ impl V2MemoryAccessPolicy {
         if class == V2PathClass::Outside {
             return Ok(false);
         }
-        self.validate_containment(path, class)?;
+        let canonical = self.validate_containment(path, class)?;
+        let scope = class
+            .scope()
+            .ok_or_else(|| V2AccessError::EscapesScope(path.to_path_buf()))?;
+        let relative = canonical
+            .strip_prefix(self.canonical_root_for_scope(scope))
+            .map_err(|_| V2AccessError::EscapesScope(path.to_path_buf()))?;
+        if is_durably_excluded(self.root_for_scope(scope), relative).map_err(|source| {
+            V2AccessError::ExclusionState {
+                path: path.to_path_buf(),
+                source,
+            }
+        })? {
+            return Err(V2AccessError::Excluded(path.to_path_buf()));
+        }
         Ok(true)
     }
 
@@ -227,12 +422,6 @@ impl V2MemoryAccessPolicy {
         if class == V2PathClass::Outside {
             return Ok(None);
         }
-        if contents.len() > MAX_WRITE_CONTENT_BYTES {
-            return Err(V2AccessError::TooLarge {
-                path: path.to_path_buf(),
-                limit_bytes: MAX_WRITE_CONTENT_BYTES as u64,
-            });
-        }
         if matches!(class, V2PathClass::Nested(_)) {
             return Err(V2AccessError::NestedPath(path.to_path_buf()));
         }
@@ -242,8 +431,37 @@ impl V2MemoryAccessPolicy {
         if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
             return Err(V2AccessError::NonMarkdown(path.to_path_buf()));
         }
+        let limit_bytes = match class {
+            V2PathClass::Observation(_) => MAX_WRITE_OBSERVATION_BYTES,
+            _ => MAX_TOPIC_FILE_BYTES,
+        };
+        if contents.len() as u64 > limit_bytes {
+            return Err(V2AccessError::TooLarge {
+                path: path.to_path_buf(),
+                limit_bytes,
+            });
+        }
 
         let canonical = self.validate_containment(path, class)?;
+        let scope = class
+            .scope()
+            .ok_or_else(|| V2AccessError::EscapesScope(path.to_path_buf()))?;
+        let relative = canonical
+            .strip_prefix(self.canonical_root_for_scope(scope))
+            .map_err(|_| V2AccessError::EscapesScope(path.to_path_buf()))?;
+        if is_durably_excluded(self.root_for_scope(scope), relative).map_err(|source| {
+            V2AccessError::ExclusionState {
+                path: path.to_path_buf(),
+                source,
+            }
+        })? {
+            return Err(V2AccessError::Excluded(path.to_path_buf()));
+        }
+        if matches!(class, V2PathClass::Observation(_))
+            && std::fs::symlink_metadata(&canonical).is_ok()
+        {
+            return Err(V2AccessError::ImmutableObservation(path.to_path_buf()));
+        }
         let previous_content = match read_previous_content(&canonical) {
             Ok(bytes) => {
                 let snapshots = self.snapshots.lock();
@@ -276,6 +494,15 @@ impl V2MemoryAccessPolicy {
     }
 
     fn write_file_inner(&self, path: &Path, contents: &[u8]) -> V2AccessResult<MemoryV2Write> {
+        self.write_file_inner_with_transaction(path, contents, None)
+    }
+
+    fn write_file_inner_with_transaction(
+        &self,
+        path: &Path,
+        contents: &[u8],
+        transaction: Option<&rusqlite::Transaction<'_>>,
+    ) -> V2AccessResult<MemoryV2Write> {
         let _write_guard = self.write_lock.lock();
         let Some(validated) = self.validate_write_locked(path, contents)? else {
             return Ok(MemoryV2Write::Outside);
@@ -301,28 +528,26 @@ impl V2MemoryAccessPolicy {
         let scope = class
             .scope()
             .ok_or_else(|| V2AccessError::EscapesScope(path.to_path_buf()))?;
-        regenerate_scope_manifest(
-            self.root_for_scope(scope),
-            scope,
-            V2ManifestBudget::default(),
-        )
-        .map_err(|source| {
-            let rollback = if let Some(previous_content) = previous_content.as_deref() {
-                persist_atomically(&canonical, previous_content, false)
-            } else {
-                std::fs::remove_file(&canonical).map_err(|rollback_source| V2AccessError::Write {
-                    path: canonical.clone(),
-                    source: rollback_source,
-                })
-            };
-            match rollback {
-                Ok(()) => V2AccessError::ManifestRefresh { source },
-                Err(rollback) => V2AccessError::ManifestRefreshRollback {
-                    source,
-                    rollback: Box::new(rollback),
-                },
-            }
-        })?;
+        self.refresh_manifest(scope, transaction)
+            .map_err(|source| {
+                let rollback = if let Some(previous_content) = previous_content.as_deref() {
+                    persist_atomically(&canonical, previous_content, false)
+                } else {
+                    std::fs::remove_file(&canonical).map_err(|rollback_source| {
+                        V2AccessError::Write {
+                            path: canonical.clone(),
+                            source: rollback_source,
+                        }
+                    })
+                };
+                match rollback {
+                    Ok(()) => V2AccessError::ManifestRefresh { source },
+                    Err(rollback) => V2AccessError::ManifestRefreshRollback {
+                        source,
+                        rollback: Box::new(rollback),
+                    },
+                }
+            })?;
         self.snapshots
             .lock()
             .insert(canonical, blake3::hash(contents));
@@ -365,10 +590,12 @@ fn canonicalize_root(root: &Path) -> V2AccessResult<PathBuf> {
 
 fn classify_against_root(path: &Path, root: &Path, scope: V2MemoryScope) -> Option<V2PathClass> {
     let relative = path.strip_prefix(root).ok()?;
-    if relative
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
         return None;
     }
     if relative == Path::new("MEMORY.md") {
@@ -387,6 +614,9 @@ fn classify_against_root(path: &Path, root: &Path, scope: V2MemoryScope) -> Opti
         } else {
             V2PathClass::Observation(scope)
         });
+    }
+    if relative.starts_with(Path::new("archive")) {
+        return Some(V2PathClass::ArchivedObservation(scope));
     }
     Some(V2PathClass::Protected(scope))
 }

@@ -256,15 +256,19 @@ fn evict_images_to_budget(
         }
         match location {
             ImageLocation::User { item, part } => {
-                let ConversationItem::User(user) = &mut conversation[item] else {
-                    unreachable!("image location must retain its item variant")
+                let Some(ConversationItem::User(user)) = conversation.get_mut(item) else {
+                    continue;
                 };
-                user.content[part] = placeholder.clone();
+                let Some(slot) = user.content.get_mut(part) else {
+                    continue;
+                };
+                *slot = placeholder.clone();
                 running = running.saturating_sub(image_bytes.saturating_sub(placeholder_bytes));
             }
             ImageLocation::ToolResult { item } => {
-                let ConversationItem::ToolResult(tool_result) = &mut conversation[item] else {
-                    unreachable!("image location must retain its item variant")
+                let Some(ConversationItem::ToolResult(tool_result)) = conversation.get_mut(item)
+                else {
+                    continue;
                 };
                 let image_index = tool_result
                     .images
@@ -346,14 +350,17 @@ mod tests {
 
     fn expected_after_three_evictions() -> Vec<ConversationItem> {
         let mut expected = mixed_history();
-        let ConversationItem::User(user) = &mut expected[0] else {
-            unreachable!()
+        let Some(ConversationItem::User(user)) = expected.get_mut(0) else {
+            panic!("expected user item: {expected:?}");
         };
-        user.content[1] = ContentPart::Text {
+        let Some(slot) = user.content.get_mut(1) else {
+            panic!("expected image part: {:?}", user.content);
+        };
+        *slot = ContentPart::Text {
             text: IMAGE_COMPACT_PLACEHOLDER.into(),
         };
-        let ConversationItem::ToolResult(tool_result) = &mut expected[2] else {
-            unreachable!()
+        let Some(ConversationItem::ToolResult(tool_result)) = expected.get_mut(2) else {
+            panic!("expected tool result: {expected:?}");
         };
         tool_result.images.remove(1);
         tool_result.images.remove(1);
@@ -423,8 +430,8 @@ mod tests {
             budgeted.outcome.body_bytes_after,
             serde_json::to_vec(&budgeted.items).unwrap().len()
         );
-        let ConversationItem::ToolResult(tool_result) = &budgeted.items[2] else {
-            unreachable!()
+        let Some(ConversationItem::ToolResult(tool_result)) = budgeted.items.get(2) else {
+            panic!("expected tool result: {:?}", budgeted.items);
         };
         assert_eq!(tool_result.tool_call_id, "call-1");
         assert_eq!(
@@ -436,13 +443,13 @@ mod tests {
             1
         );
         assert!(
-            matches!(&tool_result.images[..], [ContentPart::Text { text }, ContentPart::Image { url }] if text.as_ref() == "metadata" && url.contains('C'))
+            matches!(tool_result.images.as_slice(), [ContentPart::Text { text }, ContentPart::Image { url }] if text.as_ref() == "metadata" && url.contains('C'))
         );
         assert!(
-            matches!(&budgeted.items[3], ConversationItem::User(user) if matches!(user.content.first(), Some(ContentPart::Image { url }) if url.contains('N')))
+            matches!(budgeted.items.get(3), Some(ConversationItem::User(user)) if matches!(user.content.first(), Some(ContentPart::Image { url }) if url.contains('N')))
         );
         assert!(
-            matches!(&budgeted.items[5], ConversationItem::ToolResult(result) if matches!(result.images.first(), Some(ContentPart::Image { url }) if url.contains('Z')))
+            matches!(budgeted.items.get(5), Some(ConversationItem::ToolResult(result)) if matches!(result.images.first(), Some(ContentPart::Image { url }) if url.contains('Z')))
         );
     }
 

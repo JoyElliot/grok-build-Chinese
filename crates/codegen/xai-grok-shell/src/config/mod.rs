@@ -2,29 +2,47 @@ pub mod reloader;
 pub mod watcher;
 use crate::bundle;
 use serde::Deserialize;
+use std::sync::atomic::{AtomicU8, Ordering};
 pub use xai_grok_config_types::{
     DEFAULT_RECENCY_DECAY, MemoryConfig, MemoryDreamConfig, MemoryDreamSettings,
     MemoryEmbeddingConfig, MemoryEmbeddingSettings, MemoryFlushConfig, MemoryFlushSettings,
     MemoryGcConfig, MemoryGcSettings, MemoryIndexConfig, MemoryIndexSettings,
     MemoryInitialInjectionConfig, MemoryInitialInjectionSettings, MemoryMode, MemorySearchConfig,
     MemorySearchSettings, MemorySessionConfig, MemorySessionSettings, MemorySettings,
-    MemoryWatcherConfig, MemoryWatcherSettings, MmrConfig, MmrSettings, PruningConfig,
-    PruningSettings, TemporalDecayConfig, TemporalDecaySettings,
+    MemoryV2Config, MemoryV2Rollout, MemoryV2Settings, MemoryWatcherConfig, MemoryWatcherSettings,
+    MmrConfig, MmrSettings, PruningConfig, PruningSettings, TemporalDecayConfig,
+    TemporalDecaySettings,
 };
 /// Read the memory mode selected by the current effective config.
 ///
 /// Session actors use their already-resolved [`MemoryConfig`] instead. This
 /// helper is for standalone commands that do not own a session.
+static STANDALONE_MEMORY_MODE: AtomicU8 = AtomicU8::new(0);
+pub fn cache_standalone_memory_mode(mode: MemoryMode) {
+    let encoded = match mode {
+        MemoryMode::Legacy => 1,
+        MemoryMode::V2 => 2,
+    };
+    STANDALONE_MEMORY_MODE.store(encoded, Ordering::Release);
+}
 pub fn load_memory_mode() -> std::io::Result<MemoryMode> {
+    match STANDALONE_MEMORY_MODE.load(Ordering::Acquire) {
+        1 => Ok(MemoryMode::Legacy),
+        2 => Ok(MemoryMode::V2),
+        _ => load_memory_mode_with_remote(None),
+    }
+}
+pub fn load_memory_mode_with_remote(
+    remote: Option<&crate::util::config::RemoteSettings>,
+) -> std::io::Result<MemoryMode> {
     let config = load_effective_config()?;
-    let settings: MemorySettings = config
-        .get("memory")
-        .cloned()
-        .map(MemorySettings::deserialize)
-        .transpose()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
-        .unwrap_or_default();
-    Ok(settings.mode.unwrap_or_default())
+    Ok(resolve_standalone_memory_mode(&config, remote))
+}
+fn resolve_standalone_memory_mode(
+    config: &toml::Value,
+    remote: Option<&crate::util::config::RemoteSettings>,
+) -> MemoryMode {
+    MemoryConfig::resolve(false, false, config, remote).mode
 }
 /// Configuration for subagent (task tool) support.
 /// Parsed from the `[subagents]` section of `~/.grok/config.toml` or `.grok/config.toml`.
@@ -1764,7 +1782,7 @@ fn update_config_toml_locked(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = grok_home.join("config.toml");
     let _flock = crate::util::config::acquire_init_lock(grok_home)?;
-    let content = crate::util::config::read_to_string_or_empty(&config_path)?;
+    let (dest, content) = crate::util::config::read_follow_bound(&config_path)?;
     let mut config: toml::Value = if content.is_empty() {
         toml::Value::Table(toml::map::Map::new())
     } else {
@@ -1776,7 +1794,11 @@ fn update_config_toml_locked(
     if !mutate(table)? {
         return Ok(());
     }
-    crate::util::config::atomic_write_string(&config_path, &toml::to_string_pretty(&config)?)?;
+    crate::util::config::atomic_write_follow_bound(
+        &config_path,
+        &dest,
+        &toml::to_string_pretty(&config)?,
+    )?;
     Ok(())
 }
 /// Append `value` to the `[plugins].<list>` string array (created if missing)

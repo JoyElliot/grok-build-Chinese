@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::app::agent_view::ViewSurface;
 use crate::theme::Theme;
 
 /// Columns reserved for the rail (widest tick).
@@ -57,14 +58,14 @@ pub enum TimelineHit {
 
 /// Columns to reserve for the rail this frame: the single eligibility policy (setting, view kind, terminal width, turn count).
 /// Geometry feasibility (enough rows) stays in [`compute_rail`].
-pub fn rail_width(
+pub(crate) fn rail_width(
     show_timeline: bool,
-    is_subagent_view: bool,
+    surface: ViewSurface,
     area_width: u16,
     turn_count: usize,
 ) -> u16 {
     if show_timeline
-        && !is_subagent_view
+        && surface == ViewSurface::Root
         && area_width >= MIN_TERMINAL_WIDTH
         && turn_count >= MIN_TURNS
     {
@@ -267,8 +268,10 @@ pub fn render_tick_hover_popup(
             rest = "";
         } else {
             let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
-            lines.push(rest[..end].to_string());
-            rest = rest[end..].trim_start();
+            let Some(head) = rest.get(..end) else { break };
+            let Some(tail) = rest.get(end..) else { break };
+            lines.push(head.to_string());
+            rest = tail.trim_start();
         }
     }
     if lines.is_empty() {
@@ -507,11 +510,14 @@ mod tests {
     #[test]
     fn rail_width_gates_eligibility() {
         // All conditions met reserves the rail columns
-        assert_eq!(rail_width(true, false, 80, 5), RAIL_WIDTH);
-        // Setting off / subagent view / narrow terminal / too few turns.
-        assert_eq!(rail_width(false, false, 80, 5), 0);
-        assert_eq!(rail_width(true, true, 80, 5), 0);
-        assert_eq!(rail_width(true, false, MIN_TERMINAL_WIDTH - 1, 5), 0);
-        assert_eq!(rail_width(true, false, 80, 1), 0);
+        assert_eq!(RAIL_WIDTH, rail_width(true, ViewSurface::Root, 80, 5));
+        // Setting off / child surface / narrow terminal / too few turns.
+        assert_eq!(0, rail_width(false, ViewSurface::Root, 80, 5));
+        assert_eq!(0, rail_width(true, ViewSurface::ChildTakeover, 80, 5));
+        assert_eq!(
+            0,
+            rail_width(true, ViewSurface::Root, MIN_TERMINAL_WIDTH - 1, 5)
+        );
+        assert_eq!(0, rail_width(true, ViewSurface::Root, 80, 1));
     }
 }

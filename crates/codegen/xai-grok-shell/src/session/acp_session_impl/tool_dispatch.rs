@@ -166,19 +166,8 @@ pub(super) fn resolve_session_shell() -> String {
 pub(crate) const HTTP_STATUS_DETAILS_KEY: &str = "status";
 
 impl SessionActor {
-    /// Extract the bash command from the prompt blocks if present in meta.
-    /// Returns Some(command) if the prompt is a direct bash command, None otherwise.
     pub(super) fn extract_bash_command(prompt_blocks: &[acp::ContentBlock]) -> Option<String> {
-        use crate::extensions::prompt_meta::PromptBlockMeta;
-        for block in prompt_blocks {
-            if let acp::ContentBlock::Text(text) = block
-                && let Some(meta_val) = &text.meta
-                && let Some(meta) = PromptBlockMeta::from_value(meta_val)
-            {
-                return meta.bash_command;
-            }
-        }
-        None
+        crate::extensions::prompt_meta::PromptBlockMeta::command_in(prompt_blocks)
     }
 
     /// Handle a direct bash command from bash mode.
@@ -294,7 +283,7 @@ impl SessionActor {
         let total_lines = lines.len();
         let history_output = if total_lines > BASH_MODE_FINAL_OUTPUT_LINES {
             let start = total_lines - BASH_MODE_FINAL_OUTPUT_LINES;
-            let last_lines = lines[start..].join("\n");
+            let last_lines = lines.get(start..).unwrap_or(&[]).join("\n");
             format!("... ({} lines)\n{}", total_lines, last_lines)
         } else {
             full_output.clone()
@@ -428,7 +417,13 @@ mod tests {
     #[test]
     fn backend_failed_web_search_maps_to_failed_status() {
         let failed = web_search_payload(rs::WebSearchToolCallStatus::Failed);
-        assert_eq!(failed["status"], "failed", "wire field name is `status`");
+        assert_eq!(
+            failed
+                .pointer("/status")
+                .unwrap_or(&serde_json::Value::Null),
+            "failed",
+            "wire field name is `status`"
+        );
         assert_eq!(
             backend_tool_call_status(Some(&failed)),
             acp::ToolCallStatus::Failed

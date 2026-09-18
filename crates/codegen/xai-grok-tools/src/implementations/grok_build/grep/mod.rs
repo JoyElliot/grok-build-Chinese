@@ -477,25 +477,30 @@ fn grep_progress_stream(
                         // Mirror `run`'s hard byte + line caps when filling `stdout_buf`, then kill so rg stops walking the tree. `+ 1`: read
                         // one line past the budget so truncation is only flagged when there are genuinely MORE than `effective_head_limit`
                         // lines (matches `run` / `finalize_grep`). The extra line is dropped by `BodyStreamer`/`finalize_grep`, never emitted.
+                        let Some(chunk) = tmp.get(..n) else {
+                            break;
+                        };
                         let (accepted, hit_cap) = accept_rg_stdout_chunk(
-                            &tmp[..n],
+                            chunk,
                             stdout_buf.len(),
                             complete_lines,
                             config.effective_head_limit.saturating_add(1),
                         );
                         if accepted > 0 {
-                            complete_lines += tmp[..accepted]
-                                .iter()
-                                .filter(|&&b| b == b'\n')
-                                .count();
-                            stdout_buf.extend_from_slice(&tmp[..accepted]);
+                            let Some(accepted_bytes) = tmp.get(..accepted) else {
+                                break;
+                            };
+                            complete_lines += accepted_bytes.iter().filter(|&&b| b == b'\n').count();
+                            stdout_buf.extend_from_slice(accepted_bytes);
                         }
 
                         // Project + emit each newly completed line BEFORE the exact-fit probe below: the probe reads into `tmp`, overwriting
                         // the just-accepted bytes, so feeding after it would stream corrupted data (the terminal card is rebuilt from
                         // `stdout_buf`, but streamed deltas must stay a faithful prefix of it).
-                        for p in streamer.feed(&tmp[..accepted]) {
-                            yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                        if let Some(accepted_bytes) = tmp.get(..accepted) {
+                            for p in streamer.feed(accepted_bytes) {
+                                yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                            }
                         }
 
                         if hit_cap {
@@ -881,7 +886,9 @@ fn accept_rg_stdout_chunk(
     }
 
     let byte_room = MAX_STDOUT_BYTES - buf_len;
-    let limited = &chunk[..chunk.len().min(byte_room)];
+    let Some(limited) = chunk.get(..chunk.len().min(byte_room)) else {
+        return (0, false);
+    };
     let mut lines = complete_lines;
     for (i, &b) in limited.iter().enumerate() {
         if b == b'\n' {
@@ -916,11 +923,17 @@ async fn read_rg_stdout_capped(mut stdout_pipe: ChildStdout, max_lines: usize) -
         match stdout_pipe.read(&mut tmp).await {
             Ok(0) => break,
             Ok(n) => {
+                let Some(chunk) = tmp.get(..n) else {
+                    break;
+                };
                 let (accepted, hit_cap) =
-                    accept_rg_stdout_chunk(&tmp[..n], buf.len(), complete_lines, max_lines);
+                    accept_rg_stdout_chunk(chunk, buf.len(), complete_lines, max_lines);
                 if accepted > 0 {
-                    complete_lines += tmp[..accepted].iter().filter(|&&b| b == b'\n').count();
-                    buf.extend_from_slice(&tmp[..accepted]);
+                    let Some(accepted_bytes) = tmp.get(..accepted) else {
+                        break;
+                    };
+                    complete_lines += accepted_bytes.iter().filter(|&&b| b == b'\n').count();
+                    buf.extend_from_slice(accepted_bytes);
                 }
                 if hit_cap {
                     if accepted < n {
@@ -1137,13 +1150,18 @@ impl<'a> BodyStreamer<'a> {
         // alloc); the unconsumed tail is carried forward at the end.
         let buf = std::mem::take(&mut self.pending);
         let mut start = 0;
-        while let Some(rel) = buf[start..].iter().position(|&b| b == b'\n') {
+        while let Some(rel) = buf
+            .get(start..)
+            .and_then(|tail| tail.iter().position(|&b| b == b'\n'))
+        {
             let nl = start + rel;
             let mut end = nl; // exclusive; drops the '\n'
-            if end > start && buf[end - 1] == b'\r' {
+            if end > start && end.checked_sub(1).and_then(|i| buf.get(i).copied()) == Some(b'\r') {
                 end -= 1; // drop the '\r' of a '\r\n' (matches `str::lines()`)
             }
-            if let Some(p) = self.push_line(&buf[start..end]) {
+            if let Some(line) = buf.get(start..end)
+                && let Some(p) = self.push_line(line)
+            {
                 deltas.push(p);
             }
             start = nl + 1;
@@ -1152,7 +1170,9 @@ impl<'a> BodyStreamer<'a> {
             }
         }
         // Carry the in-progress (post-last-newline) bytes to the next feed.
-        self.pending.extend_from_slice(&buf[start..]);
+        if let Some(tail) = buf.get(start..) {
+            self.pending.extend_from_slice(tail);
+        }
         deltas
     }
 
@@ -1214,20 +1234,20 @@ fn trim_line(line: &str, max_chars_per_line: usize) -> String {
 pub fn parse_numbered_line_prefix(line: &str) -> Option<(usize, char, &str)> {
     let bytes = line.as_bytes();
     let mut idx = 0usize;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+    while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
         idx += 1;
     }
     if idx == 0 || idx >= bytes.len() {
         return None;
     }
 
-    let sep = bytes[idx] as char;
+    let sep = *bytes.get(idx)? as char;
     if sep != ':' && sep != '-' {
         return None;
     }
 
-    let line_number = line[..idx].parse::<usize>().ok()?;
-    Some((line_number, sep, &line[idx + 1..]))
+    let line_number = line.get(..idx)?.parse::<usize>().ok()?;
+    Some((line_number, sep, line.get(idx + 1..)?))
 }
 
 /// Parse ripgrep `--heading` output into structured per-file matches.
@@ -1329,9 +1349,11 @@ pub fn format_content_output(
         .collect();
 
     let cut_idx = first_idx_exceed_cum_limit(&trimmed_lines, max_output_bytes);
-    final_output_lines.extend_from_slice(&trimmed_lines[..cut_idx]);
+    if let Some(kept) = trimmed_lines.get(..cut_idx) {
+        final_output_lines.extend_from_slice(kept);
+    }
 
-    let remaining_matches = count_matches(&trimmed_lines[cut_idx..]);
+    let remaining_matches = count_matches(trimmed_lines.get(cut_idx..).unwrap_or(&[]));
     if remaining_matches > 0 {
         final_output_lines.push(format!(
             "... [{}{} lines truncated] ...",
@@ -1361,7 +1383,9 @@ pub fn format_files_with_matches_output(
         .collect();
 
     let cut_idx = first_idx_exceed_cum_limit(&trimmed_lines, max_output_bytes);
-    final_output_lines.extend_from_slice(&trimmed_lines[..cut_idx]);
+    if let Some(kept) = trimmed_lines.get(..cut_idx) {
+        final_output_lines.extend_from_slice(kept);
+    }
 
     if output_lines.len() > cut_idx {
         final_output_lines.push(format!(
@@ -1404,7 +1428,9 @@ pub fn format_count_output(
         .collect();
 
     let cut_idx = first_idx_exceed_cum_limit(&trimmed_lines, max_output_bytes);
-    final_output_lines.extend_from_slice(&trimmed_lines[..cut_idx]);
+    if let Some(kept) = trimmed_lines.get(..cut_idx) {
+        final_output_lines.extend_from_slice(kept);
+    }
 
     if output_lines.len() > cut_idx {
         final_output_lines.push(format!(
@@ -1451,20 +1477,42 @@ mod tests {
     #[test]
     fn grep_bool_flags_schema_is_plain_boolean_with_default_false() {
         let schema = serde_json::to_value(schemars::schema_for!(GrepSearchInput)).unwrap();
-        let props = &schema["properties"];
+        let Some(props) = schema.get("properties") else {
+            panic!("schema missing properties: {schema}");
+        };
 
         // Field is renamed to "-i" for the model-facing name.
-        let case = &props["-i"];
-        assert_eq!(case["type"], "boolean", "case_insensitive schema: {case}");
-        assert_eq!(case["default"], false, "case_insensitive schema: {case}");
+        let Some(case) = props.get("-i") else {
+            panic!("schema missing -i: {props}");
+        };
+        assert_eq!(
+            case.get("type").and_then(|v| v.as_str()),
+            Some("boolean"),
+            "case_insensitive schema: {case}"
+        );
+        assert_eq!(
+            case.get("default").and_then(|v| v.as_bool()),
+            Some(false),
+            "case_insensitive schema: {case}"
+        );
         assert!(
             case.get("anyOf").is_none(),
             "must not use nullable anyOf: {case}"
         );
 
-        let multi = &props["multiline"];
-        assert_eq!(multi["type"], "boolean", "multiline schema: {multi}");
-        assert_eq!(multi["default"], false, "multiline schema: {multi}");
+        let Some(multi) = props.get("multiline") else {
+            panic!("schema missing multiline: {props}");
+        };
+        assert_eq!(
+            multi.get("type").and_then(|v| v.as_str()),
+            Some("boolean"),
+            "multiline schema: {multi}"
+        );
+        assert_eq!(
+            multi.get("default").and_then(|v| v.as_bool()),
+            Some(false),
+            "multiline schema: {multi}"
+        );
         assert!(
             multi.get("anyOf").is_none(),
             "must not use nullable anyOf: {multi}"
@@ -1579,12 +1627,17 @@ mod tests {
         .collect();
 
         let matches = parse_file_matches(&lines, DEFAULT_MAX_CHARS_PER_LINE);
-        assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].path, "src/main.rs");
-        assert_eq!(matches[0].matches.len(), 2);
-        assert_eq!(matches[0].matches[0].line_number, 10);
-        assert_eq!(matches[1].path, "src/lib.rs");
-        assert_eq!(matches[1].matches.len(), 1);
+        let [first, second] = matches.as_slice() else {
+            panic!("expected two file matches: {matches:?}");
+        };
+        assert_eq!(first.path, "src/main.rs");
+        assert_eq!(first.matches.len(), 2);
+        let Some(first_hit) = first.matches.first() else {
+            panic!("expected a match in first file: {:?}", first.matches);
+        };
+        assert_eq!(first_hit.line_number, 10);
+        assert_eq!(second.path, "src/lib.rs");
+        assert_eq!(second.matches.len(), 1);
     }
 
     #[test]
@@ -2134,7 +2187,11 @@ mod tests {
         match p {
             xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "grep_match_chunk", "unexpected subkind");
-                payload["delta"].as_str().unwrap().to_owned()
+                payload
+                    .get("delta")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("payload missing delta: {payload}"))
+                    .to_owned()
             }
             other => panic!("expected Custom progress, got {other:?}"),
         }
@@ -2160,7 +2217,10 @@ mod tests {
     /// and thereby hide the very divergence these tests guard). Drops the `<workspace_result>` wrapper, the "Found …" summary (first line), and an
     /// optional `... [N lines truncated] ...` footer (last line).
     fn card_body(card: &str) -> String {
-        let after_open = &card[card.find('\n').expect("wrapper newline") + 1..];
+        let nl = card.find('\n').expect("wrapper newline");
+        let Some(after_open) = card.get(nl + 1..) else {
+            panic!("wrapper newline not a char boundary");
+        };
         let formatted = after_open
             .strip_suffix("\n</workspace_result>")
             .expect("wrapper close");
@@ -2230,7 +2290,7 @@ mod tests {
         let chunk = b"a\nb\nc\nd\n";
         let (n, hit) = accept_rg_stdout_chunk(chunk, 0, 0, 2);
         assert!(hit);
-        assert_eq!(&chunk[..n], b"a\nb\n");
+        assert_eq!(chunk.get(..n), Some(b"a\nb\n".as_slice()));
     }
 
     #[test]
@@ -2259,7 +2319,7 @@ mod tests {
         // room — actually 2 bytes fits "é" exactly.
         let (n2, hit2) = accept_rg_stdout_chunk(chunk, MAX_STDOUT_BYTES - 2, 0, 100);
         assert!(hit2);
-        assert_eq!(&chunk[..n2], "é".as_bytes());
+        assert_eq!(chunk.get(..n2), Some("é".as_bytes()));
     }
 
     #[test]
@@ -2268,8 +2328,12 @@ mod tests {
         let chunk = "café\nmore\n".as_bytes();
         let (n, hit) = accept_rg_stdout_chunk(chunk, 0, 0, 1);
         assert!(hit);
-        assert_eq!(&chunk[..n], "café\n".as_bytes());
-        assert!(std::str::from_utf8(&chunk[..n]).is_ok());
+        assert_eq!(chunk.get(..n), Some("café\n".as_bytes()));
+        assert!(
+            chunk
+                .get(..n)
+                .is_some_and(|b| std::str::from_utf8(b).is_ok())
+        );
     }
 
     /// Regression: a stdout truncation landing mid-CRLF leaves a final segment with no trailing `\n` that ends in `\r`. `str::lines()` (used by
@@ -2421,7 +2485,13 @@ mod tests {
         // the summary (line 1) and the closing wrapper (last line) — with neither
         // the wrapper nor the "Found N …" summary.
         let card_lines: Vec<&str> = card.lines().collect();
-        let body_from_card = card_lines[2..card_lines.len() - 1].join("\n");
+        let Some(end) = card_lines.len().checked_sub(1) else {
+            panic!("card too short: {card_lines:?}");
+        };
+        let Some(body_lines) = card_lines.get(2..end) else {
+            panic!("card missing body: {card_lines:?}");
+        };
+        let body_from_card = body_lines.join("\n");
         assert_eq!(
             deltas, body_from_card,
             "accumulated deltas must equal the terminal card body"
@@ -2527,7 +2597,13 @@ mod tests {
             .expect("grep terminal ok");
         let card = String::from_utf8_lossy(&output.stdout);
         let card_lines: Vec<&str> = card.lines().collect();
-        let body_from_card = card_lines[2..card_lines.len() - 1].join("\n");
+        let Some(end) = card_lines.len().checked_sub(1) else {
+            panic!("card too short: {card_lines:?}");
+        };
+        let Some(body_lines) = card_lines.get(2..end) else {
+            panic!("card missing body: {card_lines:?}");
+        };
+        let body_from_card = body_lines.join("\n");
         assert_eq!(
             deltas, body_from_card,
             "accumulated deltas must equal the terminal card body even when truncated"

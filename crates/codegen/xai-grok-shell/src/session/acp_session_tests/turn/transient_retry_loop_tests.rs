@@ -9,7 +9,7 @@ use std::time::Duration;
 use xai_grok_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
 
 /// The turn future needs a session-sized stack (spawn.rs: 8 MiB); default test stacks overflow.
-fn on_session_stack(test: impl FnOnce() + Send + 'static) {
+pub(super) fn on_session_stack(test: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(test)
@@ -18,7 +18,7 @@ fn on_session_stack(test: impl FnOnce() + Send + 'static) {
         .expect("test thread panicked");
 }
 
-fn run_paused<F: std::future::Future>(fut: impl FnOnce() -> F) {
+pub(super) fn run_paused<F: std::future::Future>(fut: impl FnOnce() -> F) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .start_paused(true)
@@ -31,7 +31,7 @@ fn run_paused<F: std::future::Future>(fut: impl FnOnce() -> F) {
 }
 
 /// No sampler-internal retries: request counts map 1:1 to submissions.
-fn sampler_surfaces_5xx() -> xai_grok_sampler::RetryPolicy {
+pub(super) fn sampler_surfaces_5xx() -> xai_grok_sampler::RetryPolicy {
     xai_grok_sampler::RetryPolicy {
         max_retries: 0,
         ..Default::default()

@@ -655,7 +655,7 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(display_text, expected, "/{name} {args}");
-                    let [acp::ContentBlock::Text(block)] = &prompt_blocks[..] else {
+                    let [acp::ContentBlock::Text(block)] = prompt_blocks.as_slice() else {
                         panic!("/{name}: expected a single Text block, got {prompt_blocks:?}");
                     };
                     assert_eq!(block.text, expected, "/{name} {args}");

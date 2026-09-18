@@ -145,12 +145,14 @@ async fn draft_id_updates_existing_draft_instead_of_appending() {
 
     assert_eq!(output.message, SUCCESS_MESSAGE);
     let drafts = FeedbackDraftStore::new(session.path()).list().unwrap();
-    assert_eq!(drafts.len(), 1);
-    assert_eq!(drafts[0].id, existing.id);
-    assert_eq!(drafts[0].r#type, Some(FeedbackType::Bug));
-    assert_eq!(drafts[0].task_category, Some(FeedbackTaskCategory::Debug));
-    assert_eq!(drafts[0].failure_mode, Some(FeedbackFailureMode::Other));
-    assert_eq!(drafts[0].revision, 2);
+    let [draft] = drafts.as_slice() else {
+        panic!("expected exactly one draft: {drafts:?}");
+    };
+    assert_eq!(draft.id, existing.id);
+    assert_eq!(draft.r#type, Some(FeedbackType::Bug));
+    assert_eq!(draft.task_category, Some(FeedbackTaskCategory::Debug));
+    assert_eq!(draft.failure_mode, Some(FeedbackFailureMode::Other));
+    assert_eq!(draft.revision, 2);
 }
 
 #[tokio::test]
@@ -167,8 +169,10 @@ async fn draft_id_update_keeps_blank_lines_the_model_wrote() {
     run_tool(session.path(), update).await.unwrap();
 
     let drafts = FeedbackDraftStore::new(session.path()).list().unwrap();
-    assert_eq!(drafts.len(), 1);
-    assert_eq!(drafts[0].details, details);
+    let [draft] = drafts.as_slice() else {
+        panic!("expected exactly one draft: {drafts:?}");
+    };
+    assert_eq!(draft.details, details);
 }
 
 #[test]
@@ -216,7 +220,9 @@ async fn missing_draft_id_does_not_append() {
 #[test]
 fn schema_has_canonical_fields() {
     let schema = crate::registry::types::generate_schema::<super::SendFeedbackInput>();
-    let properties = schema["properties"].as_object().unwrap();
+    let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) else {
+        panic!("schema missing properties: {schema}");
+    };
     assert_eq!(
         properties
             .keys()
@@ -232,10 +238,11 @@ fn schema_has_canonical_fields() {
             "type"
         ]),
     );
+    let Some(required) = schema.get("required").and_then(|v| v.as_array()) else {
+        panic!("schema missing required: {schema}");
+    };
     assert_eq!(
-        schema["required"]
-            .as_array()
-            .unwrap()
+        required
             .iter()
             .filter_map(serde_json::Value::as_str)
             .collect::<BTreeSet<_>>(),

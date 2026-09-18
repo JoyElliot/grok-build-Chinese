@@ -14,6 +14,7 @@ pub(crate) use plan::WorktreePlan;
 /// Strategy strings written to `worktrees.db` `creation_mode` and metrics.
 pub const STRATEGY_GROVE_FUSE: &str = "grove-fuse";
 pub const STRATEGY_GROVE_NFS: &str = "grove-nfs";
+pub const STRATEGY_GROVE_PROJFS: &str = "grove-projfs";
 /// Deprecated alias for [`STRATEGY_GROVE_NFS`]. Still accepted on read/GC.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const STRATEGY_NFS: &str = "nfs";
@@ -25,10 +26,14 @@ pub const STRATEGY_COPY: &str = "copy";
 pub const STRATEGY_GIT: &str = "git";
 pub const STRATEGY_STANDALONE: &str = "standalone";
 
-/// Projected grove worktree: Linux FUSE, macOS NFS, or the legacy `nfs` spelling.
+/// Projected grove worktree: Linux FUSE, macOS NFS, Windows ProjFS, or the
+/// legacy `nfs` spelling.
 #[must_use]
 pub fn is_grove_strategy(s: &str) -> bool {
-    matches!(s, STRATEGY_GROVE_FUSE | STRATEGY_GROVE_NFS | STRATEGY_NFS)
+    matches!(
+        s,
+        STRATEGY_GROVE_FUSE | STRATEGY_GROVE_NFS | STRATEGY_GROVE_PROJFS | STRATEGY_NFS
+    )
 }
 
 /// The one decline both the Grove arm and the workspace's pre-dispatch rewrite
@@ -59,6 +64,10 @@ pub enum GroveSkip {
     FuseUnavailable,
     #[cfg(target_os = "linux")]
     PrivateMountNamespace,
+    /// Windows-only: `ProjectedFSLib.dll` is absent (the `Client-ProjFS`
+    /// optional feature is off) or the build predates Windows 11 22H2.
+    #[cfg(windows)]
+    ProjfsUnavailable,
     SourceIsGroveMount,
     PreserveOnLinkedView,
     MountTableInconclusive,
@@ -87,6 +96,11 @@ impl std::fmt::Display for GroveSkip {
             Self::FuseUnavailable => "/dev/fuse or fusermount is missing",
             #[cfg(target_os = "linux")]
             Self::PrivateMountNamespace => "this process is in a private mount namespace",
+            #[cfg(windows)]
+            Self::ProjfsUnavailable => {
+                "Windows Projected File System is not available (enable the Client-ProjFS \
+                 feature on Windows 11 22H2 or later)"
+            }
             Self::SourceIsGroveMount => crate::worktree::SKIP_SOURCE_IS_GROVE_MOUNT,
             Self::PreserveOnLinkedView => {
                 "uncommitted changes cannot be carried onto a linked Grove view"
@@ -110,6 +124,7 @@ impl std::fmt::Display for GroveSkip {
 pub enum WorktreeArm {
     GroveFuse,
     GroveNfs,
+    GroveProjfs,
     Overlay,
     Btrfs,
 }
@@ -119,14 +134,15 @@ impl WorktreeArm {
     /// snapshot arm's skip means an earlier arm lost and Grove never ran.
     #[must_use]
     pub fn is_grove(self) -> bool {
-        matches!(self, Self::GroveFuse | Self::GroveNfs)
+        matches!(self, Self::GroveFuse | Self::GroveNfs | Self::GroveProjfs)
     }
 
     #[must_use]
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::GroveFuse => STRATEGY_GROVE_FUSE,
             Self::GroveNfs => STRATEGY_GROVE_NFS,
+            Self::GroveProjfs => STRATEGY_GROVE_PROJFS,
             Self::Overlay => STRATEGY_OVERLAY,
             Self::Btrfs => STRATEGY_BTRFS,
         }
@@ -196,7 +212,7 @@ pub struct CreateWorktreeResult {
     /// Report about dirty files (modified/untracked/deleted) in the source worktree
     pub dirty_files_report: Option<DirtyFilesReport>,
 
-    /// Which dispatch arm actually ran (`grove-fuse` / `grove-nfs` / `overlay` / `btrfs` / `copy` / `git` / `standalone`).
+    /// Which dispatch arm actually ran (`grove-fuse` / `grove-nfs` / `grove-projfs` / `overlay` / `btrfs` / `copy` / `git` / `standalone`).
     pub resolved_strategy: &'static str,
 
     /// Arm-specific metadata (NFS mount/backing/pin; overlay/btrfs snapshot paths).
@@ -205,7 +221,6 @@ pub struct CreateWorktreeResult {
     /// Arms that declined before the one that ran.
     pub skipped: Vec<ArmSkip>,
 
-    /// Grove daemon capability class: `current`, `old`, or `unknown`.
     pub daemon_capability_class: Option<&'static str>,
 }
 

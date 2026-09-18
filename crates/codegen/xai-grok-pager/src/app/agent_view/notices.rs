@@ -345,6 +345,24 @@ impl AgentView {
         false
     }
 
+    /// Tick the memory modal's transient copy message. Returns true if it just expired.
+    pub fn tick_memory_modal_status(&mut self) -> bool {
+        match self.active_modal.as_mut() {
+            Some(crate::views::modal::ActiveModal::MemoryBrowser { state }) => state.tick_status(),
+            _ => false,
+        }
+    }
+
+    /// A memory-modal copy message is counting down, so the animation tick must keep running.
+    pub fn memory_modal_status_needs_tick(&self) -> bool {
+        match self.active_modal.as_ref() {
+            Some(crate::views::modal::ActiveModal::MemoryBrowser { state }) => {
+                state.status_is_transient()
+            }
+            _ => false,
+        }
+    }
+
     /// Tick the extensions modal's transient result notice.
     /// Returns true if it just expired (needs a redraw to erase the badge / status line).
     pub fn tick_extensions_result_notice(&mut self) -> bool {

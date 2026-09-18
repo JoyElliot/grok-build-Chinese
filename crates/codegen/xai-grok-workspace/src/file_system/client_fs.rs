@@ -34,10 +34,6 @@ const MAX_READ_BYTES: u64 = super::walk::MAX_READ_BYTES;
 /// Bound on memoized hashes; the memo is cleared (not LRU-evicted) when full, and entries re-hash on next use.
 const HASH_MEMO_CAPACITY: usize = 4096;
 
-// =========================================================================
-// (path, size, mtime_ms) → hash memo
-// =========================================================================
-
 #[derive(Debug, Clone)]
 struct MemoEntry {
     size: u64,
@@ -78,10 +74,6 @@ impl FileHashMemo {
     }
 }
 
-// =========================================================================
-// Path resolution
-// =========================================================================
-
 /// Resolve a base-relative request path (`""` and `"."` mean the base), rejecting `..` and symlink escapes above the session's client-fs base.
 async fn resolve_with_base(
     ws: &WorkspaceHandle,
@@ -111,10 +103,6 @@ fn system_time_ms(st: std::time::SystemTime) -> i64 {
         Err(e) => -i64::try_from(e.duration().as_millis()).unwrap_or(i64::MAX),
     }
 }
-
-// =========================================================================
-// list
-// =========================================================================
 
 /// List `req.path` with stable pagination: collect the full walk (bounded by [`MAX_LIST_COLLECT`]), sort, then slice `[offset, offset + limit)`.
 /// The sort is directories first, then case-insensitive by name.
@@ -189,10 +177,6 @@ fn list_blocking(
     })
 }
 
-// =========================================================================
-// stat
-// =========================================================================
-
 /// Stat `req.path`: existence, kind, size, mtime, and (for files) a full-content SHA-256 served through the workspace hash memo.
 pub(crate) async fn stat(
     ws: &WorkspaceHandle,
@@ -256,10 +240,6 @@ pub(crate) async fn stat(
         hash: Some(hash),
     })
 }
-
-// =========================================================================
-// read_file
-// =========================================================================
 
 /// Read a byte range of `req.path` (binary-safe, capped at `min(req.max_bytes, MAX_READ_BYTES)`) together with the full-file SHA-256.
 /// When the hash is memoized for the current `(size, mtime)` only the requested range is read.
@@ -371,12 +351,18 @@ mod tests {
         let names: Vec<&str> = res.nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["alpha", "Zeta", "A.txt", "b.txt", "c.txt"]);
         assert!(!res.truncated);
-        assert_eq!(res.nodes[0].node_type, FsNodeType::Directory);
-        assert_eq!(res.nodes[2].node_type, FsNodeType::File);
-        assert_eq!(res.nodes[2].size, Some(1));
-        assert!(res.nodes[2].mtime_ms.is_some());
+        assert_eq!(
+            res.nodes.first().map(|n| n.node_type),
+            Some(FsNodeType::Directory)
+        );
+        assert_eq!(
+            res.nodes.get(2).map(|n| n.node_type),
+            Some(FsNodeType::File)
+        );
+        assert_eq!(res.nodes.get(2).and_then(|n| n.size), Some(1));
+        assert!(res.nodes.get(2).is_some_and(|n| n.mtime_ms.is_some()));
         // Paths are workspace-root-relative.
-        assert_eq!(res.nodes[2].path, "A.txt");
+        assert_eq!(res.nodes.get(2).map(|n| n.path.as_str()), Some("A.txt"));
     }
 
     /// Pagination slices the *sorted* listing, so consecutive pages have stable boundaries and concatenate to the full listing.
@@ -583,7 +569,11 @@ mod tests {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(res.content_base64.unwrap())
             .unwrap();
-        assert_eq!(bytes, payload[200..210], "maxBytes caps the chunk");
+        assert_eq!(
+            bytes,
+            payload.get(200..210).unwrap_or(&[]),
+            "maxBytes caps the chunk"
+        );
 
         // Full-file hash regardless of the requested range.
         use sha2::{Digest, Sha256};
@@ -595,7 +585,7 @@ mod tests {
         let again_bytes = base64::engine::general_purpose::STANDARD
             .decode(again.content_base64.unwrap())
             .unwrap();
-        assert_eq!(again_bytes, payload[200..210]);
+        assert_eq!(again_bytes, payload.get(200..210).unwrap_or(&[]));
     }
 
     /// `maxBytes` is server-capped at [`MAX_READ_BYTES`]: a caller-supplied huge budget cannot make the workspace buffer the whole file.
@@ -773,7 +763,7 @@ mod tests {
         let res = list(&ws, session, &list_req("")).await.unwrap();
         let names: Vec<&str> = res.nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["out.txt"]);
-        assert_eq!(res.nodes[0].path, "out.txt");
+        assert_eq!(res.nodes.first().map(|n| n.path.as_str()), Some("out.txt"));
 
         let hit = stat(
             &ws,

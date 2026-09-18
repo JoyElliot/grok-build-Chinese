@@ -10,7 +10,7 @@ use crate::copy::{self, ParallelCopyConfig};
 use crate::git;
 use crate::worktree::CreateWorktreeResult;
 use crate::worktree::plan::WorktreePlan;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::worktree::{ArmSkip, WorktreeArm};
 use crate::{IgnoredFilesMode, WorkingTreeMode};
 
@@ -250,7 +250,7 @@ fn record_main_repo_marker(source: &Path, worktree: &Path) {
 
 /// Skip details are surfaced verbatim in a one-line strategy notice, so an
 /// anyhow chain carrying subprocess output must be flattened and capped here.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn arm_failed(arm: crate::worktree::WorktreeArm, err: &anyhow::Error) -> crate::worktree::ArmSkip {
     const MAX_SKIP_REASON_CHARS: usize = 200;
     let chain = format!("{err:#}");
@@ -262,6 +262,37 @@ fn arm_failed(arm: crate::worktree::WorktreeArm, err: &anyhow::Error) -> crate::
     crate::worktree::ArmSkip::new(arm, text)
 }
 
+/// The Grove rung, shared by the three per-OS ladders. `Some` is an adopted
+/// worktree carrying the skips recorded so far; `None` means fall through.
+/// A typed hard-fail (ENOSPC, in-flight dest) is returned, never swallowed.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn grove_arm(
+    plan: &WorktreePlan,
+    arm: WorktreeArm,
+    skipped: &mut Vec<ArmSkip>,
+    grove_lost_to_daemon: &mut bool,
+) -> Result<Option<CreateWorktreeResult>> {
+    match crate::nfs::try_grove_worktree(plan) {
+        Ok(Some(crate::nfs::GroveTry::Adopted(mut result))) => {
+            result.skipped = std::mem::take(skipped);
+            Ok(Some(*result))
+        }
+        Ok(Some(crate::nfs::GroveTry::Skipped(skip))) => {
+            *grove_lost_to_daemon |= skip.is_daemon_refusal();
+            skipped.push(ArmSkip::from_grove(arm, skip));
+            Ok(None)
+        }
+        Ok(None) => Ok(None),
+        Err(e) if crate::nfs::nfs_error_blocks_fallback(&e) => Err(e),
+        Err(e) => {
+            tracing::warn!(error = %e, arm = %arm.label(), "grove worktree failed, falling back");
+            *grove_lost_to_daemon = true;
+            skipped.push(arm_failed(arm, &e));
+            Ok(None)
+        }
+    }
+}
+
 /// Dispatch worktree creation to the strategy implied by the creation mode.
 fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     use crate::CreationMode;
@@ -270,97 +301,90 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
         CreationMode::Linked | CreationMode::Standalone => {
             // Track why fast paths were skipped so the copy fallback error
             // (if any) includes context about what was tried first.
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             let mut skipped: Vec<crate::worktree::ArmSkip> = Vec::new();
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             let mut grove_lost_to_daemon = false;
 
-            // macOS: grove-nfs first. Linux: overlay → btrfs → grove-fuse.
+            // macOS: grove-nfs first. Linux: overlay → btrfs → grove-fuse,
+            // except a Grove parent skips overlay/Btrfs (those arms discover git on the mount).
+            // Windows: grove-projfs first (the copy engine reflinks on ReFS by itself).
+            #[cfg(windows)]
+            {
+                if let Some(result) = grove_arm(
+                    &plan,
+                    WorktreeArm::GroveProjfs,
+                    &mut skipped,
+                    &mut grove_lost_to_daemon,
+                )? {
+                    return Ok(result);
+                }
+            }
+
             #[cfg(target_os = "macos")]
             {
-                match crate::nfs::try_grove_worktree(&plan) {
-                    Ok(Some(crate::nfs::GroveTry::Adopted(mut result))) => {
-                        result.skipped = skipped;
-                        return Ok(*result);
-                    }
-                    Ok(Some(crate::nfs::GroveTry::Skipped(skip))) => {
-                        grove_lost_to_daemon |= skip.is_daemon_refusal();
-                        skipped.push(ArmSkip::from_grove(WorktreeArm::GroveNfs, skip));
-                    }
-                    Ok(None) => {}
-                    Err(e) if crate::nfs::nfs_error_blocks_fallback(&e) => return Err(e),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "grove-nfs worktree failed, falling back to copy");
-                        grove_lost_to_daemon = true;
-                        skipped.push(arm_failed(WorktreeArm::GroveNfs, &e));
-                    }
+                if let Some(result) = grove_arm(
+                    &plan,
+                    WorktreeArm::GroveNfs,
+                    &mut skipped,
+                    &mut grove_lost_to_daemon,
+                )? {
+                    return Ok(result);
                 }
             }
 
-            // 1. Try overlay-on-FUSE snapshot (O(1), no file copies)
             #[cfg(target_os = "linux")]
             {
-                match try_overlay_worktree(&plan) {
-                    Ok(Some(mut result)) => {
-                        result.skipped = skipped;
-                        return Ok(result);
+                // Mount table only (exact nfs/fuse or inside Grove FUSE/NFS).
+                // No Status-RPC: overlay/Btrfs on a plain checkout must not
+                // wait on a down daemon, even if Status would say forkable.
+                let skip_snapshots = crate::nfs::source_is_grove_parent(&plan.source);
+                if !skip_snapshots {
+                    match try_overlay_worktree(&plan) {
+                        Ok(Some(mut result)) => {
+                            result.skipped = skipped;
+                            return Ok(result);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "overlay snapshot failed, falling back to next strategy"
+                            );
+                            skipped.push(arm_failed(WorktreeArm::Overlay, &e));
+                        }
                     }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "overlay snapshot failed, falling back to next strategy"
-                        );
-                        skipped.push(arm_failed(WorktreeArm::Overlay, &e));
-                    }
-                }
-            }
-
-            // 2. Try BTRFS snapshot (O(1), no file copies)
-            #[cfg(target_os = "linux")]
-            {
-                match try_btrfs_worktree(&plan) {
-                    Ok(Some(mut result)) => {
-                        result.skipped = skipped;
-                        return Ok(result);
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "btrfs snapshot failed, falling back to file copy"
-                        );
-                        skipped.push(arm_failed(WorktreeArm::Btrfs, &e));
+                    match try_btrfs_worktree(&plan) {
+                        Ok(Some(mut result)) => {
+                            result.skipped = skipped;
+                            return Ok(result);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "btrfs snapshot failed, falling back to file copy"
+                            );
+                            skipped.push(arm_failed(WorktreeArm::Btrfs, &e));
+                        }
                     }
                 }
             }
 
             #[cfg(target_os = "linux")]
             {
-                match crate::nfs::try_grove_worktree(&plan) {
-                    Ok(Some(crate::nfs::GroveTry::Adopted(mut result))) => {
-                        result.skipped = skipped;
-                        return Ok(*result);
-                    }
-                    Ok(Some(crate::nfs::GroveTry::Skipped(skip))) => {
-                        grove_lost_to_daemon |= skip.is_daemon_refusal();
-                        skipped.push(ArmSkip::from_grove(WorktreeArm::GroveFuse, skip));
-                    }
-                    Ok(None) => {}
-                    Err(e) if crate::nfs::nfs_error_blocks_fallback(&e) => return Err(e),
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "grove-fuse worktree failed, falling back to copy"
-                        );
-                        grove_lost_to_daemon = true;
-                        skipped.push(arm_failed(WorktreeArm::GroveFuse, &e));
-                    }
+                if let Some(result) = grove_arm(
+                    &plan,
+                    WorktreeArm::GroveFuse,
+                    &mut skipped,
+                    &mut grove_lost_to_daemon,
+                )? {
+                    return Ok(result);
                 }
             }
 
             // 3. Fall back to file-by-file copy
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             if !skipped.is_empty() {
                 tracing::info!(
                     reasons = crate::worktree::render_arm_skips(&skipped),
@@ -371,43 +395,13 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
             // Graded only when the daemon is what turned grove away: the probe is
             // a Status round-trip, and no other outcome (an overlay/btrfs win, or
             // a local skip like a missing /dev/fuse) is explained by its age.
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             let daemon_class = grove_lost_to_daemon
                 .then(|| crate::nfs::probe_daemon_capability_class(plan.nfs.as_ref()))
                 .flatten();
 
-            let mut result = match &plan.creation_mode {
-                CreationMode::Linked => {
-                    // Status-confirmed linked Grove views must not copy the
-                    // projection (hang / projected state) when CreateWorktree
-                    // declines. Preserve fails; projected+clean may git-checkout.
-                    let linked_view = plan.nfs.as_ref().is_some_and(|opts| {
-                        crate::nfs::source_is_linked_local_view(opts, &plan.source)
-                    });
-                    if crate::nfs::dest_is_projected_mount(&plan.source) {
-                        if matches!(
-                            plan.working_tree,
-                            crate::WorkingTreeMode::PreserveWorkingTree
-                        ) {
-                            anyhow::bail!("preserve on a projected Grove source is not supported");
-                        }
-                        tracing::info!(
-                            source = %plan.source.display(),
-                            "projected source: skipping copy fallback, using git checkout"
-                        );
-                        execute_git_checkout_worktree(plan)
-                    } else if linked_view {
-                        anyhow::bail!(
-                            "linked Grove source: CreateWorktree declined; refusing copy fallback"
-                        );
-                    } else {
-                        execute_copy_worktree(plan)
-                    }
-                }
-                CreationMode::Standalone => execute_standalone_worktree(plan),
-                _ => unreachable!(),
-            }?;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let mut result = grove_copy_fallback(plan)?;
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             {
                 result.skipped = skipped;
                 result.daemon_capability_class = daemon_class;
@@ -415,6 +409,54 @@ fn execute_create_worktree_dispatch(plan: WorktreePlan) -> Result<CreateWorktree
             Ok(result)
         }
         CreationMode::GitCheckout => execute_git_checkout_worktree(plan),
+    }
+}
+
+/// Linked/Standalone refuse-vs-git-checkout-vs-copy after Grove declined.
+/// Status RPC runs only when the mount table did not already name a Grove parent.
+fn grove_copy_fallback(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
+    use crate::CreationMode;
+
+    match &plan.creation_mode {
+        CreationMode::Linked => {
+            if crate::nfs::source_is_grove_parent(&plan.source) {
+                if matches!(
+                    plan.working_tree,
+                    crate::WorkingTreeMode::PreserveWorkingTree
+                ) {
+                    anyhow::bail!("preserve on a projected Grove source is not supported");
+                }
+                tracing::info!(
+                    source = %plan.source.display(),
+                    "projected source: skipping copy fallback, using git checkout"
+                );
+                execute_git_checkout_worktree(plan)
+            } else if plan
+                .nfs
+                .as_ref()
+                .is_some_and(|opts| crate::nfs::source_keeps_grove_create(opts, &plan.source))
+            {
+                anyhow::bail!("Grove source: CreateWorktree declined; refusing copy fallback");
+            } else {
+                execute_copy_worktree(plan)
+            }
+        }
+        CreationMode::Standalone => {
+            // dest_is_projected_mount is any NFS/FUSE (including an NFS home);
+            // do not block Standalone copy of a plain repo there.
+            if crate::nfs::dest_is_grove_projection(&plan.source) {
+                anyhow::bail!("Grove source: CreateWorktree declined; refusing copy fallback");
+            }
+            if plan
+                .nfs
+                .as_ref()
+                .is_some_and(|opts| crate::nfs::source_keeps_grove_create(opts, &plan.source))
+            {
+                anyhow::bail!("Grove source: CreateWorktree declined; refusing copy fallback");
+            }
+            execute_standalone_worktree(plan)
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -1502,7 +1544,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn skip_line_stays_one_line() {
         let err = anyhow::anyhow!("mount failed:\n  stderr: permission denied\n")

@@ -41,9 +41,12 @@ fn picker_keeps_conversation_with_empty_cwd_and_missing_updated_at() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1, "conversation must not vanish");
-    assert_eq!(entries[0].id, "conv_abc");
-    assert_eq!(entries[0].cwd, "");
-    assert_eq!(entries[0].source, "conversation");
+    let Some(entry) = entries.first() else {
+        panic!("expected conversation: {entries:?}");
+    };
+    assert_eq!(entry.id, "conv_abc");
+    assert_eq!(entry.cwd, "");
+    assert_eq!(entry.source, "conversation");
 }
 
 #[test]
@@ -60,7 +63,10 @@ fn picker_keeps_old_conversation_past_cutoff() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1, "old conversation must still render");
-    assert_eq!(entries[0].source, "conversation");
+    assert_eq!(
+        entries.first().map(|e| e.source.as_str()),
+        Some("conversation")
+    );
 }
 
 #[test]
@@ -94,8 +100,11 @@ fn picker_keeps_untitled_conversation_as_untitled() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1, "untitled conversation must not vanish");
-    assert_eq!(entries[0].summary, "Untitled");
-    assert_eq!(entries[0].source, "conversation");
+    let Some(entry) = entries.first() else {
+        panic!("expected untitled conversation: {entries:?}");
+    };
+    assert_eq!(entry.summary, "Untitled");
+    assert_eq!(entry.source, "conversation");
 }
 
 #[test]
@@ -115,12 +124,15 @@ fn picker_parses_last_recap_and_last_turn_summary() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1);
+    let Some(entry) = entries.first() else {
+        panic!("expected recap entry: {entries:?}");
+    };
     assert_eq!(
-        entries[0].last_turn_summary.as_deref(),
+        entry.last_turn_summary.as_deref(),
         Some("Wired retries into billing")
     );
     assert_eq!(
-        entries[0].last_recap.as_deref(),
+        entry.last_recap.as_deref(),
         Some("Where we left off: auth refactor across the API")
     );
 }
@@ -149,8 +161,11 @@ fn picker_parses_session_kind() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].session_kind.as_deref(), Some("headless"));
-    assert_eq!(entries[1].session_kind, None);
+    let [headless, plain] = entries.as_slice() else {
+        panic!("expected two session-kind entries: {entries:?}");
+    };
+    assert_eq!(headless.session_kind.as_deref(), Some("headless"));
+    assert_eq!(plain.session_kind, None);
 }
 
 #[test]
@@ -409,7 +424,7 @@ fn relabel_presence_keeps_shell_labels_when_resolution_fails() {
     .unwrap();
 
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].source, "remote");
+    assert_eq!(entries.first().map(|e| e.source.as_str()), Some("remote"));
 }
 
 #[test]

@@ -366,8 +366,11 @@ mod tests {
         let ws = PathBuf::from("/tmp/project");
         let deny = vec![PathBuf::from(".env"), PathBuf::from("/etc/shadow")];
         let resolved = resolve_deny_paths(&ws, &deny);
-        assert_eq!(resolved[0], PathBuf::from("/tmp/project/.env"));
-        assert_eq!(resolved[1], PathBuf::from("/etc/shadow"));
+        let [rel, abs] = resolved.as_slice() else {
+            panic!("expected two resolved paths: {resolved:?}");
+        };
+        assert_eq!(rel, &PathBuf::from("/tmp/project/.env"));
+        assert_eq!(abs, &PathBuf::from("/etc/shadow"));
     }
 
     #[test]

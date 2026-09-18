@@ -585,7 +585,9 @@ impl StashedPrompt {
             }
             chip.range = chip.range.start - start..chip.range.end - start;
             if chip.kind == KIND_IMAGE
-                && let Some(number) = parse_image_display_number(&text[chip.range.clone()])
+                && let Some(number) = text
+                    .get(chip.range.clone())
+                    .and_then(parse_image_display_number)
             {
                 image_numbers.insert(number);
             }
@@ -651,7 +653,6 @@ pub struct PromptWidget {
     /// False while a turn is running, in bash/remember input modes, or while editing a queued prompt.
     pub(crate) prompt_suggestion_active: bool,
 
-    // -- Image paste state ---------------------------------------------------
     /// Images attached to the current prompt.
     pub images: Vec<PastedImage>,
     /// Images removed during undo that can be restored on redo.
@@ -803,8 +804,6 @@ impl PromptWidget {
         self.suggestions.clear_ghost();
     }
 
-    // -- Predicted-next-prompt suggestion (tab autocomplete) -----------------
-
     /// The prompt-suggestion ghost to render for the current text, if the per-frame gate is open and no other completion UI owns the row.
     /// Requires the cursor at end-of-text so the ghost visually continues the typed text.
     pub fn prompt_suggestion_ghost(&self) -> Option<&str> {
@@ -852,8 +851,6 @@ impl PromptWidget {
     pub fn try_progressive_match(&mut self, new_text: &str) -> bool {
         self.suggestions.try_progressive_match(new_text)
     }
-
-    // -- Completion dropdown ------------------------------------------------
 
     /// Whether the completion dropdown is currently open.
     pub fn completion_dropdown_open(&self) -> bool {
@@ -1162,20 +1159,6 @@ impl PromptWidget {
         self.update_file_search_context();
     }
 
-    /// Insert plain text at the start without replacing existing chip elements; the cursor lands after it.
-    pub fn prepend_text(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        self.post_insert_image_preview = None;
-        self.hovered_image_element_id = None;
-        self.set_cursor(0);
-        self.textarea.insert_str(text);
-        self.update_file_search_context();
-    }
-
-    // -- Slash command state sync -------------------------------------------
-
     pub fn set_slash_current_title(&mut self, title: Option<String>) {
         self.slash_controller.set_current_title(title);
     }
@@ -1353,7 +1336,11 @@ impl PromptWidget {
                 {
                     // The row's trailing space is its args separator; absorb an existing plain-text one. Absorbing
                     // (rather than trimming the insert) lands the cursor after the separator, in the args phase.
-                    let next_is_plain_space = self.textarea.text()[range.end..].starts_with(' ')
+                    let next_is_plain_space = self
+                        .textarea
+                        .text()
+                        .get(range.end..)
+                        .is_some_and(|s| s.starts_with(' '))
                         && !self
                             .textarea
                             .elements()
@@ -1430,8 +1417,6 @@ impl PromptWidget {
         }
     }
 
-    // -- Slash preview -------------------------------------------------------
-
     /// Trigger live preview for the currently selected slash arg suggestion. Called after
     /// `slash_move_selection` when the dropdown is in the args phase of a command that supports
     /// preview. On the first call, captures the current state so it can be reverted on cancel.
@@ -1489,8 +1474,6 @@ impl PromptWidget {
         self.slash_preview_original = None;
     }
 
-    // -- File search --------------------------------------------------------
-
     /// Poll the file search daemon for new results. Returns `true` if changed.
     pub fn poll_file_search(&mut self) -> bool {
         self.file_search.poll()
@@ -1517,8 +1500,12 @@ impl PromptWidget {
     fn parse_file_ref_element(text: &str) -> (String, Option<std::ops::Range<usize>>) {
         let text = text.strip_prefix('@').unwrap_or(text);
         if let Some(colon_pos) = text.rfind(':') {
-            let path = &text[..colon_pos];
-            let range_str = &text[colon_pos + 1..];
+            let Some(path) = text.get(..colon_pos) else {
+                return (text.to_owned(), None);
+            };
+            let Some(range_str) = text.get(colon_pos + 1..) else {
+                return (text.to_owned(), None);
+            };
             if let Some(range) = parse_line_range(range_str) {
                 return (path.to_owned(), Some(range));
             }
@@ -1734,7 +1721,6 @@ impl PromptWidget {
         // Reset flight recorder delta (overwritten if key reaches textarea).
         self.last_input_delta = crate::input_log::LastInputDelta::default();
 
-        // ── File search key handling (when dropdown is visible) ─────────
         if self.file_search.is_visible() {
             match self.handle_file_search_key(key) {
                 FileSearchKeyResult::Handled => return PromptEvent::Edited,
@@ -1775,7 +1761,6 @@ impl PromptWidget {
             return PromptEvent::Ignored;
         }
 
-        // ── Ctrl-L / : on element opens the line viewer ─────────────────
         // Ctrl-L when the cursor is on or adjacent to a file ref element, or ':' typed right at an element boundary, opens the viewer
         if key!('l', CONTROL).matches(key)
             && let Some((path, initial_range)) = self.file_ref_element_at_cursor()
@@ -1799,10 +1784,10 @@ impl PromptWidget {
         }
         // Not at an element boundary: fall through to type ':' normally
 
-        // ── Normal key handling ─────────────────────────────────────────
-
-        // Newline: Shift/Alt+Enter, or Apple Terminal bare Enter with a newline modifier held (CoreGraphics rescue inside is_mod_enter)
-        if crate::input::is_mod_enter(key) {
+        // Newline: Shift/Alt+Enter, Apple Terminal CoreGraphics rescue (inside is_mod_enter),
+        // or a delivered SUPER+Enter (Kitty). SUPER is excluded from is_mod_enter (fullscreen
+        // on many terminals) and from bare-Enter send; insert here instead of textarea fallthrough.
+        if crate::input::is_mod_enter(key) || crate::input::is_delivered_super_enter(key) {
             self.insert_replacing_selection("\n");
             return PromptEvent::Edited;
         }
@@ -1931,34 +1916,27 @@ impl PromptWidget {
         }
     }
 
-    // ── File search key dispatch ────────────────────────────────────────
-
     /// Handle navigation/selection keys when the file search dropdown is visible.
     fn handle_file_search_key(&mut self, key: &KeyEvent) -> FileSearchKeyResult {
         if key!(Up).matches(key)
             || key!('p', CONTROL).matches(key)
             || key!('k', CONTROL).matches(key)
         {
-            // Navigation: up.
             self.file_search.move_selection(-1);
             FileSearchKeyResult::Handled
         } else if key!(Down).matches(key)
             || key!('n', CONTROL).matches(key)
             || key!('j', CONTROL).matches(key)
         {
-            // Navigation: down.
             self.file_search.move_selection(1);
             FileSearchKeyResult::Handled
         } else if key!(PageUp).matches(key) || key!('u', CONTROL).matches(key) {
-            // Page up.
             self.file_search.page_move(-1, 8);
             FileSearchKeyResult::Handled
         } else if key!(PageDown).matches(key) || key!('d', CONTROL).matches(key) {
-            // Page down.
             self.file_search.page_move(1, 8);
             FileSearchKeyResult::Handled
         } else if key!(Tab).matches(key) || key!(Enter).matches(key) {
-            // Accept.
             if file_search_has_selection(&self.file_search) {
                 FileSearchKeyResult::Accepted
             } else {
@@ -1985,10 +1963,8 @@ impl PromptWidget {
                 FileSearchKeyResult::PassThrough
             }
         } else if key!(Esc).matches(key) {
-            // Dismiss.
             FileSearchKeyResult::Dismissed
         } else {
-            // Everything else: pass through to normal handling.
             FileSearchKeyResult::PassThrough
         }
     }
@@ -2332,8 +2308,6 @@ impl PromptWidget {
         self.update_file_search_context();
         PromptEvent::Edited
     }
-
-    // ── Image chip support ──────────────────────────────────────────
 
     /// Maximum number of image chips allowed in a single prompt (v1).
     pub const IMAGE_CAP: usize = 10;
@@ -2710,7 +2684,9 @@ impl PromptWidget {
         else {
             return;
         };
-        let element_id = self.images[position].element_id;
+        let Some(element_id) = self.images.get(position).map(|image| image.element_id) else {
+            return;
+        };
         if let Some(range) = self
             .textarea
             .elements()
@@ -3127,12 +3103,17 @@ impl PromptWidget {
         ])
         .split(content_area);
 
-        let text_area_rect = chunks[1];
+        let Some(&text_area_rect) = chunks.get(1) else {
+            return PromptRenderResult {
+                cursor_pos: None,
+                post_flush_escapes: None,
+            };
+        };
 
         // Top divider: ╭──────────╮
         if vpad_top > 0 && style.chrome && style.show_borders {
             let div_style = Style::default().fg(border_color).bg(bg);
-            let div_y = chunks[0].y;
+            let div_y = chunks.first().map(|c| c.y).unwrap_or(area.y);
             let left_x = area.x;
             let right_x = area.x + area.width.saturating_sub(1);
             for x in area.x..area.x + area.width {
@@ -3236,9 +3217,16 @@ impl PromptWidget {
                 theme.accent_skill
             };
 
-            // Teal coloring: recolor the command name cells (not args) when the command is recognized or has visible autocomplete suggestions
+            let text = self.textarea.text();
+            let leading_invocation = snap.command_range.as_ref().is_some_and(|range| {
+                text.get(..range.start)
+                    .is_some_and(|before| before.trim().is_empty())
+            });
+
+            // Leading `/` teals on dropdown or a recognized name. Mid-text teals only when
+            // the token actually runs (hoist) or is a skill/plugin mention.
             if snap.active
-                && (snap.open || snap.command_recognized)
+                && (snap.command_recognized || (leading_invocation && snap.open))
                 && let Some(cmd_range) = &snap.command_range
             {
                 paint_slash_token_highlight(
@@ -3251,8 +3239,9 @@ impl PromptWidget {
                 );
             }
 
-            // Teal for the partial mid-text token under the cursor while typing.
-            if let Some(ref ghost) = snap.inline_ghost {
+            if let Some(ref ghost) = snap.inline_ghost
+                && ghost.highlight
+            {
                 paint_slash_token_highlight(
                     &self.textarea,
                     self.textarea_state,
@@ -3340,8 +3329,8 @@ impl PromptWidget {
                     Some(sel) => (
                         std::borrow::Cow::Owned(format!(
                             "{}{}",
-                            &text[..sel.start],
-                            &text[sel.end..]
+                            text.get(..sel.start).unwrap_or(""),
+                            text.get(sel.end..).unwrap_or("")
                         )),
                         sel.start,
                         sel.end,
@@ -3432,8 +3421,13 @@ impl PromptWidget {
         // Bottom divider: ╰──────────grok-3 · flags──╯
         // Guard on actual allocated height, not requested `info_block`
         // During resize the layout may squeeze the info block to 0 rows, leaving chunks[2].y past the buffer boundary
-        if info_block > 0 && style.chrome && style.show_borders && chunks[2].height > 0 {
-            let div_y = chunks[2].y;
+        if info_block > 0
+            && style.chrome
+            && style.show_borders
+            && let Some(info_chunk) = chunks.get(2)
+            && info_chunk.height > 0
+        {
+            let div_y = info_chunk.y;
             let div_style = Style::default().fg(border_color).bg(bg);
             let left_x = area.x;
             let right_x = area.x + area.width.saturating_sub(1);
@@ -3751,14 +3745,15 @@ fn parse_line_range(s: &str) -> Option<std::ops::Range<usize>> {
     }
 }
 
-// ── Element display helpers ────────────────────────────────────────────
-
 /// Build the styled display `Line` for a file reference element. Renders as: `@foo/bar.rs` or
 /// `@foo/bar.rs:10-12`. Style: `@` and `:` in gray, path in theme.path, numbers in text_primary.
 pub fn file_ref_display(path: &str) -> Line<'static> {
     let theme = Theme::current();
     let (file_part, line_part) = if let Some(colon_pos) = path.rfind(':') {
-        (&path[..colon_pos], Some(&path[colon_pos + 1..]))
+        (
+            path.get(..colon_pos).unwrap_or(path),
+            path.get(colon_pos + 1..),
+        )
     } else {
         (path, None)
     };

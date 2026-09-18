@@ -181,8 +181,13 @@ impl TailState {
         self.bytes_seen = self.bytes_seen.saturating_add(bytes.len() as u64);
         if bytes.len() >= self.capacity {
             self.bytes.clear();
-            self.bytes
-                .extend_from_slice(&bytes[bytes.len() - self.capacity..]);
+            self.bytes.extend_from_slice(
+                bytes
+                    .len()
+                    .checked_sub(self.capacity)
+                    .and_then(|start| bytes.get(start..))
+                    .unwrap_or(bytes),
+            );
             self.truncated = true;
             return;
         }
@@ -252,7 +257,7 @@ macro_rules! captured_reader {
                 let before = buf.filled().len();
                 match Pin::new(&mut this.inner).poll_read(cx, buf) {
                     Poll::Ready(Ok(())) => {
-                        this.tail.append(&buf.filled()[before..]);
+                        this.tail.append(buf.filled().get(before..).unwrap_or(&[]));
                         Poll::Ready(Ok(()))
                     }
                     Poll::Ready(Err(error)) => {
@@ -872,7 +877,11 @@ where
         loop {
             match reader.read(&mut buffer).await {
                 Ok(0) => break,
-                Ok(read) => tail.append(&buffer[..read]),
+                Ok(read) => {
+                    if let Some(chunk) = buffer.get(..read) {
+                        tail.append(chunk);
+                    }
+                }
                 Err(error) => {
                     tail.record_error(&error);
                     break;

@@ -184,13 +184,14 @@ fn record_registered_via_symlinked_home_joins_as_one_row() {
     .unwrap();
 
     let report = collect_report(&real_home).unwrap();
-    assert_eq!(
-        report.worktrees.len(),
-        1,
-        "a record stored under a symlinked home must not also appear as untracked"
-    );
-    assert!(report.worktrees[0].is_tracked());
-    assert_eq!(report.worktrees[0].label(), "via-link");
+    let [wt] = report.worktrees.as_slice() else {
+        panic!(
+            "a record stored under a symlinked home must not also appear as untracked: {:?}",
+            report.worktrees
+        );
+    };
+    assert!(wt.is_tracked());
+    assert_eq!(wt.label(), "via-link");
 }
 
 #[cfg(unix)]
@@ -204,13 +205,14 @@ fn duplicate_discovered_dirs_size_once() {
     std::os::unix::fs::symlink(&wt, home.join("worktrees/xai/wt-alias")).unwrap();
 
     let report = collect_report(&home).unwrap();
-    assert_eq!(
-        report.worktrees.len(),
-        1,
-        "two discovered entries canonicalizing to one dir must yield one row"
-    );
-    assert!(!report.worktrees[0].is_tracked());
-    assert_eq!(report.worktrees[0].bytes, measured(&wt));
+    let [row] = report.worktrees.as_slice() else {
+        panic!(
+            "two discovered entries canonicalizing to one dir must yield one row: {:?}",
+            report.worktrees
+        );
+    };
+    assert!(!row.is_tracked());
+    assert_eq!(row.bytes, measured(&wt));
 }
 
 #[cfg(unix)]
@@ -305,8 +307,10 @@ fn registry_absent_reports_untracked_rows() {
     let report = collect_report(&home).unwrap();
     assert_eq!(dir_names(&home), before, "collecting must not create files");
     assert_eq!(report.registry, RegistryState::Absent);
-    assert_eq!(report.worktrees.len(), 1);
-    assert!(!report.worktrees[0].is_tracked());
+    let [wt] = report.worktrees.as_slice() else {
+        panic!("expected one untracked worktree: {:?}", report.worktrees);
+    };
+    assert!(!wt.is_tracked());
 }
 
 #[test]
@@ -325,11 +329,13 @@ fn corrupt_registry_degrades_to_untracked_rows() {
     let report = collect_report(&home).unwrap();
     assert_eq!(report.registry, RegistryState::Corrupt);
     assert!(!report.top_level_dirs.is_empty());
-    assert_eq!(report.worktrees.len(), 1);
-    assert!(!report.worktrees[0].is_tracked());
+    let [wt] = report.worktrees.as_slice() else {
+        panic!("expected one untracked worktree: {:?}", report.worktrees);
+    };
+    assert!(!wt.is_tracked());
     assert_eq!(
-        serde_json::to_value(&report).unwrap()["registry"],
-        "corrupt"
+        serde_json::to_value(&report).unwrap().get("registry"),
+        Some(&serde_json::json!("corrupt"))
     );
 }
 
@@ -661,7 +667,10 @@ fn json_shape_is_frozen() {
     );
 
     // Serialize is hand-written, and `to_value` would not see a reshuffle.
-    let pretty = serde_json::to_string_pretty(&report.worktrees[0]).unwrap();
+    let Some(first) = report.worktrees.first() else {
+        panic!("frozen fixture includes a tracked worktree");
+    };
+    let pretty = serde_json::to_string_pretty(first).unwrap();
     let keys: Vec<&str> = pretty
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"')?.split('"').next())
@@ -695,11 +704,11 @@ fn missing_home_json_is_valid_and_empty() {
     )
     .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["registry"], "absent");
-    assert_eq!(json["registry_path"], "");
-    assert_eq!(json["total_bytes"], 0);
-    assert_eq!(json["worktrees"], serde_json::json!([]));
+    assert_eq!(json.get("schema_version"), Some(&serde_json::json!(1)));
+    assert_eq!(json.get("registry"), Some(&serde_json::json!("absent")));
+    assert_eq!(json.get("registry_path"), Some(&serde_json::json!("")));
+    assert_eq!(json.get("total_bytes"), Some(&serde_json::json!(0)));
+    assert_eq!(json.get("worktrees"), Some(&serde_json::json!([])));
 }
 
 #[test]
@@ -744,7 +753,10 @@ fn print_report_truncates_long_labels_and_keeps_columns_aligned() {
     };
     let text = render_report(&report, 1_000_000_000);
 
-    assert!(text.contains(&format!("{}…", &long_label[..23])));
+    let Some(truncated) = long_label.get(..23) else {
+        panic!("label is 30 ASCII 'a's");
+    };
+    assert!(text.contains(&format!("{truncated}…")));
     assert!(!text.contains(&long_label));
     assert!(text.contains("session (dead)"));
     assert!(text.contains("untracked (session)"));
@@ -1001,9 +1013,11 @@ fn symlinked_worktrees_dir_is_surfaced_not_silently_dropped() {
         "a symlinked worktrees dir is not a dir entry, so it never reaches the breakdown: {:?}",
         report.top_level_dirs
     );
-    assert_eq!(report.worktrees.len(), 1);
+    let [wt] = report.worktrees.as_slice() else {
+        panic!("expected the escaped worktree row: {:?}", report.worktrees);
+    };
     assert!(
-        report.worktrees[0].bytes.unwrap() > report.total_bytes,
+        wt.bytes.is_some_and(|bytes| bytes > report.total_bytes),
         "the row must outsize a total that never walked the target"
     );
     assert!(
