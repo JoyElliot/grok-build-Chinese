@@ -1,0 +1,38 @@
+name: Reviewed 1.0.35 source checkpoint
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths: [.github/workflows/review-135-checkpoint.yml]
+permissions:
+  contents: read
+jobs:
+  checkpoint:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 44f65e825c9eb85258672bcdfe4b47d82afa5cd6
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Save verified history and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/review-checkpoint"
+          mkdir -p "$out"
+          test "$(git rev-parse HEAD)" = 44f65e825c9eb85258672bcdfe4b47d82afa5cd6
+          git merge-base --is-ancestor a28ee2b2063426e8816e380ccea528b9de95e5da HEAD
+          git merge-base --is-ancestor 50f53f06bab8309cb8299a50cd2751deb26db726 HEAD
+          git bundle create "$out/reviewed-135.bundle" HEAD
+          git bundle verify "$out/reviewed-135.bundle"
+          git show --no-patch --format=fuller HEAD > "$out/commit.txt"
+          git rev-parse HEAD^{tree} > "$out/tree.txt"
+          sha256sum "$out/reviewed-135.bundle" > "$out/SHA256SUMS"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reviewed-135-checkpoint-${{ github.run_id }}
+          path: ${{ runner.temp }}/review-checkpoint
+          retention-days: 14
+          if-no-files-found: error
