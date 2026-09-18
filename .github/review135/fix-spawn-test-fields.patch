@@ -1,0 +1,17 @@
+diff --git a/crates/codegen/xai-grok-shell/src/agent/subagent/isolated_spawn_e2e.rs b/crates/codegen/xai-grok-shell/src/agent/subagent/isolated_spawn_e2e.rs
+index 5bfd08e9..508e2633 100644
+--- a/crates/codegen/xai-grok-shell/src/agent/subagent/isolated_spawn_e2e.rs
++++ b/crates/codegen/xai-grok-shell/src/agent/subagent/isolated_spawn_e2e.rs
+@@ -41,6 +41,12 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
+             context_window: 256_000,
+             ..Default::default()
+         },
++        #[cfg(test)]
++        setup_failure: None,
++        #[cfg(test)]
++        run_shell_child_harness: None,
++        #[cfg(test)]
++        fail_start_metadata_write: false,
+         alpha_test_key: None,
+         auth_method_id: acp::AuthMethodId::new("test"),
+         model_id: acp::ModelId::new("test"),
