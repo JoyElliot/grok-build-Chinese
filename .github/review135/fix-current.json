@@ -1,17 +1,6 @@
 {
-  "base": "8d50220810579c51317087917ed680d91d201cea",
-  "tree": "a707e62cd0a076fe093536e9790957e0b06f8668",
-  "patches": [
-    "fix-completion-u1.patch",
-    "fix-completion-u2.patch",
-    "fix-completion-u3.patch",
-    "fix-completion-u4.patch",
-    "fix-completion-u5.patch",
-    "fix-completion-u6.patch",
-    "fix-completion-u7.patch",
-    "fix-completion-u8.patch",
-    "fix-completion-tests.patch",
-    "fix-separate-workflow.patch"
-  ],
-  "message": "补齐上游中文资料、定时任务提示及测试模块接口适配"
+  "base": "6f0365802c9778805d525367e80129dcbfd8a397",
+  "tree": "53650137b2ab796370fb677df92f6f774ff39049",
+  "patches": ["fix-spawn-test-fields.patch"],
+  "message": "修复子智能体隔离测试构造遗漏的三个条件编译字段"
 }
