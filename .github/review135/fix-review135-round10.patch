@@ -1,0 +1,88 @@
+diff --git a/.github/scripts/tests/test_upstream_localization.py b/.github/scripts/tests/test_upstream_localization.py
+index b4541b9c..ae920369 100644
+--- a/.github/scripts/tests/test_upstream_localization.py
++++ b/.github/scripts/tests/test_upstream_localization.py
+@@ -91,6 +91,23 @@ class UpstreamLocalizationTests(unittest.TestCase):
+                 self.assertRegex(metadata[key], r"[\u3400-\u9fff]")
+ 
+ 
++    def test_literal_named_ui_keys_exist_in_a_chinese_catalog(self):
++        folder = CODEGEN / "xai-grok-locale/locales"
++        keys = set(load_json(folder / "zh-CN.json")) | set(load_json(folder / "zh-CN-metadata.json"))
++        pattern = re.compile(r'\.named_(?:static_)?text\(\s*"([^"\n]+)"\s*,')
++        missing = []
++        calls = 0
++        for path in sorted(CODEGEN.glob("*/src/**/*.rs")):
++            text = path.read_text(encoding="utf-8")
++            for match in pattern.finditer(text):
++                calls += 1
++                if match.group(1) not in keys:
++                    line = text.count("\n", 0, match.start()) + 1
++                    missing.append(f"{path.relative_to(ROOT)}:{line}: {match.group(1)}")
++        self.assertGreater(calls, 500, "The scan must actually visit the shipped UI source")
++        self.assertEqual(missing, [], "Unknown literal UI keys fall back to English")
++
++
+     def test_shell_test_support_forwards_workspace_fixture_feature(self):
+         manifest = tomllib.loads((CODEGEN / "xai-grok-shell/Cargo.toml").read_text(encoding="utf-8"))
+         self.assertIn("xai-grok-workspace/test-support", manifest["features"]["test-support"])
+diff --git a/crates/codegen/xai-grok-pager/src/views/picker.rs b/crates/codegen/xai-grok-pager/src/views/picker.rs
+index ce816494..6ce3c52e 100644
+--- a/crates/codegen/xai-grok-pager/src/views/picker.rs
++++ b/crates/codegen/xai-grok-pager/src/views/picker.rs
+@@ -473,7 +473,7 @@ pub(crate) fn render_picker_search_bar_with_label_and_locale(
+     locale: Option<&LocaleContext>,
+ ) {
+     let hint = locale
+-        .map(|l| l.named_static_text("picker.search_hint", SEARCH_BAR_HINT))
++        .map(|l| l.named_static_text("picker.search.hint", SEARCH_BAR_HINT))
+         .unwrap_or(SEARCH_BAR_HINT);
+     render_line_editor_search_bar_with_label_and_hint(
+         buf,
+diff --git a/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs b/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
+index 40f1a22c..b233a569 100644
+--- a/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
++++ b/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
+@@ -138,7 +138,7 @@ pub(crate) fn render_session_picker_search_bar_with_locale(
+     locale: Option<&crate::locale::LocaleContext>,
+ ) {
+     let label = locale
+-        .map(|l| l.named_static_text("picker.search_label", SESSION_SEARCH_LABEL))
++        .map(|l| l.named_static_text("picker.search.label", SESSION_SEARCH_LABEL))
+         .unwrap_or(SESSION_SEARCH_LABEL);
+     crate::views::picker::render_picker_search_bar_with_label_and_locale(
+         buf,
+@@ -530,4 +530,33 @@ mod tests {
+         });
+         assert!(labeled, "focused label must match the modal title color");
+     }
++
++    #[test]
++    fn zh_localization_review135_session_search_uses_existing_catalog_keys() {
++        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
++        let zh = LocaleContext::new(ResolvedLocale {
++            locale: UiLocale::ZhCn,
++            source: LocaleSource::Cli,
++        });
++        let theme = Theme::groknight();
++        let area = Rect::new(0, 0, 80, 1);
++        for active in [false, true] {
++            let mut state = crate::views::picker::PickerState::default();
++            state.search_active = active;
++            if active {
++                state.set_query("literal {path}");
++            }
++            let mut buf = Buffer::empty(area);
++            render_session_picker_search_bar_with_locale(&mut buf, area, &theme, &state, Some(&zh));
++            let text = row_text(&buf);
++            assert!(text.contains("搜索："), "{text:?}");
++            assert!(!text.contains(" search:"), "{text:?}");
++            if active {
++                assert!(text.contains("literal {path}"), "{text:?}");
++            } else {
++                assert!(text.contains("/ 开始搜索"), "{text:?}");
++                assert!(!text.contains("to search"), "{text:?}");
++            }
++        }
++    }
+ }
