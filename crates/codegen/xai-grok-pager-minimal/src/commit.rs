@@ -292,7 +292,7 @@ fn paint_committed(
 
 fn paint_committed_with_footer(
     buf: &mut ratatui::buffer::Buffer,
-    renderer: EntryRenderer<'_>,
+    renderer: &EntryRenderer<'_>,
     width: u16,
     full_h: u16,
     footer_style: Style,
