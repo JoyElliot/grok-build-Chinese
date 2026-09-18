@@ -1,0 +1,79 @@
+name: Upstream 1.0.35 review cycle
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths:
+      - .github/review135/**
+      - .github/workflows/review-135-cycle.yml
+permissions:
+  contents: read
+concurrency:
+  group: review-135-cycle
+  cancel-in-progress: true
+jobs:
+  review:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      RUSTUP_TOOLCHAIN: 1.94.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Recreate fixed merge without changing remote source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-checkout https://github.com/JoyElliot/grok-build-Chinese.git "$RUNNER_TEMP/review-source"
+          cd "$RUNNER_TEMP/review-source"
+          git fetch https://github.com/xai-org/grok-build.git a28ee2b2063426e8816e380ccea528b9de95e5da
+          git checkout --detach 50f53f06bab8309cb8299a50cd2751deb26db726
+          git config user.name 'ChatGPT Review'
+          git config user.email 'chatgpt@localhost'
+          git config merge.conflictStyle diff3
+          mkdir -p "$RUNNER_TEMP/review-evidence"
+          git merge --no-commit --no-ff a28ee2b2063426e8816e380ccea528b9de95e5da > "$RUNNER_TEMP/review-evidence/merge.log" 2>&1 || {
+            test -n "$(git diff --name-only --diff-filter=U)"
+          }
+      - name: Apply reviewed resolutions and show next conflicts
+        id: resolutions
+        shell: bash
+        run: python3 .github/review135/resolve.py "$RUNNER_TEMP/review-source" "$GITHUB_WORKSPACE/.github/review135" "$RUNNER_TEMP/review-evidence"
+      - name: Prepare compiler for resolved candidate
+        if: steps.resolutions.outputs.resolved == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal --component rustfmt
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends protobuf-compiler libssl-dev libasound2-dev libdbus-1-dev libclang-dev cmake nasm pkg-config
+          echo 'PROTOC=/usr/bin/protoc' >> "$GITHUB_ENV"
+      - name: Type-check production and test targets
+        if: steps.resolutions.outputs.resolved == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/review-source"
+          cargo fmt --all -- --check 2>&1 | tee "$RUNNER_TEMP/review-evidence/cargo-fmt.log"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/review-evidence/cargo-metadata.json"
+          cargo check --locked -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-minimal --lib --tests 2>&1 | tee "$RUNNER_TEMP/review-evidence/typecheck-tests.log"
+          cargo check --locked -p xai-grok-pager-bin --features release-dist 2>&1 | tee "$RUNNER_TEMP/review-evidence/typecheck-release.log"
+      - name: Export review evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: review-135-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/review-evidence
+          retention-days: 7
+          if-no-files-found: error
+      - name: Refuse unresolved candidate
+        if: steps.resolutions.outputs.resolved != 'true'
+        shell: bash
+        run: |
+          echo '::error::Review is incomplete: unresolved merge conflicts remain; project compilation was not attempted.'
+          exit 1
