@@ -1,0 +1,136 @@
+name: Fix and validate reviewed 1.0.35
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths:
+      - .github/review135/fix-current.json
+      - .github/workflows/fix-reviewed-135.yml
+permissions:
+  contents: read
+concurrency:
+  group: fix-reviewed-135
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      candidate: ${{ steps.publish.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Verify and publish only the fixed source tree
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          root = pathlib.Path.cwd()
+          spec = json.loads((root / '.github/review135/fix-current.json').read_text())
+          for key in ('base', 'tree'):
+              assert re.fullmatch('[0-9a-f]{40}', spec[key]), key
+          assert re.fullmatch(r'fix-[a-z0-9-]+\.patch', spec['patch'])
+          branch = 'refs/heads/sync/upstream-1.0.35-reviewed'
+          def git(*args, cwd=root):
+              return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
+          remote = git('ls-remote', '--heads', 'origin', branch).split()[0]
+          assert remote == spec['base'], 'Source branch moved; refusing stale patch'
+          candidate = pathlib.Path(os.environ['RUNNER_TEMP']) / 'candidate'
+          git('worktree', 'add', '--detach', str(candidate), spec['base'])
+          patch = root / '.github/review135' / spec['patch']
+          git('apply', '--check', str(patch), cwd=candidate)
+          git('apply', '--index', str(patch), cwd=candidate)
+          git('diff', '--cached', '--check', cwd=candidate)
+          assert git('write-tree', cwd=candidate) == spec['tree'], 'Candidate tree mismatch'
+          git('-c', 'user.name=ChatGPT Review', '-c', 'user.email=chatgpt@localhost', 'commit', '-m', spec['message'], cwd=candidate)
+          commit = git('rev-parse', 'HEAD', cwd=candidate)
+          git('merge-base', '--is-ancestor', 'a28ee2b2063426e8816e380ccea528b9de95e5da', commit, cwd=candidate)
+          assert git('ls-remote', '--heads', 'origin', branch).split()[0] == spec['base'], 'Concurrent update detected'
+          git('push', 'origin', commit + ':' + branch)
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'source-evidence'
+          evidence.mkdir()
+          git('bundle', 'create', str(evidence / 'fix.bundle'), commit, '^' + spec['base'], cwd=candidate)
+          (evidence / 'result.json').write_text(json.dumps(dict(spec, commit=commit), ensure_ascii=False, indent=2))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('candidate=' + commit + '\n')
+          print('Published exact source tree:', commit, spec['tree'])
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: reviewed-135-fix-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/source-evidence
+          retention-days: 14
+          if-no-files-found: warn
+  check:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: 1.94.0
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.publish.outputs.candidate }}
+          persist-credentials: false
+      - name: Prepare pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal --component rustfmt
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends build-essential libssl-dev libasound2-dev libdbus-1-dev libclang-dev cmake nasm pkg-config
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/protoc.zip" https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip
+          echo '3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a  '"$RUNNER_TEMP/protoc.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc" >> "$GITHUB_ENV"
+          echo "PROTOC_INCLUDE=$RUNNER_TEMP/protoc/include" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: reviewed-135-debug-v1-${{ hashFiles('Cargo.lock') }}-${{ needs.publish.outputs.candidate }}
+          restore-keys: reviewed-135-debug-v1-${{ hashFiles('Cargo.lock') }}-
+      - name: Check all production and test targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/check-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/check-evidence/commit.txt"
+          status=0
+          cargo fmt --all -- --check > "$RUNNER_TEMP/check-evidence/fmt.log" 2>&1 || status=1
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/check-evidence/metadata.json" || status=1
+          cargo check --locked -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-minimal --lib --tests > "$RUNNER_TEMP/check-evidence/tests.log" 2>&1 || status=1
+          cargo check --locked -p xai-grok-pager-bin --features release-dist > "$RUNNER_TEMP/check-evidence/release.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-locale > "$RUNNER_TEMP/check-evidence/locale.log" 2>&1 || status=1
+          echo "$status" > "$RUNNER_TEMP/check-evidence/exit.txt"
+          grep -E '^error|^test result:|Finished' "$RUNNER_TEMP/check-evidence/"*.log || true
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: reviewed-135-fix-check-${{ github.run_id }}
+          path: ${{ runner.temp }}/check-evidence
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: reviewed-135-debug-v1-${{ hashFiles('Cargo.lock') }}-${{ needs.publish.outputs.candidate }}
