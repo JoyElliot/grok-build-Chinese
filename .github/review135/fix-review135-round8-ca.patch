@@ -1,0 +1,239 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/plan.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/plan.rs
+index ced5662e..11bfad1c 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/plan.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/plan.rs
+@@ -426,15 +426,20 @@ impl AgentView {
+         if self.is_freeform_builtin_slash_command()
+             && let Some(pav) = self.plan_approval_view.as_mut()
+         {
+-            let msg = match pav.focus {
+-                PlanApprovalFocus::Commenting => {
+-                    "The comment in progress is a slash command: finish or discard it before approving."
+-                }
++            let (id, english) = match pav.focus {
++                PlanApprovalFocus::Commenting => (
++                    "plan.notice.comment_is_command",
++                    "The comment in progress is a slash command: finish or discard it before approving.",
++                ),
+                 PlanApprovalFocus::Preview | PlanApprovalFocus::Prompt => {
+                     pav.focus = PlanApprovalFocus::Prompt;
+-                    "Run the slash command in the notes with Enter, or clear it, before approving."
++                    (
++                        "plan.notice.notes_are_command",
++                        "Run the slash command in the notes with Enter, or clear it, before approving.",
++                    )
+                 }
+             };
++            let msg = self.scrollback.locale().named_static_text(id, english);
+             if crate::app::minimal_mode_active() {
+                 self.scrollback.push_block(RenderBlock::system(msg));
+             } else {
+@@ -482,7 +487,11 @@ impl AgentView {
+                     pav.has_plan = true;
+                 }
+                 self.show_plan_preview_if_available();
+-                self.show_toast(PLAN_CHANGED_ON_DISK_NOTICE);
++                let message = self
++                    .scrollback
++                    .locale()
++                    .named_static_text("plan.notice.changed_on_disk", PLAN_CHANGED_ON_DISK_NOTICE);
++                self.show_toast(message);
+                 return InputOutcome::Changed;
+             }
+             let notes = review_comments.as_deref();
+@@ -584,7 +593,11 @@ impl AgentView {
+             return InputOutcome::Changed;
+         };
+         if self.is_post_turn_build_starting() {
+-            self.show_toast("Wait for the current turn to end before abandoning the plan.");
++            let message = self.scrollback.locale().named_static_text(
++                "plan.notice.busy_abandon",
++                "Wait for the current turn to end before abandoning the plan.",
++            );
++            self.show_toast(message);
+             return InputOutcome::Changed;
+         }
+         if pav.is_after_turn() {
+@@ -663,7 +676,11 @@ impl AgentView {
+                 pav.send_cancelled(None);
+                 self.kept_plan.drop_body_if_pathed();
+                 self.prompt.textarea.cancel_undo_group();
+-                self.show_toast("Plan revision sent.");
++                let message = self
++                    .scrollback
++                    .locale()
++                    .named_static_text("plan.approval.revision_sent", "Plan revision sent.");
++                self.show_toast(message);
+                 log_plan_submit("revise");
+             }
+         }
+@@ -687,15 +704,27 @@ impl AgentView {
+                 .push_block(crate::scrollback::RenderBlock::user_prompt(msg.to_string()));
+         }
+         if post_turn && to_send.as_deref().is_none_or(|text| text.trim().is_empty()) {
+-            self.show_toast("Type revision notes, or press a to approve.");
++            let message = self.scrollback.locale().named_static_text(
++                "plan.notice.revision_notes",
++                "Type revision notes, or press a to approve.",
++            );
++            self.show_toast(message);
+             return InputOutcome::Changed;
+         }
+         if self.is_post_turn_build_starting() {
+-            self.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
++            let message = self
++                .scrollback
++                .locale()
++                .named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE);
++            self.show_toast(message);
+             return InputOutcome::Changed;
+         }
+         if post_turn && self.plan_mode_pending == Some(false) {
+-            self.show_toast(LEAVE_PLAN_REVISE_NOTICE);
++            let message = self
++                .scrollback
++                .locale()
++                .named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE);
++            self.show_toast(message);
+             return InputOutcome::Changed;
+         }
+         if post_turn {
+@@ -2745,4 +2774,32 @@ mod plan_approval_optimistic_mode_tests {
+             .expect("review after revise");
+         assert_eq!(pav.plan_content.as_deref(), Some("# Revised plan\n"));
+     }
++    #[test]
++    fn zh_localization_review135_plan_notices_do_not_bypass_build_in_flight() {
++        let mut agent = agent_with_post_turn_review();
++        let zh = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
++            locale: crate::locale::UiLocale::ZhCn,
++            source: crate::locale::LocaleSource::Cli,
++        });
++        agent.scrollback.set_locale(&zh);
++        agent.set_execute_plan_prompt("build-1");
++        assert!(matches!(agent.abandon_plan(), InputOutcome::Changed));
++        assert_eq!(
++            agent.toast.as_ref().map(|(msg, _)| msg.as_str()),
++            Some("请等待当前回合结束后再放弃计划。")
++        );
++        assert!(matches!(
++            agent.send_plan_feedback(Some("add a rollback".into())),
++            InputOutcome::Changed
++        ));
++        assert_eq!(
++            agent.toast.as_ref().map(|(msg, _)| msg.as_str()),
++            Some("请等待当前回合结束后再修订计划。")
++        );
++        assert!(agent.plan_approval_view.is_some());
++        assert!(agent.kept_plan.is_kept());
++        assert_eq!(agent.execute_plan_prompt_id(), Some("build-1"));
++        assert!(plan_review_closed_rows(&agent).is_empty());
++        assert!(agent.plan_mode_pending.is_none());
++    }
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
+index 821959b1..5c29ce0f 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/render.rs
+@@ -1544,7 +1544,12 @@ impl AgentView {
+             .current_branch
+             .clone()
+             .or_else(|| lazy_git.as_ref().and_then(|i| i.branch.clone()))
+-            .map(crate::views::location::branch_label);
++            .map(|branch| {
++                crate::views::location::branch_label_with_locale(
++                    branch,
++                    Some(self.scrollback.locale()),
++                )
++            });
+         if let Some(branch) = branch {
+             location.push(Span::styled(branch, dim));
+             location.push(Span::styled(" ", bg));
+@@ -1553,7 +1558,13 @@ impl AgentView {
+             || self.session.is_worktree
+             || lazy_git.as_ref().is_some_and(|i| i.is_worktree);
+         if show_worktree_label {
+-            location.push(crate::views::location::worktree_badge(&theme).patch_style(bg));
++            location.push(
++                crate::views::location::worktree_badge_with_locale(
++                    &theme,
++                    Some(self.scrollback.locale()),
++                )
++                .patch_style(bg),
++            );
+         }
+         if let Some(profile) = xai_grok_sandbox::profile_name() {
+             location.push(Span::styled(
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/modes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/modes.rs
+index 884ca20a..edf7e90c 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/modes.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/modes.rs
+@@ -147,7 +147,11 @@ pub(super) fn set_plan_mode(
+     // Same refuse as a second approve: ExecutePlan already marked the turn
+     // running. Revise and abandon must not commit while that build is starting.
+     if !kind.to_bool() && agent.is_post_turn_build_starting() {
+-        agent.show_toast(super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE);
++        let message = agent.scrollback.locale().named_static_text(
++            "plan.notice.busy_abandon",
++            super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE,
++        );
++        agent.show_toast(message);
+         return vec![];
+     }
+ 
+@@ -698,7 +702,11 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
+     // Same refuse as set_plan_mode(Off). Shift+Tab Default is not worker
+     // accept; a later ExecutePlan refuse must not see !plan_mode_active.
+     if agent.is_post_turn_build_starting() {
+-        agent.show_toast(super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE);
++        let message = agent.scrollback.locale().named_static_text(
++            "plan.notice.busy_abandon",
++            super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE,
++        );
++        agent.show_toast(message);
+         return vec![];
+     }
+     // Per-session (symmetric with the `in_yolo` reads below), not the global UI mirror, so the cycle and the prompt "auto" indicator agree per agent
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
+index 80f0207f..b5ebfa8a 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/notes.rs
+@@ -1230,6 +1230,28 @@ pub(super) fn handle_memory_note_saved(
+     vec![]
+ }
+ 
++/// Localize only image notices generated by the client. The model request and
++/// unknown diagnostics remain untouched; the notice channel does not carry replies.
++fn localized_btw_image_notice(notice: &str, locale: &crate::locale::LocaleContext) -> String {
++    const ALL: &str = "Attached images were not included (too large or could not be loaded).";
++    const SUFFIX: &str = " attached image(s) were not included (over the 50MB side-question limit or could not be loaded).";
++    if notice == ALL {
++        return locale
++            .named_text("btw.images.omitted_all", ALL)
++            .into_owned();
++    }
++    if let Some(count) = notice.strip_suffix(SUFFIX)
++        && !count.is_empty()
++        && count.bytes().all(|b| b.is_ascii_digit())
++    {
++        return locale.named_text(
++            "btw.images.omitted_some",
++            "{count} attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
++        ).replace("{count}", count);
++    }
++    notice.to_owned()
++}
++
+ pub(super) fn handle_btw_response(
+     app: &mut AppView,
+     agent_id: AgentId,
+@@ -1239,6 +1261,9 @@ pub(super) fn handle_btw_response(
+ ) -> Vec<Effect> {
+     if let Some(agent) = app.agents.get_mut(&agent_id) {
+         use crate::views::btw_overlay::BtwOverlayState;
++        let image_notice = image_notice
++            .as_deref()
++            .map(|notice| localized_btw_image_notice(notice, agent.scrollback.locale()));
+         if let Some(request_id) = minimal_request_id {
+             // A dismissed or stale request ignores the answer. Don't toast either.
+             if crate::minimal_api::finish_minimal_btw(agent, request_id, result)
