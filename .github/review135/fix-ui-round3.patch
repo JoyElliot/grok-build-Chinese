@@ -1,0 +1,234 @@
+diff --git a/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json b/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
+index e4eae474..b66da2c6 100644
+--- a/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
++++ b/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
+@@ -1453,8 +1453,8 @@
+   "slash.command.goal.arg_placeholder": "<目标> [--budget <Token 数>] | status | pause | resume | clear",
+   "slash.command.screen_mode.error.no_session": "没有活动会话，无法以{mode}模式重新打开",
+   "slash.command.goal.description": "设置、管理或检查自主目标",
+-  "slash.command.flush.description": "立即将对话记忆刷新到磁盘",
+-  "slash.command.dream.description": "运行记忆整合（将会话日志合并为有序主题）",
++  "slash.command.flush.description": "立即将本次会话的记忆保存到磁盘",
++  "slash.command.dream.description": "立即整合记忆（将观察记录合并为主题）",
+   "slash.command.memory.description": "浏览、查看和管理记忆",
+   "slash.command.build-with-ai.description": "在 SpaceXAI 上构建 AI 应用（XAI_API_KEY + api.x.ai）",
+   "slash.command.build-with-ai.arg_placeholder": "<要构建的内容>",
+@@ -3411,5 +3411,10 @@
+   "contextual_hints.small_screen": "小屏幕提示",
+   "contextual_hints.ssh_wrap": "SSH 换行提示",
+   "contextual_hints.undo": "撤销提示",
+-  "contextual_hints.word_select": "单词选择提示"
++  "contextual_hints.word_select": "单词选择提示",
++  "prompt.flag.always_approve": "始终批准",
++  "minimal.feedback.too_small": "反馈表单需要更大的终端 - 按 Esc 关闭",
++  "slash.command.memory.error.arguments": "/memory 不接受参数。打开后按 t 启用或停用记忆，按 s 查看状态。",
++  "slash.command.flush.error.arguments": "/flush 不接受参数。",
++  "slash.command.dream.error.arguments": "/dream 不接受参数。"
+ }
+diff --git a/crates/codegen/xai-grok-pager-minimal/src/auth.rs b/crates/codegen/xai-grok-pager-minimal/src/auth.rs
+index 01179860..af6ff719 100644
+--- a/crates/codegen/xai-grok-pager-minimal/src/auth.rs
++++ b/crates/codegen/xai-grok-pager-minimal/src/auth.rs
+@@ -542,7 +542,7 @@ mod tests {
+                 .into(),
+         );
+         render_auth(&mut buf, area, &theme, &hint, &ZH_TEST_LOCALE);
+-        let text = buffer_text(&buf, area);
++        let text = crate::buffer_text(&buf);
+         let compact = text.replace(' ', "");
+         assert!(compact.contains("登录失败"), "heading: {text:?}");
+         assert!(
+diff --git a/crates/codegen/xai-grok-pager-minimal/src/feedback.rs b/crates/codegen/xai-grok-pager-minimal/src/feedback.rs
+index 54b6cd26..7de13dde 100644
+--- a/crates/codegen/xai-grok-pager-minimal/src/feedback.rs
++++ b/crates/codegen/xai-grok-pager-minimal/src/feedback.rs
+@@ -23,6 +23,7 @@ pub(super) fn render(
+     modal: &mut FeedbackModalState,
+     theme: &Theme,
+     compact: bool,
++    locale: Option<&xai_grok_pager::locale::LocaleContext>,
+ ) -> (Option<(u16, u16)>, Option<PostFlush>) {
+     match modal.render(buf, area, theme, compact) {
+         Some(frame) => (
+@@ -36,7 +37,15 @@ pub(super) fn render(
+                 height: 1u16.min(area.height),
+                 ..area
+             };
+-            super::live::render_warning_hint(buf, row, theme, FEEDBACK_BAND_TOO_SMALL_HINT);
++            let hint = locale
++                .map(|locale| {
++                    locale.named_static_text(
++                        "minimal.feedback.too_small",
++                        FEEDBACK_BAND_TOO_SMALL_HINT,
++                    )
++                })
++                .unwrap_or(FEEDBACK_BAND_TOO_SMALL_HINT);
++            super::live::render_warning_hint(buf, row, theme, hint);
+             (None, terminal::overlay::clear().map(PostFlush::from))
+         }
+     }
+@@ -66,7 +75,7 @@ mod tests {
+         let theme = Theme::terminal_default();
+         let area = Rect::new(0, 0, 80, crate::overlay::MINIMAL_APP_MODAL_ROWS);
+         let mut buf = Buffer::empty(area);
+-        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false);
++        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, None);
+ 
+         let text = crate::buffer_text(&buf);
+         for needle in ["Feedback", "Write", "Drafts"] {
+@@ -87,7 +96,7 @@ mod tests {
+         let theme = Theme::terminal_default();
+         let area = Rect::new(0, 0, 80, 4);
+         let mut buf = Buffer::empty(area);
+-        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false);
++        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, None);
+ 
+         let text = crate::buffer_text(&buf);
+         assert!(
+@@ -96,4 +105,26 @@ mod tests {
+         );
+         assert!(cursor.is_none());
+     }
++
++    #[test]
++    #[serial_test::serial]
++    fn zh_localization_feedback_too_small_band_preserves_the_escape_hint() {
++        let _reset = EmbedReset;
++        modal_window::set_embedded(true);
++        let locale =
++            xai_grok_pager::locale::LocaleContext::new(xai_grok_pager::locale::ResolvedLocale {
++                locale: xai_grok_pager::locale::UiLocale::ZhCn,
++                source: xai_grok_pager::locale::LocaleSource::Cli,
++            });
++        let mut modal = FeedbackModalState::new_with_locale(OpenFeedbackModal::default(), &locale);
++        let theme = Theme::terminal_default();
++        let area = Rect::new(0, 0, 80, 4);
++        let mut buf = Buffer::empty(area);
++        let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, Some(&locale));
++        let text = crate::buffer_text(&buf);
++        assert!(text.contains("反馈表单需要更大的终端"), "{text}");
++        assert!(text.contains("Esc"), "{text}");
++        assert!(!text.contains("Feedback form"), "{text}");
++        assert!(cursor.is_none());
++    }
+ }
+diff --git a/crates/codegen/xai-grok-pager-minimal/src/live.rs b/crates/codegen/xai-grok-pager-minimal/src/live.rs
+index 3e7f92c1..a10c09e5 100644
+--- a/crates/codegen/xai-grok-pager-minimal/src/live.rs
++++ b/crates/codegen/xai-grok-pager-minimal/src/live.rs
+@@ -148,7 +148,14 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
+             return (None, None);
+         }
+         if let Some(modal) = minimal_api::feedback_modal_mut(agent) {
+-            return super::feedback::render(frame.buffer_mut(), area, modal, &theme, compact);
++            return super::feedback::render(
++                frame.buffer_mut(),
++                area,
++                modal,
++                &theme,
++                compact,
++                Some(&locale),
++            );
+         }
+         if minimal_api::extensions_modal(agent).is_some() {
+             let tick = (now_millis() / 100) as u64;
+diff --git a/crates/codegen/xai-grok-pager-minimal/src/panel.rs b/crates/codegen/xai-grok-pager-minimal/src/panel.rs
+index 2c07d31a..84cc7827 100644
+--- a/crates/codegen/xai-grok-pager-minimal/src/panel.rs
++++ b/crates/codegen/xai-grok-pager-minimal/src/panel.rs
+@@ -882,7 +882,7 @@ mod tests {
+         let mut buf = Buffer::empty(area);
+         render(&mut buf, area, &mut a, ListPanel::Resume, &theme, None);
+ 
+-        let text = buffer_text(&buf);
++        let text = crate::buffer_text(&buf);
+         assert!(
+             text.contains("1 external session hidden \u{b7} f to show"),
+             "hidden foreign rows must stay explained while the list scrolls:\n{text}"
+diff --git a/crates/codegen/xai-grok-pager/src/slash/mod.rs b/crates/codegen/xai-grok-pager/src/slash/mod.rs
+index f96de0c8..5e496e70 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/mod.rs
+@@ -46,6 +46,18 @@ pub(crate) fn localize_command_error(
+     message: &str,
+     locale: &crate::locale::LocaleContext,
+ ) -> String {
++    // Match only exact client-owned diagnostics; server text stays opaque.
++    let owned_id = match message {
++        "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status." => {
++            Some("slash.command.memory.error.arguments")
++        }
++        "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
++        "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
++        _ => None,
++    };
++    if let Some(id) = owned_id {
++        return locale.named_text(id, message).into_owned();
++    }
+     if let Some(command) = message.strip_prefix("Usage: ") {
+         return format!(
+             "{}{command}",
+@@ -1996,6 +2008,24 @@ mod tests {
+             ),
+             "未知主题：solarized。可用主题：auto, Grokday, Groknight"
+         );
++        for (english, chinese) in [
++            ("/flush takes no arguments.", "/flush 不接受参数。"),
++            ("/dream takes no arguments.", "/dream 不接受参数。"),
++            (
++                "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status.",
++                "/memory 不接受参数。打开后按 t 启用或停用记忆，按 s 查看状态。",
++            ),
++        ] {
++            assert_eq!(localize_command_error(english, &locale), chinese);
++            assert_eq!(
++                localize_command_error(english, &crate::locale::LocaleContext::default()),
++                english,
++            );
++        }
++        assert_eq!(
++            localize_command_error("/custom takes no arguments.", &locale),
++            "/custom takes no arguments.",
++        );
+         assert_eq!(
+             localize_command_error("server supplied opaque error", &locale),
+             "server supplied opaque error"
+diff --git a/crates/codegen/xai-grok-pager/src/views/agent.rs b/crates/codegen/xai-grok-pager/src/views/agent.rs
+index 6eb4b665..bfb44248 100644
+--- a/crates/codegen/xai-grok-pager/src/views/agent.rs
++++ b/crates/codegen/xai-grok-pager/src/views/agent.rs
+@@ -856,7 +856,7 @@ pub(crate) fn build_hints(
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+-pub fn build_hints_with_locale(
++pub(crate) fn build_hints_with_locale(
+     active_pane: ActivePane,
+     focus_hint: HintItem,
+     prompt: &PromptWidget,
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/mod.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/mod.rs
+index bd8f09c4..a029acbd 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/mod.rs
+@@ -39,7 +39,7 @@ mod usage_modal;
+ 
+ pub use chrome::HeaderUpgradeCta;
+ pub(crate) use render::render_dashboard;
+-pub use render::render_dashboard_with_locale;
++pub(crate) use render::render_dashboard_with_locale;
+ pub use render::{popup_rect, render_popup_overlay, render_popup_overlay_with_locale};
+ pub use row::{
+     DashboardRow, RowBadge, build_rows, build_rows_with_roster, classify_subagent,
+diff --git a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
+index 7d2c9aca..23e368a1 100644
+--- a/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
++++ b/crates/codegen/xai-grok-pager/src/views/dashboard/render.rs
+@@ -143,7 +143,7 @@ pub(crate) fn render_dashboard(
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+-pub fn render_dashboard_with_locale(
++pub(crate) fn render_dashboard_with_locale(
+     buf: &mut Buffer,
+     area: Rect,
+     state: &mut DashboardState,
