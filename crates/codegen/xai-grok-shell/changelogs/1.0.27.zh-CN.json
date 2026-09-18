@@ -1,0 +1,12 @@
+[
+  {
+    "category": "fixes",
+    "description": "**排队消息**在立即发送后不再重复显示。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**仪表盘加载动画**在后台任务运行时不再冻结。",
+    "breaking_change": false
+  }
+]

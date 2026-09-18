@@ -1,5 +1,7 @@
 # Project Rules (AGENTS.md)
 
+[简体中文](zh-CN/12-project-rules.md)
+
 Project rules let you configure Grok per project or directory. By placing an AGENTS.md file in your repository, you can set coding conventions, build instructions, style guides, and any other instructions that Grok should follow when working in that codebase. Startup loading requires folder trust (`--trust` or an interactive grant).
 
 ---

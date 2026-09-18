@@ -467,7 +467,7 @@ impl AgentView {
                     meta: format!(
                         "{}{}",
                         s.human_schedule,
-                        crate::views::scheduled_next::next_suffix(s, now)
+                        crate::views::scheduled_next::next_suffix_with_locale(s, now, locale)
                     ),
                     killable: true,
                     openable: s.last_subagent_id.as_deref().is_some_and(|sid| {

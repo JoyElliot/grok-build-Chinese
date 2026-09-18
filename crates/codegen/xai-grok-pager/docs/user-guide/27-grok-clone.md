@@ -1,5 +1,7 @@
 # grok clone
 
+[简体中文](zh-CN/27-grok-clone.md)
+
 `grok clone` fetches a Git repository into a Grove content store and mounts a
 projected working tree (NFS on macOS, FUSE on Linux). Each invocation reads
 `GROK_CLONE` / `GROVE_CLONE` in this process, then grok enable-all

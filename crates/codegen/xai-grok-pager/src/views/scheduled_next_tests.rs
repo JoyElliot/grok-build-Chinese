@@ -81,3 +81,37 @@ fn elapsed_past_interval_is_due_now() {
 fn unknown_schedule_without_rfc_is_empty() {
     assert_eq!("", suffix("soon", Duration::ZERO, None, now()));
 }
+
+#[test]
+fn zh_localization_schedule_suffix_keeps_the_same_clocks_and_duration() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    assert_eq!(
+        "（2m5s 后运行）",
+        super::suffix_with_locale(
+            "every 30 minutes",
+            Duration::from_secs(10_000),
+            Some("2026-09-10T00:02:05Z"),
+            now(),
+            Some(&locale),
+        )
+        .trim(),
+    );
+    assert_eq!(
+        "（现在到期）",
+        super::suffix_with_locale(
+            "every 30 minutes",
+            Duration::from_secs(1_800),
+            None,
+            now(),
+            Some(&locale)
+        )
+        .trim(),
+    );
+    assert_eq!(
+        "",
+        super::suffix_with_locale("soon", Duration::ZERO, None, now(), Some(&locale)),
+    );
+}

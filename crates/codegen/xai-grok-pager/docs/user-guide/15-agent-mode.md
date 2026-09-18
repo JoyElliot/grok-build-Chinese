@@ -1,5 +1,7 @@
 # Agent mode (ACP) and IDE integration
 
+[简体中文](zh-CN/15-agent-mode.md)
+
 Agent mode runs Grok as a long-lived server that clients talk to over [ACP](https://agentclientprotocol.com) (JSON-RPC). Use it from IDEs, SDKs, eval harnesses, and custom apps. For a one-shot prompt that prints and exits, use `grok -p` instead ([headless mode](14-headless-mode.md)).
 
 ---

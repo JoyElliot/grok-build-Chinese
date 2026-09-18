@@ -68,7 +68,7 @@ fn sent(input: Option<SentMessageInput>) -> SentMessageToolCallBlock {
 fn rejected(input: Option<SentMessageInput>) -> SentMessageToolCallBlock {
     SentMessageToolCallBlock::new(
         SentMessagePresentation::Rejected {
-            reason: REJECTED_REASON.to_owned(),
+            reason: REJECTED_REASON.into(),
         },
         input,
     )
@@ -77,7 +77,7 @@ fn rejected(input: Option<SentMessageInput>) -> SentMessageToolCallBlock {
 fn unconfirmed(input: Option<SentMessageInput>) -> SentMessageToolCallBlock {
     SentMessageToolCallBlock::new(
         SentMessagePresentation::Unconfirmed {
-            reason: UNCONFIRMED_REASON.to_owned(),
+            reason: UNCONFIRMED_REASON.into(),
         },
         input,
     )
@@ -214,8 +214,7 @@ fn sent_block_renders_arguments_as_inert_text() {
 fn zh_localization_sent_message_translates_fixed_chrome_only() {
     let block = SentMessageToolCallBlock::new(
         SentMessagePresentation::Sent,
-        Some("sub-123".into()),
-        Some("literal payload".into()),
+        unresolved("sub-123", "literal payload"),
     );
     let mut ctx = context(120, DisplayMode::Expanded);
     ctx.locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
@@ -232,7 +231,7 @@ fn zh_localization_sent_message_translates_fixed_chrome_only() {
 
     assert_eq!(
         rendered,
-        "已向子智能体发送消息\n\n子智能体 ID：sub-123\n\n消息：\nliteral payload"
+        "消息 已发送给 子智能体 sub-123 · 引导\n\n子智能体 ID：sub-123\n\nliteral payload"
     );
 }
 
@@ -244,7 +243,7 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
         source: crate::locale::LocaleSource::Cli,
     });
     let fallback =
-        SentMessageToolCallBlock::new(SentMessagePresentation::RejectedUnavailable, None, None);
+        SentMessageToolCallBlock::new(SentMessagePresentation::RejectedUnavailable, None);
     let fallback_text = fallback
         .output(&ctx)
         .lines
@@ -260,7 +259,6 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
                 max_in_flight: 7,
             }),
         },
-        None,
         None,
     );
     let saturated_text = saturated
@@ -280,7 +278,6 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
             }),
         },
         None,
-        None,
     );
     let limit_text = limit
         .output(&ctx)
@@ -295,7 +292,6 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
         SentMessagePresentation::Rejected {
             reason: "opaque provider reason".into(),
         },
-        None,
         None,
     );
     let dynamic_text = dynamic
@@ -422,7 +418,7 @@ fn expanded_shows_header_suffixes_and_only_the_id_line_when_unresolved() {
         (
             SentMessageToolCallBlock::new(
                 SentMessagePresentation::Rejected {
-                    reason: "\nfirst line\nsecond line".to_owned(),
+                    reason: "\nfirst line\nsecond line".into(),
                 },
                 named(Steer, "follow up"),
             ),

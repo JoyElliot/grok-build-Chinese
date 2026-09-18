@@ -1,5 +1,7 @@
 # Slash Commands
 
+[简体中文](zh-CN/04-slash-commands.md)
+
 Type `/` in the prompt to open the command menu. It fuzzy-matches as you type, and picking a command runs it immediately.
 
 Commands come from two places: **shell builtins**, handled by the agent backend (xai-grok-shell), and **pager builtins**, handled by the pager frontend (xai-grok-pager). Both show up in the same menu, and any enabled skill with `user-invocable: true` appears there too. If a skill reuses a built-in name such as `login`, the built-in keeps `/login` and the skill stays available as `/plugin-name:login` — the menu badges both so the collision is visible.

@@ -2725,7 +2725,7 @@ mod session_picker_delete_tests {
         }
         let area = ratatui::layout::Rect::new(0, 0, 100, 28);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        agent.draw_active_modal(area, &mut buf, theme, false);
+        agent.draw_active_modal(area, &mut buf, theme, false, None);
         let content = (0..buf.area.height).fold(String::new(), |mut text, y| {
             for x in 0..buf.area.width {
                 if let Some(cell) = buf.cell((x, y)) {
@@ -2745,7 +2745,7 @@ mod session_picker_delete_tests {
             state.search_active = false;
         }
         let mut listed = ratatui::buffer::Buffer::empty(area);
-        agent.draw_active_modal(area, &mut listed, theme, false);
+        agent.draw_active_modal(area, &mut listed, theme, false, None);
         let listed_text = (0..listed.area.height).fold(String::new(), |mut text, y| {
             for x in 0..listed.area.width {
                 if let Some(cell) = listed.cell((x, y)) {
@@ -2827,7 +2827,7 @@ mod session_picker_delete_tests {
 
                     let area = ratatui::layout::Rect::new(0, 0, width, 28);
                     let mut buf = ratatui::buffer::Buffer::empty(area);
-                    agent.draw_active_modal(area, &mut buf, theme, false);
+                    agent.draw_active_modal(area, &mut buf, theme, false, None);
                     let content = (0..area.height).fold(String::new(), |mut text, y| {
                         for x in 0..area.width {
                             if let Some(cell) = buf.cell((x, y)) {

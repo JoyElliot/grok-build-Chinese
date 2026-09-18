@@ -1,5 +1,7 @@
 # Plan Mode
 
+[简体中文](zh-CN/19-plan-mode.md)
+
 Plan mode is a structured planning phase: the agent explores the codebase and designs an implementation approach before writing any code. Use it for tasks with genuine ambiguity about the right approach, where getting your input before coding prevents significant rework.
 
 ---

@@ -1,5 +1,7 @@
 # Status Line
 
+[简体中文](zh-CN/25-status-line.md)
+
 An optional row at the bottom of the pager — above the shortcuts bar in the full screen, under the prompt's info row in minimal mode — and disabled by default. It shows live session context, such as the model, context-window usage, cost, directory, and git worktree, or the output of any script you configure. Opt in with `[ui.status_line]` in `~/.grok/config.toml`.
 
 ## Set up

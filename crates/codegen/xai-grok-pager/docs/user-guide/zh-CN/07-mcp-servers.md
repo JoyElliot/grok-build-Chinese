@@ -171,10 +171,28 @@ Grok 会从当前目录逐级向上走到 git 仓库根目录，加载每一级�
 <a id="tool-naming"></a>
 ## 工具命名
 
-MCP 工具会使用服务器名称命名空间，以避免冲突：
+MCP 工具使用服务器名称作为命名空间以避免冲突，目录键为 `server__tool`（两个下划线）：
 
-- 服务器 `filesystem` 的工具 `read_file` 会变成 `filesystem__read_file`
-- 服务器 `github` 的工具 `create_issue` 会变成 `github__create_issue`
+- `filesystem` 的 `read_file` 变为 `filesystem__read_file`。
+- `github` 的 `create_issue` 变为 `github__create_issue`。
+- 工具部分可以以数字开头，例如 `auth__2fa_enable`。
+
+### 工具进入目录的条件
+
+`qualify_mcp_tool_name` 只接受满足以下条件的名称：
+
+| 部分 | 规则 |
+| --- | --- |
+| 服务器名称 | 以字母或下划线开头；其余仅限 ASCII 字母、数字、下划线和连字符。 |
+| 工具名称 | 非空；仅限 ASCII 字母、数字、下划线和连字符；可以以数字开头。 |
+| 分隔符 | 必须恰好一个 `__`；包含第二个 `__` 或 `___` 的名称会跳过。 |
+| 完整目录键 | `server` + `__` + `tool` 最多 **256** 个字符。 |
+
+被拒绝的工具会单独跳过，日志记录 `Skipping MCP tool` 及原因，其他工具仍会加载。**64 字符**是提供商的函数名预算，适用于 `search_tool` 和 `use_tool` 本身，不适用于目录键；超过 64 字符的合格目录键仍能通过 `use_tool` 按完整名称调用。
+
+`[mcp_servers.<name>]` 或 `grok-zh mcp add` 中的名称就是目录前缀。虽然数字开头的名称可以是合法 TOML 键，目录准入仍会以 `InvalidServerName` 拒绝。服务器名称以 `_` 结尾会产生含 `___` 的键，以 `InvalidOrAmbiguousQualifiedName` 跳过。
+
+`search_tool` / `use_tool` 使用完整限定目录键（例如 `github__create_issue`），不是原始工具名 `create_issue`。
 
 ---
 
@@ -364,6 +382,12 @@ startup_timeout_sec = 30
 ```bash
 tail -f ~/.grok/logs/mcp/filesystem.stderr.log
 ```
+
+### 服务器列出的工具没有出现
+
+服务器已启动且 `tools/list` 返回工具，但 `/mcps` 和 `search_tool` 不显示时：检查 `GROK_LOG_FILE` / `--debug` 中的 `Skipping MCP tool`；确认服务器名以字母或下划线开头且不以下划线结尾；工具名只包含 `[A-Za-z0-9_-]`，不含点或冒号；完整目录键不超过 256 字符。无需为满足函数名限制而把目录键缩短到 64 字符。
+
+这与首次提示时仍在握手的情况不同。握手未完成时，可在服务器就绪后发送第二条提示，或运行 `grok-zh mcp doctor`。
 
 <a id="viewing-server-status"></a>
 ### 查看服务器状态

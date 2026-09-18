@@ -45,8 +45,22 @@ Grok 会加载目录中每个匹配的文件，因此同时包含 `AGENTS.md` �
 | `$GROK_HOME/rules/`（默认 `~/.grok/rules/`） | 始终扫描；适用于所有项目 |
 | `~/.claude/rules/` | 由 `compat.claude.rules` 控制 |
 | `~/.cursor/rules/` | 由 `compat.cursor.rules` 控制 |
+| `[paths] extra_rule_dirs` 的每个条目 | 配置中列出的绝对目录；支持 `~` 展开 |
 
 主目录规则按表中顺序先加载，随后加载从仓库根目录到当前目录的项目文件。每个规则目录中的文件按字母顺序排列。厂商的 `rules` 配置项独立控制主目录规则和项目规则，不受相应 `agents` 配置项影响。Claude 的 `agents` 配置项控制 `~/.claude/` 下的命名文件以及项目 `<dir>/.claude/CLAUDE*.md`；顶层通用名称（如 `Claude.md`、`CLAUDE.md` 和 `CLAUDE.local.md`）仍会被识别。请参阅[配置](05-configuration.md#harness-compatibility)。
+
+---
+
+### 额外规则目录
+
+主目录规则按表中顺序加载，随后是从仓库根目录到当前目录的项目文件。每个规则目录内按文件名字母顺序加载。额外目录的配置示例：
+
+```toml
+[paths]
+extra_rule_dirs = ["~/team-rules", "/opt/company/grok-rules"]
+```
+
+每个目录下直接包含的 `*.md` 都会作为用户规则在所有项目中加载；不会递归扫描子目录，也不受文件夹信任、仓库 `.gitignore` 或兼容性开关影响。`grok-zh inspect` 将其标为 `global`。条目必须是绝对路径或以 `~/` 开头；相对路径或不存在的路径不会加载内容。`/import-claude` 会把现有 `~/.claude/rules/` 写到这里，使关闭 Claude 兼容扫描后仍能加载。
 
 ---
 
@@ -55,7 +69,7 @@ Grok 会加载目录中每个匹配的文件，因此同时包含 `AGENTS.md` �
 
 Grok 按以下顺序扫描项目规则：
 
-1. **主目录规则**：先扫描 `$GROK_HOME`，再扫描已启用的 `~/.claude/` 和 `~/.cursor/` 来源
+1. **主目录规则**：先扫描 `$GROK_HOME`，再扫描已启用的 `~/.claude/` 和 `~/.cursor/` 来源，最后扫描 `[paths] extra_rule_dirs`
 2. **仓库规则**：如果位于 git 仓库内，则从仓库根目录向下扫描到当前工作目录（含当前目录）的每一级
 3. **仅当前工作目录**：如果不在 git 仓库内，只扫描当前工作目录
 

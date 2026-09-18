@@ -1,5 +1,7 @@
 # Subagents and Personas
 
+[简体中文](zh-CN/16-subagents.md)
+
 Subagents are independent child sessions that handle tasks in parallel. Each subagent has its own context window, so the main agent can delegate work (research, implementation, testing, and code review) without consuming its own context. A subagent reports a summary back to the parent when it finishes.
 
 Subagents are enabled by default.

@@ -1,5 +1,7 @@
 # Sandbox Mode
 
+[简体中文](zh-CN/18-sandbox.md)
+
 Sandbox mode restricts what the agent process and its spawned commands can access on your filesystem and network using OS-level kernel primitives (Landlock on Linux, Seatbelt on macOS). The kernel enforces these limits for the process lifetime.
 
 Sandbox mode is off by default.

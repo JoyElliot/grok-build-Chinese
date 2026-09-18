@@ -1,5 +1,7 @@
 # Monitoring Usage (External OpenTelemetry)
 
+[简体中文](zh-CN/24-monitoring-usage.md)
+
 > **Status: alpha.** The schema below is versioned (`grok_code.schema.version = v1`);
 > additive changes may occur without notice, renames/removals will bump the
 > version and be called out in the changelog.

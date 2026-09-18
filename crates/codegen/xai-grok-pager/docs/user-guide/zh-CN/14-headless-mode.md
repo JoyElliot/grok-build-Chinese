@@ -258,7 +258,7 @@ Grok 也可能发出 `max_turns_reached` 和 `auto_compact_*` 事件；应将列
 
 - `apiKeySource` 在 API-key 身份验证时为 `user`，否则为 `oauth`。Grok 不区分模式中的 `project`、`org` 和 `temporary` 来源。
 - `permissionMode` 是映射到 Messages 枚举的有效无头模式：`--permission-mode` 的值，或 `--yolo` 下的 `bypassPermissions`，否则为 `default`。Grok 专有的 `auto` 等模式会折叠为 `default`。
-- `mcp_servers[].status` 反映配置而非实时连接状态。已配置的服务器始终报告 `"connected"`，因为发出 `init` 时尚未解析每个服务器的握手状态。
+- `mcp_servers[].status` 是 `x.ai/mcp/list` 的一次快照，仅在 `streaming-messages-json` 中输出：`connected`、`failed`、`needs-auth`、`pending` 或 `disabled`。握手中的服务器为 `pending`；只有会话报告 `sessionMcpResolved` 后才标记 `disabled`，未解析的行即使 `enabled` 暂为 false 也为 `pending`。快照不等待 Blocking 启动宽限期，但宽限期仍适用于提示的工具集。其他输出格式不包含该数组，也不会调用 `x.ai/mcp/list`。
 
 Grok 会省略没有数据的模式纯占位 `init` 字段，而不是发出虚拟值：`claude_code_version`、`output_style` 和 `plugins`。
 

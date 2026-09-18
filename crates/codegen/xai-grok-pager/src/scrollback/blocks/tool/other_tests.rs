@@ -11,6 +11,7 @@ fn context(mode: DisplayMode) -> BlockContext {
         appearance: Default::default(),
         is_selected: false,
         cwd: None,
+        locale: Default::default(),
     }
 }
 

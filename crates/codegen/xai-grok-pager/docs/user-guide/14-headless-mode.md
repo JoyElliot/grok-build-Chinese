@@ -1,5 +1,7 @@
 # Headless Mode and Scripting
 
+[简体中文](zh-CN/14-headless-mode.md)
+
 Headless mode runs Grok non-interactively from the command line. It accepts a single prompt, executes it with full tool access, and returns the result. Use it to automate tasks, script workflows, build integrations, and parse output programmatically.
 
 ---

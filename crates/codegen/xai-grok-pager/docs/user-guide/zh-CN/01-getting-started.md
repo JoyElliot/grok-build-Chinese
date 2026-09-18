@@ -50,8 +50,7 @@ grok-zh --version
 随后重新运行 `grok-zh`。默认通道为稳定版；`grok-zh update --alpha` 可显式选择预发布版，
 `grok-zh update --stable` 可切回稳定版。
 
-在 Grove 配置中启用 `[clone] enabled = true` 后，可以通过 Grove 提取仓库
-（macOS 使用 NFS，Linux 使用 FUSE）：
+可通过 Grove 提取仓库并挂载工作树（macOS 使用 NFS，Linux 使用 FUSE）。可在 Grove 配置 `~/.config/grove/config.toml` 中设置 `[clone] enabled = true`，或设置 `GROK_CLONE=1` 启用克隆。设置 `GROK_GROVE=1` 或在 Grok 的 `~/.grok/config.toml` 中配置 `[cli] grove = true`，可在未设置专用开关时同时启用克隆与会话工作树；专用开关仍优先。
 
 ```bash
 grok-zh clone <url> [dir]
@@ -97,14 +96,7 @@ grok-zh
 输入消息并按 `Enter` 发送。Grok 会按需读取文件、运行命令和编辑代码；每次工具
 运行都会实时流式显示在回滚区中。
 
-按 `Tab` 在提示输入框与回滚区之间切换焦点。任务运行时，按 `Esc` 可取消任务
-（全屏 Vim 回滚模式例外：任务运行期间 `Esc` 不执行取消；精简模式即使启用
-Vim 也会取消）。输入框为空时，`Ctrl+C` 可取消任务；若仍有草稿，第一次按下
-只会清空草稿。空闲时，在 800 毫秒内连续按两次 `Esc`：输入框非空时会清空
-内容；输入框为空且已有会话消息时会打开回退界面，详见
-[键盘快捷键](03-keyboard-shortcuts.md#escape)。回滚区获得焦点后，可用方向键
-选择条目，并折叠或展开内容。若希望用 `j`/`k` 导航、`h`/`l` 折叠，请启用
-Vim 模式。
+按 `Tab` 在提示输入框与回滚区之间切换焦点。轮次运行中，`Esc` 不会取消，而会提示使用 `Ctrl+C`；输入框有草稿时，先按 `Ctrl+C` 清除草稿，再在空输入框中按一次取消轮次。空闲时，在 800ms 内连续按两次 Esc：非空输入框会清空并暂存草稿，空输入框且已有消息时打开回退选择器。回滚区聚焦后可用方向键选择并折叠/展开；Vim 模式还可用 j/k 导航和 h/l 折叠。参见[键盘快捷键](03-keyboard-shortcuts.md#escape)。
 
 ### 引用文件
 

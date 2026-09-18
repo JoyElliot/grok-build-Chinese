@@ -1,5 +1,7 @@
 # MCP Servers
 
+[简体中文](zh-CN/07-mcp-servers.md)
+
 MCP (Model Context Protocol) servers extend Grok with external tool integrations. They let Grok interact with any service that implements the MCP standard.
 
 ---

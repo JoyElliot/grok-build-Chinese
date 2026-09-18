@@ -1,5 +1,7 @@
 # Configuration
 
+[简体中文](zh-CN/05-configuration.md)
+
 Grok reads settings from config files, environment variables, and CLI flags. This page covers the common options. The field list for `config.toml`, `managed_config.toml`, and `requirements.toml` is [26-config-reference.md](26-config-reference.md) (extracted to `~/.grok/docs/user-guide/` on launch).
 
 ---

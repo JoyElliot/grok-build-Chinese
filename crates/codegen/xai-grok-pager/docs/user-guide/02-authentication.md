@@ -1,5 +1,7 @@
 # Authentication
 
+[简体中文](zh-CN/02-authentication.md)
+
 Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
 
 ---

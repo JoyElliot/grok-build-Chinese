@@ -2693,7 +2693,7 @@ mod recursive_locale_tests {
     fn zh_localization_inserted_subagent_inherits_parent_locale_immediately() {
         let mut parent = make_agent();
         parent.set_locale_recursive(&zh_locale());
-        parent.insert_subagent_view("child".into(), Box::new(make_agent()));
+        parent.insert_test_child("child".into(), Box::new(make_agent()));
 
         assert_eq!(
             parent.subagent_views["child"].scrollback.locale().locale(),

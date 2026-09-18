@@ -1,5 +1,7 @@
 # Getting Started
 
+[简体中文](zh-CN/01-getting-started.md)
+
 > **Community build notice:** This is the unofficial Simplified Chinese
 > distribution. Its command is `grok-zh`; it intentionally shares `~/.grok`
 > and `GROK_HOME` with the official executable so sessions, credentials, and

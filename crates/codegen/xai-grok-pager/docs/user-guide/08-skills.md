@@ -1,5 +1,7 @@
 # Skills
 
+[简体中文](zh-CN/08-skills.md)
+
 Skills are reusable prompt packages that extend Grok with task-specific instructions. They let you capture a repeatable procedure once, instead of re-explaining it each session. Startup discovery skips project skills and commands in untrusted folders.
 
 ---

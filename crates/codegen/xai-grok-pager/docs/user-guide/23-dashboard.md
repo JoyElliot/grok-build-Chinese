@@ -1,5 +1,7 @@
 # Agent Dashboard
 
+[简体中文](zh-CN/23-dashboard.md)
+
 The Agent Dashboard lists every top-level session in this pager process —
 local sessions and forks — grouped by state. From one screen you can peek,
 reply, attach, pin, rename, stop, or dispatch a new agent. Subagents are not

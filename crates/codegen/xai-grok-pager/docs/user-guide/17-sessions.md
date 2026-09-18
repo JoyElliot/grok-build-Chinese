@@ -1,5 +1,7 @@
 # Session Management
 
+[简体中文](zh-CN/17-sessions.md)
+
 Grok saves every conversation to disk automatically. Whether you work in the TUI, in headless mode, or over agent stdio, Grok records the exchange as a session. You can resume, rewind, or compact it. This document describes how to manage sessions.
 
 ---

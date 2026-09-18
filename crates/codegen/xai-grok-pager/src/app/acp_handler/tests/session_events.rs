@@ -1164,7 +1164,7 @@
     fn child_hook_annotation_routes_to_live_child_scrollback() {
         let mut agent = make_agent(Some("root-sess"));
         let child_sid = "child-hook";
-        agent.insert_subagent_view(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+        agent.insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
         let update = XaiSessionUpdate::HookAnnotation {
             message: "custom hook text".into(),
             kind: Default::default(),

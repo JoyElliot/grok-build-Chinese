@@ -1,5 +1,7 @@
 # Custom Models
 
+[简体中文](zh-CN/11-custom-models.md)
+
 Grok connects to custom model endpoints for alternative providers, self-hosted models, and overriding built-in settings. This guide explains how to select models, configure endpoints, and integrate third-party providers.
 
 ---

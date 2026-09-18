@@ -1,0 +1,37 @@
+[
+  {
+    "category": "fixes",
+    "description": "回滚区中**折叠的子智能体组**现在会正确标注运行中和已完成的数量。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**仪表盘搜索与恢复会话选择器**现在会明确标识当前文本输入区域，并在搜索后恢复列表选择。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**停靠面板分区**通过点击折叠后，不再残留选中高亮。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "标题栏和仪表盘中的**工作树路径**不再显示多余后缀。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "带有较长服务器前缀的 **MCP 工具**现在会被保留，不再被静默丢弃。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**轮次取消提示**现在会正确显示取消原因，不再总是标注为用户取消。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "标题栏中的**长路径**现在始终缩短为最后两个路径部分。",
+    "breaking_change": false
+  }
+]

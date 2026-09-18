@@ -122,7 +122,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let (cursor, _) = render(&mut buf, area, &mut modal, &theme, false, Some(&locale));
         let text = crate::buffer_text(&buf);
-        assert!(text.contains("反馈表单需要更大的终端"), "{text}");
+        assert!(
+            text.replace(' ', "").contains("反馈表单需要更大的终端"),
+            "{text}"
+        );
         assert!(text.contains("Esc"), "{text}");
         assert!(!text.contains("Feedback form"), "{text}");
         assert!(cursor.is_none());

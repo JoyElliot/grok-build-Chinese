@@ -1,5 +1,7 @@
 # Configuration reference
 
+[简体中文](zh-CN/26-config-reference.md)
+
 This file ships with the CLI and is extracted to `~/.grok/docs/user-guide/26-config-reference.md` on launch. It is the complete field list for `config.toml`, `managed_config.toml`, and `requirements.toml`. For conceptual guidance see [05-configuration.md](05-configuration.md).
 
 ## How to configure

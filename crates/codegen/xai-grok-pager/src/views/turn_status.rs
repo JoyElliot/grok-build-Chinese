@@ -1089,7 +1089,7 @@ mod tests {
             command: AgentCommand::SwitchModelCompact,
             started_at: Instant::now(),
         };
-        let (_, label, _) = compute_activity(&theme, &state, &None, false, false);
+        let (_, label, _) = compute_activity(&theme, &state, &None, false, false, None);
         assert_eq!(label, "Switching model…");
         assert!(should_show(&state, false, None, Watchers::default(), false));
     }

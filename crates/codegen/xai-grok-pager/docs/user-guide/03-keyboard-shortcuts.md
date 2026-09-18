@@ -1,5 +1,7 @@
 # Keyboard Shortcuts
 
+[简体中文](zh-CN/03-keyboard-shortcuts.md)
+
 Reference for key bindings in the Grok Build TUI. Bindings are built in and cannot currently be remapped.
 
 ---

@@ -1,5 +1,7 @@
 # Terminal Support and Troubleshooting
 
+[简体中文](zh-CN/21-terminal-support.md)
+
 Grok Build runs as a full-screen TUI. It relies on terminal support for color,
 clipboard, keyboard input, mouse input, and full-screen display. Terminals,
 multiplexers, containers, and SSH sessions can handle these features differently.

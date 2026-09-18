@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Markdown 标题**现在会正确应用主题颜色。",
+    "breaking_change": false
+  }
+]

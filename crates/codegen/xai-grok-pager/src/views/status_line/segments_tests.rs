@@ -122,6 +122,7 @@ fn turn_timer(secs: u64) -> String {
         &context(),
         Some(Duration::from_secs(secs)),
         &[StatusLineItem::TurnTimer],
+        None,
     )
     .first()
     .expect("TurnTimer segment")

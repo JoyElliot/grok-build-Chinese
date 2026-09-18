@@ -1,5 +1,7 @@
 # Cross-Session Memory
 
+[简体中文](zh-CN/13-memory.md)
+
 Memory lets Grok recall facts, decisions, and patterns from earlier sessions. Grok indexes the information you save and searches it automatically, so a new session can reuse relevant context.
 
 ---
