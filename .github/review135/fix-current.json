@@ -1,6 +1,16 @@
 {
-  "base": "6a22c41af386fa4c11f024ad822d13804b7820d6",
-  "tree": "6e0c0aba6560765440f9dbd8a5ae97e86b4601b8",
-  "patch": "fix-ui-round3.patch",
-  "message": "修复精简界面测试引用，补齐反馈与记忆命令提示本地化"
+  "base": "8d50220810579c51317087917ed680d91d201cea",
+  "tree": "1abbdfc2b99c918aeef74625a92dd1587196c558",
+  "patches": [
+    "fix-completion-u1.patch",
+    "fix-completion-u2.patch",
+    "fix-completion-u3.patch",
+    "fix-completion-u4.patch",
+    "fix-completion-u5.patch",
+    "fix-completion-u6.patch",
+    "fix-completion-u7.patch",
+    "fix-completion-u8.patch",
+    "fix-completion-tests.patch"
+  ],
+  "message": "补齐上游中文资料、定时任务提示及测试模块接口适配"
 }
