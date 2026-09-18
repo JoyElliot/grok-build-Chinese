@@ -1,6 +1,13 @@
 {
-  "base": "6f0365802c9778805d525367e80129dcbfd8a397",
-  "tree": "53650137b2ab796370fb677df92f6f774ff39049",
-  "patches": ["fix-spawn-test-fields.patch"],
-  "message": "修复子智能体隔离测试构造遗漏的三个条件编译字段"
+  "base": "44f65e825c9eb85258672bcdfe4b47d82afa5cd6",
+  "tree": "06a7ed07a51cfe6d250f74eab7087be571f6f945",
+  "patches": [
+    "fix-review135-round8-a.patch",
+    "fix-review135-round8-b.patch",
+    "fix-review135-round8-ca.patch",
+    "fix-review135-round8-cb.patch",
+    "fix-review135-round8-da.patch",
+    "fix-review135-round8-db.patch"
+  ],
+  "message": "修复独立测试功能传递、记忆提示隐私并补齐新增中文路径"
 }
