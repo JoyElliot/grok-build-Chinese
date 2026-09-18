@@ -1,0 +1,149 @@
+diff --git a/crates/codegen/xai-grok-pager/src/acp/tracker.rs b/crates/codegen/xai-grok-pager/src/acp/tracker.rs
+index 7c6e7be7..df826917 100644
+--- a/crates/codegen/xai-grok-pager/src/acp/tracker.rs
++++ b/crates/codegen/xai-grok-pager/src/acp/tracker.rs
+@@ -2379,7 +2379,7 @@ fn tool_call_to_block(
+             let mut block = OtherToolCallBlock::new(label, summary);
+             let mut ct = content_text(tc);
+             if ct.is_empty()
+-                && let Some(extracted) = extract_use_tool_output(&tc.raw_output)
++                && let (Some(extracted), _) = extract_use_tool_output(&tc.raw_output)
+             {
+                 ct = extracted;
+             }
+diff --git a/crates/codegen/xai-grok-pager/src/app/app_view.rs b/crates/codegen/xai-grok-pager/src/app/app_view.rs
+index 0379a9eb..a390f362 100644
+--- a/crates/codegen/xai-grok-pager/src/app/app_view.rs
++++ b/crates/codegen/xai-grok-pager/src/app/app_view.rs
+@@ -4732,6 +4732,7 @@ impl AppView {
+                                     cached_lines,
+                                     compact,
+                                     &theme,
++                                    Some(self.locale.as_ref()),
+                                 );
+                             }
+                             if !has_access && !self.access_gate_shown_logged {
+@@ -5118,7 +5119,7 @@ impl AppView {
+             return;
+         }
+         let Some((owner, _label, _url)) = crate::views::announcements::promo_cta(
+-            display_announcements,
++            &self.active_announcements,
+             &self.hidden_announcement_ids,
+         ) else {
+             return;
+diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
+index f2f0451f..8ec7f9b6 100644
+--- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
+@@ -480,7 +480,6 @@ pub(crate) fn execute(
+                             meta,
+                             &tx,
+                             "Worktree session creation",
+-                            locale.as_ref(),
+                         )
+                         .await;
+                     match result {
+diff --git a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message.rs b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message.rs
+index 689fca8f..908141f8 100644
+--- a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message.rs
++++ b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message.rs
+@@ -654,6 +654,7 @@ impl BlockContent for SentMessageToolCallBlock {
+             SentMessagePresentation::Sending
+             | SentMessagePresentation::Sent
+             | SentMessagePresentation::Rejected { .. }
++            | SentMessagePresentation::RejectedUnavailable
+             | SentMessagePresentation::Unconfirmed { .. } => Some(AccentStyle::static_color(
+                 self.presentation.accent(&theme, ctx.is_running),
+             )),
+diff --git a/crates/codegen/xai-grok-pager/src/scrollback/state/verb_group.rs b/crates/codegen/xai-grok-pager/src/scrollback/state/verb_group.rs
+index 5603a34d..7bc1056c 100644
+--- a/crates/codegen/xai-grok-pager/src/scrollback/state/verb_group.rs
++++ b/crates/codegen/xai-grok-pager/src/scrollback/state/verb_group.rs
+@@ -201,7 +201,7 @@ pub fn verb_group_header_label_with_locale(
+ 
+     let end = end.min(entries.len());
+     let Some(run) = entries.get(header_idx.min(end)..end) else {
+-        return acc.into_label(theme);
++        return acc.into_label(theme, locale);
+     };
+     for &entry in run {
+         let kind = match run_step(entry, show_thinking) {
+diff --git a/crates/codegen/xai-grok-pager/src/views/agent.rs b/crates/codegen/xai-grok-pager/src/views/agent.rs
+index 2b387602..6eb4b665 100644
+--- a/crates/codegen/xai-grok-pager/src/views/agent.rs
++++ b/crates/codegen/xai-grok-pager/src/views/agent.rs
+@@ -843,12 +843,13 @@ pub(crate) fn build_hints(
+         selected_can_kill,
+         multiline_mode,
+         vim_mode,
+-        is_subagent_view,
++        surface,
+         is_turn_running,
+         has_queued_follow_up,
++        queue_mutation,
+         selected_is_user_prompt,
+         selected_is_agent_message,
+-        shift_enter_unavailable,
++        prefer_alt_enter_newline,
+         scrollback_search,
+         None,
+     )
+@@ -873,12 +874,13 @@ pub fn build_hints_with_locale(
+     selected_can_kill: bool,
+     multiline_mode: bool,
+     vim_mode: bool,
+-    is_subagent_view: bool,
++    surface: ViewSurface,
+     is_turn_running: bool,
+     has_queued_follow_up: bool,
++    queue_mutation: QueueMutation,
+     selected_is_user_prompt: bool,
+     selected_is_agent_message: bool,
+-    shift_enter_unavailable: bool,
++    prefer_alt_enter_newline: bool,
+     scrollback_search: Option<&ScrollbackSearchState>,
+     locale: Option<&crate::locale::LocaleContext>,
+ ) -> Vec<HintItem> {
+@@ -1277,9 +1279,10 @@ mod tests {
+                     false,
+                     false,
+                     false,
+-                    false,
++                    ViewSurface::Root,
+                     running,
+                     false,
++                    QueueMutation::PerRowKind,
+                     false,
+                     false,
+                     false,
+diff --git a/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs b/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
+index 549e396a..40f1a22c 100644
+--- a/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
++++ b/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
+@@ -195,6 +195,11 @@ fn render_simple_session_picker_modal(
+     use crate::views::modal_window::{ModalSizing, ModalWindowConfig, Shortcut};
+     use crate::views::picker::{self, PickerField};
+ 
++    let text = |id: &str, english: &'static str| {
++        ctx.locale
++            .map(|locale| locale.named_static_text(id, english))
++            .unwrap_or(english)
++    };
+     let shortcuts = vec![
+         Shortcut {
+             label: text("picker.shortcut.nav", "\u{2191}\u{2193} nav"),
+diff --git a/crates/codegen/xai-grok-pager/src/views/turn_status.rs b/crates/codegen/xai-grok-pager/src/views/turn_status.rs
+index afdd3c64..974b5080 100644
+--- a/crates/codegen/xai-grok-pager/src/views/turn_status.rs
++++ b/crates/codegen/xai-grok-pager/src/views/turn_status.rs
+@@ -699,6 +699,9 @@ fn localized_command_display_name(
+     locale: Option<&crate::locale::LocaleContext>,
+ ) -> &'static str {
+     match command {
++        AgentCommand::SwitchModelCompact | AgentCommand::MemoryFlush | AgentCommand::MemoryDream => {
++            command.display_name_with_locale(locale)
++        }
+         AgentCommand::Compact => {
+             turn_static_text(locale, "turn.command.compacting", command.display_name())
+         }
