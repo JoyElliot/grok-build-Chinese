@@ -1,6 +1,6 @@
 {
-  "base": "a638fdafc6418f3ec99b44907a525000d73766ce",
-  "tree": "f4c98b42da9e891b00f93ccbbf41a1075dbabf95",
-  "patch": "fix-continuation-round2.patch",
-  "message": "修复精简界面借用和公开文档测试路径，恢复格式门禁"
+  "base": "6a22c41af386fa4c11f024ad822d13804b7820d6",
+  "tree": "6e0c0aba6560765440f9dbd8a5ae97e86b4601b8",
+  "patch": "fix-ui-round3.patch",
+  "message": "修复精简界面测试引用，补齐反馈与记忆命令提示本地化"
 }
