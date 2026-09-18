@@ -4,7 +4,6 @@ on:
     branches: [sync/upstream-1.0.35]
     paths:
       - .github/review135/fix-current.json
-      - .github/workflows/fix-reviewed-135.yml
 permissions:
   contents: read
 concurrency:
@@ -34,7 +33,10 @@ jobs:
           spec = json.loads((root / '.github/review135/fix-current.json').read_text())
           for key in ('base', 'tree'):
               assert re.fullmatch('[0-9a-f]{40}', spec[key]), key
-          assert re.fullmatch(r'fix-[a-z0-9-]+\.patch', spec['patch'])
+          patches = spec.get('patches', [spec.get('patch')])
+          assert isinstance(patches, list) and 1 <= len(patches) <= 10
+          assert len(set(patches)) == len(patches)
+          assert all(isinstance(name, str) and re.fullmatch(r'fix-[a-z0-9-]+\.patch', name) for name in patches)
           branch = 'refs/heads/sync/upstream-1.0.35-reviewed'
           def git(*args, cwd=root):
               return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
@@ -46,9 +48,10 @@ jobs:
           candidate = pathlib.Path(os.environ['RUNNER_TEMP']) / 'candidate'
           git('worktree', 'add', '--detach', str(candidate), remote)
           if not already_published:
-              patch = root / '.github/review135' / spec['patch']
-              git('apply', '--check', str(patch), cwd=candidate)
-              git('apply', '--index', str(patch), cwd=candidate)
+              for name in patches:
+                  patch = root / '.github/review135' / name
+                  git('apply', '--check', str(patch), cwd=candidate)
+                  git('apply', '--index', str(patch), cwd=candidate)
               git('diff', '--cached', '--check', cwd=candidate)
               assert git('write-tree', cwd=candidate) == spec['tree'], 'Candidate tree mismatch'
               git('-c', 'user.name=ChatGPT Review', '-c', 'user.email=chatgpt@localhost', 'commit', '-m', spec['message'], cwd=candidate)
@@ -125,6 +128,25 @@ jobs:
           cargo test --locked -p xai-grok-locale > "$RUNNER_TEMP/check-evidence/locale.log" 2>&1 || status=1
           echo "$status" > "$RUNNER_TEMP/check-evidence/exit.txt"
           grep -E '^error|^test result:|Finished' "$RUNNER_TEMP/check-evidence/"*.log || true
+          exit "$status"
+      - name: Execute localization and compatibility regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/check-evidence"
+          status=0
+          python3 .github/scripts/tests/test_upstream_localization.py > "$out/localization-docs.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-shell --lib bundled_metadata_is_the_community_chinese_release -- --test-threads=1 > "$out/shell-bundled.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-pager --lib zh_localization -- --test-threads=1 > "$out/pager-zh.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-pager --lib localizes_owned_slash_errors_without_changing_dynamic_tokens -- --test-threads=1 > "$out/slash-errors.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-pager --lib views::scheduled_next::tests -- --test-threads=1 > "$out/scheduled.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-pager-minimal --lib -- --test-threads=1 > "$out/minimal-all.log" 2>&1 || status=1
+          cargo test --locked -p xai-grok-update --features community-build --lib -- --test-threads=1 > "$out/community-update.log" 2>&1 || status=1
+          for log in shell-bundled pager-zh slash-errors scheduled minimal-all community-update; do
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$out/$log.log" || status=1
+          done
+          echo "$status" > "$out/runtime-exit.txt"
+          grep -E '^error|^test result:|^failures:|Finished' "$out/"*.log || true
           exit "$status"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
