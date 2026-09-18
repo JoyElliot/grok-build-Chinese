@@ -1,0 +1,417 @@
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.25.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.25.zh-CN.json
+new file mode 100644
+index 00000000..c6470f53
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.25.zh-CN.json
+@@ -0,0 +1,102 @@
++[
++  {
++    "category": "fixes",
++    "description": "**Bash 命令输出**现在会在界面中显示完整结果，而不是截断后的末尾部分。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**后台任务列表**现在以可持久保存的快照发送，使客户端重连后能够恢复状态。",
++    "breaking_change": false
++  },
++  {
++    "category": "performance",
++    "description": "**嵌入式启动**在较慢的文件系统中扫描技能目录时，不再发生超时。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**语音输入**现在会在光标位置插入文字，而不是始终追加到末尾。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**成功执行的钩子**现在保持静默；只有阻塞或失败的钩子才显示状态或一行提示。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**无界面提示请求**在智能体无响应时会正常超时，不再无限等待。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**Vim 模式下的 Shift+J/K**现在会跳到视口顶部的下一轮或上一轮，与时间线箭头的行为一致。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**定时任务**现在会引导智能体检查结果，并清理或更新重复执行的计划。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**双击**现在可以选中设置选择器中的单选按钮。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "通过将实时回显改为显式启用，修复部分 ACP 客户端**重复显示用户提示**的问题。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "修复未使用 `--continue` 启动后再恢复会话时，**`grok -c` 连接到错误空会话**的问题。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**停靠面板和队列的悬停颜色**现在与终端其余部分一致，不再使用较强的下拉菜单高亮。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "修复读取带有 PNG 缩略图前缀的 Adobe SVG 时出现的**图片上传错误**。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**仪表盘操作行**（新建智能体、打开历史会话、工作树）现在可以用方向键导航，并通过 Enter 执行。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**停靠面板中的子智能体行**现在会显示与其他可终止任务一致的停止标签。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "修复同一台机器上并发启动或多个账号之间**启动设置和模型目录**被共享或覆盖的问题。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**工作流工具**现在支持暂停和停止来源，使智能体能够控制自己启动的后台执行。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**任务停靠面板**现在将加载动画与标题对齐，不再嵌套显示在分隔线下方。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**`/feedback <text>`** 恢复为立即发送，不再启动模型轮次；发送失败时会保存到草稿并提示。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**`/theme` 选择器**现在可以匹配 transparent、dark、system 等别名，同时仍插入规范名称。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.25.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.25.zh-CN.md
+new file mode 100644
+index 00000000..05a3b3e0
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.25.zh-CN.md
+@@ -0,0 +1,30 @@
++# 1.0.25 — 2026-09-09
++
++## 新功能
++
++- **后台任务列表**现在以可持久保存的快照发送，使客户端重连后能够恢复状态。
++- **成功执行的钩子**现在保持静默；只有阻塞或失败的钩子才显示状态或一行提示。
++- **Vim 模式下的 Shift+J/K**现在会跳到视口顶部的下一轮或上一轮，与时间线箭头的行为一致。
++- **双击**现在可以选中设置选择器中的单选按钮。
++- **仪表盘操作行**（新建智能体、打开历史会话、工作树）现在可以用方向键导航，并通过 Enter 执行。
++- **工作流工具**现在支持暂停和停止来源，使智能体能够控制自己启动的后台执行。
++- **`/theme` 选择器**现在可以匹配 transparent、dark、system 等别名，同时仍插入规范名称。
++
++## Bug 修复
++
++- **Bash 命令输出**现在会在界面中显示完整结果，而不是截断后的末尾部分。
++- **语音输入**现在会在光标位置插入文字，而不是始终追加到末尾。
++- **无界面提示请求**在智能体无响应时会正常超时，不再无限等待。
++- **定时任务**现在会引导智能体检查结果，并清理或更新重复执行的计划。
++- 通过将实时回显改为显式启用，修复部分 ACP 客户端**重复显示用户提示**的问题。
++- 修复未使用 `--continue` 启动后再恢复会话时，**`grok -c` 连接到错误空会话**的问题。
++- **停靠面板和队列的悬停颜色**现在与终端其余部分一致，不再使用较强的下拉菜单高亮。
++- 修复读取带有 PNG 缩略图前缀的 Adobe SVG 时出现的**图片上传错误**。
++- **停靠面板中的子智能体行**现在会显示与其他可终止任务一致的停止标签。
++- 修复同一台机器上并发启动或多个账号之间**启动设置和模型目录**被共享或覆盖的问题。
++- **任务停靠面板**现在将加载动画与标题对齐，不再嵌套显示在分隔线下方。
++- **`/feedback <text>`** 恢复为立即发送，不再启动模型轮次；发送失败时会保存到草稿并提示。
++
++## 性能优化
++
++- **嵌入式启动**在较慢的文件系统中扫描技能目录时，不再发生超时。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.26.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.26.zh-CN.json
+new file mode 100644
+index 00000000..af0957c9
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.26.zh-CN.json
+@@ -0,0 +1,57 @@
++[
++  {
++    "category": "fixes",
++    "description": "**`/btw` 旁支提问**现在会包含输入框中附加的图片。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "对子智能体发送的**即时插话消息**现在会打断长时间的后台等待，使消息立即送达。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "回滚区中的**子智能体消息行**现在会标明消息采用即时插话、排队还是引导方式发送。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**反馈表单**现在可以直接在精简模式中使用，无需切换到全屏。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**后台任务提醒**不再回显原始 Shell 命令。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**失败的后台任务**在模型读取输出后不再产生重复提醒。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "压缩期间出现的 **TPM 速率限制错误**现在会重试，不再被误判为上下文溢出。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "在轮次开始不久按 **Ctrl+C** 时，现在可以正确回退提示，不再发生竞态。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**仪表盘方向键**现在可以从空输入框导航操作行。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "针对旧版服务器的 **MCP 工具调用**现在会正确声明引导交互支持。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**记忆 v2**现在可以从初始化失败中恢复，并避免反复出错后采集停滞。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.26.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.26.zh-CN.md
+new file mode 100644
+index 00000000..aa166c7e
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.26.zh-CN.md
+@@ -0,0 +1,18 @@
++# 1.0.26 — 2026-09-09
++
++## 新功能
++
++- 对子智能体发送的**即时插话消息**现在会打断长时间的后台等待，使消息立即送达。
++- 回滚区中的**子智能体消息行**现在会标明消息采用即时插话、排队还是引导方式发送。
++- **反馈表单**现在可以直接在精简模式中使用，无需切换到全屏。
++
++## Bug 修复
++
++- **`/btw` 旁支提问**现在会包含输入框中附加的图片。
++- **后台任务提醒**不再回显原始 Shell 命令。
++- **失败的后台任务**在模型读取输出后不再产生重复提醒。
++- 压缩期间出现的 **TPM 速率限制错误**现在会重试，不再被误判为上下文溢出。
++- 在轮次开始不久按 **Ctrl+C** 时，现在可以正确回退提示，不再发生竞态。
++- **仪表盘方向键**现在可以从空输入框导航操作行。
++- 针对旧版服务器的 **MCP 工具调用**现在会正确声明引导交互支持。
++- **记忆 v2**现在可以从初始化失败中恢复，并避免反复出错后采集停滞。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.27.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.27.zh-CN.json
+new file mode 100644
+index 00000000..e52f03f5
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.27.zh-CN.json
+@@ -0,0 +1,12 @@
++[
++  {
++    "category": "fixes",
++    "description": "**排队消息**在立即发送后不再重复显示。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**仪表盘加载动画**在后台任务运行时不再冻结。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.27.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.27.zh-CN.md
+new file mode 100644
+index 00000000..f4343aed
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.27.zh-CN.md
+@@ -0,0 +1,6 @@
++# 1.0.27 — 2026-09-10
++
++## Bug 修复
++
++- **排队消息**在立即发送后不再重复显示。
++- **仪表盘加载动画**在后台任务运行时不再冻结。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.28.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.28.zh-CN.json
+new file mode 100644
+index 00000000..7a5bb2b2
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.28.zh-CN.json
+@@ -0,0 +1,22 @@
++[
++  {
++    "category": "features",
++    "description": "**`/btw` 现在可以出现在消息中间**：该行其余内容会作为旁支问题，不进入主会话记录。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**自动更新**不再删除仍被其他进程使用的 grok 可执行文件。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "现在可以在 config.toml 中为 Responses API 端点配置**每个模型的 `reasoning_summary`**。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**提示编辑器**在软换行之间按上下方向键移动时，不再卡住光标或跳过一行。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.28.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.28.zh-CN.md
+new file mode 100644
+index 00000000..e9cf87e9
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.28.zh-CN.md
+@@ -0,0 +1,11 @@
++# 1.0.28 — 2026-09-10
++
++## 新功能
++
++- **`/btw` 现在可以出现在消息中间**：该行其余内容会作为旁支问题，不进入主会话记录。
++- 现在可以在 config.toml 中为 Responses API 端点配置**每个模型的 `reasoning_summary`**。
++
++## Bug 修复
++
++- **自动更新**不再删除仍被其他进程使用的 grok 可执行文件。
++- **提示编辑器**在软换行之间按上下方向键移动时，不再卡住光标或跳过一行。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.29.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.29.zh-CN.json
+new file mode 100644
+index 00000000..ac22f84f
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.29.zh-CN.json
+@@ -0,0 +1,32 @@
++[
++  {
++    "category": "fixes",
++    "description": "界面中的 **Tab 导航**现在会在输入框、回滚区和整个停靠面板之间顺畅循环，不再逐个停在每个停靠分区。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**Ctrl+G** 现在可以隐藏或显示停靠面板；隐藏后焦点返回回滚区。",
++    "breaking_change": false
++  },
++  {
++    "category": "performance",
++    "description": "**智能体仪表盘**在只有空闲加载动画或隐藏行时，不再浪费 CPU 重绘相同帧。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "多个并发的 **`grok agent stdio` 进程**使用同一个 GROK_HOME 时，不再在启动阶段崩溃。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**MCP 服务器连接**不再因服务器采用 2026-07-28 协议版本而失败。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "修复 Windows 未启用 Client-ProjFS 可选功能时出现的**启动崩溃**。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.29.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.29.zh-CN.md
+new file mode 100644
+index 00000000..356440b2
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.29.zh-CN.md
+@@ -0,0 +1,13 @@
++# 1.0.29 — 2026-09-11
++
++## Bug 修复
++
++- 界面中的 **Tab 导航**现在会在输入框、回滚区和整个停靠面板之间顺畅循环，不再逐个停在每个停靠分区。
++- **Ctrl+G** 现在可以隐藏或显示停靠面板；隐藏后焦点返回回滚区。
++- 多个并发的 **`grok agent stdio` 进程**使用同一个 GROK_HOME 时，不再在启动阶段崩溃。
++- **MCP 服务器连接**不再因服务器采用 2026-07-28 协议版本而失败。
++- 修复 Windows 未启用 Client-ProjFS 可选功能时出现的**启动崩溃**。
++
++## 性能优化
++
++- **智能体仪表盘**在只有空闲加载动画或隐藏行时，不再浪费 CPU 重绘相同帧。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.30.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.30.zh-CN.json
+new file mode 100644
+index 00000000..f476815a
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.30.zh-CN.json
+@@ -0,0 +1,27 @@
++[
++  {
++    "category": "fixes",
++    "description": "**运行时长显示**现在会进位为小时（例如 `3h14m`），不再停在 60 分钟。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**会话标题栏**重新设计为单行，承载覆盖视图上下文和仪表盘按钮。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**停靠面板中的监视器与循环任务行**现在会显示下次执行时间。",
++    "breaking_change": false
++  },
++  {
++    "category": "performance",
++    "description": "通过省略逐帧同步更新包装，修复 **tmux 窗格中的卡顿**。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**工作流状态**现在会在停靠面板中显示为可点击的一行。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.30.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.30.zh-CN.md
+new file mode 100644
+index 00000000..c9254ff4
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.30.zh-CN.md
+@@ -0,0 +1,15 @@
++# 1.0.30 — 2026-09-11
++
++## 新功能
++
++- **会话标题栏**重新设计为单行，承载覆盖视图上下文和仪表盘按钮。
++
++## Bug 修复
++
++- **运行时长显示**现在会进位为小时（例如 `3h14m`），不再停在 60 分钟。
++- **停靠面板中的监视器与循环任务行**现在会显示下次执行时间。
++- **工作流状态**现在会在停靠面板中显示为可点击的一行。
++
++## 性能优化
++
++- 通过省略逐帧同步更新包装，修复 **tmux 窗格中的卡顿**。
