@@ -1,0 +1,59 @@
+diff --git a/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs b/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
+index b233a569..d5cbfc4b 100644
+--- a/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
++++ b/crates/codegen/xai-grok-pager/src/views/session_picker_surface.rs
+@@ -432,7 +432,7 @@ mod tests {
+     use ratatui::layout::Rect;
+     use ratatui::style::Modifier;
+ 
+-    use super::render_session_picker_search_bar;
++    use super::{render_session_picker_search_bar, render_session_picker_search_bar_with_locale};
+     use crate::theme::Theme;
+ 
+     fn paint_inactive_query(theme: &Theme) -> Buffer {
+@@ -540,23 +540,35 @@ mod tests {
+         });
+         let theme = Theme::groknight();
+         let area = Rect::new(0, 0, 80, 1);
+-        for active in [false, true] {
++        for (active, query) in [
++            (false, ""),
++            (true, ""),
++            (false, "literal {path}"),
++            (true, "literal {path}"),
++        ] {
+             let mut state = crate::views::picker::PickerState::default();
+             state.search_active = active;
+-            if active {
+-                state.set_query("literal {path}");
+-            }
++            state.set_query(query);
+             let mut buf = Buffer::empty(area);
+             render_session_picker_search_bar_with_locale(&mut buf, area, &theme, &state, Some(&zh));
+             let text = row_text(&buf);
+-            assert!(text.contains("搜索："), "{text:?}");
+-            assert!(!text.contains(" search:"), "{text:?}");
+-            if active {
+-                assert!(text.contains("literal {path}"), "{text:?}");
++            // Wide glyphs leave padding cells in the buffer. Normalize only
++            // chrome assertions; check the original query against raw cells.
++            let chrome = text.replace(' ', "");
++            assert!(!chrome.contains("search:"), "{text:?}");
++            assert!(!chrome.contains("tosearch"), "{text:?}");
++            if active || !query.is_empty() {
++                assert!(chrome.contains("搜索："), "{text:?}");
++                assert!(!chrome.contains("/开始搜索"), "{text:?}");
+             } else {
+-                assert!(text.contains("/ 开始搜索"), "{text:?}");
+-                assert!(!text.contains("to search"), "{text:?}");
++                // Idle empty search shows only the hint, not an input label.
++                assert!(chrome.contains("/开始搜索"), "{text:?}");
++                assert!(!chrome.contains("搜索："), "{text:?}");
++            }
++            if !query.is_empty() {
++                assert!(text.contains(query), "{text:?}");
+             }
++            assert_eq!(state.query(), query);
+         }
+     }
+ }
