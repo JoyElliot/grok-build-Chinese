@@ -782,9 +782,12 @@ fn run_pending_suspends(
         match crate::app::external_editor::prepare(app, request) {
             Ok(Some(prepared)) => {
                 let launch = prepared.launch();
+                let invalid_editor_command = app
+                    .locale
+                    .named_static_text("editor.error.invalid_command", "invalid editor command");
                 let mut editor_result = Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "invalid editor command",
+                    invalid_editor_command,
                 ));
                 let moved_cursor = match suspend_for_child(
                     app.screen_mode,
@@ -800,7 +803,7 @@ fn run_pending_suspends(
                                 .status(),
                             None => Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidInput,
-                                "invalid editor command",
+                                invalid_editor_command,
                             )),
                         };
                     },

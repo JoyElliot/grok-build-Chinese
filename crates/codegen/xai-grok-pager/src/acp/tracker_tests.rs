@@ -5333,3 +5333,72 @@ fn hook_gate_survives_a_text_chunk_stamped_before_the_batch() {
         Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))
     ));
 }
+
+#[test]
+fn zh_localization_review135_tracker_localizes_only_owned_read_errors() {
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+    let zh = LocaleContext::new(ResolvedLocale {
+        locale: UiLocale::ZhCn,
+        source: LocaleSource::Cli,
+    });
+    for (content, expected) in [
+        ("", "读取失败"),
+        ("Read failed", "Read failed"),
+        ("/tmp/{path} 原始错误", "/tmp/{path} 原始错误"),
+    ] {
+        let tc = acp::ToolCall::new(acp::ToolCallId::new(Arc::from("read-error")), "read_file")
+            .kind(acp::ToolKind::Read)
+            .status(acp::ToolCallStatus::Failed)
+            .raw_input(Some(serde_json::json!({"path": "/tmp/{path}.rs"})))
+            .content(if content.is_empty() {
+                vec![]
+            } else {
+                vec![content.into()]
+            });
+        let mut sb = ScrollbackState::new();
+        sb.set_locale(&zh);
+        let mut tracker = AcpUpdateTracker::new();
+        tracker.handle_update(acp::SessionUpdate::ToolCall(tc.clone()), &meta(), &mut sb);
+        let entry = sb.get(0).expect("failed tool call must remain visible");
+        let RenderBlock::ToolCall(ToolCallBlock::Read(block)) = &entry.block else {
+            panic!("expected read block")
+        };
+        assert_eq!(block.error.as_deref(), Some(expected));
+        assert_eq!(block.path, "/tmp/{path}.rs");
+        let RenderBlock::ToolCall(ToolCallBlock::Read(block)) =
+            tool_call_to_block(&tc, None, &SubagentLabelRegistry::default())
+        else {
+            panic!("expected read block")
+        };
+        assert_eq!(
+            block.error.as_deref(),
+            Some(if content.is_empty() {
+                "Read failed"
+            } else {
+                content
+            })
+        );
+    }
+}
+
+#[test]
+fn zh_localization_review135_failed_edit_defaults_preserve_raw_error_content() {
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+    let zh = LocaleContext::new(ResolvedLocale {
+        locale: UiLocale::ZhCn,
+        source: LocaleSource::Cli,
+    });
+    let base = acp::ToolCall::new(
+        acp::ToolCallId::new(Arc::from("edit-error")),
+        "search_replace",
+    )
+    .kind(acp::ToolKind::Edit)
+    .status(acp::ToolCallStatus::Failed);
+    assert_eq!(extract_edit_error_with_locale(&base, Some(&zh)), "编辑失败");
+    assert_eq!(extract_edit_error(&base), "Edit failed");
+    let supplied = base.content(vec!["Edit failed: literal {path}".into()]);
+    assert_eq!(
+        extract_edit_error_with_locale(&supplied, Some(&zh)),
+        "Edit failed: literal {path}"
+    );
+}

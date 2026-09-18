@@ -426,15 +426,20 @@ impl AgentView {
         if self.is_freeform_builtin_slash_command()
             && let Some(pav) = self.plan_approval_view.as_mut()
         {
-            let msg = match pav.focus {
-                PlanApprovalFocus::Commenting => {
-                    "The comment in progress is a slash command: finish or discard it before approving."
-                }
+            let (id, english) = match pav.focus {
+                PlanApprovalFocus::Commenting => (
+                    "plan.notice.comment_is_command",
+                    "The comment in progress is a slash command: finish or discard it before approving.",
+                ),
                 PlanApprovalFocus::Preview | PlanApprovalFocus::Prompt => {
                     pav.focus = PlanApprovalFocus::Prompt;
-                    "Run the slash command in the notes with Enter, or clear it, before approving."
+                    (
+                        "plan.notice.notes_are_command",
+                        "Run the slash command in the notes with Enter, or clear it, before approving.",
+                    )
                 }
             };
+            let msg = self.scrollback.locale().named_static_text(id, english);
             if crate::app::minimal_mode_active() {
                 self.scrollback.push_block(RenderBlock::system(msg));
             } else {
@@ -482,7 +487,11 @@ impl AgentView {
                     pav.has_plan = true;
                 }
                 self.show_plan_preview_if_available();
-                self.show_toast(PLAN_CHANGED_ON_DISK_NOTICE);
+                let message = self
+                    .scrollback
+                    .locale()
+                    .named_static_text("plan.notice.changed_on_disk", PLAN_CHANGED_ON_DISK_NOTICE);
+                self.show_toast(message);
                 return InputOutcome::Changed;
             }
             let notes = review_comments.as_deref();
@@ -584,7 +593,11 @@ impl AgentView {
             return InputOutcome::Changed;
         };
         if self.is_post_turn_build_starting() {
-            self.show_toast("Wait for the current turn to end before abandoning the plan.");
+            let message = self.scrollback.locale().named_static_text(
+                "plan.notice.busy_abandon",
+                "Wait for the current turn to end before abandoning the plan.",
+            );
+            self.show_toast(message);
             return InputOutcome::Changed;
         }
         if pav.is_after_turn() {
@@ -663,7 +676,11 @@ impl AgentView {
                 pav.send_cancelled(None);
                 self.kept_plan.drop_body_if_pathed();
                 self.prompt.textarea.cancel_undo_group();
-                self.show_toast("Plan revision sent.");
+                let message = self
+                    .scrollback
+                    .locale()
+                    .named_static_text("plan.approval.revision_sent", "Plan revision sent.");
+                self.show_toast(message);
                 log_plan_submit("revise");
             }
         }
@@ -687,15 +704,27 @@ impl AgentView {
                 .push_block(crate::scrollback::RenderBlock::user_prompt(msg.to_string()));
         }
         if post_turn && to_send.as_deref().is_none_or(|text| text.trim().is_empty()) {
-            self.show_toast("Type revision notes, or press a to approve.");
+            let message = self.scrollback.locale().named_static_text(
+                "plan.notice.revision_notes",
+                "Type revision notes, or press a to approve.",
+            );
+            self.show_toast(message);
             return InputOutcome::Changed;
         }
         if self.is_post_turn_build_starting() {
-            self.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
+            let message = self
+                .scrollback
+                .locale()
+                .named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE);
+            self.show_toast(message);
             return InputOutcome::Changed;
         }
         if post_turn && self.plan_mode_pending == Some(false) {
-            self.show_toast(LEAVE_PLAN_REVISE_NOTICE);
+            let message = self
+                .scrollback
+                .locale()
+                .named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE);
+            self.show_toast(message);
             return InputOutcome::Changed;
         }
         if post_turn {
@@ -2744,5 +2773,33 @@ mod plan_approval_optimistic_mode_tests {
             .as_ref()
             .expect("review after revise");
         assert_eq!(pav.plan_content.as_deref(), Some("# Revised plan\n"));
+    }
+    #[test]
+    fn zh_localization_review135_plan_notices_do_not_bypass_build_in_flight() {
+        let mut agent = agent_with_post_turn_review();
+        let zh = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        agent.scrollback.set_locale(&zh);
+        agent.set_execute_plan_prompt("build-1");
+        assert!(matches!(agent.abandon_plan(), InputOutcome::Changed));
+        assert_eq!(
+            agent.toast.as_ref().map(|(msg, _)| msg.as_str()),
+            Some("请等待当前回合结束后再放弃计划。")
+        );
+        assert!(matches!(
+            agent.send_plan_feedback(Some("add a rollback".into())),
+            InputOutcome::Changed
+        ));
+        assert_eq!(
+            agent.toast.as_ref().map(|(msg, _)| msg.as_str()),
+            Some("请等待当前回合结束后再修订计划。")
+        );
+        assert!(agent.plan_approval_view.is_some());
+        assert!(agent.kept_plan.is_kept());
+        assert_eq!(agent.execute_plan_prompt_id(), Some("build-1"));
+        assert!(plan_review_closed_rows(&agent).is_empty());
+        assert!(agent.plan_mode_pending.is_none());
     }
 }

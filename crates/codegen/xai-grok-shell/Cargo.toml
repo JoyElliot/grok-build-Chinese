@@ -9,9 +9,13 @@ default = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
-# it via `required-features`. Forwards login and sampler `test-support` so
+# it via `required-features`. Forwards login, sampler, and workspace `test-support` so
 # downstream test builds see those crates' test seams.
-test-support = ["xai-grok-login/test-support", "xai-grok-sampler/test-support"]
+test-support = [
+    "xai-grok-login/test-support",
+    "xai-grok-sampler/test-support",
+    "xai-grok-workspace/test-support",
+]
 test-util = []
 # Local Computer Hub workspace_server (own/attach + crash-restart). Requires
 local-workspace = []

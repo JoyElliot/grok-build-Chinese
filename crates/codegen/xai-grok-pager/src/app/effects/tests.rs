@@ -3008,3 +3008,14 @@ fn session_list_partial_notices_localize_only_the_fixed_copy() {
         "Couldn't load conversations: retry"
     );
 }
+
+
+#[test]
+fn zh_localization_review135_usage_unsupported_is_typed_not_a_text_rewrite() {
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+    let zh = LocaleContext::new(ResolvedLocale { locale: UiLocale::ZhCn, source: LocaleSource::Cli });
+    assert_eq!(unsupported_or_sanitized(acp::Error::method_not_found(), &zh), "当前智能体版本不支持此功能");
+    assert_eq!(unsupported_or_sanitized(acp::Error::method_not_found(), &LocaleContext::default()), "not supported by this agent version");
+    let expected = sanitize_user_error(&acp::Error::internal_error().to_string());
+    assert_eq!(unsupported_or_sanitized(acp::Error::internal_error(), &zh), expected);
+}

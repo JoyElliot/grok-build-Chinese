@@ -197,6 +197,43 @@ pub enum SessionEvent {
     },
 }
 
+/// Format trusted memory-capture status chrome without promoting arbitrary
+/// activity strings, model diagnostics, or local paths into a user-facing notice.
+pub(crate) fn memory_capture_status_text(
+    activity: &str,
+    from_turn: u32,
+    through_turn: u32,
+    attempt: u32,
+    locale: &crate::locale::LocaleContext,
+) -> String {
+    let (id, english) = match activity {
+        "queued" => ("memory.capture.status.queued", "queued"),
+        "running" => ("memory.capture.status.running", "running"),
+        "completed" => ("memory.capture.status.completed", "completed"),
+        "no_op" => ("memory.capture.status.no_op", "completed with no changes"),
+        "retry" => ("memory.capture.status.retry", "scheduled for retry"),
+        "failed" => ("memory.capture.status.failed", "failed"),
+        _ => ("memory.capture.status.updated", "updated"),
+    };
+    let activity = locale.named_text(id, english);
+    let attempt_suffix = if attempt > 1 {
+        locale
+            .named_text("memory.capture.attempt", " (attempt {attempt})")
+            .replace("{attempt}", &attempt.to_string())
+    } else {
+        String::new()
+    };
+    locale
+        .named_text(
+            "memory.capture.notice",
+            "Memory capture {activity} for turns {from}-{through}{attempt_suffix}",
+        )
+        .replace("{activity}", &activity)
+        .replace("{from}", &from_turn.to_string())
+        .replace("{through}", &through_turn.to_string())
+        .replace("{attempt_suffix}", &attempt_suffix)
+}
+
 /// Debug-only, foldable view of observations created by a memory-v2 capture.
 #[derive(Debug, Clone)]
 pub struct MemoryCaptureBlock {
@@ -237,6 +274,25 @@ impl MemoryCaptureBlock {
         )
     }
 
+    fn title_with_locale(&self, locale: &crate::locale::LocaleContext) -> String {
+        let (id, english) = if self.entries.len() == 1 {
+            (
+                "memory.capture.title.one",
+                "Model-generated memory debug output: {count} memory for turns {from}-{through}",
+            )
+        } else {
+            (
+                "memory.capture.title.many",
+                "Model-generated memory debug output: {count} memories for turns {from}-{through}",
+            )
+        };
+        locale
+            .named_text(id, english)
+            .replace("{count}", &self.entries.len().to_string())
+            .replace("{from}", &self.from_turn.to_string())
+            .replace("{through}", &self.through_turn.to_string())
+    }
+
     pub(crate) fn searchable_text(&self) -> String {
         let mut parts = vec![self.title()];
         for entry in &self.entries {
@@ -259,7 +315,7 @@ impl BlockContent for MemoryCaptureBlock {
             theme.primary().add_modifier(Modifier::BOLD)
         };
         let mut lines = vec![BlockLine::styled(Line::from(Span::styled(
-            self.title(),
+            self.title_with_locale(&ctx.locale),
             title_style,
         )))];
 
@@ -268,7 +324,12 @@ impl BlockContent for MemoryCaptureBlock {
             for (index, entry) in self.entries.iter().enumerate() {
                 lines.push(BlockLine::separator(Line::default()));
                 lines.push(BlockLine::styled(Line::from(Span::styled(
-                    format!("Untrusted model-generated observation {}", index + 1),
+                    ctx.locale
+                        .named_text(
+                            "memory.capture.observation",
+                            "Untrusted model-generated observation {index}",
+                        )
+                        .replace("{index}", &(index + 1).to_string()),
                     theme.muted().add_modifier(Modifier::BOLD),
                 ))));
                 lines.extend(
@@ -303,7 +364,11 @@ impl BlockContent for MemoryCaptureBlock {
                     .and_then(|name| name.to_str())
                     .unwrap_or(entry.path.as_str());
                 let mut path_line = BlockLine::styled(Line::from(vec![
-                    Span::styled("Open file \u{2192} ", theme.muted()),
+                    Span::styled(
+                        ctx.locale
+                            .named_static_text("memory.capture.open_file", "Open file \u{2192} "),
+                        theme.muted(),
+                    ),
                     Span::styled(
                         label.to_owned(),
                         theme.primary().add_modifier(Modifier::UNDERLINED),
@@ -2221,5 +2286,78 @@ mod tests {
         assert!(!block.is_selectable());
         assert!(!block.has_bullet(&ctx()));
         assert_eq!(block.accent(&ctx()), None);
+    }
+    #[test]
+    fn zh_localization_review135_memory_debug_retains_payload_and_local_link_only() {
+        let path = "/tmp/memory/observation.md";
+        let body = "literal {activity}, 原始正文 remains unchanged";
+        let block = MemoryCaptureBlock::new(
+            2,
+            4,
+            vec![MemoryCaptureDebugEntry {
+                statement: "Original observation".into(),
+                body: Some(body.into()),
+                path: path.into(),
+            }],
+        );
+        let output = block.output(&BlockContext {
+            locale: zh_locale(),
+            width: 160,
+            ..ctx()
+        });
+        let text = output
+            .lines
+            .iter()
+            .map(|line| crate::scrollback::types::line_plain_text(&line.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("模型生成的记忆调试输出：第 2–4 回合，共 1 条记忆"),
+            "{text}"
+        );
+        assert!(text.contains("未经信任的模型生成观察记录 1"), "{text}");
+        assert!(text.contains(body), "{text}");
+        assert!(text.contains("Original observation"));
+        assert!(text.contains("打开文件 → observation.md"), "{text}");
+        let links = output
+            .lines
+            .iter()
+            .filter_map(|line| line.link_target.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            links,
+            vec![&crate::render::osc8::LinkTarget::File(Arc::from(
+                Path::new(path)
+            ))]
+        );
+        // The Chinese label is not a license to make model text or URLs trusted.
+        let untrusted = MemoryCaptureBlock::new(
+            2,
+            4,
+            vec![MemoryCaptureDebugEntry {
+                statement: "\u{1b}]8;;https://evil.example\u{7}trusted\u{1b}]8;;\u{7}".into(),
+                body: Some("attacker@example.com\u{202e}".into()),
+                path: path.into(),
+            }],
+        );
+        let output = untrusted.output(&BlockContext {
+            locale: zh_locale(),
+            ..ctx()
+        });
+        let text = output
+            .lines
+            .iter()
+            .map(|line| crate::scrollback::types::line_plain_text(&line.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains('\u{202e}'));
+        assert!(!text.contains("https://"));
+        assert!(!text.contains("attacker@example.com"));
+        assert!(output.lines.iter().all(|line| line.link_target.is_none()
+            || line.link_target.as_ref()
+                == Some(&crate::render::osc8::LinkTarget::File(Arc::from(
+                    Path::new(path)
+                )))));
     }
 }

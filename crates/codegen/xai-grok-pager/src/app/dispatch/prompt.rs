@@ -212,13 +212,21 @@ pub(super) fn dispatch_execute_plan(
         return vec![];
     };
     if !agent.session.state.is_idle() {
-        agent.show_toast("Wait for the current turn to end before building the plan.");
+        let message = agent.scrollback.locale().named_static_text(
+            "plan.notice.busy_build",
+            "Wait for the current turn to end before building the plan.",
+        );
+        agent.show_toast(message);
         return vec![];
     }
     // Shift+Tab / set_mode Off stages leave-Plan first. Approve must not
     // start ExecutePlan while that switch can still clear last_plan.
     if agent.plan_mode_pending == Some(false) {
-        agent.show_toast(LEAVE_PLAN_BUILD_NOTICE);
+        let message = agent
+            .scrollback
+            .locale()
+            .named_static_text("plan.notice.switching_build", LEAVE_PLAN_BUILD_NOTICE);
+        agent.show_toast(message);
         return vec![];
     }
     let prompt_id = uuid::Uuid::new_v4().to_string();
@@ -279,17 +287,31 @@ pub(super) fn dispatch_revise_plan(app: &mut AppView, text: String) -> Vec<Effec
     };
     if has_post_turn_review && leave_plan_pending {
         if let Some(agent) = get_active_agent_mut(app) {
-            agent.show_toast(LEAVE_PLAN_REVISE_NOTICE);
+            let message = agent
+                .scrollback
+                .locale()
+                .named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE);
+            agent.show_toast(message);
         } else {
-            app.show_toast(LEAVE_PLAN_REVISE_NOTICE);
+            let message = app
+                .locale
+                .named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE);
+            app.show_toast(message);
         }
         return vec![];
     }
     if has_post_turn_review && build_in_flight {
         if let Some(agent) = get_active_agent_mut(app) {
-            agent.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
+            let message = agent
+                .scrollback
+                .locale()
+                .named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE);
+            agent.show_toast(message);
         } else {
-            app.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
+            let message = app
+                .locale
+                .named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE);
+            app.show_toast(message);
         }
         return vec![];
     }
@@ -750,12 +772,16 @@ pub(super) fn dispatch_send_prompt_submission(
             agent.prompt.slash_controller.registry(),
         )
     {
+        let message = agent.scrollback.locale().named_static_text(
+            "slash.command.goal.error.mid_text",
+            crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE,
+        );
         if screen_mode_is_minimal {
-            agent.scrollback.push_block(RenderBlock::system(
-                crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE.to_owned(),
-            ));
+            agent
+                .scrollback
+                .push_block(RenderBlock::system(message.to_owned()));
         } else {
-            agent.show_toast(crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE);
+            agent.show_toast(message);
         }
         return prelude;
     }

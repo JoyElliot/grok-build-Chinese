@@ -1291,10 +1291,11 @@ impl AcpUpdateTracker {
         let tc_id = tc.tool_call_id.0.to_string();
         if let Some(orphan) = self.orphan_updates.remove(&tc_id) {
             let merged = merge_tool_call_update(tc, orphan);
-            let block = tool_call_to_block(
+            let block = tool_call_to_block_with_locale(
                 &merged,
                 self.session_cwd.as_deref(),
                 &self.subagent_labels.borrow(),
+                Some(scrollback.locale()),
             );
             self.finish_completed_tool(block, scrollback, is_replay);
             return true;
@@ -1304,17 +1305,19 @@ impl AcpUpdateTracker {
             acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
         );
         if is_completed {
-            let block = tool_call_to_block(
+            let block = tool_call_to_block_with_locale(
                 &tc,
                 self.session_cwd.as_deref(),
                 &self.subagent_labels.borrow(),
+                Some(scrollback.locale()),
             );
             self.finish_completed_tool(block, scrollback, is_replay);
         } else {
-            let block = tool_call_to_block(
+            let block = tool_call_to_block_with_locale(
                 &tc,
                 self.session_cwd.as_deref(),
                 &self.subagent_labels.borrow(),
+                Some(scrollback.locale()),
             );
             let id = scrollback.push_block(block);
             scrollback.set_last_running(true);
@@ -1385,10 +1388,11 @@ impl AcpUpdateTracker {
                         && !is_bg_plumbing_tool(&base)
                     {
                         base.update(tcu.fields);
-                        let block = tool_call_to_block(
+                        let block = tool_call_to_block_with_locale(
                             &base,
                             self.session_cwd.as_deref(),
                             &self.subagent_labels.borrow(),
+                            Some(scrollback.locale()),
                         );
                         self.finish_completed_tool(block, scrollback, is_replay);
                         return true;
@@ -1438,10 +1442,11 @@ impl AcpUpdateTracker {
                         Some((tc_id.clone(), desc, false))
                     } else {
                         if let Some(entry_id) = pending.entry_id {
-                            let mut block = tool_call_to_block(
+                            let mut block = tool_call_to_block_with_locale(
                                 &pending.base,
                                 self.session_cwd.as_deref(),
                                 &self.subagent_labels.borrow(),
+                                Some(scrollback.locale()),
                             );
                             let mut kind_changed = false;
                             if let Some(entry) = scrollback.get_by_id_mut(entry_id) {
@@ -1462,18 +1467,20 @@ impl AcpUpdateTracker {
                     }
                 } else {
                     let entry_id = if let Some(entry_id) = pending.entry_id {
-                        let block = tool_call_to_block(
+                        let block = tool_call_to_block_with_locale(
                             &pending.base,
                             self.session_cwd.as_deref(),
                             &self.subagent_labels.borrow(),
+                            Some(scrollback.locale()),
                         );
                         scrollback.replace_tool_block(entry_id, block, pending.started_at);
                         entry_id
                     } else {
-                        let block = tool_call_to_block(
+                        let block = tool_call_to_block_with_locale(
                             &pending.base,
                             self.session_cwd.as_deref(),
                             &self.subagent_labels.borrow(),
+                            Some(scrollback.locale()),
                         );
                         let id = scrollback.push_block(block);
                         scrollback.set_last_running(true);
@@ -1509,10 +1516,11 @@ impl AcpUpdateTracker {
         }
         if let Some(pending) = self.pending_tools.remove(&tc_id) {
             let merged = merge_tool_call_update(pending.base, tcu);
-            let block = tool_call_to_block(
+            let block = tool_call_to_block_with_locale(
                 &merged,
                 self.session_cwd.as_deref(),
                 &self.subagent_labels.borrow(),
+                Some(scrollback.locale()),
             );
             if let Some(entry_id) = pending.entry_id {
                 if scrollback.replace_tool_block(entry_id, block, pending.started_at)
@@ -1858,11 +1866,26 @@ fn execute_command_from_tool_call(tc: &acp::ToolCall) -> String {
 /// Parses `tool_call.kind` to create the appropriate block type, extracting fields from `raw_input` JSON when available.
 /// `session_cwd` sets execute `header_display` when a leading `cd <cwd>` is redundant.
 /// `labels` names the target of a `send_subagent_message` row.
+#[cfg(test)]
 fn tool_call_to_block(
     tc: &acp::ToolCall,
     session_cwd: Option<&Path>,
     labels: &SubagentLabelRegistry,
 ) -> RenderBlock {
+    tool_call_to_block_with_locale(tc, session_cwd, labels, None)
+}
+
+fn tool_call_to_block_with_locale(
+    tc: &acp::ToolCall,
+    session_cwd: Option<&Path>,
+    labels: &SubagentLabelRegistry,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> RenderBlock {
+    let error_text = |id: &str, english: &str| {
+        locale
+            .map(|l| l.named_text(id, english).into_owned())
+            .unwrap_or_else(|| english.to_owned())
+    };
     let success = !matches!(tc.status, acp::ToolCallStatus::Failed);
     match tc.kind {
         acp::ToolKind::Execute => {
@@ -1889,7 +1912,7 @@ fn tool_call_to_block(
                     } else if bash.exit_code != 0 {
                         format!("exit code {}", bash.exit_code)
                     } else {
-                        "Command failed".into()
+                        error_text("tool.error.command_failed", "Command failed")
                     };
                     block = block.with_error(error_msg);
                 }
@@ -1904,7 +1927,7 @@ fn tool_call_to_block(
                 if !success {
                     let text = content_text(tc);
                     let error_msg = if text.is_empty() {
-                        "Command failed".to_string()
+                        error_text("tool.error.command_failed", "Command failed")
                     } else {
                         text
                     };
@@ -1961,7 +1984,7 @@ fn tool_call_to_block(
                 _ if !success => {
                     let text = content_text(tc);
                     block = block.with_error(if text.is_empty() {
-                        "Read failed".to_string()
+                        error_text("tool.error.read_failed", "Read failed")
                     } else {
                         text
                     });
@@ -2006,7 +2029,7 @@ fn tool_call_to_block(
                 let (hunks, _count) = xai_grok_pager_diff::extract_edit_hunks(tc);
                 EditToolCallBlock::new(path, hunks)
             } else {
-                let error_msg = extract_edit_error(tc);
+                let error_msg = extract_edit_error_with_locale(tc, locale);
                 EditToolCallBlock::new(path, vec![]).with_error(error_msg)
             };
             if untrusted_summary {
@@ -2154,7 +2177,10 @@ fn tool_call_to_block(
                 }
             }
             if !success {
-                block = block.with_error(failure_reason(tc, "Web search failed"));
+                block = block.with_error(failure_reason(
+                    tc,
+                    &error_text("tool.error.web_search_failed", "Web search failed"),
+                ));
             }
             RenderBlock::ToolCall(ToolCallBlock::WebSearch(block))
         }
@@ -2173,7 +2199,10 @@ fn tool_call_to_block(
             block.file_matches = grep.file_matches;
             block.file_paths = grep.file_paths;
             if !success {
-                block.error = Some(failure_reason(tc, "Search failed"));
+                block.error = Some(failure_reason(
+                    tc,
+                    &error_text("tool.error.search_failed", "Search failed"),
+                ));
             }
             RenderBlock::ToolCall(ToolCallBlock::Search(block))
         }
@@ -2195,7 +2224,7 @@ fn tool_call_to_block(
                 block.output = Some(text);
             }
             if !success {
-                block = block.with_error("Fetch failed");
+                block = block.with_error(error_text("tool.error.fetch_failed", "Fetch failed"));
             }
             RenderBlock::ToolCall(ToolCallBlock::WebFetch(block))
         }
@@ -2209,7 +2238,10 @@ fn tool_call_to_block(
                 block = block.with_output(content);
             }
             if !success {
-                block = block.with_error("List directory failed");
+                block = block.with_error(error_text(
+                    "tool.error.list_directory_failed",
+                    "List directory failed",
+                ));
             }
             RenderBlock::ToolCall(ToolCallBlock::ListDir(block))
         }
@@ -2241,7 +2273,7 @@ fn tool_call_to_block(
                     .content
                     .take()
                     .filter(|_| block.results.is_empty())
-                    .unwrap_or_else(|| "Search failed".to_owned());
+                    .unwrap_or_else(|| error_text("tool.error.search_failed", "Search failed"));
                 block = block.with_error(error);
             }
             RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block))
@@ -2331,7 +2363,7 @@ fn tool_call_to_block(
                         } else if bash.exit_code != 0 {
                             format!("exit code {}", bash.exit_code)
                         } else {
-                            "Command failed".into()
+                            error_text("tool.error.command_failed", "Command failed")
                         };
                         block = block.with_error(error_msg);
                     }
@@ -2345,7 +2377,7 @@ fn tool_call_to_block(
                 if !success {
                     let text = content_text(tc);
                     block = block.with_error(if text.is_empty() {
-                        "Command failed".to_string()
+                        error_text("tool.error.command_failed", "Command failed")
                     } else {
                         text
                     });
@@ -2686,23 +2718,51 @@ fn extract_raw_field(tc: &acp::ToolCall, field: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 /// The error shown on a failed Edit block: a short label for a structured search_replace output, else the text content
+#[cfg(test)]
 fn extract_edit_error(tc: &acp::ToolCall) -> String {
+    extract_edit_error_with_locale(tc, None)
+}
+
+fn extract_edit_error_with_locale(
+    tc: &acp::ToolCall,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
+    let error_text = |id: &str, english: &str| {
+        locale
+            .map(|l| l.named_text(id, english).into_owned())
+            .unwrap_or_else(|| english.to_owned())
+    };
     use xai_grok_tools::types::output::SearchReplaceOutput;
     if let Some(ref raw) = tc.raw_output
         && let Ok(ToolOutput::SearchReplace(sr)) = serde_json::from_value::<ToolOutput>(raw.clone())
     {
         return match sr {
-            SearchReplaceOutput::InvalidInput(_) => "Invalid input".to_owned(),
-            SearchReplaceOutput::FileNotFound(_) => "File not found".to_owned(),
-            SearchReplaceOutput::MultipleMatchesFound(_) => "Multiple matches found".to_owned(),
-            SearchReplaceOutput::FileAlreadyExists(_) => "File already exists".to_owned(),
-            SearchReplaceOutput::FilenameTooLong(_) => "Filename too long".to_owned(),
-            SearchReplaceOutput::NoMatchesFound(_) => "No matches found".to_owned(),
-            SearchReplaceOutput::EditsApplied(_) => "Edit failed".to_owned(),
+            SearchReplaceOutput::InvalidInput(_) => {
+                error_text("tool.error.invalid_input", "Invalid input")
+            }
+            SearchReplaceOutput::FileNotFound(_) => {
+                error_text("tool.error.file_not_found", "File not found")
+            }
+            SearchReplaceOutput::MultipleMatchesFound(_) => error_text(
+                "tool.error.multiple_matches_found",
+                "Multiple matches found",
+            ),
+            SearchReplaceOutput::FileAlreadyExists(_) => {
+                error_text("tool.error.file_already_exists", "File already exists")
+            }
+            SearchReplaceOutput::FilenameTooLong(_) => {
+                error_text("tool.error.filename_too_long", "Filename too long")
+            }
+            SearchReplaceOutput::NoMatchesFound(_) => {
+                error_text("tool.error.no_matches_found", "No matches found")
+            }
+            SearchReplaceOutput::EditsApplied(_) => {
+                error_text("tool.error.edit_failed", "Edit failed")
+            }
         };
     }
     match content_text(tc) {
-        text if text.is_empty() => "Edit failed".to_owned(),
+        text if text.is_empty() => error_text("tool.error.edit_failed", "Edit failed"),
         text => text,
     }
 }

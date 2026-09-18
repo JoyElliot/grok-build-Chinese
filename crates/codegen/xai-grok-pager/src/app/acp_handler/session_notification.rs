@@ -1569,22 +1569,15 @@ fn memory_capture_system_message(
     from_turn: u32,
     through_turn: u32,
     attempt: u32,
+    locale: &crate::locale::LocaleContext,
 ) -> String {
-    let activity = match activity {
-        "queued" => "queued",
-        "running" => "running",
-        "completed" => "completed",
-        "no_op" => "completed with no changes",
-        "retry" => "scheduled for retry",
-        "failed" => "failed",
-        _ => "updated",
-    };
-    let attempt_suffix = if attempt > 1 {
-        format!(" (attempt {attempt})")
-    } else {
-        String::new()
-    };
-    format!("Memory capture {activity} for turns {from_turn}-{through_turn}{attempt_suffix}")
+    crate::scrollback::blocks::memory_capture_status_text(
+        activity,
+        from_turn,
+        through_turn,
+        attempt,
+        locale,
+    )
 }
 pub(super) fn apply_session_event(
     update: &XaiSessionUpdate,
@@ -1689,6 +1682,7 @@ pub(super) fn apply_session_event(
                 *from_turn,
                 *through_turn,
                 *attempt,
+                scrollback.locale(),
             )));
             true
         }
@@ -1931,7 +1925,13 @@ mod memory_capture_privacy_tests {
     #[test]
     fn trusted_capture_copy_only_accepts_typed_status_values() {
         let untrusted = "failed: /Users/alice/private\nhttps://untrusted.example";
-        let message = memory_capture_system_message(untrusted, 2, 4, 3);
+        let message = memory_capture_system_message(
+            untrusted,
+            2,
+            4,
+            3,
+            &crate::locale::LocaleContext::default(),
+        );
         assert_eq!(message, "Memory capture updated for turns 2-4 (attempt 3)");
         assert!(!message.contains(untrusted));
     }

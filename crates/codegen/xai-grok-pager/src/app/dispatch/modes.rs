@@ -147,7 +147,11 @@ pub(super) fn set_plan_mode(
     // Same refuse as a second approve: ExecutePlan already marked the turn
     // running. Revise and abandon must not commit while that build is starting.
     if !kind.to_bool() && agent.is_post_turn_build_starting() {
-        agent.show_toast(super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE);
+        let message = agent.scrollback.locale().named_static_text(
+            "plan.notice.busy_abandon",
+            super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE,
+        );
+        agent.show_toast(message);
         return vec![];
     }
 
@@ -698,7 +702,11 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
     // Same refuse as set_plan_mode(Off). Shift+Tab Default is not worker
     // accept; a later ExecutePlan refuse must not see !plan_mode_active.
     if agent.is_post_turn_build_starting() {
-        agent.show_toast(super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE);
+        let message = agent.scrollback.locale().named_static_text(
+            "plan.notice.busy_abandon",
+            super::prompt::BUILD_IN_FLIGHT_ABANDON_NOTICE,
+        );
+        agent.show_toast(message);
         return vec![];
     }
     // Per-session (symmetric with the `in_yolo` reads below), not the global UI mirror, so the cycle and the prompt "auto" indicator agree per agent

@@ -51,6 +51,7 @@ pub(crate) fn localize_command_error(
         "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status." => {
             Some("slash.command.memory.error.arguments")
         }
+        "No themes available" => Some("slash.command.theme.error.none_available"),
         "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
         "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
         _ => None,
@@ -2009,6 +2010,7 @@ mod tests {
             "未知主题：solarized。可用主题：auto, Grokday, Groknight"
         );
         for (english, chinese) in [
+            ("No themes available", "没有可用的主题"),
             ("/flush takes no arguments.", "/flush 不接受参数。"),
             ("/dream takes no arguments.", "/dream 不接受参数。"),
             (

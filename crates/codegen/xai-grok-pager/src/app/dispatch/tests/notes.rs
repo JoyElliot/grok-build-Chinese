@@ -2604,3 +2604,59 @@ fn btw_submit_sends_composer_images() {
         "composer images are consumed by the side question"
     );
 }
+
+#[test]
+fn zh_localization_review135_btw_notices_translate_without_rewriting_reply() {
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+    let zh = LocaleContext::new(ResolvedLocale {
+        locale: UiLocale::ZhCn,
+        source: LocaleSource::Cli,
+    });
+    for minimal in [false, true] {
+        for (notice, expected) in [
+            (
+                "Attached images were not included (too large or could not be loaded).",
+                "附加图片未能发送（图片过大或无法加载）。",
+            ),
+            (
+                "2 attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
+                "2 张附加图片未能发送（超过侧边提问的 50MB 限制或无法加载）。",
+            ),
+            (
+                "{count} attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
+                "{count} attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
+            ),
+        ] {
+            let mut app = test_app_with_agent();
+            let id = AgentId(0);
+            if minimal {
+                app.screen_mode = crate::app::ScreenMode::Minimal;
+            }
+            app.agents.get_mut(&id).unwrap().scrollback.set_locale(&zh);
+            let request_id = if minimal {
+                Some(send_minimal_btw(&mut app, "side question"))
+            } else {
+                None
+            };
+            dispatch(
+                Action::TaskComplete(TaskResult::BtwResponse {
+                    agent_id: id,
+                    result: Ok("Original reply {count}".into()),
+                    minimal_request_id: request_id,
+                    image_notice: Some(notice.into()),
+                }),
+                &mut app,
+            );
+            assert_eq!(
+                agent_ref(&app, id).toast.as_ref().map(|(s, _)| s.as_str()),
+                Some(expected)
+            );
+            let Some(crate::views::btw_overlay::BtwOverlayState::Done { content, .. }) =
+                &agent_ref(&app, id).btw_state
+            else {
+                panic!("expected completed side question");
+            };
+            assert_eq!(content.text(), "Original reply {count}");
+        }
+    }
+}

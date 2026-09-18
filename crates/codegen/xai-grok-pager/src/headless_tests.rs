@@ -847,45 +847,37 @@ fn compact_failure_plain_output_localizes_fixed_chrome_only() {
 }
 
 #[test]
-fn zh_localization_memory_flush_plain_output_localizes_fixed_chrome_and_known_results() {
+fn zh_localization_memory_flush_plain_output_preserves_upstream_privacy_boundary() {
     let zh = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
         locale: crate::locale::UiLocale::ZhCn,
         source: crate::locale::LocaleSource::Cli,
     });
+    let en = crate::locale::LocaleContext::default();
     assert_eq!(
         super::reducer::Lifecycle::MemoryFlushStarted.plain_message_with_locale(&zh),
         "正在刷新记忆。"
     );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "written".into(),
-            path: Some("/tmp/MEMORY.md".into()),
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：已写入；路径：/tmp/MEMORY.md"
-    );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "rejected: provider detail".into(),
-            path: None,
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：已拒绝：provider detail。"
-    );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "future opaque result".into(),
-            path: None,
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：future opaque result。"
-    );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "future {path} result".into(),
-            path: Some("/tmp/MEMORY.md".into()),
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：future {path} result；路径：/tmp/MEMORY.md"
-    );
+    for (result, path) in [
+        ("written", Some("/tmp/MEMORY.md")),
+        ("rejected: provider detail", None),
+        ("future opaque result", None),
+        ("future {path} result", Some("/tmp/MEMORY.md")),
+        (
+            "\u{1b}]8;;https://untrusted.example\u{7}private",
+            Some("/Users/alice/private/session.jsonl"),
+        ),
+    ] {
+        let event = super::reducer::Lifecycle::MemoryFlushCompleted {
+            result: result.to_owned(),
+            path: path.map(str::to_owned),
+        };
+        assert_eq!(event.plain_message_with_locale(&zh), "记忆刷新已完成。");
+        assert_eq!(event.plain_message_with_locale(&en), event.plain_message());
+        let mut reducer = super::reducer::reducer_for(OutputFormat::StreamingJson).unwrap();
+        let lines = reducer.reduce(super::reducer::StreamEvent::Lifecycle(event));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["type"], "memory_flush_completed");
+        assert_eq!(lines[0]["result"], result);
+        assert_eq!(lines[0]["path"], serde_json::json!(path));
+    }
 }

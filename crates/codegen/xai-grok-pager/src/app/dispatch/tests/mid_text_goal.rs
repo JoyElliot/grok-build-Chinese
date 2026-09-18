@@ -149,3 +149,36 @@ fn mid_text_goal_in_minimal_is_a_system_line() {
     assert!(toast_text(&app, id).is_none());
     assert_eq!(MID_TEXT_GOAL_NOTICE, last_system_text(&app, id));
 }
+
+#[test]
+fn zh_localization_review135_mid_text_goal_keeps_draft_in_both_screen_modes() {
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+    let zh = LocaleContext::new(ResolvedLocale {
+        locale: UiLocale::ZhCn,
+        source: LocaleSource::Cli,
+    });
+    for minimal in [false, true] {
+        let mut app = test_app_with_agent();
+        if minimal {
+            app.screen_mode = crate::app::ScreenMode::Minimal;
+        }
+        let id = AgentId(0);
+        register_goal(&mut app, id);
+        let agent = test_agent_mut(&mut app, id);
+        agent.scrollback.set_locale(&zh);
+        agent.prompt.set_text(TESLA);
+        let effects = dispatch(Action::SendPrompt(TESLA.to_owned()), &mut app);
+        assert!(effects.is_empty());
+        let expected = "斜杠命令只能放在消息开头，请将 `/goal …` 移到最前面。";
+        if minimal {
+            assert_eq!(last_system_text(&app, id), expected);
+            assert!(toast_text(&app, id).is_none());
+        } else {
+            assert_eq!(toast_text(&app, id), Some(expected));
+            assert!(test_agent(&app, id).scrollback.is_empty());
+        }
+        assert_eq!(test_agent(&app, id).prompt.text(), TESLA);
+        assert!(test_agent(&app, id).session.prompt_history.is_empty());
+        assert!(test_agent(&app, id).btw_state.is_none());
+    }
+}

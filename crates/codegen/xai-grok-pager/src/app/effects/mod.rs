@@ -3948,9 +3948,10 @@ pub(crate) fn execute(
         }
         Effect::FetchSessionUsage { agent_id, session_id, nonce } => {
             let tx = acp_tx.clone();
+            let locale = session_flags.locale.clone();
             tasks
                 .spawn(async move {
-                    match fetch_session_usage(&session_id, &tx).await {
+                    match fetch_session_usage(&session_id, &tx, &locale).await {
                         Ok(usage) => {
                             TaskResult::SessionUsageComplete {
                                 agent_id,
@@ -4580,7 +4581,7 @@ pub(crate) fn execute(
                                 .get("result")
                                 .and_then(|r| r.get("answer"))
                                 .and_then(|a| a.as_str())
-                                .unwrap_or("No response")
+                                .unwrap_or_else(|| locale.named_static_text("btw.no_response", "No response"))
                                 .to_string();
                             TaskResult::BtwResponse {
                                 agent_id,
@@ -5394,6 +5395,7 @@ async fn fetch_session_info(
 async fn fetch_session_usage(
     session_id: &acp::SessionId,
     tx: &AcpAgentTx,
+    locale: &crate::locale::LocaleContext,
 ) -> Result<xai_grok_shell::extensions::notification::PromptUsage, String> {
     let request = acp::ExtRequest::new(
         "x.ai/session/usage",
@@ -5405,20 +5407,20 @@ async fn fetch_session_usage(
             .expect("serialize session/usage params")
             .into(),
     );
-    let resp = acp_send(request, tx).await.map_err(unsupported_or_sanitized)?;
+    let resp = acp_send(request, tx).await.map_err(|e| unsupported_or_sanitized(e, locale))?;
     let parsed: xai_grok_shell::extensions::usage::SessionUsageResponse = serde_json::from_str(
             resp.0.get(),
         )
         .map_err(|e| {
             tracing::debug!("session usage deser failed: {e}");
-            "invalid session usage response".to_string()
+            locale.named_text("session.usage.invalid_response", "invalid session usage response").into_owned()
         })?;
     Ok(parsed.usage)
 }
 /// An agent that predates an extension answers `method_not_found`
-fn unsupported_or_sanitized(e: acp::Error) -> String {
+fn unsupported_or_sanitized(e: acp::Error, locale: &crate::locale::LocaleContext) -> String {
     if i32::from(e.code) == i32::from(acp::Error::method_not_found().code) {
-        "not supported by this agent version".to_string()
+        locale.named_text("session.usage.unsupported", "not supported by this agent version").into_owned()
     } else {
         sanitize_user_error(&e.to_string())
     }

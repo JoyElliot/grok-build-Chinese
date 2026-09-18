@@ -1544,7 +1544,12 @@ impl AgentView {
             .current_branch
             .clone()
             .or_else(|| lazy_git.as_ref().and_then(|i| i.branch.clone()))
-            .map(crate::views::location::branch_label);
+            .map(|branch| {
+                crate::views::location::branch_label_with_locale(
+                    branch,
+                    Some(self.scrollback.locale()),
+                )
+            });
         if let Some(branch) = branch {
             location.push(Span::styled(branch, dim));
             location.push(Span::styled(" ", bg));
@@ -1553,7 +1558,13 @@ impl AgentView {
             || self.session.is_worktree
             || lazy_git.as_ref().is_some_and(|i| i.is_worktree);
         if show_worktree_label {
-            location.push(crate::views::location::worktree_badge(&theme).patch_style(bg));
+            location.push(
+                crate::views::location::worktree_badge_with_locale(
+                    &theme,
+                    Some(self.scrollback.locale()),
+                )
+                .patch_style(bg),
+            );
         }
         if let Some(profile) = xai_grok_sandbox::profile_name() {
             location.push(Span::styled(

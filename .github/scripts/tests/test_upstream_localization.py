@@ -73,9 +73,29 @@ class UpstreamLocalizationTests(unittest.TestCase):
             "prompt.flag.always_approve", "minimal.feedback.too_small",
             "slash.command.memory.error.arguments", "slash.command.flush.error.arguments",
             "slash.command.dream.error.arguments", "tasks.schedule.next_in", "tasks.schedule.due_now",
+            "plan.notice.busy_revise", "plan.notice.busy_abandon", "plan.notice.switching_revise",
+            "plan.notice.changed_on_disk", "plan.notice.switching_build", "plan.notice.revision_notes",
+            "plan.notice.busy_build", "plan.notice.comment_is_command", "plan.notice.notes_are_command",
+            "memory.capture.notice", "memory.capture.title.one", "memory.capture.title.many",
+            "memory.capture.observation", "memory.capture.open_file", "memory.capture.attempt",
+            "headless.lifecycle.memory_flush.finished", "headless.lifecycle.compact_started",
+            "headless.lifecycle.compact_completed", "headless.lifecycle.compact_cancelled",
+            "headless.lifecycle.auto_continue", "tool.error.read_failed", "tool.error.web_search_failed",
+            "tool.error.command_failed", "tool.error.search_failed", "tool.error.edit_failed",
+            "tool.error.fetch_failed", "tool.error.list_directory_failed", "btw.images.omitted_all",
+            "btw.images.omitted_some", "btw.no_response", "session.usage.unsupported",
+            "session.usage.invalid_response", "editor.error.invalid_command",
+            "slash.command.goal.error.mid_text", "slash.command.theme.error.none_available",
         ):
             with self.subTest(key=key):
                 self.assertRegex(metadata[key], r"[\u3400-\u9fff]")
+
+
+    def test_shell_test_support_forwards_workspace_fixture_feature(self):
+        manifest = tomllib.loads((CODEGEN / "xai-grok-shell/Cargo.toml").read_text(encoding="utf-8"))
+        self.assertIn("xai-grok-workspace/test-support", manifest["features"]["test-support"])
+        self.assertNotIn("test-support", manifest["features"]["default"],
+                         "Test fixtures must stay opt-in for production builds")
 
 
 if __name__ == "__main__":
