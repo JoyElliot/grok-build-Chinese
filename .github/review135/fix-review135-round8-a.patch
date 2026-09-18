@@ -1,0 +1,135 @@
+diff --git a/.github/scripts/tests/test_upstream_localization.py b/.github/scripts/tests/test_upstream_localization.py
+index 8737fd9f..030f6fd8 100644
+--- a/.github/scripts/tests/test_upstream_localization.py
++++ b/.github/scripts/tests/test_upstream_localization.py
+@@ -73,10 +73,30 @@ class UpstreamLocalizationTests(unittest.TestCase):
+             "prompt.flag.always_approve", "minimal.feedback.too_small",
+             "slash.command.memory.error.arguments", "slash.command.flush.error.arguments",
+             "slash.command.dream.error.arguments", "tasks.schedule.next_in", "tasks.schedule.due_now",
++            "plan.notice.busy_revise", "plan.notice.busy_abandon", "plan.notice.switching_revise",
++            "plan.notice.changed_on_disk", "plan.notice.switching_build", "plan.notice.revision_notes",
++            "plan.notice.busy_build", "plan.notice.comment_is_command", "plan.notice.notes_are_command",
++            "memory.capture.notice", "memory.capture.title.one", "memory.capture.title.many",
++            "memory.capture.observation", "memory.capture.open_file", "memory.capture.attempt",
++            "headless.lifecycle.memory_flush.finished", "headless.lifecycle.compact_started",
++            "headless.lifecycle.compact_completed", "headless.lifecycle.compact_cancelled",
++            "headless.lifecycle.auto_continue", "tool.error.read_failed", "tool.error.web_search_failed",
++            "tool.error.command_failed", "tool.error.search_failed", "tool.error.edit_failed",
++            "tool.error.fetch_failed", "tool.error.list_directory_failed", "btw.images.omitted_all",
++            "btw.images.omitted_some", "btw.no_response", "session.usage.unsupported",
++            "session.usage.invalid_response", "editor.error.invalid_command",
++            "slash.command.goal.error.mid_text", "slash.command.theme.error.none_available",
+         ):
+             with self.subTest(key=key):
+                 self.assertRegex(metadata[key], r"[\u3400-\u9fff]")
+ 
+ 
++    def test_shell_test_support_forwards_workspace_fixture_feature(self):
++        manifest = tomllib.loads((CODEGEN / "xai-grok-shell/Cargo.toml").read_text(encoding="utf-8"))
++        self.assertIn("xai-grok-workspace/test-support", manifest["features"]["test-support"])
++        self.assertNotIn("test-support", manifest["features"]["default"],
++                         "Test fixtures must stay opt-in for production builds")
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json b/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
+index b66da2c6..747894f4 100644
+--- a/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
++++ b/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
+@@ -3416,5 +3416,54 @@
+   "minimal.feedback.too_small": "反馈表单需要更大的终端 - 按 Esc 关闭",
+   "slash.command.memory.error.arguments": "/memory 不接受参数。打开后按 t 启用或停用记忆，按 s 查看状态。",
+   "slash.command.flush.error.arguments": "/flush 不接受参数。",
+-  "slash.command.dream.error.arguments": "/dream 不接受参数。"
++  "slash.command.dream.error.arguments": "/dream 不接受参数。",
++  "plan.notice.busy_revise": "请等待当前回合结束后再修订计划。",
++  "plan.notice.busy_abandon": "请等待当前回合结束后再放弃计划。",
++  "plan.notice.switching_revise": "请等待计划模式切换完成后再修订计划。",
++  "plan.notice.changed_on_disk": "磁盘上的计划已更改。批准前请先审阅更新后的计划。",
++  "plan.notice.switching_build": "请等待计划模式切换完成后再执行计划。",
++  "plan.notice.revision_notes": "请输入修订意见，或按 a 批准。",
++  "plan.notice.busy_build": "请等待当前回合结束后再执行计划。",
++  "plan.notice.comment_is_command": "正在编写的批注是一条斜杠命令：批准前请先完成或放弃该批注。",
++  "plan.notice.notes_are_command": "批准前，请按 Enter 执行意见中的斜杠命令，或先清空它。",
++  "memory.capture.status.queued": "已排队",
++  "memory.capture.status.running": "进行中",
++  "memory.capture.status.completed": "已完成",
++  "memory.capture.status.no_op": "已完成，无更改",
++  "memory.capture.status.retry": "已安排重试",
++  "memory.capture.status.failed": "失败",
++  "memory.capture.status.updated": "已更新",
++  "memory.capture.attempt": "（第 {attempt} 次尝试）",
++  "memory.capture.notice": "第 {from}–{through} 回合的记忆捕获{activity}{attempt_suffix}",
++  "memory.capture.title.one": "模型生成的记忆调试输出：第 {from}–{through} 回合，共 {count} 条记忆",
++  "memory.capture.title.many": "模型生成的记忆调试输出：第 {from}–{through} 回合，共 {count} 条记忆",
++  "memory.capture.observation": "未经信任的模型生成观察记录 {index}",
++  "memory.capture.open_file": "打开文件 → ",
++  "headless.lifecycle.memory_flush.finished": "记忆刷新已完成。",
++  "headless.lifecycle.memory_capture.notice": "{message}。",
++  "headless.lifecycle.compact_started": "正在自动压缩对话（已使用 {percentage}%）…",
++  "headless.lifecycle.compact_completed": "对话已压缩。",
++  "headless.lifecycle.compact_cancelled": "自动压缩已取消。",
++  "headless.lifecycle.auto_continue": "已在压缩后恢复。",
++  "tool.error.read_failed": "读取失败",
++  "tool.error.web_search_failed": "网页搜索失败",
++  "tool.error.search_failed": "搜索失败",
++  "tool.error.fetch_failed": "获取失败",
++  "tool.error.list_directory_failed": "列出目录失败",
++  "tool.error.invalid_input": "输入无效",
++  "tool.error.file_not_found": "找不到文件",
++  "tool.error.multiple_matches_found": "找到多个匹配项",
++  "tool.error.file_already_exists": "文件已存在",
++  "tool.error.filename_too_long": "文件名过长",
++  "tool.error.no_matches_found": "未找到匹配项",
++  "tool.error.edit_failed": "编辑失败",
++  "tool.error.command_failed": "命令执行失败",
++  "slash.command.goal.error.mid_text": "斜杠命令只能放在消息开头，请将 `/goal …` 移到最前面。",
++  "slash.command.theme.error.none_available": "没有可用的主题",
++  "btw.images.omitted_all": "附加图片未能发送（图片过大或无法加载）。",
++  "btw.images.omitted_some": "{count} 张附加图片未能发送（超过侧边提问的 50MB 限制或无法加载）。",
++  "session.usage.invalid_response": "会话用量响应无效",
++  "session.usage.unsupported": "当前智能体版本不支持此功能",
++  "btw.no_response": "未收到回复",
++  "editor.error.invalid_command": "编辑器命令无效"
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/slash/mod.rs b/crates/codegen/xai-grok-pager/src/slash/mod.rs
+index 5e496e70..f543e6f8 100644
+--- a/crates/codegen/xai-grok-pager/src/slash/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/slash/mod.rs
+@@ -51,6 +51,7 @@ pub(crate) fn localize_command_error(
+         "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status." => {
+             Some("slash.command.memory.error.arguments")
+         }
++        "No themes available" => Some("slash.command.theme.error.none_available"),
+         "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
+         "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
+         _ => None,
+@@ -2009,6 +2010,7 @@ mod tests {
+             "未知主题：solarized。可用主题：auto, Grokday, Groknight"
+         );
+         for (english, chinese) in [
++            ("No themes available", "没有可用的主题"),
+             ("/flush takes no arguments.", "/flush 不接受参数。"),
+             ("/dream takes no arguments.", "/dream 不接受参数。"),
+             (
+diff --git a/crates/codegen/xai-grok-shell/Cargo.toml b/crates/codegen/xai-grok-shell/Cargo.toml
+index 772d4676..8a140e92 100644
+--- a/crates/codegen/xai-grok-shell/Cargo.toml
++++ b/crates/codegen/xai-grok-shell/Cargo.toml
+@@ -9,9 +9,13 @@ default = []
+ dhat-heap = ["dep:dhat"]
+ # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
+ # load, and bench tests. Off by default; the tests/benches that use it declare
+-# it via `required-features`. Forwards login and sampler `test-support` so
++# it via `required-features`. Forwards login, sampler, and workspace `test-support` so
+ # downstream test builds see those crates' test seams.
+-test-support = ["xai-grok-login/test-support", "xai-grok-sampler/test-support"]
++test-support = [
++    "xai-grok-login/test-support",
++    "xai-grok-sampler/test-support",
++    "xai-grok-workspace/test-support",
++]
+ test-util = []
+ # Local Computer Hub workspace_server (own/attach + crash-restart). Requires
+ local-workspace = []
