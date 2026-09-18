@@ -1,0 +1,30 @@
+name: Review protoc 29.3
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths: [.github/workflows/review-protoc-135.yml]
+permissions:
+  contents: read
+jobs:
+  protoc:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fetch and verify the repository-pinned compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --output protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip
+          printf '%s  %s\n' 3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a protoc.zip | sha256sum -c -
+          unzip -q protoc.zip -d protoc
+          chmod 0755 protoc/bin/protoc
+          protoc/bin/protoc --version
+          tar -czf protoc-29.3.tar.gz protoc
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: review-protoc-29.3-${{ github.run_id }}
+          path: ${{ runner.temp }}/protoc-29.3.tar.gz
+          retention-days: 7
+          if-no-files-found: error
