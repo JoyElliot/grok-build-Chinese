@@ -1,6 +1,6 @@
 {
-  "base": "6c1e721019ecda161d47d37cc426741ab2681ce5",
-  "tree": "83b5c9ed8c3420c2b915c8f75d261d913e8d8e79",
-  "patch": "fix-round1.patch",
-  "message": "修复 1.0.35 首轮编译阻断并对齐本地化调用链"
+  "base": "a638fdafc6418f3ec99b44907a525000d73766ce",
+  "tree": "f4c98b42da9e891b00f93ccbbf41a1075dbabf95",
+  "patch": "fix-continuation-round2.patch",
+  "message": "修复精简界面借用和公开文档测试路径，恢复格式门禁"
 }
