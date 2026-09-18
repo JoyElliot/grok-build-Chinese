@@ -1,6 +1,6 @@
 {
-  "base": "8290885be7635304bb5e18b89ee24b9b572579ac",
-  "tree": "967668486c5970b3601961e3426f0f9882068077",
-  "patches": ["fix-review135-round9.patch", "fix-review135-round10.patch", "fix-review135-round11-test.patch"],
-  "message": "复查修复工作树社区命令、搜索框中文键与防漏翻译门禁"
+  "base": "5a89420a8f96cce7868a3204981f81dfe01ec13a",
+  "tree": "ab41e63adb89f6ffddc0ed945d2b7b03d931682f",
+  "patches": ["fix-review135-round12.patch"],
+  "message": "修复搜索框中文回归测试的导入、闲置状态及宽字符断言"
 }
