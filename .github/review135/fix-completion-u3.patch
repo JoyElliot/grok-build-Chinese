@@ -1,0 +1,184 @@
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md b/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
+index 87bb0a5e..c547c918 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/26-config-reference.md)
++
+ This file ships with the CLI and is extracted to `~/.grok/docs/user-guide/26-config-reference.md` on launch. It is the complete field list for `config.toml`, `managed_config.toml`, and `requirements.toml`. For conceptual guidance see [05-configuration.md](05-configuration.md).
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/27-grok-clone.md b/crates/codegen/xai-grok-pager/docs/user-guide/27-grok-clone.md
+index 192e4409..d6b33dbd 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/27-grok-clone.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/27-grok-clone.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/27-grok-clone.md)
++
+ `grok clone` fetches a Git repository into a Grove content store and mounts a
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/01-getting-started.md
+index 92b7262f..5b96e6fb 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/01-getting-started.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/01-getting-started.md
+@@ -52,4 +52,3 @@ grok-zh --version
+ 
+-在 Grove 配置中启用 `[clone] enabled = true` 后，可以通过 Grove 提取仓库
+-（macOS 使用 NFS，Linux 使用 FUSE）：
++可通过 Grove 提取仓库并挂载工作树（macOS 使用 NFS，Linux 使用 FUSE）。可在 Grove 配置 `~/.config/grove/config.toml` 中设置 `[clone] enabled = true`，或设置 `GROK_CLONE=1` 启用克隆。设置 `GROK_GROVE=1` 或在 Grok 的 `~/.grok/config.toml` 中配置 `[cli] grove = true`，可在未设置专用开关时同时启用克隆与会话工作树；专用开关仍优先。
+ 
+@@ -99,10 +98,3 @@ grok-zh
+ 
+-按 `Tab` 在提示输入框与回滚区之间切换焦点。任务运行时，按 `Esc` 可取消任务
+-（全屏 Vim 回滚模式例外：任务运行期间 `Esc` 不执行取消；精简模式即使启用
+-Vim 也会取消）。输入框为空时，`Ctrl+C` 可取消任务；若仍有草稿，第一次按下
+-只会清空草稿。空闲时，在 800 毫秒内连续按两次 `Esc`：输入框非空时会清空
+-内容；输入框为空且已有会话消息时会打开回退界面，详见
+-[键盘快捷键](03-keyboard-shortcuts.md#escape)。回滚区获得焦点后，可用方向键
+-选择条目，并折叠或展开内容。若希望用 `j`/`k` 导航、`h`/`l` 折叠，请启用
+-Vim 模式。
++按 `Tab` 在提示输入框与回滚区之间切换焦点。轮次运行中，`Esc` 不会取消，而会提示使用 `Ctrl+C`；输入框有草稿时，先按 `Ctrl+C` 清除草稿，再在空输入框中按一次取消轮次。空闲时，在 800ms 内连续按两次 Esc：非空输入框会清空并暂存草稿，空输入框且已有消息时打开回退选择器。回滚区聚焦后可用方向键选择并折叠/展开；Vim 模式还可用 j/k 导航和 h/l 折叠。参见[键盘快捷键](03-keyboard-shortcuts.md#escape)。
+ 
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/03-keyboard-shortcuts.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/03-keyboard-shortcuts.md
+index f68b5632..b9255691 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/03-keyboard-shortcuts.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/03-keyboard-shortcuts.md
+@@ -92,3 +92,3 @@ Grok 有两种输入模式，用于控制你在回滚区中的导航方式：
+ 
+-**Esc 不是焦点按键。** 它遵循下面的取消/清除/回退语义。轮次进行中的取消是唯一受 `[ui].vim_mode`（回滚导航）控制的分支；没有任何行为依赖 `[ui].simple_mode`（提示编辑器）。覆盖层、模态框、斜杠/文件下拉菜单、语音、搜索和选择会优先接管 Esc。
++**Esc 不是焦点按键。** 它遵循下面的清除/回退语义；轮次运行时不会取消，而会提示使用 `Ctrl+C`。这一行为不受 `[ui].vim_mode`（回滚导航）或 `[ui].simple_mode`（提示编辑器）影响。覆盖层、模态框、斜杠/文件下拉菜单、语音、搜索和选择会优先接管 Esc。
+ 
+@@ -140,2 +140,11 @@ MCP 服务器请求用户输入（表单字段或 URL 同意）时会显示此
+ 
++### `/feedback` 反馈表单
++
++Ctrl+Tab / Ctrl+Shift+Tab 在“编写”和“草稿”标签间切换。Esc 关闭表单；聚焦的标签行或打开的确认会先被解除。
++
++“编写”中 Enter 发送；草稿提供类型/任务/失败标签时，Tab 聚焦这些行，再按 Tab 回到报告框，左右键选择标签值。“草稿”中上下键或 j/k 选择，Enter 加载到编写页，`d` 删除（`y` 确认），`/` 搜索。
++
++可上传跟踪时，提交前先询问：上下键选择，Enter 按选择发送，Esc 跳过上传但仍发送报告。该表单没有可轮流选择的普通答案行，不套用问题卡片的 Tab 规则。
++
++<a id="permission-prompt"></a>
+ ### 权限提示
+@@ -169,15 +178,14 @@ MCP 服务器请求用户输入（表单字段或 URL 同意）时会显示此
+ | 状态 | 手势 | 效果 |
+-|--------|---------|--------|
+-| 轮次运行中，**精简模式或关闭 Vim 回滚模式（默认）** | `Esc` | 立即取消（无论提示框还是回滚区聚焦，即使有草稿——草稿会**保留**，不同于 Ctrl+C 的先清除手势）。 |
+-| 轮次运行中，**全屏 Vim 模式** | `Esc` | 被吞掉，空操作（**不会**取消）。请使用 `Ctrl+C`（或命令面板/其他取消入口）。 |
+-| 轮次取消中 | `Esc` | 在**所有**模式下重新发送取消（如果第一次确认丢失则重试）。此状态下 `Ctrl+C` 会升级为退出。 |
+-| 空闲 + 非空提示（文本或图像芯片），**提示框聚焦** | **在 800ms 内按 `Esc` 两次** | 清除提示；被清除的草稿会暂存（按 `Ctrl+S` 或 `Alt+S` 可恢复，包含图像），其文本也会保存到提示历史并排在 `↑` 历史浏览首位。第一次按下会显示“再按一次即可清除”。 |
+-| 空闲 + 空提示 + 有会话消息，**提示框或回滚区聚焦** | **在 800ms 内按 `Esc` 两次** | 打开回退选择器（等同于 `/rewind`）。第一次按下不会显示提示。 |
+-| 空闲 + 空提示且没有消息，**或回滚区聚焦且有草稿 / 模式化（`!` `#`）编写器 / 等待输入的待处理覆盖层 / 打开的历史搜索** | `Esc` | 被吞掉，空操作（不会聚焦回滚区）。清除只作用于提示面板；回退要求空的普通模式编写器、没有待处理覆盖层且没有打开历史搜索。阅读回滚区不会改变草稿、编写器模式、等待回答的问题或进行中的搜索。 |
++| --- | --- | --- |
++| 轮次运行中（所有模式和面板） | `Esc` | **不会取消**；提示按 Ctrl+C 取消，草稿不变。 |
++| 轮次取消中 | `Esc` | 吞掉，空操作；Ctrl+C 可继续升级为退出。 |
++| 空闲、非空草稿、输入框聚焦 | 800ms 内按两次 `Esc` | 清除并暂存草稿（含图片）；Ctrl+S / Alt+S 可恢复，文本进入历史。第一次显示再次清除提示。 |
++| 空闲、空普通提示、有历史消息、输入框或回滚区聚焦 | 800ms 内按两次 `Esc` | 打开 `/rewind` 回退选择器，第一次无提示。 |
++| 空闲无消息、回滚区聚焦但有草稿、模式化输入、待处理覆盖层或历史搜索 | `Esc` | 按对应界面处理或吞掉，不改变草稿或误触发回退。 |
+ 
+-**取消后的缓冲期：** 在由 Esc 触发取消后约一秒内，空闲回退触发仍被抑制——连续按 Esc 停止轮次不会无意间打开回退选择器。只会抑制回退触发；其他 Esc 行为不受影响。
++**运行中 Esc 的缓冲期：** 按下运行中 Esc 后约一秒内，空闲回退触发仍被抑制，避免轮次恰好结束时连续按 Esc 误开回退；其他 Esc 行为不受影响。
+ 
+-**抢占 Esc（在轮次中途取消/吞掉以及清除/回退前执行）：** 覆盖层、模态框、斜杠/文件/补全下拉菜单、历史搜索、回滚搜索、文本选择、链接高亮、语音，以及**Bash / Remember 模式退出**（提示框为空时按 Esc 离开 `!` / `#` 模式并返回普通提示，即使轮次仍在运行）。无参数的 `/feedback` 会打开报告面板；按 Esc 关闭该面板。
++覆盖层、模态框、补全菜单、历史/回滚搜索、选区、链接高亮、语音，以及空的 Bash / Remember 输入模式退出，会优先处理 Esc。无参数 `/feedback` 打开反馈表单，Esc 先处理其中的标签行或确认，再关闭表单。
+ 
+-**Ctrl+C 与 Esc：** 轮次运行时有非空草稿，Ctrl+C 会清除草稿并保持轮次；再次在空提示框按 Ctrl+C 才会取消。Esc 会立即取消并保留草稿（全屏 Vim 模式下不会取消；仅在已取消时重试）。空闲时非空 Ctrl+C 一次即可清除；Esc 需要在 800ms 内按两次。两种清除留下的内容不同：`Esc Esc` 会暂存草稿，因此可用 `Ctrl+S` 恢复；`Ctrl+C` 会丢弃草稿（文本仍会进入 `↑` 历史）。
++运行时有非空草稿，Ctrl+C 先清除草稿并保留轮次；在空输入框再次按下才取消。Esc 从不代替取消。空闲时 Ctrl+C 一次丢弃草稿（文本仍入历史），Esc Esc 则暂存草稿供恢复。
+ 
+@@ -197,3 +205,3 @@ MCP 服务器请求用户输入（表单字段或 URL 同意）时会显示此
+ | `Ctrl+O` | 智能体界面 | 切换始终批准（YOLO）模式 |
+-| `F3` | 智能体界面 | 打开会话选择器（恢复之前的会话，等同于 `/resume`） |
++| `Ctrl+R` | 智能体界面 | 打开会话选择器（恢复之前的会话，等同于 `/resume`） |
+ | `Ctrl+;`（替代：`Ctrl+'`） | 智能体界面 | 切换提示队列面板（非空时）。仅限**本地 macOS** VS Code 系列：主按键为 **`Ctrl+4`**（`;` / `'` 仍为替代键）。SSH 和非 Mac 仍使用 **`Ctrl+;`** / **`Ctrl+'`**。 |
+@@ -223,2 +231,10 @@ MCP 服务器请求用户输入（表单字段或 URL 同意）时会显示此
+ 
++### 子智能体全屏视图
++
++子智能体视图没有输入框，仅用于观察；不能输入或暂存提示，根会话专用快捷键不会执行或传给父级。Ctrl+C 取消当前子级，q/Esc 返回（搜索打开时先关闭搜索），Ctrl+Q 始终退出（VS Code 系列为 Ctrl+D）。详情见[子智能体指南](16-subagents.md#fullscreen-framed-view-the-child-transcript)。
++
++### 换行提示与 Cmd+Enter
++
++普通输入和 `/btw` 的草稿非空时，底栏会显示可用换行组合键；SSH 或旧 tmux 优先 Alt+Enter。Cmd+Enter 不是约定的发送或换行快捷键：部分本机终端会让它落入文本区而换行，Apple Terminal 也有本机修饰键补救；SSH 下 Cmd 不会到达，可能被当作 Enter 发送。远程请用 Alt+Enter、反斜杠加 Enter 或 `/ml`。详情见[终端支持](21-terminal-support.md)。
++
+ ## 图像粘贴与拖放
+@@ -303,3 +319,3 @@ Linux X11 有两个独立的文本选择：
+ |-----|--------|
+-| `F3` | 恢复会话（打开会话选择器） |
++| `Ctrl+R` | 恢复会话（打开会话选择器） |
+ | `Ctrl+W` | 打开新工作树对话框（仅在 git 仓库内） |
+@@ -308,3 +324,3 @@ Linux X11 有两个独立的文本选择：
+ 
+-`Ctrl+W`、`Ctrl+I` 和 `Ctrl+Shift+I` 仅在欢迎界面启用。`F3` 在欢迎界面和智能体会话中都打开会话选择器（在会话内会以模态覆盖层打开，与 `/resume` 命令相同）。`Ctrl+S` 用于会话内的提示草稿暂存，在没有草稿可暂存的欢迎界面不起作用。`Ctrl+Q` 是上面记录的全局退出绑定，不是欢迎界面专用处理器。
++`Ctrl+W`、`Ctrl+I` 和 `Ctrl+Shift+I` 仅在欢迎界面启用。`Ctrl+R` 在欢迎界面和智能体会话中都打开会话选择器（在会话内会以模态覆盖层打开，与 `/resume` 命令相同）。`Ctrl+S` 用于会话内的提示草稿暂存，在没有草稿可暂存的欢迎界面不起作用。`Ctrl+Q` 是上面记录的全局退出绑定，不是欢迎界面专用处理器。
+ 
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/04-slash-commands.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/04-slash-commands.md
+index f782b20c..3934c47c 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/04-slash-commands.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/04-slash-commands.md
+@@ -135,3 +135,3 @@
+ 
+-切换多行输入。启用后，`Enter` 插入换行，`Shift+Enter`（或 `Alt+Enter`）发送消息。轮次中途，空编写器中的普通 `Enter` 仍会强制发送队列首条后续提示。别名：`/ml`。
++切换多行输入。启用后，`Enter` 插入换行，`Shift+Enter`（或 `Alt+Enter`）发送消息。轮次中途，空输入框中的普通 `Enter` 仍会强制发送队列首条后续提示。未启用多行输入且草稿非空时，底栏会显示可用的换行快捷键；SSH 或旧 tmux 环境优先显示 `Alt+Enter`。别名：`/ml`。
+ 
+@@ -174,3 +174,3 @@
+ 
+-`/flush`、`/dream` 和 `/memory` 要求启用记忆（`--experimental-memory` 或 `GROK_MEMORY=1`）；`/memory` 还需要配置记忆后端。`/remember` 始终可用。
++`/flush` 和 `/dream` 要求记忆已启用。只要配置了记忆存储，`/memory` 就可用于浏览笔记和切换当前会话的记忆开关，即使 `[memory] enabled = false`；若没有后端或进程强制禁用了记忆，则隐藏该命令。`/remember` 始终可用。
+ 
+@@ -178,3 +178,3 @@
+ 
+-浏览、查看和管理已保存的记忆。传入 `on` 或 `off` 可启用或禁用记忆。别名：`/mem`。
++浏览、查看和管理已保存的记忆。打开窗口后按 `t` 切换当前会话的记忆开关；按 `x` 删除所选笔记，再按一次确认；按 `s` 查看不包含笔记内容的诊断信息。别名：`/mem`。
+ 
+@@ -182,3 +182,2 @@
+ /memory
+-/memory off
+ ```
+@@ -187,3 +186,3 @@
+ 
+-立即将当前会话的知识保存到记忆中，触发 LLM 对最重要内容进行摘要。在压缩前或任何想锁定上下文的时候使用。
++立即保存当前会话的重要知识，触发 LLM 提炼关键内容。在压缩前或需要保留上下文时使用。执行期间显示“正在保存记忆”，结束后报告保存结果或未执行的原因。
+ 
+@@ -191,3 +190,3 @@
+ 
+-运行记忆整合——将会话日志合并为有组织的主题。
++运行记忆整合，将收集到的观察记录或会话知识整理成主题。执行期间显示“正在整合记忆”，结束后报告完成、失败或跳过的结果。
+ 
+@@ -328,3 +327,3 @@ Shell 还支持子命令（`/plugins list`、`/plugins install <source>`、`/plu
+ 
+-报告问题或发送反馈。命令会打开报告面板：`Enter` 发送，`Esc` 丢弃。带消息时会将其预填到面板中，发送前仍可编辑；在 `--minimal` 模式下，带消息仍会立即发送。
++报告问题或发送反馈。无参数的 `/feedback` 在所有模式（包括精简模式）下打开反馈表单，提供“编写”和“草稿”标签页。`/feedback <message>` 在所有模式下都会立即发送，不再先预填表单，也不启动模型轮次；失败时会保存到草稿并显示提示。
+ 
+@@ -337,3 +336,5 @@ Shell 还支持子命令（`/plugins list`、`/plugins install <source>`、`/plu
+ 
+-在不中断当前任务的情况下向智能体发送旁注。在精简模式（`--minimal`）中，答案会显示在提示框上方、可关闭的面板中：`Esc` 关闭面板，完成的答案会保存到原生回滚区，已经关闭的面板收到迟到回复时会丢弃该回复。旁问题及其答案不会成为主轮次的一部分。
++在不中断当前任务的情况下发送旁支问题。`/btw` 也可以出现在消息中间：整条消息去掉该命令后会作为旁支问题，不进入主会话记录；只有 `/btw` 支持这种行内行为。精简模式（`--minimal`）中，答案显示在提示框上方可关闭的面板内：`Esc` 关闭，已完成的答案保存到原生回滚区，关闭后到达的迟到回复被丢弃。问题及答案不属于主轮次。
++
++旁支输入遵循普通输入框的多行规则。非空草稿时底栏显示换行快捷键；SSH 环境使用 `Alt+Enter`，也可输入 `\` 后按 Enter，或用 `/ml`。不要依赖远程会话中的 `Cmd+Enter` 换行。
+ 
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/05-configuration.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/05-configuration.md
+index 55431169..cfcf55f1 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/05-configuration.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/05-configuration.md
+@@ -141,4 +141,4 @@ default_selected_permission = "allow_once"
+ |-------|----------|
+-| `false`（默认） | 回滚区会抑制裸字母和 `Shift+letter` 按键（`j`/`k`、`h`/`l`、`g`/`G`、`y`/`Y`、`o`/`O`、`r`、`x`、`e`/`E`、`H`/`L`，以及 `i`）：按下其中任意键会聚焦提示并输入该字符。方向键、`Tab`、`Space`、`PageUp`/`PageDown` 以及所有 `Ctrl+letter` 快捷键仍可导航。`Esc` **不是**回滚键——它会取消正在运行的回合；空闲时遵循清除 / 回退策略（见[键盘快捷键](03-keyboard-shortcuts.md#escape)）。 |
+-| `true` | 所有 Vim 风格回滚绑定均启用，完全按照[键盘快捷键](03-keyboard-shortcuts.md)所列。回合进行中，`Esc` 在此模式下会被吞掉（用 `Ctrl+C` 取消）；精简模式无论如何都保留 Esc 取消行为。 |
++| `false`（默认） | 回滚区会抑制裸字母和 `Shift+letter` 按键（`j`/`k`、`h`/`l`、`g`/`G`、`y`/`Y`、`o`/`O`、`r`、`x`、`e`/`E`、`H`/`L`，以及 `i`）：按下其中任意键会聚焦提示并输入该字符。方向键、`Tab`、`Space`、`PageUp`/`PageDown` 以及所有 `Ctrl+letter` 快捷键仍可导航。`Esc` **不是**回滚键——运行中的回合会提示使用 `Ctrl+C` 取消，`Esc` 本身不会取消；空闲时遵循清除 / 回退策略（见[键盘快捷键](03-keyboard-shortcuts.md#escape)）。 |
++| `true` | 所有 Vim 风格回滚绑定均启用，完全按照[键盘快捷键](03-keyboard-shortcuts.md)所列。回合进行中，所有模式（包括精简模式）的 `Esc` 均不会取消，而会提示使用 `Ctrl+C`；Vim 设置只控制回滚导航。 |
+ 
+@@ -290,3 +290,3 @@ MCP 服务器也可以在 `.grok/config.toml` 中按项目设置。项目级配
+ 
+-跨会话持久化知识（需要 `--experimental-memory` 或 `GROK_MEMORY=1`）。
++跨会话持久化知识。使用 `[memory] enabled = true` 或 `GROK_MEMORY=1` 启用；有效 TOML 中显式的 `enabled = false` 会覆盖远程启用设置。配置禁用的会话仍可打开 `/memory` 并按 `t` 临时启用；`--no-memory` 或 `GROK_MEMORY=0` 则对整个进程强制禁用。更新后首次打开工作区时，旧版笔记会自动迁移到主题，原文件保持不变。
+ 
+@@ -294,3 +294,3 @@ MCP 服务器也可以在 `.grok/config.toml` 中按项目设置。项目级配
+ [memory]
+-enabled = false                       # 启用记忆
++enabled = true                        # 启用记忆
+ 
+@@ -878 +878,5 @@ disable_plugins = false               # 完全隐藏钩子/插件 UI
+ 项目和用户条目会替换同名的低优先级条目。插件条目只会添加本地文件尚未定义的名称，因此本地 `lsp.json` 始终优先于插件。只有在插件受信任后才会加载插件 LSP 服务器（见[插件](09-plugins.md)）。
++
++## 保存配置与符号链接
++
++通过设置界面保存用户配置时，如果 `~/.grok/config.toml` 本身是符号链接，会原子更新链接目标并保留链接；若链接目标尚不存在，则创建该目标。项目配置文件的末端符号链接出于安全考虑会被替换为普通文件。无法解析的用户配置不会被覆盖。
