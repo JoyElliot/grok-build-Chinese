@@ -1,0 +1,25 @@
+{
+  "files": {
+    "Cargo.lock": {
+      "conflicts": {
+        "0": {"text": " \"xai-grok-product\",\n \"xai-grok-sampling-types\",\n"},
+        "1": {"choice": "ours"},
+        "2": {"choice": "theirs"}
+      }
+    },
+    "crates/codegen/xai-grok-agent/src/prompt/prompt_encrypted.rs": {
+      "conflicts": {"0": {"choice": "theirs"}},
+      "review_note": "Generated prompt must be regenerated from merged plaintext before candidate acceptance."
+    },
+    "crates/codegen/xai-grok-agent/src/prompt/template.rs": {
+      "conflicts": {
+        "0": {"text": "    #[test]\n    fn test_compact_prompt_preserves_community_planning_language() {\n        assert!(COMPACT_SYSTEM_PROMPT.contains(\"For Chinese requests, use concise Simplified Chinese\"));\n        for status in [\"pending\", \"in_progress\", \"completed\", \"cancelled\"] {\n            assert!(COMPACT_SYSTEM_PROMPT.contains(status));\n        }\n    }\n\n"}
+      }
+    },
+    "crates/codegen/xai-grok-agent/templates/prompt.md": {
+      "conflicts": {
+        "0": {"text": "\n${%- if tools.by_kind.plan %}\n\n<planning_language>\nWhen using `${{ tools.by_kind.plan }}`, write all natural-language plan and task-list content—including plan titles, step text, update explanations, and progress summaries—in the same natural language as the user's request. If the user's request contains Chinese, or active instructions ask for Chinese, use concise Simplified Chinese and do not translate it into English. Preserve code identifiers, tool names, commands, paths, URLs, configuration keys, protocol fields and status values, symbols, product and proper names, and task IDs; keep canonical values such as `pending`, `in_progress`, `completed`, and `cancelled` verbatim.\n</planning_language>\n${%- endif %}\n"}
+      }
+    }
+  }
+}
