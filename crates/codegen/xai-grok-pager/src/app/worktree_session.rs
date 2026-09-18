@@ -284,11 +284,21 @@ pub(crate) async fn resume_session_into_worktree(
 
 /// Append the worktree location to a failure that happened after the worktree was created, so
 /// the caller can reclaim it.
-pub(crate) fn note_orphaned_worktree(message: &str, worktree_root: &Path) -> String {
-    format!(
-        "{message} (worktree {} was created and is still on disk; remove it with `grok worktree rm`)",
-        worktree_root.display()
-    )
+pub(crate) fn note_orphaned_worktree(
+    message: &str,
+    worktree_root: &Path,
+    locale: &crate::locale::LocaleContext,
+) -> String {
+    // Substitute owned command chrome before the opaque path; never rescan the
+    // error or path for placeholders supplied by the caller.
+    let suffix = locale
+        .named_text(
+            "session.worktree.orphaned",
+            " (worktree {path} was created and is still on disk; remove it with `{command} worktree rm`)",
+        )
+        .replace("{command}", xai_grok_product::CLI_NAME)
+        .replace("{path}", &worktree_root.display().to_string());
+    format!("{message}{suffix}")
 }
 
 #[cfg(test)]
@@ -411,9 +421,38 @@ mod tests {
 
     #[test]
     fn orphan_note_names_the_path() {
-        let msg = note_orphaned_worktree("Couldn't create session: boom", Path::new("/wt/q"));
+        let msg = note_orphaned_worktree(
+            "Couldn't create session: boom",
+            Path::new("/wt/q"),
+            &crate::locale::LocaleContext::default(),
+        );
         assert!(msg.starts_with("Couldn't create session: boom"));
         assert!(msg.contains("/wt/q"));
-        assert!(msg.contains("grok worktree rm"));
+        assert!(msg.contains("grok-zh worktree rm"));
+    }
+
+    #[test]
+    fn zh_localization_review135_orphan_hint_preserves_opaque_values() {
+        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let error = "provider says {path}: literal {command}";
+        let path = Path::new("/wt/中文 {command}");
+        for locale in [&zh, &LocaleContext::default()] {
+            let output = note_orphaned_worktree(error, path, locale);
+            assert!(output.starts_with(error));
+            assert!(output.contains(&path.display().to_string()));
+            assert!(output.contains("`grok-zh worktree rm`"));
+            assert!(!output.contains("`grok worktree rm`"));
+        }
+        assert_eq!(
+            note_orphaned_worktree(error, path, &zh),
+            format!(
+                "{error}（工作树 {} 已创建且仍保留在磁盘上；可用 `grok-zh worktree rm` 删除）",
+                path.display()
+            )
+        );
     }
 }

@@ -2028,7 +2028,11 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
         ),
     };
     let msg = match orphaned_worktree_root {
-        Some(root) => crate::app::worktree_session::note_orphaned_worktree(&reason, &root),
+        Some(root) => crate::app::worktree_session::note_orphaned_worktree(
+            &reason,
+            &root,
+            app.locale.as_ref(),
+        ),
         None => reason,
     };
     let is_orphan = app

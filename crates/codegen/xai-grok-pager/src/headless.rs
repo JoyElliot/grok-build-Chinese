@@ -686,6 +686,7 @@ async fn open_session_in_new_worktree(
     cwd: &Path,
     spec: &WorktreeSpec,
     session_id: Option<&str>,
+    locale: &crate::locale::LocaleContext,
 ) -> anyhow::Result<OpenedSession> {
     let created = create_worktree(acp_tx, cwd, spec, &new_worktree_id(session_id))
         .await
@@ -703,7 +704,7 @@ async fn open_session_in_new_worktree(
     opened.map_err(|e| {
         anyhow::anyhow!(
             "{}",
-            note_orphaned_worktree(&e.to_string(), &created.worktree_root)
+            note_orphaned_worktree(&e.to_string(), &created.worktree_root, locale)
         )
     })
 }
@@ -748,7 +749,7 @@ async fn resume_session_in_new_worktree(
     .map_err(|e| {
         anyhow::anyhow!(
             "{}",
-            note_orphaned_worktree(&e.to_string(), &resumed.worktree_root)
+            note_orphaned_worktree(&e.to_string(), &resumed.worktree_root, locale)
         )
     })
 }
@@ -1088,10 +1089,17 @@ pub async fn run_single_turn(
     xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::SessionCreate);
     let opened = match (materialized, worktree.as_ref()) {
         (MaterializedStartup::NewAuto, Some(spec)) => {
-            open_session_in_new_worktree(&acp_tx, &cwd, spec, None).await
+            open_session_in_new_worktree(&acp_tx, &cwd, spec, None, options.locale.as_ref()).await
         }
         (MaterializedStartup::NewWithId { session_id }, Some(spec)) => {
-            open_session_in_new_worktree(&acp_tx, &cwd, spec, Some(&session_id)).await
+            open_session_in_new_worktree(
+                &acp_tx,
+                &cwd,
+                spec,
+                Some(&session_id),
+                options.locale.as_ref(),
+            )
+            .await
         }
         (
             MaterializedStartup::Resume {

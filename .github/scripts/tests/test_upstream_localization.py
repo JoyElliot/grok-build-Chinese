@@ -85,10 +85,37 @@ class UpstreamLocalizationTests(unittest.TestCase):
             "tool.error.fetch_failed", "tool.error.list_directory_failed", "btw.images.omitted_all",
             "btw.images.omitted_some", "btw.no_response", "session.usage.unsupported",
             "session.usage.invalid_response", "editor.error.invalid_command",
-            "slash.command.goal.error.mid_text", "slash.command.theme.error.none_available",
+            "slash.command.goal.error.mid_text", "slash.command.theme.error.none_available", "session.worktree.orphaned",
         ):
             with self.subTest(key=key):
                 self.assertRegex(metadata[key], r"[\u3400-\u9fff]")
+
+
+    def test_literal_named_ui_keys_exist_in_a_chinese_catalog(self):
+        folder = CODEGEN / "xai-grok-locale/locales"
+        keys = set(load_json(folder / "zh-CN.json")) | set(load_json(folder / "zh-CN-metadata.json"))
+        pattern = re.compile(r'\.named_(?:static_)?text\(\s*"([^"\n]+)"\s*,')
+        missing = []
+        calls = 0
+        for path in sorted(CODEGEN.glob("*/src/**/*.rs")):
+            text = path.read_text(encoding="utf-8")
+            for match in pattern.finditer(text):
+                calls += 1
+                if match.group(1) not in keys:
+                    line = text.count("\n", 0, match.start()) + 1
+                    missing.append(f"{path.relative_to(ROOT)}:{line}: {match.group(1)}")
+        self.assertGreater(calls, 500, "The scan must actually visit the shipped UI source")
+        self.assertEqual(missing, [], "Unknown literal UI keys fall back to English")
+
+
+    def test_literal_key_guard_runs_for_source_only_changes(self):
+        workflow = (ROOT / ".github/workflows/upstream-localization.yml").read_text(encoding="utf-8")
+        for event in ("pull_request", "push"):
+            match = re.search(rf"^  {event}:\n(.*?)(?=^  [a-z_]+:|^permissions:)",
+                              workflow, re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(match, f"Missing {event} trigger")
+            self.assertIn("'crates/codegen/*/src/**'", match.group(1),
+                          "Literal-key checks must not depend on a simultaneous catalog edit")
 
 
     def test_shell_test_support_forwards_workspace_fixture_feature(self):

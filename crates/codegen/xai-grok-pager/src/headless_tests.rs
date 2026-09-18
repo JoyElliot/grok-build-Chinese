@@ -320,9 +320,15 @@ async fn worktree_create_opens_session_at_worktree_subdirectory() {
     );
     let spec = WorktreeSpec::from_cli(Some("fix"), Some("origin/main")).unwrap();
 
-    let opened = open_session_in_new_worktree(&tx, &launch_cwd, &spec, None)
-        .await
-        .unwrap();
+    let opened = open_session_in_new_worktree(
+        &tx,
+        &launch_cwd,
+        &spec,
+        None,
+        &crate::locale::LocaleContext::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(opened.session_id.0.as_ref(), "sess-new");
     assert_eq!(opened.cwd, wt_root.path().join("crates").join("pager"));
@@ -365,10 +371,15 @@ async fn worktree_create_with_session_id_names_worktree_and_session() {
     );
     let sid = "2d3c6b3e-3d43-4f0a-9d2e-2b6d1b6a9c11";
 
-    let opened =
-        open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), Some(sid))
-            .await
-            .unwrap();
+    let opened = open_session_in_new_worktree(
+        &tx,
+        source.path(),
+        &WorktreeSpec::default(),
+        Some(sid),
+        &crate::locale::LocaleContext::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(opened.session_id.0.as_ref(), sid);
     assert_eq!(opened.cwd, wt_root.path());
@@ -406,10 +417,16 @@ async fn worktree_create_failure_is_reported_before_any_session_opens() {
         ),
     ] {
         let (tx, log) = spawn_fake_agent(reply, Ok("never"));
-        let err = open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), None)
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = open_session_in_new_worktree(
+            &tx,
+            source.path(),
+            &WorktreeSpec::default(),
+            None,
+            &crate::locale::LocaleContext::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("couldn't create worktree"), "{err}");
         assert!(err.contains(expect), "{err}");
         assert!(log.lock().unwrap().new_sessions.is_empty());
@@ -425,14 +442,20 @@ async fn worktree_create_then_session_failure_names_the_orphaned_worktree() {
         Err("agent refused"),
     );
 
-    let err = open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), None)
-        .await
-        .unwrap_err()
-        .to_string();
+    let err = open_session_in_new_worktree(
+        &tx,
+        source.path(),
+        &WorktreeSpec::default(),
+        None,
+        &crate::locale::LocaleContext::default(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
 
     assert!(err.contains("agent refused"), "{err}");
     assert!(err.contains(&wt_root.path().display().to_string()), "{err}");
-    assert!(err.contains("grok worktree rm"), "{err}");
+    assert!(err.contains("grok-zh worktree rm"), "{err}");
 }
 
 #[tokio::test]

@@ -3465,5 +3465,6 @@
   "session.usage.invalid_response": "会话用量响应无效",
   "session.usage.unsupported": "当前智能体版本不支持此功能",
   "btw.no_response": "未收到回复",
-  "editor.error.invalid_command": "编辑器命令无效"
+  "editor.error.invalid_command": "编辑器命令无效",
+  "session.worktree.orphaned": "（工作树 {path} 已创建且仍保留在磁盘上；可用 `{command} worktree rm` 删除）"
 }

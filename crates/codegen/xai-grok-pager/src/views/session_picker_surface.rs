@@ -138,7 +138,7 @@ pub(crate) fn render_session_picker_search_bar_with_locale(
     locale: Option<&crate::locale::LocaleContext>,
 ) {
     let label = locale
-        .map(|l| l.named_static_text("picker.search_label", SESSION_SEARCH_LABEL))
+        .map(|l| l.named_static_text("picker.search.label", SESSION_SEARCH_LABEL))
         .unwrap_or(SESSION_SEARCH_LABEL);
     crate::views::picker::render_picker_search_bar_with_label_and_locale(
         buf,
@@ -529,5 +529,34 @@ mod tests {
             })
         });
         assert!(labeled, "focused label must match the modal title color");
+    }
+
+    #[test]
+    fn zh_localization_review135_session_search_uses_existing_catalog_keys() {
+        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let theme = Theme::groknight();
+        let area = Rect::new(0, 0, 80, 1);
+        for active in [false, true] {
+            let mut state = crate::views::picker::PickerState::default();
+            state.search_active = active;
+            if active {
+                state.set_query("literal {path}");
+            }
+            let mut buf = Buffer::empty(area);
+            render_session_picker_search_bar_with_locale(&mut buf, area, &theme, &state, Some(&zh));
+            let text = row_text(&buf);
+            assert!(text.contains("搜索："), "{text:?}");
+            assert!(!text.contains(" search:"), "{text:?}");
+            if active {
+                assert!(text.contains("literal {path}"), "{text:?}");
+            } else {
+                assert!(text.contains("/ 开始搜索"), "{text:?}");
+                assert!(!text.contains("to search"), "{text:?}");
+            }
+        }
     }
 }

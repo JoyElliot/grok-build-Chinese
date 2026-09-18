@@ -473,7 +473,7 @@ pub(crate) fn render_picker_search_bar_with_label_and_locale(
     locale: Option<&LocaleContext>,
 ) {
     let hint = locale
-        .map(|l| l.named_static_text("picker.search_hint", SEARCH_BAR_HINT))
+        .map(|l| l.named_static_text("picker.search.hint", SEARCH_BAR_HINT))
         .unwrap_or(SEARCH_BAR_HINT);
     render_line_editor_search_bar_with_label_and_hint(
         buf,
