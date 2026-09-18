@@ -23,11 +23,11 @@ jobs:
           python3 - <<'PY'
           import json, os, pathlib, subprocess
           root = pathlib.Path.cwd()
-          base = '8290885be7635304bb5e18b89ee24b9b572579ac'
+          base = '5a89420a8f96cce7868a3204981f81dfe01ec13a'
           bundle_base = '50f53f06bab8309cb8299a50cd2751deb26db726'
-          tree = '967668486c5970b3601961e3426f0f9882068077'
+          tree = 'ab41e63adb89f6ffddc0ed945d2b7b03d931682f'
           branch = 'refs/heads/sync/upstream-1.0.35-reviewed'
-          patches = ['fix-review135-round9.patch', 'fix-review135-round10.patch', 'fix-review135-round11-test.patch']
+          patches = ['fix-review135-round12.patch']
           def git(*args, cwd=root):
               return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
           remote = git('ls-remote', '--heads', 'origin', branch).split()[0]
@@ -45,7 +45,7 @@ jobs:
               assert git('write-tree', cwd=candidate) == tree, 'Reviewed tree mismatch'
               assert not git('diff', '--cached', '--name-only', '--', '.github/workflows'), 'Workflow changes must use the authorized connector'
               git('-c', 'user.name=ChatGPT Review', '-c', 'user.email=chatgpt@localhost',
-                  'commit', '-m', '复查修复工作树社区命令、搜索框中文键与防漏翻译门禁', cwd=candidate)
+                  'commit', '-m', '修复搜索框中文回归测试的导入、闲置状态及宽字符断言', cwd=candidate)
           commit = git('rev-parse', 'HEAD', cwd=candidate)
           assert git('show', '-s', '--format=%T', commit, cwd=candidate) == tree
           git('merge-base', '--is-ancestor', 'a28ee2b2063426e8816e380ccea528b9de95e5da', commit, cwd=candidate)
