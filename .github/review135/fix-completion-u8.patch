@@ -1,0 +1,231 @@
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.31.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.31.zh-CN.json
+new file mode 100644
+index 00000000..5b6defc4
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.31.zh-CN.json
+@@ -0,0 +1,37 @@
++[
++  {
++    "category": "fixes",
++    "description": "回滚区中**折叠的子智能体组**现在会正确标注运行中和已完成的数量。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**仪表盘搜索与恢复会话选择器**现在会明确标识当前文本输入区域，并在搜索后恢复列表选择。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**停靠面板分区**通过点击折叠后，不再残留选中高亮。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "标题栏和仪表盘中的**工作树路径**不再显示多余后缀。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "带有较长服务器前缀的 **MCP 工具**现在会被保留，不再被静默丢弃。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**轮次取消提示**现在会正确显示取消原因，不再总是标注为用户取消。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "标题栏中的**长路径**现在始终缩短为最后两个路径部分。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.31.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.31.zh-CN.md
+new file mode 100644
+index 00000000..7d6d74b1
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.31.zh-CN.md
+@@ -0,0 +1,11 @@
++# 1.0.31 — 2026-09-13
++
++## Bug 修复
++
++- 回滚区中**折叠的子智能体组**现在会正确标注运行中和已完成的数量。
++- **仪表盘搜索与恢复会话选择器**现在会明确标识当前文本输入区域，并在搜索后恢复列表选择。
++- **停靠面板分区**通过点击折叠后，不再残留选中高亮。
++- 标题栏和仪表盘中的**工作树路径**不再显示多余后缀。
++- 带有较长服务器前缀的 **MCP 工具**现在会被保留，不再被静默丢弃。
++- **轮次取消提示**现在会正确显示取消原因，不再总是标注为用户取消。
++- 标题栏中的**长路径**现在始终缩短为最后两个路径部分。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.32.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.32.zh-CN.json
+new file mode 100644
+index 00000000..3e539145
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.32.zh-CN.json
+@@ -0,0 +1,17 @@
++[
++  {
++    "category": "fixes",
++    "description": "来自 `x.ai/plugins/list` 和 `x.ai/skills/*` 的**插件与技能列表**现在即使在首个会话建立前，也会反映最新的 config.toml。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "修复 Windows ARM64 构建在首次 TLS 握手时发生的**崩溃**。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "在计划审批期间输入的 **`/feedback` 等斜杠命令**现在会正确执行。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.32.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.32.zh-CN.md
+new file mode 100644
+index 00000000..fb50bea5
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.32.zh-CN.md
+@@ -0,0 +1,7 @@
++# 1.0.32 — 2026-09-14
++
++## Bug 修复
++
++- 来自 `x.ai/plugins/list` 和 `x.ai/skills/*` 的**插件与技能列表**现在即使在首个会话建立前，也会反映最新的 config.toml。
++- 修复 Windows ARM64 构建在首次 TLS 握手时发生的**崩溃**。
++- 在计划审批期间输入的 **`/feedback` 等斜杠命令**现在会正确执行。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.33.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.33.zh-CN.json
+new file mode 100644
+index 00000000..1d7ec92f
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.33.zh-CN.json
+@@ -0,0 +1,77 @@
++[
++  {
++    "category": "fixes",
++    "description": "修复在 macOS 粘贴图片时可能附加错误图片的问题。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**MCP 工具结果**现在会包含服务器提供的结构化 JSON 数据。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**直接列出的 MCP 工具调用**现在会显示名称、参数以及错误信息。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "父会话关闭后，**后台子智能体任务**现在会正确显示为已取消。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "所有子智能体完成后，子智能体停靠面板不再显示无法点击的完成数量行。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "取消或超时的 MCP 工具调用现在会通知服务器停止工作，避免继续在后台执行。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**`/rewind`** 不再因会话清理后缺少旧压缩检查点而失败；只要求目标的基准检查点存在。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "大型技能文件现在与其他文件读取一样，最多读取 25,000 个 Token；超大的技能正文会显示截断说明，不再淹没上下文。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "长期运行的会话不再在 30 天清理过程中丢失旧压缩检查点或已转存的提示。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "当定时任务、监控或工作流仍在运行时，不再自动显示恢复上下文的会话回顾。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "精简模式中确认 `/delete` 或 `/exit` 后，现在会立即打开新的空会话，不再看起来卡住。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "精简模式中执行 `/new` 后再恢复会话，现在会正确重新加载历史，不再显示错误会话。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "不需要参数的 MCP 工具不再在权限面板中显示多余的 `{}` 行。",
++    "breaking_change": false
++  },
++  {
++    "category": "features",
++    "description": "**输入框底栏**现在会在 SSH 无法使用 Cmd+Enter 时显示 Alt+Enter 换行快捷键。",
++    "breaking_change": false
++  },
++  {
++    "category": "fixes",
++    "description": "**Windows 上的 `grok clone`** 不再因仓库 Git 配置中包含反斜杠或引号而失败。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.33.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.33.zh-CN.md
+new file mode 100644
+index 00000000..1ef5ba82
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.33.zh-CN.md
+@@ -0,0 +1,22 @@
++# 1.0.33 — 2026-09-15
++
++## 新功能
++
++- **MCP 工具结果**现在会包含服务器提供的结构化 JSON 数据。
++- **输入框底栏**现在会在 SSH 无法使用 Cmd+Enter 时显示 Alt+Enter 换行快捷键。
++
++## Bug 修复
++
++- 修复在 macOS 粘贴图片时可能附加错误图片的问题。
++- **直接列出的 MCP 工具调用**现在会显示名称、参数以及错误信息。
++- 父会话关闭后，**后台子智能体任务**现在会正确显示为已取消。
++- 所有子智能体完成后，子智能体停靠面板不再显示无法点击的完成数量行。
++- 取消或超时的 MCP 工具调用现在会通知服务器停止工作，避免继续在后台执行。
++- **`/rewind`** 不再因会话清理后缺少旧压缩检查点而失败；只要求目标的基准检查点存在。
++- 大型技能文件现在与其他文件读取一样，最多读取 25,000 个 Token；超大的技能正文会显示截断说明，不再淹没上下文。
++- 长期运行的会话不再在 30 天清理过程中丢失旧压缩检查点或已转存的提示。
++- 当定时任务、监控或工作流仍在运行时，不再自动显示恢复上下文的会话回顾。
++- 精简模式中确认 `/delete` 或 `/exit` 后，现在会立即打开新的空会话，不再看起来卡住。
++- 精简模式中执行 `/new` 后再恢复会话，现在会正确重新加载历史，不再显示错误会话。
++- 不需要参数的 MCP 工具不再在权限面板中显示多余的 `{}` 行。
++- **Windows 上的 `grok clone`** 不再因仓库 Git 配置中包含反斜杠或引号而失败。
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.34.zh-CN.json b/crates/codegen/xai-grok-shell/changelogs/1.0.34.zh-CN.json
+new file mode 100644
+index 00000000..8e6c68bb
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.34.zh-CN.json
+@@ -0,0 +1,7 @@
++[
++  {
++    "category": "fixes",
++    "description": "**Markdown 标题**现在会正确应用主题颜色。",
++    "breaking_change": false
++  }
++]
+diff --git a/crates/codegen/xai-grok-shell/changelogs/1.0.34.zh-CN.md b/crates/codegen/xai-grok-shell/changelogs/1.0.34.zh-CN.md
+new file mode 100644
+index 00000000..5fafdf88
+--- /dev/null
++++ b/crates/codegen/xai-grok-shell/changelogs/1.0.34.zh-CN.md
+@@ -0,0 +1,5 @@
++# 1.0.34 — 2026-09-16
++
++## Bug 修复
++
++- **Markdown 标题**现在会正确应用主题颜色。
