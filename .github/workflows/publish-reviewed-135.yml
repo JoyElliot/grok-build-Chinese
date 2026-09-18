@@ -54,8 +54,20 @@ jobs:
           mkdir -p "$RUNNER_TEMP/review-evidence"
           git merge --no-commit --no-ff a28ee2b2063426e8816e380ccea528b9de95e5da > "$RUNNER_TEMP/review-evidence/merge.log" 2>&1 || test -n "$(git ls-files -u)"
           RUSTUP_TOOLCHAIN=1.94.0 python3 "$RUNNER_TEMP/review-resolutions/reconstruct.py" "$RUNNER_TEMP/candidate" 2>&1 | tee "$RUNNER_TEMP/review-evidence/reconstruct.log"
+          python3 - <<'PY'
+          from pathlib import Path
+          files = ['crates/codegen/xai-grok-pager/src/app/acp_handler/tests/plan_mode.rs', 'crates/codegen/xai-grok-pager/src/app/acp_handler/tests/session_routing.rs']
+          files += [f'crates/codegen/xai-grok-shell/changelogs/1.0.{v}.md' for v in range(25, 35)]
+          files += ['crates/codegen/xai-grok-shell/changelogs/1.0.35.zh-CN.md']
+          for name in files:
+              p = Path(name)
+              p.write_text(p.read_text().rstrip('\n') + '\n')
+          PY
+          git add -A
+          RUSTUP_TOOLCHAIN=1.94.0 cargo fmt --all -- --check
           git diff --cached --check
-          test "$(git write-tree)" = 701ad58038673b6b5635f741f5ac38596d47725a
+          test "$(git write-tree)" = 6aff111193c9cb047470433ea2e2ef822ca5a918
+          git write-tree > "$RUNNER_TEMP/review-evidence/final-tree.txt"
       - name: Publish source branch without touching zh-dev
         id: publish
         shell: bash
