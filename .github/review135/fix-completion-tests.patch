@@ -1,0 +1,109 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/session_events.rs b/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/session_events.rs
+index a1beb122..b0869e34 100644
+--- a/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/session_events.rs
++++ b/crates/codegen/xai-grok-pager/src/app/acp_handler/tests/session_events.rs
+@@ -1166,3 +1166,3 @@
+         let child_sid = "child-hook";
+-        agent.insert_subagent_view(child_sid.into(), Box::new(make_agent(Some(child_sid))));
++        agent.insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+         let update = XaiSessionUpdate::HookAnnotation {
+diff --git a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
+index 45b238ff..1eaa8bea 100644
+--- a/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
++++ b/crates/codegen/xai-grok-pager/src/app/agent_view/session.rs
+@@ -2695,3 +2695,3 @@ mod recursive_locale_tests {
+         parent.set_locale_recursive(&zh_locale());
+-        parent.insert_subagent_view("child".into(), Box::new(make_agent()));
++        parent.insert_test_child("child".into(), Box::new(make_agent()));
+ 
+diff --git a/crates/codegen/xai-grok-pager/src/app/modals.rs b/crates/codegen/xai-grok-pager/src/app/modals.rs
+index ee0cfe3d..8e3800b2 100644
+--- a/crates/codegen/xai-grok-pager/src/app/modals.rs
++++ b/crates/codegen/xai-grok-pager/src/app/modals.rs
+@@ -2727,3 +2727,3 @@ mod session_picker_delete_tests {
+         let mut buf = ratatui::buffer::Buffer::empty(area);
+-        agent.draw_active_modal(area, &mut buf, theme, false);
++        agent.draw_active_modal(area, &mut buf, theme, false, None);
+         let content = (0..buf.area.height).fold(String::new(), |mut text, y| {
+@@ -2747,3 +2747,3 @@ mod session_picker_delete_tests {
+         let mut listed = ratatui::buffer::Buffer::empty(area);
+-        agent.draw_active_modal(area, &mut listed, theme, false);
++        agent.draw_active_modal(area, &mut listed, theme, false, None);
+         let listed_text = (0..listed.area.height).fold(String::new(), |mut text, y| {
+@@ -2829,3 +2829,3 @@ mod session_picker_delete_tests {
+                     let mut buf = ratatui::buffer::Buffer::empty(area);
+-                    agent.draw_active_modal(area, &mut buf, theme, false);
++                    agent.draw_active_modal(area, &mut buf, theme, false, None);
+                     let content = (0..area.height).fold(String::new(), |mut text, y| {
+diff --git a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/other_tests.rs b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/other_tests.rs
+index 7afc9d5a..4ccbdbbe 100644
+--- a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/other_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/other_tests.rs
+@@ -13,2 +13,3 @@ fn context(mode: DisplayMode) -> BlockContext {
+         cwd: None,
++        locale: Default::default(),
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message_tests.rs b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message_tests.rs
+index 851c6fc8..7bbfa002 100644
+--- a/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/sent_message_tests.rs
+@@ -70,3 +70,3 @@ fn rejected(input: Option<SentMessageInput>) -> SentMessageToolCallBlock {
+         SentMessagePresentation::Rejected {
+-            reason: REJECTED_REASON.to_owned(),
++            reason: REJECTED_REASON.into(),
+         },
+@@ -79,3 +79,3 @@ fn unconfirmed(input: Option<SentMessageInput>) -> SentMessageToolCallBlock {
+         SentMessagePresentation::Unconfirmed {
+-            reason: UNCONFIRMED_REASON.to_owned(),
++            reason: UNCONFIRMED_REASON.into(),
+         },
+@@ -216,4 +216,3 @@ fn zh_localization_sent_message_translates_fixed_chrome_only() {
+         SentMessagePresentation::Sent,
+-        Some("sub-123".into()),
+-        Some("literal payload".into()),
++        unresolved("sub-123", "literal payload"),
+     );
+@@ -234,3 +233,3 @@ fn zh_localization_sent_message_translates_fixed_chrome_only() {
+         rendered,
+-        "已向子智能体发送消息\n\n子智能体 ID：sub-123\n\n消息：\nliteral payload"
++        "消息 已发送给 子智能体 sub-123 · 引导\n\n子智能体 ID：sub-123\n\nliteral payload"
+     );
+@@ -246,3 +245,3 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
+     let fallback =
+-        SentMessageToolCallBlock::new(SentMessagePresentation::RejectedUnavailable, None, None);
++        SentMessageToolCallBlock::new(SentMessagePresentation::RejectedUnavailable, None);
+     let fallback_text = fallback
+@@ -263,3 +262,2 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
+         None,
+-        None,
+     );
+@@ -282,3 +280,2 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
+         None,
+-        None,
+     );
+@@ -298,3 +295,2 @@ fn zh_localization_translates_only_product_owned_delivery_reasons() {
+         None,
+-        None,
+     );
+@@ -424,3 +420,3 @@ fn expanded_shows_header_suffixes_and_only_the_id_line_when_unresolved() {
+                 SentMessagePresentation::Rejected {
+-                    reason: "\nfirst line\nsecond line".to_owned(),
++                    reason: "\nfirst line\nsecond line".into(),
+                 },
+diff --git a/crates/codegen/xai-grok-pager/src/views/status_line/segments_tests.rs b/crates/codegen/xai-grok-pager/src/views/status_line/segments_tests.rs
+index 423c77a6..99b3e273 100644
+--- a/crates/codegen/xai-grok-pager/src/views/status_line/segments_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/views/status_line/segments_tests.rs
+@@ -124,2 +124,3 @@ fn turn_timer(secs: u64) -> String {
+         &[StatusLineItem::TurnTimer],
++        None,
+     )
+diff --git a/crates/codegen/xai-grok-pager/src/views/turn_status.rs b/crates/codegen/xai-grok-pager/src/views/turn_status.rs
+index 96ddf27f..b6fc5a0d 100644
+--- a/crates/codegen/xai-grok-pager/src/views/turn_status.rs
++++ b/crates/codegen/xai-grok-pager/src/views/turn_status.rs
+@@ -1091,3 +1091,3 @@ mod tests {
+         };
+-        let (_, label, _) = compute_activity(&theme, &state, &None, false, false);
++        let (_, label, _) = compute_activity(&theme, &state, &None, false, false, None);
+         assert_eq!(label, "Switching model…");
