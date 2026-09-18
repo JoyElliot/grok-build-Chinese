@@ -1,0 +1,254 @@
+diff --git a/.github/scripts/tests/test_upstream_localization.py b/.github/scripts/tests/test_upstream_localization.py
+index 030f6fd8..b4541b9c 100644
+--- a/.github/scripts/tests/test_upstream_localization.py
++++ b/.github/scripts/tests/test_upstream_localization.py
+@@ -85,7 +85,7 @@ class UpstreamLocalizationTests(unittest.TestCase):
+             "tool.error.fetch_failed", "tool.error.list_directory_failed", "btw.images.omitted_all",
+             "btw.images.omitted_some", "btw.no_response", "session.usage.unsupported",
+             "session.usage.invalid_response", "editor.error.invalid_command",
+-            "slash.command.goal.error.mid_text", "slash.command.theme.error.none_available",
++            "slash.command.goal.error.mid_text", "slash.command.theme.error.none_available", "session.worktree.orphaned",
+         ):
+             with self.subTest(key=key):
+                 self.assertRegex(metadata[key], r"[\u3400-\u9fff]")
+diff --git a/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json b/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
+index 747894f4..a2eda472 100644
+--- a/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
++++ b/crates/codegen/xai-grok-locale/locales/zh-CN-metadata.json
+@@ -3465,5 +3465,6 @@
+   "session.usage.invalid_response": "会话用量响应无效",
+   "session.usage.unsupported": "当前智能体版本不支持此功能",
+   "btw.no_response": "未收到回复",
+-  "editor.error.invalid_command": "编辑器命令无效"
++  "editor.error.invalid_command": "编辑器命令无效",
++  "session.worktree.orphaned": "（工作树 {path} 已创建且仍保留在磁盘上；可用 `{command} worktree rm` 删除）"
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+index 4a5b4ff2..fa57bff8 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs
+@@ -2028,7 +2028,11 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
+         ),
+     };
+     let msg = match orphaned_worktree_root {
+-        Some(root) => crate::app::worktree_session::note_orphaned_worktree(&reason, &root),
++        Some(root) => crate::app::worktree_session::note_orphaned_worktree(
++            &reason,
++            &root,
++            app.locale.as_ref(),
++        ),
+         None => reason,
+     };
+     let is_orphan = app
+diff --git a/crates/codegen/xai-grok-pager/src/app/worktree_session.rs b/crates/codegen/xai-grok-pager/src/app/worktree_session.rs
+index 84ed7fc0..03a43bd7 100644
+--- a/crates/codegen/xai-grok-pager/src/app/worktree_session.rs
++++ b/crates/codegen/xai-grok-pager/src/app/worktree_session.rs
+@@ -284,11 +284,21 @@ pub(crate) async fn resume_session_into_worktree(
+ 
+ /// Append the worktree location to a failure that happened after the worktree was created, so
+ /// the caller can reclaim it.
+-pub(crate) fn note_orphaned_worktree(message: &str, worktree_root: &Path) -> String {
+-    format!(
+-        "{message} (worktree {} was created and is still on disk; remove it with `grok worktree rm`)",
+-        worktree_root.display()
+-    )
++pub(crate) fn note_orphaned_worktree(
++    message: &str,
++    worktree_root: &Path,
++    locale: &crate::locale::LocaleContext,
++) -> String {
++    // Substitute owned command chrome before the opaque path; never rescan the
++    // error or path for placeholders supplied by the caller.
++    let suffix = locale
++        .named_text(
++            "session.worktree.orphaned",
++            " (worktree {path} was created and is still on disk; remove it with `{command} worktree rm`)",
++        )
++        .replace("{command}", xai_grok_product::CLI_NAME)
++        .replace("{path}", &worktree_root.display().to_string());
++    format!("{message}{suffix}")
+ }
+ 
+ #[cfg(test)]
+@@ -411,9 +421,38 @@ mod tests {
+ 
+     #[test]
+     fn orphan_note_names_the_path() {
+-        let msg = note_orphaned_worktree("Couldn't create session: boom", Path::new("/wt/q"));
++        let msg = note_orphaned_worktree(
++            "Couldn't create session: boom",
++            Path::new("/wt/q"),
++            &crate::locale::LocaleContext::default(),
++        );
+         assert!(msg.starts_with("Couldn't create session: boom"));
+         assert!(msg.contains("/wt/q"));
+-        assert!(msg.contains("grok worktree rm"));
++        assert!(msg.contains("grok-zh worktree rm"));
++    }
++
++    #[test]
++    fn zh_localization_review135_orphan_hint_preserves_opaque_values() {
++        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
++        let zh = LocaleContext::new(ResolvedLocale {
++            locale: UiLocale::ZhCn,
++            source: LocaleSource::Cli,
++        });
++        let error = "provider says {path}: literal {command}";
++        let path = Path::new("/wt/中文 {command}");
++        for locale in [&zh, &LocaleContext::default()] {
++            let output = note_orphaned_worktree(error, path, locale);
++            assert!(output.starts_with(error));
++            assert!(output.contains(&path.display().to_string()));
++            assert!(output.contains("`grok-zh worktree rm`"));
++            assert!(!output.contains("`grok worktree rm`"));
++        }
++        assert_eq!(
++            note_orphaned_worktree(error, path, &zh),
++            format!(
++                "{error}（工作树 {} 已创建且仍保留在磁盘上；可用 `grok-zh worktree rm` 删除）",
++                path.display()
++            )
++        );
+     }
+ }
+diff --git a/crates/codegen/xai-grok-pager/src/headless.rs b/crates/codegen/xai-grok-pager/src/headless.rs
+index b6c8a039..08b289cc 100644
+--- a/crates/codegen/xai-grok-pager/src/headless.rs
++++ b/crates/codegen/xai-grok-pager/src/headless.rs
+@@ -686,6 +686,7 @@ async fn open_session_in_new_worktree(
+     cwd: &Path,
+     spec: &WorktreeSpec,
+     session_id: Option<&str>,
++    locale: &crate::locale::LocaleContext,
+ ) -> anyhow::Result<OpenedSession> {
+     let created = create_worktree(acp_tx, cwd, spec, &new_worktree_id(session_id))
+         .await
+@@ -703,7 +704,7 @@ async fn open_session_in_new_worktree(
+     opened.map_err(|e| {
+         anyhow::anyhow!(
+             "{}",
+-            note_orphaned_worktree(&e.to_string(), &created.worktree_root)
++            note_orphaned_worktree(&e.to_string(), &created.worktree_root, locale)
+         )
+     })
+ }
+@@ -748,7 +749,7 @@ async fn resume_session_in_new_worktree(
+     .map_err(|e| {
+         anyhow::anyhow!(
+             "{}",
+-            note_orphaned_worktree(&e.to_string(), &resumed.worktree_root)
++            note_orphaned_worktree(&e.to_string(), &resumed.worktree_root, locale)
+         )
+     })
+ }
+@@ -1088,10 +1089,17 @@ pub async fn run_single_turn(
+     xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::SessionCreate);
+     let opened = match (materialized, worktree.as_ref()) {
+         (MaterializedStartup::NewAuto, Some(spec)) => {
+-            open_session_in_new_worktree(&acp_tx, &cwd, spec, None).await
++            open_session_in_new_worktree(&acp_tx, &cwd, spec, None, options.locale.as_ref()).await
+         }
+         (MaterializedStartup::NewWithId { session_id }, Some(spec)) => {
+-            open_session_in_new_worktree(&acp_tx, &cwd, spec, Some(&session_id)).await
++            open_session_in_new_worktree(
++                &acp_tx,
++                &cwd,
++                spec,
++                Some(&session_id),
++                options.locale.as_ref(),
++            )
++            .await
+         }
+         (
+             MaterializedStartup::Resume {
+diff --git a/crates/codegen/xai-grok-pager/src/headless_tests.rs b/crates/codegen/xai-grok-pager/src/headless_tests.rs
+index 5e9ba449..bc3d9c94 100644
+--- a/crates/codegen/xai-grok-pager/src/headless_tests.rs
++++ b/crates/codegen/xai-grok-pager/src/headless_tests.rs
+@@ -320,9 +320,15 @@ async fn worktree_create_opens_session_at_worktree_subdirectory() {
+     );
+     let spec = WorktreeSpec::from_cli(Some("fix"), Some("origin/main")).unwrap();
+ 
+-    let opened = open_session_in_new_worktree(&tx, &launch_cwd, &spec, None)
+-        .await
+-        .unwrap();
++    let opened = open_session_in_new_worktree(
++        &tx,
++        &launch_cwd,
++        &spec,
++        None,
++        &crate::locale::LocaleContext::default(),
++    )
++    .await
++    .unwrap();
+ 
+     assert_eq!(opened.session_id.0.as_ref(), "sess-new");
+     assert_eq!(opened.cwd, wt_root.path().join("crates").join("pager"));
+@@ -365,10 +371,15 @@ async fn worktree_create_with_session_id_names_worktree_and_session() {
+     );
+     let sid = "2d3c6b3e-3d43-4f0a-9d2e-2b6d1b6a9c11";
+ 
+-    let opened =
+-        open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), Some(sid))
+-            .await
+-            .unwrap();
++    let opened = open_session_in_new_worktree(
++        &tx,
++        source.path(),
++        &WorktreeSpec::default(),
++        Some(sid),
++        &crate::locale::LocaleContext::default(),
++    )
++    .await
++    .unwrap();
+ 
+     assert_eq!(opened.session_id.0.as_ref(), sid);
+     assert_eq!(opened.cwd, wt_root.path());
+@@ -406,10 +417,16 @@ async fn worktree_create_failure_is_reported_before_any_session_opens() {
+         ),
+     ] {
+         let (tx, log) = spawn_fake_agent(reply, Ok("never"));
+-        let err = open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), None)
+-            .await
+-            .unwrap_err()
+-            .to_string();
++        let err = open_session_in_new_worktree(
++            &tx,
++            source.path(),
++            &WorktreeSpec::default(),
++            None,
++            &crate::locale::LocaleContext::default(),
++        )
++        .await
++        .unwrap_err()
++        .to_string();
+         assert!(err.contains("couldn't create worktree"), "{err}");
+         assert!(err.contains(expect), "{err}");
+         assert!(log.lock().unwrap().new_sessions.is_empty());
+@@ -425,14 +442,20 @@ async fn worktree_create_then_session_failure_names_the_orphaned_worktree() {
+         Err("agent refused"),
+     );
+ 
+-    let err = open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), None)
+-        .await
+-        .unwrap_err()
+-        .to_string();
++    let err = open_session_in_new_worktree(
++        &tx,
++        source.path(),
++        &WorktreeSpec::default(),
++        None,
++        &crate::locale::LocaleContext::default(),
++    )
++    .await
++    .unwrap_err()
++    .to_string();
+ 
+     assert!(err.contains("agent refused"), "{err}");
+     assert!(err.contains(&wt_root.path().display().to_string()), "{err}");
+-    assert!(err.contains("grok worktree rm"), "{err}");
++    assert!(err.contains("grok-zh worktree rm"), "{err}");
+ }
+ 
+ #[tokio::test]
