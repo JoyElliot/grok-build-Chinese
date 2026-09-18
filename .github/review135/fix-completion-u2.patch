@@ -1,0 +1,180 @@
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md b/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
+index 7ffcf8e6..07b0d65a 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/06-theming.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/06-theming.md)
++
+ Grok Build draws all TUI colors from a central theme. You can switch themes while Grok is running, follow your operating system's light or dark appearance, and adjust scrollback layout, animations, and block styling through configuration files.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/07-mcp-servers.md b/crates/codegen/xai-grok-pager/docs/user-guide/07-mcp-servers.md
+index 1b9c6837..ab4051ec 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/07-mcp-servers.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/07-mcp-servers.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/07-mcp-servers.md)
++
+ MCP (Model Context Protocol) servers extend Grok with external tool integrations. They let Grok interact with any service that implements the MCP standard.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md b/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md
+index 1c8d6734..a691e187 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/08-skills.md)
++
+ Skills are reusable prompt packages that extend Grok with task-specific instructions. They let you capture a repeatable procedure once, instead of re-explaining it each session. Startup discovery skips project skills and commands in untrusted folders.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/09-plugins.md b/crates/codegen/xai-grok-pager/docs/user-guide/09-plugins.md
+index 74d21961..d7f9994e 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/09-plugins.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/09-plugins.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/09-plugins.md)
++
+ A plugin bundles skills, slash commands, agents, hooks, and MCP servers into one installable unit. You get plugins from a marketplace, install the ones you want, and Grok loads what they add. To build and share your own, see [Create your own marketplace](#create-your-own-marketplace).
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md b/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
+index 9fa90a18..bab22ef6 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/10-hooks.md)
++
+ Hooks let you run a script or send an HTTP request at key moments in a Grok session. Use them to automate tasks, enforce safety checks, log activity, send notifications, and integrate your own tools.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md b/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md
+index 4e3bf802..1b2300bc 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/11-custom-models.md)
++
+ Grok connects to custom model endpoints for alternative providers, self-hosted models, and overriding built-in settings. This guide explains how to select models, configure endpoints, and integrate third-party providers.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md b/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md
+index 5fbad16b..2720475f 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/12-project-rules.md)
++
+ Project rules let you configure Grok per project or directory. By placing an AGENTS.md file in your repository, you can set coding conventions, build instructions, style guides, and any other instructions that Grok should follow when working in that codebase. Startup loading requires folder trust (`--trust` or an interactive grant).
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/13-memory.md b/crates/codegen/xai-grok-pager/docs/user-guide/13-memory.md
+index bd02b163..8f74e672 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/13-memory.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/13-memory.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/13-memory.md)
++
+ Memory lets Grok recall facts, decisions, and patterns from earlier sessions. Grok indexes the information you save and searches it automatically, so a new session can reuse relevant context.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md b/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md
+index 7ac6c4e4..e8f517d3 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/14-headless-mode.md)
++
+ Headless mode runs Grok non-interactively from the command line. It accepts a single prompt, executes it with full tool access, and returns the result. Use it to automate tasks, script workflows, build integrations, and parse output programmatically.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md b/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md
+index c025513e..ede203af 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/15-agent-mode.md)
++
+ Agent mode runs Grok as a long-lived server that clients talk to over [ACP](https://agentclientprotocol.com) (JSON-RPC). Use it from IDEs, SDKs, eval harnesses, and custom apps. For a one-shot prompt that prints and exits, use `grok -p` instead ([headless mode](14-headless-mode.md)).
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md b/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md
+index b59e9ff1..b5abc511 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/16-subagents.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/16-subagents.md)
++
+ Subagents are independent child sessions that handle tasks in parallel. Each subagent has its own context window, so the main agent can delegate work (research, implementation, testing, and code review) without consuming its own context. A subagent reports a summary back to the parent when it finishes.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md b/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md
+index c3d1aa99..54727d98 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/17-sessions.md)
++
+ Grok saves every conversation to disk automatically. Whether you work in the TUI, in headless mode, or over agent stdio, Grok records the exchange as a session. You can resume, rewind, or compact it. This document describes how to manage sessions.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md b/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md
+index f097cc59..6f0e8ffe 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/18-sandbox.md)
++
+ Sandbox mode restricts what the agent process and its spawned commands can access on your filesystem and network using OS-level kernel primitives (Landlock on Linux, Seatbelt on macOS). The kernel enforces these limits for the process lifetime.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/19-plan-mode.md b/crates/codegen/xai-grok-pager/docs/user-guide/19-plan-mode.md
+index c0c3614a..2a80710d 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/19-plan-mode.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/19-plan-mode.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/19-plan-mode.md)
++
+ Plan mode is a structured planning phase: the agent explores the codebase and designs an implementation approach before writing any code. Use it for tasks with genuine ambiguity about the right approach, where getting your input before coding prevents significant rework.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/20-background-tasks.md b/crates/codegen/xai-grok-pager/docs/user-guide/20-background-tasks.md
+index aa81a3ff..1c25fe28 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/20-background-tasks.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/20-background-tasks.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/20-background-tasks.md)
++
+ Grok runs long-lived processes without blocking the conversation. This document covers background commands, the `/loop` command, the `monitor` tool, and the scheduler.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/21-terminal-support.md b/crates/codegen/xai-grok-pager/docs/user-guide/21-terminal-support.md
+index c9165968..90aa6305 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/21-terminal-support.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/21-terminal-support.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/21-terminal-support.md)
++
+ Grok Build runs as a full-screen TUI. It relies on terminal support for color,
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md b/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md
+index 6bb08482..2246ac25 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/22-permissions-and-safety.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/22-permissions-and-safety.md)
++
+ Control what Grok can access and do: permission modes, allow/ask/deny rules, hooks, and the optional OS-level sandbox.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/23-dashboard.md b/crates/codegen/xai-grok-pager/docs/user-guide/23-dashboard.md
+index a70778c6..a78456af 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/23-dashboard.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/23-dashboard.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/23-dashboard.md)
++
+ The Agent Dashboard lists every top-level session in this pager process —
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md b/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
+index 8dfe218e..10066936 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/24-monitoring-usage.md)
++
+ > **Status: alpha.** The schema below is versioned (`grok_code.schema.version = v1`);
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/25-status-line.md b/crates/codegen/xai-grok-pager/docs/user-guide/25-status-line.md
+index 82da5ad4..50d5d246 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/25-status-line.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/25-status-line.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/25-status-line.md)
++
+ An optional row at the bottom of the pager — above the shortcuts bar in the full screen, under the prompt's info row in minimal mode — and disabled by default. It shows live session context, such as the model, context-window usage, cost, directory, and git worktree, or the output of any script you configure. Opt in with `[ui.status_line]` in `~/.grok/config.toml`.
