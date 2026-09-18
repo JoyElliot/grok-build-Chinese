@@ -1,5 +1,5 @@
 diff --git a/.github/workflows/upstream-localization.yml b/.github/workflows/upstream-localization.yml
- deleted file mode 100644
+deleted file mode 100644
 index 7f512562..00000000
 --- a/.github/workflows/upstream-localization.yml
 +++ /dev/null
