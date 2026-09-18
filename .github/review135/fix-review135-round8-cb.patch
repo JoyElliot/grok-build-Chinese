@@ -1,0 +1,293 @@
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
+index efc01f43..c477d159 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/prompt.rs
+@@ -212,13 +212,21 @@ pub(super) fn dispatch_execute_plan(
+         return vec![];
+     };
+     if !agent.session.state.is_idle() {
+-        agent.show_toast("Wait for the current turn to end before building the plan.");
++        let message = agent.scrollback.locale().named_static_text(
++            "plan.notice.busy_build",
++            "Wait for the current turn to end before building the plan.",
++        );
++        agent.show_toast(message);
+         return vec![];
+     }
+     // Shift+Tab / set_mode Off stages leave-Plan first. Approve must not
+     // start ExecutePlan while that switch can still clear last_plan.
+     if agent.plan_mode_pending == Some(false) {
+-        agent.show_toast(LEAVE_PLAN_BUILD_NOTICE);
++        let message = agent
++            .scrollback
++            .locale()
++            .named_static_text("plan.notice.switching_build", LEAVE_PLAN_BUILD_NOTICE);
++        agent.show_toast(message);
+         return vec![];
+     }
+     let prompt_id = uuid::Uuid::new_v4().to_string();
+@@ -279,17 +287,31 @@ pub(super) fn dispatch_revise_plan(app: &mut AppView, text: String) -> Vec<Effec
+     };
+     if has_post_turn_review && leave_plan_pending {
+         if let Some(agent) = get_active_agent_mut(app) {
+-            agent.show_toast(LEAVE_PLAN_REVISE_NOTICE);
++            let message = agent
++                .scrollback
++                .locale()
++                .named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE);
++            agent.show_toast(message);
+         } else {
+-            app.show_toast(LEAVE_PLAN_REVISE_NOTICE);
++            let message = app
++                .locale
++                .named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE);
++            app.show_toast(message);
+         }
+         return vec![];
+     }
+     if has_post_turn_review && build_in_flight {
+         if let Some(agent) = get_active_agent_mut(app) {
+-            agent.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
++            let message = agent
++                .scrollback
++                .locale()
++                .named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE);
++            agent.show_toast(message);
+         } else {
+-            app.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
++            let message = app
++                .locale
++                .named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE);
++            app.show_toast(message);
+         }
+         return vec![];
+     }
+@@ -750,12 +772,16 @@ pub(super) fn dispatch_send_prompt_submission(
+             agent.prompt.slash_controller.registry(),
+         )
+     {
++        let message = agent.scrollback.locale().named_static_text(
++            "slash.command.goal.error.mid_text",
++            crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE,
++        );
+         if screen_mode_is_minimal {
+-            agent.scrollback.push_block(RenderBlock::system(
+-                crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE.to_owned(),
+-            ));
++            agent
++                .scrollback
++                .push_block(RenderBlock::system(message.to_owned()));
+         } else {
+-            agent.show_toast(crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE);
++            agent.show_toast(message);
+         }
+         return prelude;
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mid_text_goal.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mid_text_goal.rs
+index 1d2827b7..bf1a87e0 100644
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mid_text_goal.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/mid_text_goal.rs
+@@ -149,3 +149,36 @@ fn mid_text_goal_in_minimal_is_a_system_line() {
+     assert!(toast_text(&app, id).is_none());
+     assert_eq!(MID_TEXT_GOAL_NOTICE, last_system_text(&app, id));
+ }
++
++#[test]
++fn zh_localization_review135_mid_text_goal_keeps_draft_in_both_screen_modes() {
++    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
++    let zh = LocaleContext::new(ResolvedLocale {
++        locale: UiLocale::ZhCn,
++        source: LocaleSource::Cli,
++    });
++    for minimal in [false, true] {
++        let mut app = test_app_with_agent();
++        if minimal {
++            app.screen_mode = crate::app::ScreenMode::Minimal;
++        }
++        let id = AgentId(0);
++        register_goal(&mut app, id);
++        let agent = test_agent_mut(&mut app, id);
++        agent.scrollback.set_locale(&zh);
++        agent.prompt.set_text(TESLA);
++        let effects = dispatch(Action::SendPrompt(TESLA.to_owned()), &mut app);
++        assert!(effects.is_empty());
++        let expected = "斜杠命令只能放在消息开头，请将 `/goal …` 移到最前面。";
++        if minimal {
++            assert_eq!(last_system_text(&app, id), expected);
++            assert!(toast_text(&app, id).is_none());
++        } else {
++            assert_eq!(toast_text(&app, id), Some(expected));
++            assert!(test_agent(&app, id).scrollback.is_empty());
++        }
++        assert_eq!(test_agent(&app, id).prompt.text(), TESLA);
++        assert!(test_agent(&app, id).session.prompt_history.is_empty());
++        assert!(test_agent(&app, id).btw_state.is_none());
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/notes.rs b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/notes.rs
+--- a/crates/codegen/xai-grok-pager/src/app/dispatch/tests/notes.rs
++++ b/crates/codegen/xai-grok-pager/src/app/dispatch/tests/notes.rs
+@@ -2604,3 +2604,59 @@ fn btw_submit_sends_composer_images() {
+         "composer images are consumed by the side question"
+     );
+ }
++
++#[test]
++fn zh_localization_review135_btw_notices_translate_without_rewriting_reply() {
++    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
++    let zh = LocaleContext::new(ResolvedLocale {
++        locale: UiLocale::ZhCn,
++        source: LocaleSource::Cli,
++    });
++    for minimal in [false, true] {
++        for (notice, expected) in [
++            (
++                "Attached images were not included (too large or could not be loaded).",
++                "附加图片未能发送（图片过大或无法加载）。",
++            ),
++            (
++                "2 attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
++                "2 张附加图片未能发送（超过侧边提问的 50MB 限制或无法加载）。",
++            ),
++            (
++                "{count} attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
++                "{count} attached image(s) were not included (over the 50MB side-question limit or could not be loaded).",
++            ),
++        ] {
++            let mut app = test_app_with_agent();
++            let id = AgentId(0);
++            if minimal {
++                app.screen_mode = crate::app::ScreenMode::Minimal;
++            }
++            app.agents.get_mut(&id).unwrap().scrollback.set_locale(&zh);
++            let request_id = if minimal {
++                Some(send_minimal_btw(&mut app, "side question"))
++            } else {
++                None
++            };
++            dispatch(
++                Action::TaskComplete(TaskResult::BtwResponse {
++                    agent_id: id,
++                    result: Ok("Original reply {count}".into()),
++                    minimal_request_id: request_id,
++                    image_notice: Some(notice.into()),
++                }),
++                &mut app,
++            );
++            assert_eq!(
++                agent_ref(&app, id).toast.as_ref().map(|(s, _)| s.as_str()),
++                Some(expected)
++            );
++            let Some(crate::views::btw_overlay::BtwOverlayState::Done { content, .. }) =
++                &agent_ref(&app, id).btw_state
++            else {
++                panic!("expected completed side question");
++            };
++            assert_eq!(content.text(), "Original reply {count}");
++        }
++    }
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
+index 8ec7f9b6..6db50f2a 100644
+--- a/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
++++ b/crates/codegen/xai-grok-pager/src/app/effects/mod.rs
+@@ -3948,9 +3948,10 @@ pub(crate) fn execute(
+         }
+         Effect::FetchSessionUsage { agent_id, session_id, nonce } => {
+             let tx = acp_tx.clone();
++            let locale = session_flags.locale.clone();
+             tasks
+                 .spawn(async move {
+-                    match fetch_session_usage(&session_id, &tx).await {
++                    match fetch_session_usage(&session_id, &tx, &locale).await {
+                         Ok(usage) => {
+                             TaskResult::SessionUsageComplete {
+                                 agent_id,
+@@ -4580,7 +4581,7 @@ pub(crate) fn execute(
+                                 .get("result")
+                                 .and_then(|r| r.get("answer"))
+                                 .and_then(|a| a.as_str())
+-                                .unwrap_or("No response")
++                                .unwrap_or_else(|| locale.named_static_text("btw.no_response", "No response"))
+                                 .to_string();
+                             TaskResult::BtwResponse {
+                                 agent_id,
+@@ -5394,6 +5395,7 @@ async fn fetch_session_info(
+ async fn fetch_session_usage(
+     session_id: &acp::SessionId,
+     tx: &AcpAgentTx,
++    locale: &crate::locale::LocaleContext,
+ ) -> Result<xai_grok_shell::extensions::notification::PromptUsage, String> {
+     let request = acp::ExtRequest::new(
+         "x.ai/session/usage",
+@@ -5405,20 +5407,20 @@ async fn fetch_session_usage(
+             .expect("serialize session/usage params")
+             .into(),
+     );
+-    let resp = acp_send(request, tx).await.map_err(unsupported_or_sanitized)?;
++    let resp = acp_send(request, tx).await.map_err(|e| unsupported_or_sanitized(e, locale))?;
+     let parsed: xai_grok_shell::extensions::usage::SessionUsageResponse = serde_json::from_str(
+             resp.0.get(),
+         )
+         .map_err(|e| {
+             tracing::debug!("session usage deser failed: {e}");
+-            "invalid session usage response".to_string()
++            locale.named_text("session.usage.invalid_response", "invalid session usage response").into_owned()
+         })?;
+     Ok(parsed.usage)
+ }
+ /// An agent that predates an extension answers `method_not_found`
+-fn unsupported_or_sanitized(e: acp::Error) -> String {
++fn unsupported_or_sanitized(e: acp::Error, locale: &crate::locale::LocaleContext) -> String {
+     if i32::from(e.code) == i32::from(acp::Error::method_not_found().code) {
+-        "not supported by this agent version".to_string()
++        locale.named_text("session.usage.unsupported", "not supported by this agent version").into_owned()
+     } else {
+         sanitize_user_error(&e.to_string())
+     }
+diff --git a/crates/codegen/xai-grok-pager/src/app/effects/tests.rs b/crates/codegen/xai-grok-pager/src/app/effects/tests.rs
+index c6000b42..4904bea0 100644
+--- a/crates/codegen/xai-grok-pager/src/app/effects/tests.rs
++++ b/crates/codegen/xai-grok-pager/src/app/effects/tests.rs
+@@ -3008,3 +3008,14 @@ fn session_list_partial_notices_localize_only_the_fixed_copy() {
+         "Couldn't load conversations: retry"
+     );
+ }
++
++
++#[test]
++fn zh_localization_review135_usage_unsupported_is_typed_not_a_text_rewrite() {
++    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
++    let zh = LocaleContext::new(ResolvedLocale { locale: UiLocale::ZhCn, source: LocaleSource::Cli });
++    assert_eq!(unsupported_or_sanitized(acp::Error::method_not_found(), &zh), "当前智能体版本不支持此功能");
++    assert_eq!(unsupported_or_sanitized(acp::Error::method_not_found(), &LocaleContext::default()), "not supported by this agent version");
++    let expected = sanitize_user_error(&acp::Error::internal_error().to_string());
++    assert_eq!(unsupported_or_sanitized(acp::Error::internal_error(), &zh), expected);
++}
+diff --git a/crates/codegen/xai-grok-pager/src/app/event_loop.rs b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
+index 04d40346..be7ad1b4 100644
+--- a/crates/codegen/xai-grok-pager/src/app/event_loop.rs
++++ b/crates/codegen/xai-grok-pager/src/app/event_loop.rs
+@@ -782,9 +782,12 @@ fn run_pending_suspends(
+         match crate::app::external_editor::prepare(app, request) {
+             Ok(Some(prepared)) => {
+                 let launch = prepared.launch();
++                let invalid_editor_command = app
++                    .locale
++                    .named_static_text("editor.error.invalid_command", "invalid editor command");
+                 let mut editor_result = Err(std::io::Error::new(
+                     std::io::ErrorKind::InvalidInput,
+-                    "invalid editor command",
++                    invalid_editor_command,
+                 ));
+                 let moved_cursor = match suspend_for_child(
+                     app.screen_mode,
+@@ -800,7 +803,7 @@ fn run_pending_suspends(
+                                 .status(),
+                             None => Err(std::io::Error::new(
+                                 std::io::ErrorKind::InvalidInput,
+-                                "invalid editor command",
++                                invalid_editor_command,
+                             )),
+                         };
+                     },
