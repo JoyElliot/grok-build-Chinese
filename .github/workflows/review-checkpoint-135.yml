@@ -1,0 +1,35 @@
+name: Review PR 5 source checkpoint
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths: [.github/workflows/review-checkpoint-135.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6f0365802c9778805d525367e80129dcbfd8a397
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export pinned source history without repository writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 6f0365802c9778805d525367e80129dcbfd8a397
+          git branch review-checkpoint HEAD
+          mkdir -p "$RUNNER_TEMP/checkpoint"
+          git bundle create "$RUNNER_TEMP/checkpoint/reviewed-135.bundle" refs/heads/review-checkpoint
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/checkpoint/identity.txt"
+          cd "$RUNNER_TEMP/checkpoint"
+          sha256sum reviewed-135.bundle > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reviewed-135-source-checkpoint-${{ github.run_id }}
+          path: ${{ runner.temp }}/checkpoint
+          retention-days: 14
+          if-no-files-found: error
