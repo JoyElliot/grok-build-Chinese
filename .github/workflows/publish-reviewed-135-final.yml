@@ -24,6 +24,7 @@ jobs:
           import json, os, pathlib, subprocess
           root = pathlib.Path.cwd()
           base = '8290885be7635304bb5e18b89ee24b9b572579ac'
+          bundle_base = '50f53f06bab8309cb8299a50cd2751deb26db726'
           tree = '967668486c5970b3601961e3426f0f9882068077'
           branch = 'refs/heads/sync/upstream-1.0.35-reviewed'
           patches = ['fix-review135-round9.patch', 'fix-review135-round10.patch', 'fix-review135-round11-test.patch']
@@ -48,11 +49,12 @@ jobs:
           commit = git('rev-parse', 'HEAD', cwd=candidate)
           assert git('show', '-s', '--format=%T', commit, cwd=candidate) == tree
           git('merge-base', '--is-ancestor', 'a28ee2b2063426e8816e380ccea528b9de95e5da', commit, cwd=candidate)
+          git('merge-base', '--is-ancestor', bundle_base, commit, cwd=candidate)
           out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'source-evidence'
           out.mkdir()
-          git('bundle', 'create', str(out / 'follow-up.bundle'), 'HEAD', '^' + base, cwd=candidate)
-          git('bundle', 'verify', str(out / 'follow-up.bundle'), cwd=candidate)
-          result = {'base': base, 'commit': commit, 'tree': tree, 'patches': patches, 'published': False}
+          git('bundle', 'create', str(out / 'candidate.bundle'), 'HEAD', '^' + bundle_base, cwd=candidate)
+          git('bundle', 'verify', str(out / 'candidate.bundle'), cwd=candidate)
+          result = {'base': base, 'bundle_base': bundle_base, 'commit': commit, 'tree': tree, 'patches': patches, 'published': False}
           (out / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
           assert git('ls-remote', '--heads', 'origin', branch).split()[0] == remote, 'Concurrent source update'
           if remote == base:
