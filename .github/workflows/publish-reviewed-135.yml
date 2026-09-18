@@ -1,0 +1,137 @@
+name: Publish and check reviewed 1.0.35 candidate
+on:
+  push:
+    branches: [sync/upstream-1.0.35]
+    paths:
+      - .github/review135/transport/**
+      - .github/workflows/publish-reviewed-135.yml
+permissions:
+  contents: read
+concurrency:
+  group: publish-reviewed-135
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/sync/upstream-1.0.35'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      candidate: ${{ steps.publish.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Verify reviewed source transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/review135/transport/part{00..13}.bin > "$RUNNER_TEMP/transport.tar.xz"
+          echo '9a923117fa2b1fb8790e11d3d19b0da224b4417ca00a7e52351cc9638d966b03  '"$RUNNER_TEMP/transport.tar.xz" | sha256sum -c -
+          python3 - <<'PY'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          dest = root / 'review-resolutions'
+          dest.mkdir()
+          with tarfile.open(root / 'transport.tar.xz') as archive:
+              for m in archive.getmembers():
+                  if not m.isfile() or pathlib.PurePosixPath(m.name).name != m.name:
+                      raise SystemExit('Unexpected resolution archive entry')
+              archive.extractall(dest, filter='data')
+          PY
+      - name: Reconstruct and verify exact candidate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal --component rustfmt
+          git fetch https://github.com/xai-org/grok-build.git a28ee2b2063426e8816e380ccea528b9de95e5da
+          git worktree add --detach "$RUNNER_TEMP/candidate" 50f53f06bab8309cb8299a50cd2751deb26db726
+          cd "$RUNNER_TEMP/candidate"
+          git config user.name 'ChatGPT Review'
+          git config user.email 'chatgpt@localhost'
+          git config merge.conflictStyle diff3
+          mkdir -p "$RUNNER_TEMP/review-evidence"
+          git merge --no-commit --no-ff a28ee2b2063426e8816e380ccea528b9de95e5da > "$RUNNER_TEMP/review-evidence/merge.log" 2>&1 || test -n "$(git ls-files -u)"
+          RUSTUP_TOOLCHAIN=1.94.0 python3 "$RUNNER_TEMP/review-resolutions/reconstruct.py" "$RUNNER_TEMP/candidate" 2>&1 | tee "$RUNNER_TEMP/review-evidence/reconstruct.log"
+          git diff --cached --check
+          test "$(git write-tree)" = 701ad58038673b6b5635f741f5ac38596d47725a
+      - name: Publish source branch without touching zh-dev
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          git commit -m '同步上游 1.0.35：迁移社区适配并补齐新增中文界面（待完整 CI 验证）'
+          candidate=$(git rev-parse HEAD)
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" = 3
+          git merge-base --is-ancestor a28ee2b2063426e8816e380ccea528b9de95e5da HEAD
+          git bundle create "$RUNNER_TEMP/review-evidence/source-candidate.bundle" HEAD ^50f53f06bab8309cb8299a50cd2751deb26db726 ^a28ee2b2063426e8816e380ccea528b9de95e5da
+          cd "$GITHUB_WORKSPACE"
+          if test -n "$(git ls-remote --heads origin refs/heads/sync/upstream-1.0.35-reviewed)"; then
+            echo '::error::The destination branch already exists; refusing to overwrite it.'
+            exit 1
+          fi
+          git push origin "$candidate:refs/heads/sync/upstream-1.0.35-reviewed"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "$candidate" > "$RUNNER_TEMP/review-evidence/published-commit.txt"
+          echo "Published reviewed source candidate: $candidate" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: reviewed-135-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/review-evidence
+          retention-days: 14
+          if-no-files-found: warn
+  typecheck:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: 1.94.0
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.publish.outputs.candidate }}
+          persist-credentials: false
+      - name: Prepare pinned compilers and native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal --component rustfmt
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends build-essential libssl-dev libasound2-dev libdbus-1-dev libclang-dev cmake nasm pkg-config
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/protoc.zip" https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip
+          echo '3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a  '"$RUNNER_TEMP/protoc.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          chmod +x "$RUNNER_TEMP/protoc/bin/protoc"
+          echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc" >> "$GITHUB_ENV"
+          echo "PROTOC_INCLUDE=$RUNNER_TEMP/protoc/include" >> "$GITHUB_ENV"
+      - name: Type-check production, tests and release entry point
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/typecheck-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/typecheck-evidence/commit.txt"
+          cargo fmt --all -- --check 2>&1 | tee "$RUNNER_TEMP/typecheck-evidence/fmt.log"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/typecheck-evidence/metadata.json"
+          status=0
+          cargo check --locked -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-minimal --lib --tests 2>&1 | tee "$RUNNER_TEMP/typecheck-evidence/tests.log" || status=1
+          cargo check --locked -p xai-grok-pager-bin --features release-dist 2>&1 | tee "$RUNNER_TEMP/typecheck-evidence/release.log" || status=1
+          cargo test --locked -p xai-grok-locale 2>&1 | tee "$RUNNER_TEMP/typecheck-evidence/locale.log" || status=1
+          echo "$status" > "$RUNNER_TEMP/typecheck-evidence/exit.txt"
+          exit "$status"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: reviewed-135-typecheck-${{ github.run_id }}
+          path: ${{ runner.temp }}/typecheck-evidence
+          retention-days: 14
+          if-no-files-found: warn
