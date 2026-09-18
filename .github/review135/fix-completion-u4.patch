@@ -1,0 +1,245 @@
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/07-mcp-servers.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/07-mcp-servers.md
+index 1ab75170..58639e6c 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/07-mcp-servers.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/07-mcp-servers.md
+@@ -173,6 +173,24 @@ Grok 会从当前目录逐级向上走到 git 仓库根目录，加载每一级
+ 
+-MCP 工具会使用服务器名称命名空间，以避免冲突：
++MCP 工具使用服务器名称作为命名空间以避免冲突，目录键为 `server__tool`（两个下划线）：
+ 
+-- 服务器 `filesystem` 的工具 `read_file` 会变成 `filesystem__read_file`
+-- 服务器 `github` 的工具 `create_issue` 会变成 `github__create_issue`
++- `filesystem` 的 `read_file` 变为 `filesystem__read_file`。
++- `github` 的 `create_issue` 变为 `github__create_issue`。
++- 工具部分可以以数字开头，例如 `auth__2fa_enable`。
++
++### 工具进入目录的条件
++
++`qualify_mcp_tool_name` 只接受满足以下条件的名称：
++
++| 部分 | 规则 |
++| --- | --- |
++| 服务器名称 | 以字母或下划线开头；其余仅限 ASCII 字母、数字、下划线和连字符。 |
++| 工具名称 | 非空；仅限 ASCII 字母、数字、下划线和连字符；可以以数字开头。 |
++| 分隔符 | 必须恰好一个 `__`；包含第二个 `__` 或 `___` 的名称会跳过。 |
++| 完整目录键 | `server` + `__` + `tool` 最多 **256** 个字符。 |
++
++被拒绝的工具会单独跳过，日志记录 `Skipping MCP tool` 及原因，其他工具仍会加载。**64 字符**是提供商的函数名预算，适用于 `search_tool` 和 `use_tool` 本身，不适用于目录键；超过 64 字符的合格目录键仍能通过 `use_tool` 按完整名称调用。
++
++`[mcp_servers.<name>]` 或 `grok-zh mcp add` 中的名称就是目录前缀。虽然数字开头的名称可以是合法 TOML 键，目录准入仍会以 `InvalidServerName` 拒绝。服务器名称以 `_` 结尾会产生含 `___` 的键，以 `InvalidOrAmbiguousQualifiedName` 跳过。
++
++`search_tool` / `use_tool` 使用完整限定目录键（例如 `github__create_issue`），不是原始工具名 `create_issue`。
+ 
+@@ -367,2 +385,8 @@ tail -f ~/.grok/logs/mcp/filesystem.stderr.log
+ 
++### 服务器列出的工具没有出现
++
++服务器已启动且 `tools/list` 返回工具，但 `/mcps` 和 `search_tool` 不显示时：检查 `GROK_LOG_FILE` / `--debug` 中的 `Skipping MCP tool`；确认服务器名以字母或下划线开头且不以下划线结尾；工具名只包含 `[A-Za-z0-9_-]`，不含点或冒号；完整目录键不超过 256 字符。无需为满足函数名限制而把目录键缩短到 64 字符。
++
++这与首次提示时仍在握手的情况不同。握手未完成时，可在服务器就绪后发送第二条提示，或运行 `grok-zh mcp doctor`。
++
+ <a id="viewing-server-status"></a>
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/08-skills.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/08-skills.md
+index c619f898..344dbc6a 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/08-skills.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/08-skills.md
+@@ -53,2 +53,4 @@ disabled = ["wip-skill"]              # 保留在列表中但不激活的技能
+ 
++`[paths] extra_skill_dirs` 由 `/import-claude` 写入，但不会注入技能。需要额外目录时，请使用 `[skills] paths`。
++
+ ---
+@@ -241,3 +243,3 @@ Grok 将平台技能与个人技能分开分发。捆绑技能缓存于 `~/.grok
+ 
+-3. **按名称引用工具。** 如果技能依赖特定工具（例如 `run_terminal_command` 或 `search_replace`），请写出工具名称，让模型知道使用什么。
++3. **按名称引用工具。** 如果技能依赖特定工具（例如 `run_terminal_cmd` 或 `search_replace`），请写出工具名称，让模型知道使用什么。
+ 
+@@ -248 +250,5 @@ Grok 将平台技能与个人技能分开分发。捆绑技能缓存于 `~/.grok
+ 6. **通过运行进行测试。** 调用 `/name` 并确认技能工作正常，然后再依赖自动调用。
++
++### 技能正文大小上限
++
++Grok 最多内联技能正文的前 25,000 个 Token，与 `read_file` 的读取上限相同。将较长的参考资料放在同级文件，并在技能中指示使用行偏移和行数限制读取。
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/11-custom-models.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/11-custom-models.md
+index 0ef03104..fefad68a 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/11-custom-models.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/11-custom-models.md
+@@ -104,2 +104,3 @@ env_key = "XAI_API_KEY"                   # 保存 API 密钥的环境变量（
+ api_backend = "chat_completions"          # "chat_completions"、"responses" 或 "messages"
++reasoning_summary = "concise"             # 仅 Responses API：none / auto / concise / detailed
+ temperature = 0.7                          # 采样温度
+@@ -268,2 +269,23 @@ env_key = "OPENAI_API_KEY"
+ 
++### Responses API 推理摘要与 AWS Bedrock（Mantle）
++
++Responses API 默认请求 `concise` 推理摘要，界面中的推理文本来自该摘要。将 `reasoning_summary` 设为 `detailed` 或 `auto` 可以请求更完整的摘要；设为 `none` 则省略该字段，适配拒绝此参数的网关。
++
++Bedrock 的 OpenAI 兼容网关拒绝 `reasoning.summary`，因此使用 `reasoning_summary = "none"`。认证采用 Bedrock API 密钥作为 Bearer Token；下面通过具名认证提供商生成短期密钥：
++
++```toml
++[auth_provider.bedrock]
++command = "aws-bedrock-token"   # 将 Bedrock API 密钥打印到标准输出
++token_ttl_secs = 3600
++
++[model."bedrock-grok-4.6"]
++model = "xai.grok-4.6"
++base_url = "https://bedrock-mantle.us-west-2.api.aws/openai/v1"
++name = "Grok 4.6 (Bedrock)"
++api_backend = "responses"
++reasoning_summary = "none"
++auth_provider = "bedrock"
++context_window = 500000
++```
++
+ <a id="ollama-local-models"></a>
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/12-project-rules.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/12-project-rules.md
+index 248ebccd..c964e573 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/12-project-rules.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/12-project-rules.md
+@@ -47,2 +47,3 @@ Grok 会加载目录中每个匹配的文件，因此同时包含 `AGENTS.md` 
+ | `~/.cursor/rules/` | 由 `compat.cursor.rules` 控制 |
++| `[paths] extra_rule_dirs` 的每个条目 | 配置中列出的绝对目录；支持 `~` 展开 |
+ 
+@@ -52,2 +53,15 @@ Grok 会加载目录中每个匹配的文件，因此同时包含 `AGENTS.md` 
+ 
++### 额外规则目录
++
++主目录规则按表中顺序加载，随后是从仓库根目录到当前目录的项目文件。每个规则目录内按文件名字母顺序加载。额外目录的配置示例：
++
++```toml
++[paths]
++extra_rule_dirs = ["~/team-rules", "/opt/company/grok-rules"]
++```
++
++每个目录下直接包含的 `*.md` 都会作为用户规则在所有项目中加载；不会递归扫描子目录，也不受文件夹信任、仓库 `.gitignore` 或兼容性开关影响。`grok-zh inspect` 将其标为 `global`。条目必须是绝对路径或以 `~/` 开头；相对路径或不存在的路径不会加载内容。`/import-claude` 会把现有 `~/.claude/rules/` 写到这里，使关闭 Claude 兼容扫描后仍能加载。
++
++---
++
+ <a id="how-discovery-works"></a>
+@@ -57,3 +71,3 @@ Grok 按以下顺序扫描项目规则：
+ 
+-1. **主目录规则**：先扫描 `$GROK_HOME`，再扫描已启用的 `~/.claude/` 和 `~/.cursor/` 来源
++1. **主目录规则**：先扫描 `$GROK_HOME`，再扫描已启用的 `~/.claude/` 和 `~/.cursor/` 来源，最后扫描 `[paths] extra_rule_dirs`
+ 2. **仓库规则**：如果位于 git 仓库内，则从仓库根目录向下扫描到当前工作目录（含当前目录）的每一级
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/13-memory.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/13-memory.md
+index 2a5275ab..0433a102 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/13-memory.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/13-memory.md
+@@ -21,19 +21,17 @@
+ 
+-<a id="enabling-memory"></a>
+-## 启用记忆
++<a id="how-memory-is-organized"></a>
++### 记忆的组织方式
+ 
+-<a id="per-session-flag"></a>
+-### 每会话标志
++记忆有两个范围：全局记忆保存跨项目适用的事实，工作区记忆保存一个仓库的知识。同一仓库的克隆和工作树共享工作区范围。
+ 
+-```bash
+-grok-zh --experimental-memory
+-```
++每个范围使用普通 Markdown 文件保存知识。`topics/` 为每个主题保存整理后的笔记，供 Grok 在会话开始时读取。已完成轮次中新捕获的事实先保存为小型观察记录，后续整合过程（`/dream`）再将其合入主题。两个范围的有界生成索引在每个会话中注入一次，帮助模型决定打开哪些主题。
+ 
+-<a id="environment-variable"></a>
+-### 环境变量
++更新后首次打开工作区时，旧版本记录的笔记会自动沿用：旧笔记的每节成为一个主题，同名主题会在“From earlier sessions”标题下追加旧内容。旧文件保留不变。
+ 
+-```bash
+-export GROK_MEMORY=1
+-grok-zh
+-```
++记忆产品遥测只包含固定枚举、布尔值、计数和耗时，不包含提示、陈述、主题名、关键词、路径、模型输出或自由格式错误。
++
++---
++
++<a id="enabling-memory"></a>
++## 启用记忆
+ 
+@@ -48,12 +46,14 @@ enabled = true
+ 
+-<a id="force-disable"></a>
+-### 强制禁用
+-
+-即使其他设置启用了记忆，也可以将其禁用：
++<a id="environment-variable"></a>
++### 环境变量
+ 
+ ```bash
+-grok-zh --no-memory
++export GROK_MEMORY=1
++grok-zh
+ ```
+ 
+-或者：
++<a id="force-disable"></a>
++### 强制禁用
++
++即使 TOML 或远程设置启用了记忆，也可以对进程强制禁用：
+ 
+@@ -63,4 +63,2 @@ export GROK_MEMORY=0
+ 
+-`--no-memory` 标志的优先级绝对最高，始终会禁用记忆。
+-
+ <a id="mid-session-toggle"></a>
+@@ -68,12 +66,7 @@ export GROK_MEMORY=0
+ 
+-无需重启，即可在会话期间打开或关闭记忆：
++打开 `/memory` 并按 `t`，无需重启即可打开或关闭当前会话的记忆。该状态不写入 `config.toml`，两个方向都有效：配置启用的会话可以关闭，配置禁用的会话也可以打开；新会话仍按配置决定。
+ 
+-```
+-/memory on
+-/memory off
+-```
+-
+-该切换仅作用于当前会话，不会持久化到 `config.toml`。关闭后会移除对记忆工具的访问，但会保留磁盘上的现有文件。打开后会重新初始化记忆存储并注册记忆工具。
++关闭会移除记忆工具和系统提示中的记忆指令，但保留磁盘文件。打开会重新初始化存储、注册工具、恢复记忆指令，并在下一轮注入记忆索引；若已有轮次运行，则等它结束后启用。
+ 
+-也可以在 `/memory` 模态窗口中按 `t` 切换。
++该切换不能覆盖进程级强制禁用（`--no-memory` 兼容标志或 `GROK_MEMORY=0`），这些设置会在整个会话中隐藏 `/memory`。
+ 
+@@ -82,7 +75,7 @@ export GROK_MEMORY=0
+ 
+-1. `--no-memory` CLI 标志（始终禁用）
+-2. `--experimental-memory` CLI 标志（启用）
+-3. `GROK_MEMORY` 环境变量：`1`/`true` 启用，`0`/`false` 禁用
+-4. config.toml 中的 `[memory]` 节
+-5. 默认值：禁用
++1. 进程级强制禁用（`--no-memory` 或 `GROK_MEMORY=0`）关闭记忆。
++2. 有效 TOML 中显式的 `[memory] enabled = false` 关闭记忆，包括由托管远程设置启用的记忆；`/memory` 中的 `t` 仍可对当前会话打开。
++3. 否则由 `GROK_MEMORY=1`、`[memory] enabled = true` 或托管远程设置启用。
++
++面向运维人员的分阶段发布和紧急关闭控制不在本指南中介绍。
+ 
+@@ -216,12 +209,13 @@ Grok 会搜索全部记忆文件，并按来源汇总已知内容：全局偏好
+ | `PgUp`/`PgDn` | 跳转 10 个条目 |
+-| `/` | 过滤文件列表 |
++| `/` | 按笔记名称和内容过滤列表；多个词必须全部匹配 |
++| `Enter` | 阅读选中笔记，预览获得键盘焦点；方向键、`PgUp`/`PgDn`、`Home`/`End` 滚动 |
+ | `y` | 将所选文件的路径复制到剪贴板 |
+-| `x` | 删除所选会话文件（再次按 `x` 确认） |
++| `x` | 删除所选笔记（再次按 `x` 确认） |
+ | `t` | 打开或关闭记忆 |
+ | `Ctrl+F` | 切换全屏 |
+-| `Esc` | 关闭模态窗口，或退出过滤模式 |
++| `Esc` | 关闭窗口，或退出过滤/预览焦点 |
+ 
+-预览窗格为只读。使用鼠标滚轮或拖动滚动条滚动。只能删除会话文件，不能删除全局或工作区的 `MEMORY.md`。
++预览窗格为只读。可用滚轮、拖动滚动条，或按 Enter 聚焦后用键盘滚动。拖选预览文字会复制该文字，文件列表下方会短暂显示确认。生成的 `MEMORY.md` 索引不能删除。筛选会滚动到首个匹配；无匹配时列表会明确提示，按 `Backspace` 清除筛选。
+ 
+-当记忆模态窗口的内容区域少于 80 列时，窗口会隐藏预览窗格，仅显示文件列表。
++内容区域少于 64 列时，只显示文件列表并隐藏大小列；按 `Enter` 可全宽阅读选中笔记，按 `Esc` 返回列表。
+ 
+@@ -240,3 +234,3 @@ Memory saved to ~/.grok/memory/MEMORY.md
+ 
+-后台保存——flush、dream 和会话结束保存——会静默运行，不会发布回滚区消息。随时使用 `/memory` 浏览 Grok 已存储的内容。
++后台自动 flush、自动 Dream 和会话结束保存保持静默，不发布回滚区消息。手动运行 `/flush` 或 `/dream` 时会在回滚区报告结果。随时可用 `/memory` 浏览已存储内容。
+ 
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/14-headless-mode.md b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/14-headless-mode.md
+index 3fefa32d..516551cb 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/14-headless-mode.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/14-headless-mode.md
+@@ -260,3 +260,3 @@ Grok 也可能发出 `max_turns_reached` 和 `auto_compact_*` 事件；应将列
+ - `permissionMode` 是映射到 Messages 枚举的有效无头模式：`--permission-mode` 的值，或 `--yolo` 下的 `bypassPermissions`，否则为 `default`。Grok 专有的 `auto` 等模式会折叠为 `default`。
+-- `mcp_servers[].status` 反映配置而非实时连接状态。已配置的服务器始终报告 `"connected"`，因为发出 `init` 时尚未解析每个服务器的握手状态。
++- `mcp_servers[].status` 是 `x.ai/mcp/list` 的一次快照，仅在 `streaming-messages-json` 中输出：`connected`、`failed`、`needs-auth`、`pending` 或 `disabled`。握手中的服务器为 `pending`；只有会话报告 `sessionMcpResolved` 后才标记 `disabled`，未解析的行即使 `enabled` 暂为 false 也为 `pending`。快照不等待 Blocking 启动宽限期，但宽限期仍适用于提示的工具集。其他输出格式不包含该数组，也不会调用 `x.ai/mcp/list`。
+ 
