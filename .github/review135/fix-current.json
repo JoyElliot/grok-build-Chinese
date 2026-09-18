@@ -1,13 +1,6 @@
 {
-  "base": "44f65e825c9eb85258672bcdfe4b47d82afa5cd6",
-  "tree": "06a7ed07a51cfe6d250f74eab7087be571f6f945",
-  "patches": [
-    "fix-review135-round8-a.patch",
-    "fix-review135-round8-b.patch",
-    "fix-review135-round8-ca.patch",
-    "fix-review135-round8-cb.patch",
-    "fix-review135-round8-da.patch",
-    "fix-review135-round8-db.patch"
-  ],
-  "message": "修复独立测试功能传递、记忆提示隐私并补齐新增中文路径"
+  "base": "272382caed985e744564a8878c9e134d12cd6531",
+  "tree": "e3691092f32ecb2e15bad2a6ee5f7e9b83589889",
+  "patches": ["fix-review135-round9.patch"],
+  "message": "修复工作树失败清理提示的社区命令并补齐双语路径"
 }
