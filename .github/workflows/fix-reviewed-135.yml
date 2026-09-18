@@ -123,6 +123,8 @@ jobs:
           status=0
           cargo fmt --all -- --check > "$RUNNER_TEMP/check-evidence/fmt.log" 2>&1 || status=1
           cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/check-evidence/metadata.json" || status=1
+          cargo check --locked -p xai-grok-shell --features test-support --lib > "$RUNNER_TEMP/check-evidence/shell-test-support.log" 2>&1 || status=1
+          cargo check --locked -p xai-grok-pager --lib --tests > "$RUNNER_TEMP/check-evidence/pager-standalone.log" 2>&1 || status=1
           cargo check --locked -p xai-grok-shell -p xai-grok-pager -p xai-grok-pager-minimal --lib --tests > "$RUNNER_TEMP/check-evidence/tests.log" 2>&1 || status=1
           cargo check --locked -p xai-grok-pager-bin --features release-dist > "$RUNNER_TEMP/check-evidence/release.log" 2>&1 || status=1
           cargo test --locked -p xai-grok-locale > "$RUNNER_TEMP/check-evidence/locale.log" 2>&1 || status=1
