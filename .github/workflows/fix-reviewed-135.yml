@@ -39,26 +39,33 @@ jobs:
           def git(*args, cwd=root):
               return subprocess.check_output(['git', *args], cwd=cwd, text=True).strip()
           remote = git('ls-remote', '--heads', 'origin', branch).split()[0]
-          assert remote == spec['base'], 'Source branch moved; refusing stale patch'
+          already_published = remote != spec['base']
+          if already_published:
+              assert git('show', '-s', '--format=%T', remote) == spec['tree'], 'Source branch moved to a different tree'
+              assert git('show', '-s', '--format=%P', remote) == spec['base'], 'Source branch history changed'
           candidate = pathlib.Path(os.environ['RUNNER_TEMP']) / 'candidate'
-          git('worktree', 'add', '--detach', str(candidate), spec['base'])
-          patch = root / '.github/review135' / spec['patch']
-          git('apply', '--check', str(patch), cwd=candidate)
-          git('apply', '--index', str(patch), cwd=candidate)
-          git('diff', '--cached', '--check', cwd=candidate)
-          assert git('write-tree', cwd=candidate) == spec['tree'], 'Candidate tree mismatch'
-          git('-c', 'user.name=ChatGPT Review', '-c', 'user.email=chatgpt@localhost', 'commit', '-m', spec['message'], cwd=candidate)
+          git('worktree', 'add', '--detach', str(candidate), remote)
+          if not already_published:
+              patch = root / '.github/review135' / spec['patch']
+              git('apply', '--check', str(patch), cwd=candidate)
+              git('apply', '--index', str(patch), cwd=candidate)
+              git('diff', '--cached', '--check', cwd=candidate)
+              assert git('write-tree', cwd=candidate) == spec['tree'], 'Candidate tree mismatch'
+              git('-c', 'user.name=ChatGPT Review', '-c', 'user.email=chatgpt@localhost', 'commit', '-m', spec['message'], cwd=candidate)
           commit = git('rev-parse', 'HEAD', cwd=candidate)
+          assert git('show', '-s', '--format=%T', 'HEAD', cwd=candidate) == spec['tree']
           git('merge-base', '--is-ancestor', 'a28ee2b2063426e8816e380ccea528b9de95e5da', commit, cwd=candidate)
-          assert git('ls-remote', '--heads', 'origin', branch).split()[0] == spec['base'], 'Concurrent update detected'
-          git('push', 'origin', commit + ':' + branch)
           evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'source-evidence'
           evidence.mkdir()
-          git('bundle', 'create', str(evidence / 'fix.bundle'), commit, '^' + spec['base'], cwd=candidate)
+          git('bundle', 'create', str(evidence / 'fix.bundle'), 'HEAD', '^' + spec['base'], cwd=candidate)
+          git('bundle', 'verify', str(evidence / 'fix.bundle'), cwd=candidate)
           (evidence / 'result.json').write_text(json.dumps(dict(spec, commit=commit), ensure_ascii=False, indent=2))
+          assert git('ls-remote', '--heads', 'origin', branch).split()[0] == remote, 'Concurrent update detected'
+          if not already_published:
+              git('push', 'origin', commit + ':' + branch)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write('candidate=' + commit + '\n')
-          print('Published exact source tree:', commit, spec['tree'])
+          print('Verified published source tree:', commit, spec['tree'])
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
