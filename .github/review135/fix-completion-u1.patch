@@ -1,0 +1,240 @@
+diff --git a/.github/release-notes/commit-titles.zh-CN.json b/.github/release-notes/commit-titles.zh-CN.json
+index 188503d2..32776c1d 100644
+--- a/.github/release-notes/commit-titles.zh-CN.json
++++ b/.github/release-notes/commit-titles.zh-CN.json
+@@ -56,2 +56,8 @@
+       "upstream_base": "72a61251fcffb464bcc687aeb5a998e5a98ec0c9"
++    },
++    {
++      "merge_sha": "6c1e721019ecda161d47d37cc426741ab2681ce5",
++      "first_parent": "50f53f06bab8309cb8299a50cd2751deb26db726",
++      "upstream_tip": "a28ee2b2063426e8816e380ccea528b9de95e5da",
++      "upstream_base": "37949780c144e37df692e3d669051a21fec24f20"
+     }
+@@ -273,2 +279,12 @@
+       "title_zh": "同步上游记忆隔离、会话守护进程与交互修复"
++    },
++    {
++      "sha": "482711333c7195dc16a272777f86086d615e2afb",
++      "source_subject": "Synced from monorepo",
++      "title_zh": "同步上游 1.0.25 至 1.0.34：完善子智能体消息、精简反馈与跨平台交互"
++    },
++    {
++      "sha": "a28ee2b2063426e8816e380ccea528b9de95e5da",
++      "source_subject": "Synced from monorepo",
++      "title_zh": "同步上游 1.0.35：改进记忆管理、守护进程工具显示与终端性能"
+     }
+diff --git a/.github/scripts/tests/test_upstream_localization.py b/.github/scripts/tests/test_upstream_localization.py
+new file mode 100644
+index 00000000..8737fd9f
+--- /dev/null
++++ b/.github/scripts/tests/test_upstream_localization.py
+@@ -0,0 +1,82 @@
++"""Verify the translated upstream material shipped by the community build."""
++import json
++import re
++import tomllib
++import unittest
++from collections import Counter
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[3]
++CODEGEN = ROOT / "crates/codegen"
++
++
++def unique_object(pairs):
++    result = {}
++    for key, value in pairs:
++        if key in result:
++            raise ValueError(f"Duplicate JSON key: {key}")
++        result[key] = value
++    return result
++
++
++def load_json(path):
++    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
++
++
++class UpstreamLocalizationTests(unittest.TestCase):
++    def test_upstream_changelogs_keep_each_entry_and_machine_field(self):
++        manifest = tomllib.loads((CODEGEN / "xai-grok-shell/Cargo.toml").read_text(encoding="utf-8"))
++        current = manifest["package"]["version"]
++        major, minor, patch = (int(part) for part in current.split("-")[0].split("."))
++        self.assertEqual((major, minor), (1, 0), "Update the reviewed changelog window for a new minor version")
++        folder = CODEGEN / "xai-grok-shell/changelogs"
++        for number in range(25, patch + 1):
++            version = f"1.0.{number}"
++            with self.subTest(version=version):
++                english = load_json(folder / f"{version}.json")
++                chinese = load_json(folder / f"{version}.zh-CN.json")
++                self.assertEqual(len(english), len(chinese))
++                for original, translated in zip(english, chinese):
++                    self.assertEqual(
++                        {key: value for key, value in original.items() if key != "description"},
++                        {key: value for key, value in translated.items() if key != "description"},
++                    )
++                    self.assertRegex(translated["description"], r"[\u3400-\u9fff]")
++                    self.assertNotEqual(original["description"], translated["description"])
++                markdown = (folder / f"{version}.zh-CN.md").read_text(encoding="utf-8")
++                # Optional community-only notes are separate from the mirrored upstream entries.
++                upstream = markdown.split("## 中文社区版改进", 1)[0]
++                bullets = [line[2:] for line in upstream.splitlines() if line.startswith("- ")]
++                self.assertEqual(Counter(bullets), Counter(entry["description"] for entry in chinese))
++
++    def test_public_configuration_table_has_the_same_keys(self):
++        guide = CODEGEN / "xai-grok-pager/docs/user-guide"
++        def keys(path):
++            text = path.read_text(encoding="utf-8")
++            values = re.findall(r"^\| `([^`]+)` \|", text, re.MULTILINE)
++            # The policy example repeats remote_fetch outside the main table.
++            return Counter(values)
++        self.assertEqual(keys(guide / "26-config-reference.md"), keys(guide / "zh-CN/26-config-reference.md"))
++
++    def test_english_guides_link_to_the_shipped_chinese_counterparts(self):
++        docs = CODEGEN / "xai-grok-pager/docs"
++        for section in ("user-guide", "tutorial"):
++            for english in sorted((docs / section).glob("*.md")):
++                chinese = english.parent / "zh-CN" / english.name
++                if chinese.is_file():
++                    with self.subTest(page=english.name, section=section):
++                        self.assertIn(f"[简体中文](zh-CN/{english.name})", english.read_text(encoding="utf-8"))
++
++    def test_new_owned_ui_messages_have_chinese_metadata(self):
++        metadata = load_json(CODEGEN / "xai-grok-locale/locales/zh-CN-metadata.json")
++        for key in (
++            "prompt.flag.always_approve", "minimal.feedback.too_small",
++            "slash.command.memory.error.arguments", "slash.command.flush.error.arguments",
++            "slash.command.dream.error.arguments", "tasks.schedule.next_in", "tasks.schedule.due_now",
++        ):
++            with self.subTest(key=key):
++                self.assertRegex(metadata[key], r"[\u3400-\u9fff]")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/.github/workflows/upstream-localization.yml b/.github/workflows/upstream-localization.yml
+new file mode 100644
+index 00000000..7f512562
+--- /dev/null
++++ b/.github/workflows/upstream-localization.yml
+@@ -0,0 +1,38 @@
++name: 同步资料完整性
++on:
++  pull_request:
++    branches: [zh-dev]
++    paths:
++      - 'crates/codegen/xai-grok-locale/**'
++      - 'crates/codegen/xai-grok-pager/docs/**'
++      - 'crates/codegen/xai-grok-shell/changelogs/**'
++      - 'crates/codegen/xai-grok-shell/Cargo.toml'
++      - '.github/scripts/**'
++      - '.github/workflows/upstream-localization.yml'
++  push:
++    branches: [zh-dev, 'sync/**']
++    paths:
++      - 'crates/codegen/xai-grok-locale/**'
++      - 'crates/codegen/xai-grok-pager/docs/**'
++      - 'crates/codegen/xai-grok-shell/changelogs/**'
++      - 'crates/codegen/xai-grok-shell/Cargo.toml'
++      - '.github/scripts/**'
++      - '.github/workflows/upstream-localization.yml'
++permissions:
++  contents: read
++jobs:
++  localization:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 10
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
++        with:
++          persist-credentials: false
++      - name: 检查上游更新日志、配置表和本地化元数据
++        run: python3 .github/scripts/tests/test_upstream_localization.py
++      - name: 检查公告、包协议和 macOS 打包约定
++        run: |
++          python3 .github/scripts/tests/test_announcement_translations.py
++          python3 .github/scripts/tests/test_package_protocol.py
++          python3 .github/scripts/tests/test_macos_build.py
++          python3 packaging/macos/tests/test_install_lock.py
+diff --git a/README.md b/README.md
+index d4f9c2e9..e367bd96 100644
+--- a/README.md
++++ b/README.md
+@@ -240,2 +240,3 @@ Releases 中通过这些门禁的平台资产。
+ - 安全策略：[`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)
++- 1.0.35 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.35.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.35.zh-CN.md)
+ - 1.0.24 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.24.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.24.zh-CN.md)
+diff --git a/crates/codegen/xai-grok-pager-minimal/src/feedback.rs b/crates/codegen/xai-grok-pager-minimal/src/feedback.rs
+index 7de13dde..e6bd591e 100644
+--- a/crates/codegen/xai-grok-pager-minimal/src/feedback.rs
++++ b/crates/codegen/xai-grok-pager-minimal/src/feedback.rs
+@@ -124,3 +124,6 @@ mod tests {
+         let text = crate::buffer_text(&buf);
+-        assert!(text.contains("反馈表单需要更大的终端"), "{text}");
++        assert!(
++            text.replace(' ', "").contains("反馈表单需要更大的终端"),
++            "{text}"
++        );
+         assert!(text.contains("Esc"), "{text}");
+diff --git a/crates/codegen/xai-grok-pager/docs/tutorial/zh-CN/09-where-next.md b/crates/codegen/xai-grok-pager/docs/tutorial/zh-CN/09-where-next.md
+index 33689f97..a310f82b 100644
+--- a/crates/codegen/xai-grok-pager/docs/tutorial/zh-CN/09-where-next.md
++++ b/crates/codegen/xai-grok-pager/docs/tutorial/zh-CN/09-where-next.md
+@@ -15,3 +15,3 @@
+ - 会话会自动保存。使用 `grok-zh -c` 恢复最新会话，或使用 `/resume`
+-  （`F3`）选择一个会话。
++  （`Ctrl+R`）选择一个会话。
+ - 会话太长而变慢？`/compact` 释放上下文；`/context` 显示上下文使用情况。
+@@ -19,5 +19,4 @@
+   以无头模式运行——非常适合脚本和 CI。
+-- 本社区预览版暂不启用内置更新；请从中文版独立发布渠道获取经过测试的新版本。
+-- 感觉哪里不对？在官方服务可用时可用 `/feedback` 提交反馈；中文版问题请提交到
+-  社区 Fork 的问题跟踪器。
++- 使用 `grok-zh update` 从社区独立发布渠道更新；用 `/release-notes` 查看变化。
++- 感觉哪里不对？`/feedback <text>` 会立即向服务团队发送反馈，无参数 `/feedback` 打开含已保存草稿的表单；中文版问题请提交到社区 Fork 的问题跟踪器。
+ 
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
+index 17fbee08..804f9173 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/01-getting-started.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/01-getting-started.md)
++
+ > **Community build notice:** This is the unofficial Simplified Chinese
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
+index 5e321a67..1c5c04b1 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/02-authentication.md)
++
+ Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/03-keyboard-shortcuts.md b/crates/codegen/xai-grok-pager/docs/user-guide/03-keyboard-shortcuts.md
+index c326c916..d98395f9 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/03-keyboard-shortcuts.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/03-keyboard-shortcuts.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/03-keyboard-shortcuts.md)
++
+ Reference for key bindings in the Grok Build TUI. Bindings are built in and cannot currently be remapped.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md b/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md
+index ed88db99..59364ba4 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/04-slash-commands.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/04-slash-commands.md)
++
+ Type `/` in the prompt to open the command menu. It fuzzy-matches as you type, and picking a command runs it immediately.
+diff --git a/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md b/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md
+index b7ea89b6..8ef2de07 100644
+--- a/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md
++++ b/crates/codegen/xai-grok-pager/docs/user-guide/05-configuration.md
+@@ -2,2 +2,4 @@
+ 
++[简体中文](zh-CN/05-configuration.md)
++
+ Grok reads settings from config files, environment variables, and CLI flags. This page covers the common options. The field list for `config.toml`, `managed_config.toml`, and `requirements.toml` is [26-config-reference.md](26-config-reference.md) (extracted to `~/.grok/docs/user-guide/` on launch).
