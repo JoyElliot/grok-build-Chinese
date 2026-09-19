@@ -772,6 +772,7 @@ impl AgentView {
                     header: overlay_header,
                     stop_label: self.overlay_stop_label(),
                 }),
+                locale,
             );
         }
         if let Some(esc) = self.take_subagent_inline_media_clear_escapes() {

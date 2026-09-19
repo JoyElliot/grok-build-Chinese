@@ -102,11 +102,14 @@ impl AgentView {
         theme: &Theme,
         bundle_state: &crate::app::bundle::BundleState,
         overlay: Option<InheritedOverlay<'_>>,
+        locale: Option<&crate::locale::LocaleContext>,
     ) -> (
         Option<(u16, u16)>,
         Option<crate::terminal::overlay::PostFlush>,
     ) {
-        use crate::app::subagent::{format_context_badge, format_subagent_label};
+        use crate::app::subagent::{
+            format_context_badge_with_locale, format_subagent_label_with_locale,
+        };
         use ratatui::style::Modifier;
         use unicode_width::UnicodeWidthStr;
         let appearance = self.scrollback.appearance().clone();
@@ -149,7 +152,7 @@ impl AgentView {
             .map(|s| crate::util::format_duration(s.display_elapsed()))
             .unwrap_or_default();
         let (type_label, description): (String, String) = match info {
-            Some(s) => format_subagent_label(s),
+            Some(s) => format_subagent_label_with_locale(s, locale),
             None => (String::new(), raw_description.to_string()),
         };
         let icon = if is_running {
@@ -189,12 +192,23 @@ impl AgentView {
             .filter(|s| !s.is_empty())
             .unwrap_or("")
             .to_string();
-        let badge = info.map(format_context_badge).unwrap_or("");
+        let badge = info
+            .map(|info| format_context_badge_with_locale(info, locale))
+            .unwrap_or_default();
         let activity_label: Option<String> = if is_running {
             self.subagent_views.get(child_sid).and_then(|cv| {
                 cv.resolve_turn_activity()
-                    .map(|a| crate::app::subagent::format_activity_label(&a))
-                    .or_else(|| cv.session.state.is_busy().then(|| "Waiting".to_string()))
+                    .map(|a| crate::app::subagent::format_activity_label_with_locale(&a, locale))
+                    .or_else(|| {
+                        cv.session.state.is_busy().then(|| {
+                            locale
+                                .map(|locale| {
+                                    locale.named_static_text("turn.activity.waiting", "Waiting")
+                                })
+                                .unwrap_or("Waiting")
+                                .to_string()
+                        })
+                    })
             })
         } else {
             None
@@ -309,7 +323,7 @@ impl AgentView {
             buf.set_span_safe(
                 rx,
                 title_y,
-                &Span::styled(badge, Style::default().fg(theme.gray_dim)),
+                &Span::styled(&badge, Style::default().fg(theme.gray_dim)),
                 badge.width() as u16,
             );
         }
@@ -331,6 +345,7 @@ impl AgentView {
                 overlay.is_some(),
                 &mut Vec::new(),
                 AppRenderParams {
+                    locale,
                     overlay_header: overlay.map(|o| o.header).unwrap_or_default(),
                     overlay_stop_label: overlay.map(|o| o.stop_label),
                     ..AppRenderParams::default()

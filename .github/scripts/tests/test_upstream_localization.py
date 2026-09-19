@@ -53,7 +53,16 @@ class UpstreamLocalizationTests(unittest.TestCase):
         guide = CODEGEN / "xai-grok-pager/docs/user-guide"
         def keys(path):
             text = path.read_text(encoding="utf-8")
-            values = re.findall(r"^\| `([^`]+)` \|", text, re.MULTILINE)
+            values = []
+            section = None
+            for line in text.splitlines():
+                if line.startswith("#"):
+                    heading = re.fullmatch(r"### `([^`]+)`", line)
+                    section = heading.group(1) if heading else None
+                row = re.match(r"^\| `([^`]+)` \|", line)
+                if row:
+                    values.append((section, row.group(1)))
+            # Keep keys under the same canonical section as the upstream guide.
             # The policy example repeats remote_fetch outside the main table.
             return Counter(values)
         self.assertEqual(keys(guide / "26-config-reference.md"), keys(guide / "zh-CN/26-config-reference.md"))

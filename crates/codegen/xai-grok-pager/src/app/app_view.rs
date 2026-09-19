@@ -5001,12 +5001,13 @@ impl AppView {
                                             .unwrap_or_else(|| "(session)".to_string());
                                         let bundle_state = &self.bundle_state;
                                         let (cursor, post_flush, drawn) =
-                                            crate::views::dashboard::render_popup_overlay(
+                                            crate::views::dashboard::render_popup_overlay_with_locale(
                                                 f.buffer_mut(),
                                                 popup_area,
                                                 &theme,
                                                 &title,
                                                 dashboard,
+                                                Some(self.locale.as_ref()),
                                                 |inner, buf| {
                                                     if let Some(agent) = agents.get_mut(&agent_id) {
                                                         agent

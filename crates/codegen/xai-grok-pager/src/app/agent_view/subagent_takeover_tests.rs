@@ -271,6 +271,86 @@ fn takeover_draw_forwards_pending_hint_and_child_cursor() {
             .height
     );
 }
+#[test]
+fn zh_localization_takeover_forwards_locale_to_frame_and_child() {
+    let zh = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let registry = ActionRegistry::defaults();
+    for (locale, label, badge, waiting, response, hint) in [
+        (
+            None,
+            "Explore",
+            "forked",
+            "Waiting",
+            "Waiting for response…",
+            "press again to opaque_action",
+        ),
+        (
+            Some(&zh),
+            "探索",
+            "已分叉",
+            "等待中",
+            "正在等待回复…",
+            "再次按键以opaque_action",
+        ),
+    ] {
+        for bash_turn in [false, true] {
+            let mut parent = parent_with_child(CHILD_SID);
+            let mut info = crate::app::subagent::test_support::make_info();
+            info.child_session_id = CHILD_SID.into();
+            info.description = "OPAQUE.task::{token}".into();
+            info.attempt.context_source = Some("forked".into());
+            info.attempt.model = Some("grok-model-raw".into());
+            parent.subagent_sessions.insert(CHILD_SID.into(), info);
+            let child = parent.subagent_view_mut(CHILD_SID).expect("child view");
+            child.session.state = crate::app::agent::AgentState::TurnRunning;
+            child.bash_turn = bash_turn;
+            parent.open_subagent_fullscreen(CHILD_SID.to_owned());
+
+            let area = Rect::new(0, 0, 180, 30);
+            let mut buf = Buffer::empty(area);
+            parent.draw(
+                area,
+                &mut buf,
+                &registry,
+                &mut ScratchBuffer::new(),
+                Some(PendingHint {
+                    shortcut: crate::key!(Esc),
+                    label: "opaque_action",
+                }),
+                false,
+                crate::app::agent_view::BannerSlotParams::none(),
+                &crate::app::bundle::BundleState::default(),
+                false,
+                &mut Vec::new(),
+                crate::app::agent_view::AppRenderParams {
+                    locale,
+                    ..Default::default()
+                },
+            );
+            let text = buffer_text(&buf, area);
+            // Wide glyphs occupy a second, blank buffer cell.
+            let compact = text.replace(' ', "");
+            for expected in [
+                label,
+                badge,
+                if bash_turn { waiting } else { response },
+                hint,
+            ] {
+                assert!(
+                    compact.contains(&expected.replace(' ', "")),
+                    "{expected}: {text}"
+                );
+            }
+            for opaque in ["OPAQUE.task::{token}", "grok-model-raw", "opaque_action"] {
+                assert!(text.contains(opaque), "{opaque}: {text}");
+            }
+        }
+    }
+}
+
 /// A parent whose child, with a transcript, sits on bare scrollback under an open takeover. `vim_mode` is pinned on
 /// both views: `AgentView::new` reads it from the user's config, which CI does not have.
 fn open_takeover(child_sid: &str, vim_mode: bool) -> AgentView {

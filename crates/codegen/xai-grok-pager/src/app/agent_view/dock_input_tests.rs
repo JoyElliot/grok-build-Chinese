@@ -2203,6 +2203,26 @@ fn running_workflow_is_a_dock_row_above_watchers() {
 }
 
 #[test]
+fn zh_localization_workflow_dock_preserves_names_and_localizes_chrome() {
+    let zh = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let agent = dock_with_workflow();
+    for (locale, kind, activity) in [
+        (None, "Workflow", "Verify · 1 agent"),
+        (Some(&zh), "工作流", "Verify · 1 个智能体"),
+    ] {
+        let snapshot = agent.dock_snapshot_with_locale(locale);
+        let row = snapshot.workflows.first().expect("workflow row");
+        assert_eq!(row.kind, kind);
+        assert_eq!(row.description, "learn-traces-2");
+        assert_eq!(row.activity.as_deref(), Some(activity));
+        assert!(row.openable && row.killable && row.spinning);
+    }
+}
+
+#[test]
 fn terminal_workflow_is_hidden_from_the_dock() {
     let mut agent = make_agent();
     agent

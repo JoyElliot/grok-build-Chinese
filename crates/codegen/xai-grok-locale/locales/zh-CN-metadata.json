@@ -216,6 +216,7 @@
   "dock.kind.run": "运行",
   "dock.kind.monitor": "监视器",
   "dock.kind.loop": "循环",
+  "dock.kind.workflow": "工作流",
   "dock.more": "另有 {count} 项",
   "tip.export_copy.lead": "经常复制？",
   "tip.export_copy.last_reply": " 上一条回复 · ",

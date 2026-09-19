@@ -277,13 +277,13 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `grok_com_config.oidc.scopes` | `string[]` | `yes` | `user` | OIDC scope。也对应 `GROK_OIDC_SCOPES`。 |
 | `grok_com_config.preferred_method` | `api_key / oidc` | `yes` | `user` | 将自动认证固定为一种方式，不回退。 |
 | `grok_com_config.token_header` | `string` | `yes` | `user` | 携带 CLI 认证令牌的标头名；默认为 `xai-grok-cli`。 |
-| `harness.wait_for_uploads` | `boolean` | `yes` | `user` | 返回提示响应前等待轮次结束的跟踪上传，默认关闭。一次性无界面执行仍会在退出时排空待处理上传，使用强制最小预算（约 150 秒，即解析窗口和一次上传尝试）；更大的 upload_flush_timeout_secs 会延长该预算。 |
 
 ### `harness`
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
 | `harness.disable_workspace_teleport` | `boolean` | `pin` | `user` | 每轮工作区快照的关闭开关。 |
+| `harness.wait_for_uploads` | `boolean` | `yes` | `user` | 返回提示响应前等待轮次结束的跟踪上传，默认关闭。一次性无界面执行仍会在退出时排空待处理上传，使用强制最小预算（约 150 秒，即解析窗口和一次上传尝试）；更大的 upload_flush_timeout_secs 会延长该预算。 |
 
 ### `hints`
 
@@ -505,12 +505,12 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | --- | --- | --- | --- | --- |
 | `skills.disabled` | `string[]` | `yes` | `user` | 仍发现但不激活的技能名称。 |
 | `skills.paths` | `string[]` | `yes` | `user` | 额外技能目录。 |
-| `storage.cleanup_ttl_days` | `integer` | `yes` | `user` | 会话空闲达到该天数后删除其目录；活跃会话中的旧媒体和终端日志也按此期限清理。默认 30。 |
 
 ### `storage`
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
+| `storage.cleanup_ttl_days` | `integer` | `yes` | `user` | 会话空闲达到该天数后删除其目录；活跃会话中的旧媒体和终端日志也按此期限清理。默认 30。 |
 
 ### `subagents`
 

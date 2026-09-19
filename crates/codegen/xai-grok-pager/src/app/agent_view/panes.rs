@@ -297,15 +297,26 @@ impl AgentView {
         }
     }
     pub(crate) fn dock_workflow_rows(&self) -> Vec<(String, crate::views::dock::DockRow)> {
+        self.dock_workflow_rows_with_locale(None)
+    }
+    pub(crate) fn dock_workflow_rows_with_locale(
+        &self,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> Vec<(String, crate::views::dock::DockRow)> {
         self.workflow_runs_newest_first()
             .into_iter()
             .filter(|run| !run.is_terminal())
             .map(|run| {
-                let activity = run.activity_label();
+                let activity = run.activity_label_with_locale(locale);
                 (
                     run.run_id.clone(),
                     crate::views::dock::DockRow {
-                        kind: "Workflow".into(),
+                        kind: locale
+                            .map(|locale| {
+                                locale.named_static_text("dock.kind.workflow", "Workflow")
+                            })
+                            .unwrap_or("Workflow")
+                            .into(),
                         description: run.name.clone(),
                         activity: (!activity.is_empty()).then_some(activity),
                         meta: crate::views::dock::fmt_elapsed(run.live_elapsed_ms() / 1000),
@@ -697,7 +708,7 @@ impl AgentView {
     ) -> crate::views::dock::DockData {
         crate::views::dock::DockData {
             workflows: self
-                .dock_workflow_rows()
+                .dock_workflow_rows_with_locale(locale)
                 .into_iter()
                 .map(|(_, row)| row)
                 .collect(),
