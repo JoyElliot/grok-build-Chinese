@@ -6,6 +6,7 @@
     dead_code
 )]
 #![warn(unreachable_pub)]
+#![deny(clippy::indexing_slicing)]
 #[cfg(all(test, feature = "dhat-heap"))]
 #[global_allocator]
 static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;

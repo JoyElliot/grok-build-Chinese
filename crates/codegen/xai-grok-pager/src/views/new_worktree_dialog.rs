@@ -139,7 +139,7 @@ pub fn render_new_worktree_dialog_with_locale(
     let prefix_w = label_prefix.width() as u16;
     let input_width = inner_width.saturating_sub(prefix_w);
     let viewport = state.viewport(input_width as usize);
-    let visible_input = &state.label()[viewport.visible_byte_range];
+    let visible_input = state.label().get(viewport.visible_byte_range).unwrap_or("");
 
     let prefix_span = Span::styled(label_prefix, Style::default().fg(theme.gray_bright));
     let input_span = Span::styled(visible_input, Style::default().fg(theme.text_primary));
@@ -213,7 +213,7 @@ mod tests {
         for y in 0..area.height {
             let mut row = String::new();
             for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
+                row.push_str(buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
             }
             lines.push(row);
         }
@@ -268,7 +268,8 @@ mod tests {
         let area = Rect::new(0, 0, 40, 12);
         let label = "super-long-worktree-name-that-will-not-fit";
         let text = render_to_text(area, label);
-        let tail = &label[label.len().saturating_sub(8)..];
+        let start = label.len().saturating_sub(8);
+        let tail = label.get(start..).unwrap_or("");
         assert!(
             text.contains(tail),
             "end of long name must remain visible when scrolled:\n{text}"
@@ -300,7 +301,8 @@ mod tests {
                     && cell.bg == theme.text_primary)
         };
         assert!(
-            (0..area.height).any(|y| (0..area.width).any(|x| is_cursor(&buffer[(x, y)]))),
+            (0..area.height)
+                .any(|y| { (0..area.width).any(|x| buffer.cell((x, y)).is_some_and(&is_cursor)) }),
             "live cursor cell must remain visible",
         );
     }

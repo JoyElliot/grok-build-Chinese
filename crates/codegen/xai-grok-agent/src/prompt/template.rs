@@ -56,6 +56,13 @@ pub const COMPACT_SYSTEM_PROMPT: &str = "You are an AI coding agent. You operate
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Inserts into `v` when it is an object; other values are left untouched.
+    fn jset(v: &mut serde_json::Value, key: &str, val: serde_json::Value) {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(key.to_owned(), val);
+        }
+    }
     use std::collections::HashMap;
     use xai_grok_tools::types::template_renderer::TemplateRenderer;
     use xai_grok_tools::types::tool::ToolKind;
@@ -108,6 +115,22 @@ mod tests {
             &xor_encrypt(&normalize_newlines(subagent_raw), PROMPT_SEEDS[2]),
             "subagent_prompt.md encrypted bytes are stale — run scripts/encrypt_templates.py"
         );
+    }
+
+    /// The memory injector treats any `<memory-context>` substring in the system prompt as an
+    /// already-injected block, so a prompt that mentions the tag disables memory injection.
+    #[test]
+    fn templates_never_mention_the_memory_context_tag() {
+        for (name, template) in [
+            ("prompt.md", base_template()),
+            ("apply_patch_prompt.md", apply_patch_template()),
+            ("subagent_prompt.md", subagent_template()),
+        ] {
+            assert!(
+                !template.contains("memory-context"),
+                "{name} mentions the memory-context tag; describe the injected index in prose instead"
+            );
+        }
     }
 
     /// Build a TemplateRenderer with the standard grok-build tool kinds.
@@ -248,20 +271,6 @@ mod tests {
     // ── Base template rendering ─────────────────────────────────────
 
     #[test]
-    fn test_base_template_contains_resolved_tool_names() {
-        let prompt = render_base(&default_renderer(), &default_placeholders());
-        // The minimal prompt only resolves the read/edit tool names, inside <tool_calling>
-        // (todo_write / run_terminal_command lived in sections that the trimmed prompt no longer renders.)
-        assert!(prompt.contains("read_file"), "Should contain 'read_file'");
-        assert!(
-            prompt.contains("search_replace"),
-            "Should contain 'search_replace'"
-        );
-        assert!(!prompt.contains("${{"), "No unresolved template variables");
-        assert!(!prompt.contains("${%"), "No unresolved template blocks");
-    }
-
-    #[test]
     fn test_base_template_with_overridden_tool_names() {
         let tools: HashMap<ToolKind, String> = [
             (ToolKind::Read, "view_file".to_string()),
@@ -276,7 +285,13 @@ mod tests {
         ]
         .into();
         let r = TemplateRenderer::new(tools, HashMap::new());
-        let prompt = render_base(&r, &default_placeholders());
+        let mut placeholders = default_placeholders();
+        jset(
+            &mut placeholders,
+            "memory_v2_enabled",
+            serde_json::json!(true),
+        );
+        let prompt = render_base(&r, &placeholders);
         assert!(
             prompt.contains("`view_file`"),
             "Should use overridden 'view_file'"
@@ -365,58 +380,14 @@ mod tests {
         );
     }
 
-    // ── Mid-session mode switching ──────────────────────────────────
-
     #[test]
-    fn test_mid_session_switch_concise_to_full() {
-        let compact = COMPACT_SYSTEM_PROMPT;
-        assert!(compact.contains("For Chinese requests, use concise Simplified Chinese"));
+    fn compact_prompt_preserves_plan_language_and_canonical_statuses() {
+        assert!(
+            COMPACT_SYSTEM_PROMPT.contains("For Chinese requests, use concise Simplified Chinese")
+        );
         for status in ["pending", "in_progress", "completed", "cancelled"] {
-            assert!(compact.contains(status));
+            assert!(COMPACT_SYSTEM_PROMPT.contains(status));
         }
-        assert!(!compact.contains("read_file"), "Compact has no tool names");
-        assert!(
-            !compact.contains("<tool_calling>"),
-            "Compact has no tool section"
-        );
-
-        let full = render_base(&default_renderer(), &default_placeholders());
-        assert!(
-            full.contains("<tool_calling>"),
-            "Full prompt has tool section"
-        );
-        assert!(full.contains("read_file"), "Full prompt has read_file");
-        assert!(
-            full.contains("search_replace"),
-            "Full prompt has search_replace"
-        );
-    }
-
-    #[test]
-    fn test_mid_session_switch_preserves_tool_overrides() {
-        let tools: HashMap<ToolKind, String> = [
-            (ToolKind::Read, "view".to_string()),
-            (ToolKind::Edit, "edit".to_string()),
-            (ToolKind::Execute, "run_terminal_cmd".to_string()),
-            (ToolKind::Plan, "todo_write".to_string()),
-            (
-                ToolKind::BackgroundTaskAction,
-                "get_task_output".to_string(),
-            ),
-        ]
-        .into();
-        let r = TemplateRenderer::new(tools, HashMap::new());
-        let prompt = render_base(&r, &default_placeholders());
-        assert!(prompt.contains("`edit`"), "Should use overridden 'edit'");
-        assert!(prompt.contains("`view`"), "Should use overridden 'view'");
-        assert!(
-            !prompt.contains("`read_file`"),
-            "Should not contain original 'read_file'"
-        );
-        assert!(
-            !prompt.contains("`search_replace`"),
-            "Should not contain original 'search_replace'"
-        );
     }
 
     // ── Determinism ─────────────────────────────────────────────────
@@ -463,7 +434,7 @@ mod tests {
         .into();
         let r = TemplateRenderer::new(tools, HashMap::new());
         let mut p = default_placeholders();
-        p["memory_enabled"] = serde_json::json!(true);
+        jset(&mut p, "memory_enabled", serde_json::json!(true));
         let prompt = render_base(&r, &p);
         assert!(
             !prompt.contains("<memory>"),
@@ -491,10 +462,21 @@ mod tests {
     #[test]
     fn test_memory_v2_renders_filesystem_instructions_and_roots() {
         let mut placeholders = default_placeholders();
-        placeholders["memory_v2_enabled"] = serde_json::json!(true);
-        placeholders["memory_global_path"] = serde_json::json!("/home/test/.grok/memory-v2/global");
-        placeholders["memory_workspace_path"] =
-            serde_json::json!("/home/test/.grok/memory-v2/workspaces/project");
+        jset(
+            &mut placeholders,
+            "memory_v2_enabled",
+            serde_json::json!(true),
+        );
+        jset(
+            &mut placeholders,
+            "memory_global_path",
+            serde_json::json!("/home/test/.grok/memory-v2/global"),
+        );
+        jset(
+            &mut placeholders,
+            "memory_workspace_path",
+            serde_json::json!("/home/test/.grok/memory-v2/workspaces/project"),
+        );
 
         let prompt = render_base(&default_renderer(), &placeholders);
         assert!(prompt.contains("<memory>"));
@@ -503,7 +485,7 @@ mod tests {
         assert!(prompt.contains("topics/"));
         assert!(prompt.contains("observations/_inbox/"));
         assert!(prompt.contains("NEVER edit it directly"));
-        assert!(prompt.contains("do not automatically search"));
+        assert!(prompt.contains("read the topic files whose titles cover it"));
         assert!(!prompt.contains("memory_save"));
     }
 
@@ -657,9 +639,9 @@ mod tests {
 
     fn word_bounded(hay: &str, needle: &str) -> bool {
         let mut s = 0;
-        while let Some(i) = hay[s..].find(needle) {
+        while let Some(i) = hay.get(s..).and_then(|rest| rest.find(needle)) {
             let end = s + i + needle.len();
-            match hay[end..].chars().next() {
+            match hay.get(end..).and_then(|rest| rest.chars().next()) {
                 None => return true,
                 Some(c) if !(c.is_alphanumeric() || c == '_') => return true,
                 _ => s += i + 1,
@@ -681,16 +663,22 @@ mod tests {
         let mut errors: Vec<String> = Vec::new();
         let mut i = 0;
         while i + 2 < bytes.len() {
-            let three = &bytes[i..i + 3];
+            let Some(three) = bytes.get(i..i + 3) else {
+                break;
+            };
             if three == b"${%" {
-                let end = bytes[i + 3..]
-                    .windows(2)
-                    .position(|w| w == b"%}")
+                let end = bytes
+                    .get(i + 3..)
+                    .and_then(|rest| rest.windows(2).position(|w| w == b"%}"))
                     .map(|e| i + 3 + e + 2)
                     .unwrap_or(bytes.len());
-                let body = std::str::from_utf8(&bytes[i + 3..end - 2])
-                    .unwrap()
-                    .trim_matches(['-', ' ']);
+                let body = std::str::from_utf8(
+                    end.checked_sub(2)
+                        .and_then(|e| bytes.get(i + 3..e))
+                        .unwrap_or(&[]),
+                )
+                .unwrap()
+                .trim_matches(['-', ' ']);
                 if let Some(c) = body.strip_prefix("if ") {
                     stack.push(c.trim().into());
                 } else if let Some(c) = body.strip_prefix("elif ") {
@@ -704,12 +692,18 @@ mod tests {
                 }
                 i = end;
             } else if three == b"${{" {
-                let end = bytes[i + 3..]
-                    .windows(2)
-                    .position(|w| w == b"}}")
+                let end = bytes
+                    .get(i + 3..)
+                    .and_then(|rest| rest.windows(2).position(|w| w == b"}}"))
                     .map(|e| i + 3 + e + 2)
                     .unwrap_or(bytes.len());
-                let body = std::str::from_utf8(&bytes[i + 3..end - 2]).unwrap().trim();
+                let body = std::str::from_utf8(
+                    end.checked_sub(2)
+                        .and_then(|e| bytes.get(i + 3..e))
+                        .unwrap_or(&[]),
+                )
+                .unwrap()
+                .trim();
                 // search_tool and use_tool are always built-in, so they never need a guard
                 const ALWAYS_BUILTIN: &[&str] = &["search_tool", "use_tool"];
                 if let Some(kind) = body.strip_prefix("tools.by_kind.")
@@ -717,7 +711,7 @@ mod tests {
                     && !ALWAYS_BUILTIN.contains(&kind)
                     && !stack.iter().any(|c| guarantees(c, kind))
                 {
-                    let line = template[..i].lines().count() + 1;
+                    let line = template.get(..i).unwrap_or("").lines().count() + 1;
                     errors.push(format!(
                         "{label}:{line}: unguarded `${{{{ tools.by_kind.{kind} }}}}` (stack: {stack:?})"
                     ));
@@ -750,7 +744,7 @@ mod tests {
         // The `! <command>` shell-prefix tip was removed from the minimal prompt
         // The <user_guide> block still renders for interactive sessions only, so that's what we assert here
         let mut p = default_placeholders();
-        p["is_non_interactive"] = serde_json::json!(false);
+        jset(&mut p, "is_non_interactive", serde_json::json!(false));
         let prompt = render_base(&default_renderer(), &p);
         assert!(
             prompt.contains("<user_guide>"),
@@ -761,7 +755,7 @@ mod tests {
     #[test]
     fn non_interactive_suppresses_shell_prefix_tip_and_user_guide() {
         let mut p = default_placeholders();
-        p["is_non_interactive"] = serde_json::json!(true);
+        jset(&mut p, "is_non_interactive", serde_json::json!(true));
         let prompt = render_base(&default_renderer(), &p);
         assert!(
             !prompt.contains("<user_guide>"),
@@ -792,9 +786,14 @@ mod tests {
         ];
         let mut subsets: Vec<Vec<ToolKind>> = vec![vec![], optional.to_vec()];
         for i in 0..optional.len() {
-            subsets.push(vec![optional[i]]);
+            let Some(&a) = optional.get(i) else {
+                continue;
+            };
+            subsets.push(vec![a]);
             for j in (i + 1)..optional.len() {
-                subsets.push(vec![optional[i], optional[j]]);
+                if let Some(&b) = optional.get(j) {
+                    subsets.push(vec![a, b]);
+                }
             }
         }
 
@@ -806,7 +805,7 @@ mod tests {
                     .collect();
                 let r = TemplateRenderer::new(tools, HashMap::new());
                 let mut p = default_placeholders();
-                p["memory_enabled"] = serde_json::json!(memory_enabled);
+                jset(&mut p, "memory_enabled", serde_json::json!(memory_enabled));
                 let rendered = r
                     .render_with_extra(&base_template(), &p)
                     .unwrap_or_else(|e| {

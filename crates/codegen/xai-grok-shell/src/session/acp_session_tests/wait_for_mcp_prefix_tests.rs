@@ -227,11 +227,11 @@ async fn progressive_body() {
     assert!(!wedged.chat_state_handle.get_conversation().await.is_empty());
 
     // A zero-turn rebuild rebuilds the prefix through the same policy, so a delivery-tools session still holds the wait.
-    let (_, rebuild_wait) =
-        timed(wedged.handle_rebuild_agent_for_definition(
-            xai_grok_agent::AgentDefinition::default_grok_build(),
-        ))
-        .await;
+    let (_, rebuild_wait) = timed(wedged.handle_rebuild_agent_for_definition(
+        xai_grok_agent::AgentDefinition::default_grok_build(),
+        xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+    ))
+    .await;
     assert!(
         rebuild_wait >= DELIVERY_TOOLS_DEFAULT_PREFIX_WAIT,
         "the rebuilt prefix runs the full delivery wait, got {rebuild_wait:?}"
@@ -397,7 +397,7 @@ async fn dispatch_body() {
                 .unwrap_or(serde_json::Value::Null);
             let result = match message.get("method").and_then(|m| m.as_str()) {
                 Some("initialize") => serde_json::json!({
-                    "protocolVersion": message["params"]["protocolVersion"],
+                    "protocolVersion": message.get("params").and_then(|p| p.get("protocolVersion")).cloned().unwrap_or(serde_json::Value::Null),
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "ready", "version": "0.0.0" },
                 }),

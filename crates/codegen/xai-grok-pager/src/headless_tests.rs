@@ -7,9 +7,18 @@ fn reap_request_for_task_kills_with_session_scope() {
     let request = super::reap_request_for_work(&work, &session_id).unwrap();
     assert_eq!(request.method.as_ref(), "x.ai/task/kill");
     let params: serde_json::Value = serde_json::from_str(request.params.get()).unwrap();
-    assert_eq!(params["sessionId"], "sess-1");
-    assert_eq!(params["taskId"], "task-42");
-    assert_eq!(params["source"], "teardown");
+    assert_eq!(
+        params.get("sessionId").and_then(|v| v.as_str()),
+        Some("sess-1")
+    );
+    assert_eq!(
+        params.get("taskId").and_then(|v| v.as_str()),
+        Some("task-42")
+    );
+    assert_eq!(
+        params.get("source").and_then(|v| v.as_str()),
+        Some("teardown")
+    );
 }
 
 /// A numeric `task_id` is coerced to its string form, tracked, and reaped on exit.
@@ -39,9 +48,15 @@ fn numeric_task_id_is_decoded_tracked_and_reaped() {
     let request = super::reap_request_for_work(&work, &session_id).unwrap();
     assert_eq!(request.method.as_ref(), "x.ai/task/kill");
     let params: serde_json::Value = serde_json::from_str(request.params.get()).unwrap();
-    assert_eq!(params["taskId"], "4242");
-    assert_eq!(params["sessionId"], "sess-1");
-    assert_eq!(params["source"], "teardown");
+    assert_eq!(params.get("taskId").and_then(|v| v.as_str()), Some("4242"));
+    assert_eq!(
+        params.get("sessionId").and_then(|v| v.as_str()),
+        Some("sess-1")
+    );
+    assert_eq!(
+        params.get("source").and_then(|v| v.as_str()),
+        Some("teardown")
+    );
 }
 
 #[test]
@@ -51,7 +66,10 @@ fn reap_request_for_subagent_cancels_with_typed_id() {
     let request = super::reap_request_for_work(&work, &session_id).unwrap();
     assert_eq!(request.method.as_ref(), "x.ai/subagent/cancel");
     let params: serde_json::Value = serde_json::from_str(request.params.get()).unwrap();
-    assert_eq!(params["subagentId"], "sub-7");
+    assert_eq!(
+        params.get("subagentId").and_then(|v| v.as_str()),
+        Some("sub-7")
+    );
 }
 
 /// A `task_backgrounded` delivered right at prompt completion is still recorded by the drain.
@@ -98,10 +116,11 @@ fn post_open_error_carries_real_session_context() {
     let pre_lines = pre.error("boom", None, 0, None);
     let pre_result = pre_lines
         .iter()
-        .find(|l| l["type"] == "result")
+        .find(|l| l.get("type").and_then(|t| t.as_str()) == Some("result"))
         .expect("result line");
     assert_eq!(
-        pre_result["session_id"], "",
+        pre_result.get("session_id").and_then(|v| v.as_str()),
+        Some(""),
         "pre-session error keeps the startup-error fallback"
     );
 
@@ -119,18 +138,25 @@ fn post_open_error_carries_real_session_context() {
     let post_lines = post.error("boom", None, 0, None);
     let post_result = post_lines
         .iter()
-        .find(|l| l["type"] == "result")
+        .find(|l| l.get("type").and_then(|t| t.as_str()) == Some("result"))
         .expect("result line");
     assert_eq!(
-        post_result["session_id"], "sess-real",
+        post_result.get("session_id").and_then(|v| v.as_str()),
+        Some("sess-real"),
         "post-open error carries the real session id"
     );
     let init = post_lines
         .iter()
-        .find(|l| l["type"] == "system" && l["subtype"] == "init")
+        .find(|l| {
+            l.get("type").and_then(|t| t.as_str()) == Some("system")
+                && l.get("subtype").and_then(|s| s.as_str()) == Some("init")
+        })
         .expect("system/init line");
-    assert_eq!(init["session_id"], "sess-real");
-    assert_eq!(init["cwd"], "/work/dir");
+    assert_eq!(
+        init.get("session_id").and_then(|v| v.as_str()),
+        Some("sess-real")
+    );
+    assert_eq!(init.get("cwd").and_then(|v| v.as_str()), Some("/work/dir"));
 }
 
 use super::*;
@@ -294,30 +320,44 @@ async fn worktree_create_opens_session_at_worktree_subdirectory() {
     );
     let spec = WorktreeSpec::from_cli(Some("fix"), Some("origin/main")).unwrap();
 
-    let opened = open_session_in_new_worktree(&tx, &launch_cwd, &spec, None)
-        .await
-        .unwrap();
+    let opened = open_session_in_new_worktree(
+        &tx,
+        &launch_cwd,
+        &spec,
+        None,
+        &crate::locale::LocaleContext::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(opened.session_id.0.as_ref(), "sess-new");
     assert_eq!(opened.cwd, wt_root.path().join("crates").join("pager"));
     let log = log.lock().unwrap();
-    let (method, params) = &log.ext[0];
+    let Some((method, params)) = log.ext.first() else {
+        panic!("expected an ext call: {:?}", log.ext);
+    };
     assert_eq!(method, "x.ai/git/worktree/create_from_worktree_sync");
     assert_eq!(
-        params["sourceWorktreePath"],
-        launch_cwd.to_string_lossy().as_ref()
+        params.get("sourceWorktreePath").and_then(|v| v.as_str()),
+        Some(launch_cwd.to_string_lossy().as_ref())
     );
-    assert_eq!(params["copyMode"], "clean");
-    assert_eq!(params["label"], "fix");
-    assert_eq!(params["gitRef"], "origin/main");
+    assert_eq!(
+        params.get("copyMode").and_then(|v| v.as_str()),
+        Some("clean")
+    );
+    assert_eq!(params.get("label").and_then(|v| v.as_str()), Some("fix"));
+    assert_eq!(
+        params.get("gitRef").and_then(|v| v.as_str()),
+        Some("origin/main")
+    );
     assert!(
-        params["newSessionId"]
-            .as_str()
-            .unwrap()
-            .starts_with("pager-")
+        params
+            .get("newSessionId")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.starts_with("pager-"))
     );
     assert_eq!(log.new_sessions.len(), 1);
-    assert_eq!(log.new_sessions[0].0, opened.cwd);
+    assert_eq!(log.new_sessions.first().map(|s| &s.0), Some(&opened.cwd));
     assert!(log.loads.is_empty());
 }
 
@@ -331,19 +371,34 @@ async fn worktree_create_with_session_id_names_worktree_and_session() {
     );
     let sid = "2d3c6b3e-3d43-4f0a-9d2e-2b6d1b6a9c11";
 
-    let opened =
-        open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), Some(sid))
-            .await
-            .unwrap();
+    let opened = open_session_in_new_worktree(
+        &tx,
+        source.path(),
+        &WorktreeSpec::default(),
+        Some(sid),
+        &crate::locale::LocaleContext::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(opened.session_id.0.as_ref(), sid);
     assert_eq!(opened.cwd, wt_root.path());
     let log = log.lock().unwrap();
-    assert_eq!(log.ext[0].1["newSessionId"], sid);
-    assert_eq!(log.ext[0].1["copyMode"], "dirty");
-    let meta = log.new_sessions[0]
-        .1
-        .as_ref()
+    let Some((_, params)) = log.ext.first() else {
+        panic!("expected an ext call: {:?}", log.ext);
+    };
+    assert_eq!(
+        params.get("newSessionId").and_then(|v| v.as_str()),
+        Some(sid)
+    );
+    assert_eq!(
+        params.get("copyMode").and_then(|v| v.as_str()),
+        Some("dirty")
+    );
+    let meta = log
+        .new_sessions
+        .first()
+        .and_then(|s| s.1.as_ref())
         .expect("session id forced via meta");
     assert_eq!(meta.get("sessionId").and_then(|v| v.as_str()), Some(sid));
 }
@@ -362,10 +417,16 @@ async fn worktree_create_failure_is_reported_before_any_session_opens() {
         ),
     ] {
         let (tx, log) = spawn_fake_agent(reply, Ok("never"));
-        let err = open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), None)
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = open_session_in_new_worktree(
+            &tx,
+            source.path(),
+            &WorktreeSpec::default(),
+            None,
+            &crate::locale::LocaleContext::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("couldn't create worktree"), "{err}");
         assert!(err.contains(expect), "{err}");
         assert!(log.lock().unwrap().new_sessions.is_empty());
@@ -381,14 +442,20 @@ async fn worktree_create_then_session_failure_names_the_orphaned_worktree() {
         Err("agent refused"),
     );
 
-    let err = open_session_in_new_worktree(&tx, source.path(), &WorktreeSpec::default(), None)
-        .await
-        .unwrap_err()
-        .to_string();
+    let err = open_session_in_new_worktree(
+        &tx,
+        source.path(),
+        &WorktreeSpec::default(),
+        None,
+        &crate::locale::LocaleContext::default(),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
 
     assert!(err.contains("agent refused"), "{err}");
     assert!(err.contains(&wt_root.path().display().to_string()), "{err}");
-    assert!(err.contains("grok worktree rm"), "{err}");
+    assert!(err.contains("grok-zh worktree rm"), "{err}");
 }
 
 #[tokio::test]
@@ -422,18 +489,31 @@ async fn worktree_resume_loads_reported_session_without_re_restoring_code() {
     assert_eq!(opened.session_id.0.as_ref(), "forked-in-worktree");
     assert_eq!(opened.cwd, eff_cwd);
     let log = log.lock().unwrap();
-    let (method, params) = &log.ext[0];
+    let Some((method, params)) = log.ext.first() else {
+        panic!("expected an ext call: {:?}", log.ext);
+    };
     assert_eq!(method, "x.ai/git/worktree/resume_session");
-    assert_eq!(params["sessionId"], "orig");
     assert_eq!(
-        params["sourceCwd"],
-        source.path().to_string_lossy().as_ref()
+        params.get("sessionId").and_then(|v| v.as_str()),
+        Some("orig")
     );
-    assert_eq!(params["copyMode"], "clean");
-    assert_eq!(params["gitRef"], "v1.2");
-    assert_eq!(params["restoreCode"], true);
+    assert_eq!(
+        params.get("sourceCwd").and_then(|v| v.as_str()),
+        Some(source.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        params.get("copyMode").and_then(|v| v.as_str()),
+        Some("clean")
+    );
+    assert_eq!(params.get("gitRef").and_then(|v| v.as_str()), Some("v1.2"));
+    assert_eq!(
+        params.get("restoreCode").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     assert!(params.get("worktreeType").is_some());
-    let (loaded_sid, loaded_cwd, meta) = &log.loads[0];
+    let Some((loaded_sid, loaded_cwd, meta)) = log.loads.first() else {
+        panic!("expected a load: {:?}", log.loads);
+    };
     assert_eq!(loaded_sid, "forked-in-worktree");
     assert_eq!(loaded_cwd, &eff_cwd);
     let meta = meta.as_ref().unwrap();
@@ -516,12 +596,15 @@ fn strict_valid_rules_parse_deny_before_allow() {
     let deny = vec![s("Bash(rm*)"), s("Edit(/etc/**)")];
     let rules = parse_permission_rules_strict(&allow, &deny).unwrap();
     assert_eq!(rules.len(), 3);
-    assert_eq!(rules[0].action, RuleAction::Deny);
-    assert!(matches!(rules[0].tool, ToolFilter::Bash));
-    assert_eq!(rules[1].action, RuleAction::Deny);
-    assert!(matches!(rules[1].tool, ToolFilter::Edit));
-    assert_eq!(rules[2].action, RuleAction::Allow);
-    assert!(matches!(rules[2].tool, ToolFilter::Bash));
+    let [r0, r1, r2] = rules.as_slice() else {
+        panic!("expected three rules: {rules:?}");
+    };
+    assert_eq!(r0.action, RuleAction::Deny);
+    assert!(matches!(r0.tool, ToolFilter::Bash));
+    assert_eq!(r1.action, RuleAction::Deny);
+    assert!(matches!(r1.tool, ToolFilter::Edit));
+    assert_eq!(r2.action, RuleAction::Allow);
+    assert!(matches!(r2.tool, ToolFilter::Bash));
 }
 
 #[test]
@@ -554,10 +637,13 @@ fn lenient_skips_invalid_keeps_valid() {
     let deny = vec![s("EnterWorktree(foo)"), s("Bash(rm*)")];
     let rules = parse_permission_rules_lenient(&allow, &deny);
     assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0].action, RuleAction::Deny);
-    assert_eq!(rules[0].pattern.as_deref(), Some("rm*"));
-    assert_eq!(rules[1].action, RuleAction::Allow);
-    assert_eq!(rules[1].pattern.as_deref(), Some("npm*"));
+    let [r0, r1] = rules.as_slice() else {
+        panic!("expected two rules: {rules:?}");
+    };
+    assert_eq!(r0.action, RuleAction::Deny);
+    assert_eq!(r0.pattern.as_deref(), Some("rm*"));
+    assert_eq!(r1.action, RuleAction::Allow);
+    assert_eq!(r1.pattern.as_deref(), Some("npm*"));
 }
 
 #[test]
@@ -572,20 +658,26 @@ fn empty_inputs_produce_empty_rules() {
 fn domain_mode_web_fetch() {
     let rules = parse_permission_rules_strict(&[], &[s("WebFetch(domain:evil.com)")]).unwrap();
     assert_eq!(rules.len(), 1);
-    assert!(matches!(rules[0].tool, ToolFilter::WebFetch));
+    let Some(rule) = rules.first() else {
+        panic!("expected a WebFetch rule: {rules:?}");
+    };
+    assert!(matches!(rule.tool, ToolFilter::WebFetch));
     assert_eq!(
-        rules[0].pattern_mode,
+        rule.pattern_mode,
         xai_grok_workspace::permission::types::PatternMode::Domain
     );
-    assert_eq!(rules[0].pattern.as_deref(), Some("evil.com"));
+    assert_eq!(rule.pattern.as_deref(), Some("evil.com"));
 }
 
 #[test]
 fn bash_colon_wildcard_deny_translates_to_prefix() {
     let rules = parse_permission_rules_strict(&[], &[s("Bash(sed:*)")]).unwrap();
     assert_eq!(rules.len(), 1);
-    assert!(matches!(rules[0].tool, ToolFilter::Bash));
-    assert_eq!(rules[0].pattern.as_deref(), Some("sed"));
+    let Some(rule) = rules.first() else {
+        panic!("expected a Bash rule: {rules:?}");
+    };
+    assert!(matches!(rule.tool, ToolFilter::Bash));
+    assert_eq!(rule.pattern.as_deref(), Some("sed"));
 }
 
 #[test]
@@ -594,10 +686,10 @@ fn structured_output_without_meta_errors_never_parses_text() {
     emitter.text_buffer = r#"{"name":"alice","age":30}"#.into();
     emitter.set_structured_output_from_meta(serde_json::json!({}).as_object());
     let result = emitter.build_json_result("EndTurn", "sess-1", "req-1");
-    assert!(result["structuredOutput"].is_null());
+    assert!(result.get("structuredOutput").is_none_or(|v| v.is_null()));
     assert_eq!(
-        result["structuredOutputError"],
-        "model did not produce structured output"
+        result.get("structuredOutputError").and_then(|v| v.as_str()),
+        Some("model did not produce structured output")
     );
 }
 
@@ -609,7 +701,13 @@ fn structured_output_from_meta_wins_over_text_buffer() {
         serde_json::json!({"structuredOutput": {"name": "carol"}}).as_object(),
     );
     let result = emitter.build_json_result("EndTurn", "sess-1", "req-1");
-    assert_eq!(result["structuredOutput"]["name"], "carol");
+    assert_eq!(
+        result
+            .get("structuredOutput")
+            .and_then(|o| o.get("name"))
+            .and_then(|n| n.as_str()),
+        Some("carol")
+    );
     assert!(result.get("structuredOutputError").is_none());
 
     let mut emitter = HeadlessEmitter::new(OutputFormat::Json, true);
@@ -620,10 +718,10 @@ fn structured_output_from_meta_wins_over_text_buffer() {
         .as_object(),
     );
     let result = emitter.build_json_result("EndTurn", "sess-1", "req-1");
-    assert!(result["structuredOutput"].is_null());
+    assert!(result.get("structuredOutput").is_none_or(|v| v.is_null()));
     assert_eq!(
-        result["structuredOutputError"],
-        "output does not match the required schema"
+        result.get("structuredOutputError").and_then(|v| v.as_str()),
+        Some("output does not match the required schema")
     );
 }
 
@@ -639,7 +737,13 @@ fn streaming_json_structured_output_emits_from_meta() {
     );
     let mut target = serde_json::json!({});
     emitter.attach_structured_output(&mut target);
-    assert_eq!(target["structuredOutput"]["name"], "bob");
+    assert_eq!(
+        target
+            .get("structuredOutput")
+            .and_then(|o| o.get("name"))
+            .and_then(|n| n.as_str()),
+        Some("bob")
+    );
     assert!(target.get("structuredOutputError").is_none());
 }
 
@@ -766,45 +870,37 @@ fn compact_failure_plain_output_localizes_fixed_chrome_only() {
 }
 
 #[test]
-fn zh_localization_memory_flush_plain_output_localizes_fixed_chrome_and_known_results() {
+fn zh_localization_memory_flush_plain_output_preserves_upstream_privacy_boundary() {
     let zh = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
         locale: crate::locale::UiLocale::ZhCn,
         source: crate::locale::LocaleSource::Cli,
     });
+    let en = crate::locale::LocaleContext::default();
     assert_eq!(
         super::reducer::Lifecycle::MemoryFlushStarted.plain_message_with_locale(&zh),
         "正在刷新记忆。"
     );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "written".into(),
-            path: Some("/tmp/MEMORY.md".into()),
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：已写入；路径：/tmp/MEMORY.md"
-    );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "rejected: provider detail".into(),
-            path: None,
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：已拒绝：provider detail。"
-    );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "future opaque result".into(),
-            path: None,
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：future opaque result。"
-    );
-    assert_eq!(
-        super::reducer::Lifecycle::MemoryFlushCompleted {
-            result: "future {path} result".into(),
-            path: Some("/tmp/MEMORY.md".into()),
-        }
-        .plain_message_with_locale(&zh),
-        "记忆刷新结果：future {path} result；路径：/tmp/MEMORY.md"
-    );
+    for (result, path) in [
+        ("written", Some("/tmp/MEMORY.md")),
+        ("rejected: provider detail", None),
+        ("future opaque result", None),
+        ("future {path} result", Some("/tmp/MEMORY.md")),
+        (
+            "\u{1b}]8;;https://untrusted.example\u{7}private",
+            Some("/Users/alice/private/session.jsonl"),
+        ),
+    ] {
+        let event = super::reducer::Lifecycle::MemoryFlushCompleted {
+            result: result.to_owned(),
+            path: path.map(str::to_owned),
+        };
+        assert_eq!(event.plain_message_with_locale(&zh), "记忆刷新已完成。");
+        assert_eq!(event.plain_message_with_locale(&en), event.plain_message());
+        let mut reducer = super::reducer::reducer_for(OutputFormat::StreamingJson).unwrap();
+        let lines = reducer.reduce(super::reducer::StreamEvent::Lifecycle(event));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["type"], "memory_flush_completed");
+        assert_eq!(lines[0]["result"], result);
+        assert_eq!(lines[0]["path"], serde_json::json!(path));
+    }
 }

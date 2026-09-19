@@ -2,9 +2,31 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::v2::{MAX_DIRECTORY_ENTRIES, MAX_DISCOVERED_FILES, excluded_manifest_paths};
+
 pub(super) fn list_memory_files(
     global_dir: &Path,
     workspace_dir: &Path,
+) -> std::io::Result<Vec<PathBuf>> {
+    list_memory_files_with_caps(
+        global_dir,
+        workspace_dir,
+        MAX_DIRECTORY_ENTRIES,
+        MAX_DISCOVERED_FILES,
+    )
+}
+
+/// Enumerate browsable files with explicit caps so the bounds are testable.
+///
+/// A directory holding more than `max_entries` entries is an error rather than
+/// something to walk to exhaustion, and at most `max_files` paths are returned.
+/// Files the state ledger hides (record-only/shadow observations, tombstones
+/// awaiting unlink) are omitted so browse matches the manifest.
+fn list_memory_files_with_caps(
+    global_dir: &Path,
+    workspace_dir: &Path,
+    max_entries: usize,
+    max_files: usize,
 ) -> std::io::Result<Vec<PathBuf>> {
     let storage_root = global_dir.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -27,9 +49,10 @@ pub(super) fn list_memory_files(
             Err(error) => return Err(error),
         };
         ensure_descendant(&canonical_scope, &canonical_root)?;
+        let excluded = excluded_manifest_paths(scope_dir).map_err(std::io::Error::other)?;
 
         let manifest = scope_dir.join("MEMORY.md");
-        if is_safe_markdown_file(&manifest, &canonical_scope)? {
+        if is_safe_markdown_file(&manifest, &canonical_scope)? && files.len() < max_files {
             files.push(manifest);
         }
 
@@ -43,13 +66,38 @@ pub(super) fn list_memory_files(
             };
             ensure_descendant(&canonical_directory, &canonical_scope)?;
 
-            for entry in std::fs::read_dir(&directory)? {
-                let path = entry?.path();
-                if path.extension().and_then(|value| value.to_str()) == Some("md")
-                    && is_safe_markdown_file(&path, &canonical_scope)?
-                {
-                    files.push(path);
+            for (entry_index, entry) in std::fs::read_dir(&directory)?.enumerate() {
+                if entry_index >= max_entries {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "v2 memory directory {} exceeds the {max_entries}-entry safety limit",
+                            directory.display()
+                        ),
+                    ));
                 }
+                let path = entry?.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("md")
+                    || !is_safe_markdown_file(&path, &canonical_scope)?
+                {
+                    continue;
+                }
+                let is_excluded = path
+                    .strip_prefix(scope_dir)
+                    .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                    .is_ok_and(|relative| excluded.contains(&relative));
+                if is_excluded {
+                    continue;
+                }
+                if files.len() >= max_files {
+                    tracing::warn!(
+                        directory = %directory.display(),
+                        limit = max_files,
+                        "v2 memory listing reached its file cap; omitting remaining files"
+                    );
+                    break;
+                }
+                files.push(path);
             }
         }
     }

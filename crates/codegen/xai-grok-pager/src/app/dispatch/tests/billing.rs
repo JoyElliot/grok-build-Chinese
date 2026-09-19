@@ -3,8 +3,6 @@
 use super::*;
 use xai_grok_shell::sampling::error::is_free_usage_exhausted_error;
 
-// ── Credit-limit upsell / max-tier tests ───────────────────────────
-
 /// Open the non-max-tier Q&A upsell modal. Panics if the modal was not created.
 fn open_upsell_qa(app: &mut AppView, mode: CreditLimitUpsellMode) {
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -27,6 +25,35 @@ fn agent_qv(app: &AppView) -> &crate::views::question_view::QuestionViewState {
         .unwrap()
 }
 
+fn first_question(
+    qv: &crate::views::question_view::QuestionViewState,
+) -> &crate::views::question_view::Question {
+    match qv.questions.first() {
+        Some(q) => q,
+        None => panic!("expected a question"),
+    }
+}
+
+fn option_at(
+    q: &crate::views::question_view::Question,
+    i: usize,
+) -> &crate::views::question_view::QuestionOption {
+    match q.options.get(i) {
+        Some(o) => o,
+        None => panic!("expected option {i}"),
+    }
+}
+
+fn set_first_selection(
+    qv: &mut crate::views::question_view::QuestionViewState,
+    sel: crate::views::question_view::QuestionSelection,
+) {
+    match qv.selections.first_mut() {
+        Some(slot) => *slot = sel,
+        None => panic!("expected a selection slot"),
+    }
+}
+
 fn test_stashed_prompt(text: &str) -> crate::app::agent::InFlightPrompt {
     crate::app::agent::InFlightPrompt {
         text: text.into(),
@@ -39,7 +66,7 @@ fn test_stashed_prompt(text: &str) -> crate::app::agent::InFlightPrompt {
 
 /// Dispatch a `BillingFetched` task result with sensible defaults.
 fn open_usage_modal_nonce(app: &AppView) -> u64 {
-    match app.agents[&AgentId(0)].active_modal.as_ref() {
+    match test_agent(app, AgentId(0)).active_modal.as_ref() {
         Some(crate::views::modal::ActiveModal::UsageInfo { state }) => state.fetch_nonce,
         _ => 0,
     }
@@ -101,7 +128,7 @@ fn credit_limit_retry_preserves_image_submission_state() {
             .iter()
             .any(|effect| matches!(effect, Effect::SendPromptBlocks { .. }))
     );
-    let in_flight = app.agents[&AgentId(0)]
+    let in_flight = test_agent(&app, AgentId(0))
         .session
         .in_flight_prompt
         .as_ref()
@@ -243,14 +270,14 @@ fn retry_credit_limit_prompt_toasts_when_stash_empty() {
     let mut app = test_app_with_agent();
     let effects = dispatch(Action::RetryCreditLimitPrompt, &mut app);
     assert!(effects.is_empty(), "expected no send, got {effects:?}");
-    let toast = app.agents[&AgentId(0)]
+    let toast = test_agent(&app, AgentId(0))
         .toast
         .as_ref()
         .map(|(m, _)| m.as_str());
     assert_eq!(toast, Some("No prompt to retry."));
-    let has_system = (0..app.agents[&AgentId(0)].scrollback.len()).any(|i| {
+    let has_system = (0..test_agent(&app, AgentId(0)).scrollback.len()).any(|i| {
         matches!(
-            &app.agents[&AgentId(0)].scrollback.entry(i).unwrap().block,
+            &test_agent(&app, AgentId(0)).scrollback.entry(i).unwrap().block,
             crate::scrollback::block::RenderBlock::System(sys)
                 if sys.text.contains("No prompt to retry")
         )
@@ -273,7 +300,7 @@ fn credit_limit_translate_retry_option_dispatches_retry() {
         .question_view
         .take()
         .expect("expected credit-limit upsell modal");
-    qv.selections[0] = QuestionSelection::Single(Some(2));
+    set_first_selection(&mut qv, QuestionSelection::Single(Some(2)));
     let kind = qv
         .local_kind
         .take()
@@ -299,7 +326,7 @@ fn credit_limit_translate_max_tier_retry_is_second_option() {
         .question_view
         .take()
         .expect("expected credit-limit upsell modal");
-    qv.selections[0] = QuestionSelection::Single(Some(1));
+    set_first_selection(&mut qv, QuestionSelection::Single(Some(1)));
     let kind = qv
         .local_kind
         .take()
@@ -347,15 +374,15 @@ fn upsell_non_max_shows_qa_with_retry_option() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
-    let q = &agent_qv(&app).questions[0];
+    let q = first_question(agent_qv(&app));
     assert_eq!(q.options.len(), 3);
-    assert_eq!(q.options[0].label, "Upgrade tier");
-    assert_eq!(q.options[0].id.as_deref(), Some(UPSELL_URL_UPGRADE));
-    assert_eq!(q.options[1].label, "Pay as you go");
-    assert_eq!(q.options[1].id.as_deref(), Some(UPSELL_URL_PAYG));
-    assert_eq!(q.options[2].label, "Try Again");
+    assert_eq!(option_at(q, 0).label, "Upgrade tier");
+    assert_eq!(option_at(q, 0).id.as_deref(), Some(UPSELL_URL_UPGRADE));
+    assert_eq!(option_at(q, 1).label, "Pay as you go");
+    assert_eq!(option_at(q, 1).id.as_deref(), Some(UPSELL_URL_PAYG));
+    assert_eq!(option_at(q, 2).label, "Try Again");
     assert_eq!(
-        q.options[2].id.as_deref(),
+        option_at(q, 2).id.as_deref(),
         Some(crate::app::dispatch::CREDIT_LIMIT_RETRY_OPTION_ID)
     );
 }
@@ -367,10 +394,10 @@ fn upsell_non_max_payg_on_shows_increase_label() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: true },
     );
-    let q = &agent_qv(&app).questions[0];
+    let q = first_question(agent_qv(&app));
     assert_eq!(q.options.len(), 3);
-    assert_eq!(q.options[1].label, "Increase limit");
-    assert_eq!(q.options[2].label, "Try Again");
+    assert_eq!(option_at(q, 1).label, "Increase limit");
+    assert_eq!(option_at(q, 2).label, "Try Again");
 }
 
 #[test]
@@ -380,7 +407,7 @@ fn upsell_non_max_qa_heading_is_credit_limit_when_payg_off() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
-    let heading = &agent_qv(&app).questions[0].question;
+    let heading = &first_question(agent_qv(&app)).question;
     assert!(
         heading.contains("credit limit"),
         "expected 'credit limit' in heading, got: {heading}"
@@ -394,7 +421,7 @@ fn upsell_non_max_qa_heading_is_spending_cap_when_payg_on() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: true },
     );
-    let heading = &agent_qv(&app).questions[0].question;
+    let heading = &first_question(agent_qv(&app)).question;
     assert!(
         heading.contains("spending cap"),
         "expected 'spending cap' in heading, got: {heading}"
@@ -408,7 +435,7 @@ fn upsell_non_max_upgrade_url_is_supergrok() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
-    let url = agent_qv(&app).questions[0].options[0]
+    let url = option_at(first_question(agent_qv(&app)), 0)
         .id
         .as_deref()
         .unwrap();
@@ -423,7 +450,7 @@ fn upsell_non_max_payg_url_is_usage() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
-    let url = agent_qv(&app).questions[0].options[1]
+    let url = option_at(first_question(agent_qv(&app)), 1)
         .id
         .as_deref()
         .unwrap();
@@ -438,7 +465,7 @@ fn upsell_non_max_payg_on_description_mentions_spending_cap() {
         CreditLimitUpsellMode::LegacyPayg { enabled: true },
     );
     assert_eq!(
-        agent_qv(&app).questions[0].options[1].description,
+        option_at(first_question(agent_qv(&app)), 1).description,
         "Raise your pay-as-you-go spending cap"
     );
 }
@@ -451,7 +478,7 @@ fn upsell_non_max_payg_off_description_mentions_on_demand() {
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
     assert_eq!(
-        agent_qv(&app).questions[0].options[1].description,
+        option_at(first_question(agent_qv(&app)), 1).description,
         "Enable pay-as-you-go credits for on-demand usage"
     );
 }
@@ -460,18 +487,18 @@ fn upsell_non_max_payg_off_description_mentions_on_demand() {
 fn upsell_non_max_unified_shows_buy_credits() {
     let mut app = test_app_with_agent();
     open_upsell_qa(&mut app, CreditLimitUpsellMode::UnifiedCredits);
-    let q = &agent_qv(&app).questions[0];
+    let q = first_question(agent_qv(&app));
     assert!(q.question.contains("weekly limit"));
     assert_eq!(
-        q.options[0].description,
+        option_at(q, 0).description,
         "Upgrade to a higher tier for more usage"
     );
-    assert_eq!(q.options[1].label, "Buy more credits");
+    assert_eq!(option_at(q, 1).label, "Buy more credits");
     assert_eq!(
-        q.options[1].description,
+        option_at(q, 1).description,
         "Purchase credits to keep using Grok Build"
     );
-    assert_eq!(q.options[2].label, "Try Again");
+    assert_eq!(option_at(q, 2).label, "Try Again");
 }
 
 #[test]
@@ -484,14 +511,14 @@ fn upsell_max_unified_qa_omits_upgrade() {
         before,
         "max-tier upsell must not push a scrollback card"
     );
-    let q = &agent_qv(&app).questions[0];
+    let q = first_question(agent_qv(&app));
     assert!(q.question.contains("weekly limit"));
     assert_eq!(q.options.len(), 2);
-    assert_eq!(q.options[0].label, "Buy more credits");
-    assert_eq!(q.options[0].id.as_deref(), Some(UPSELL_URL_PAYG));
-    assert_eq!(q.options[1].label, "Try Again");
+    assert_eq!(option_at(q, 0).label, "Buy more credits");
+    assert_eq!(option_at(q, 0).id.as_deref(), Some(UPSELL_URL_PAYG));
+    assert_eq!(option_at(q, 1).label, "Try Again");
     assert_eq!(
-        q.options[1].id.as_deref(),
+        option_at(q, 1).id.as_deref(),
         Some(crate::app::dispatch::CREDIT_LIMIT_RETRY_OPTION_ID)
     );
 }
@@ -574,7 +601,7 @@ fn upsell_non_max_qa_has_single_select() {
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
     assert_eq!(
-        agent_qv(&app).questions[0].multi_select,
+        first_question(agent_qv(&app)).multi_select,
         Some(false),
         "upsell should be single-select"
     );
@@ -627,12 +654,12 @@ fn upsell_max_tier_opens_qa_without_upgrade_payg_off() {
     );
     assert!(app.agents.get(&AgentId(0)).unwrap().question_view.is_some());
     assert_eq!(agent_scrollback_len(&app), before);
-    let q = &agent_qv(&app).questions[0];
+    let q = first_question(agent_qv(&app));
     assert!(q.question.contains("credit limit"));
     assert_eq!(q.options.len(), 2);
-    assert_eq!(q.options[0].label, "Pay as you go");
-    assert_eq!(q.options[0].id.as_deref(), Some(UPSELL_URL_PAYG));
-    assert_eq!(q.options[1].label, "Try Again");
+    assert_eq!(option_at(q, 0).label, "Pay as you go");
+    assert_eq!(option_at(q, 0).id.as_deref(), Some(UPSELL_URL_PAYG));
+    assert_eq!(option_at(q, 1).label, "Try Again");
 }
 
 #[test]
@@ -642,11 +669,11 @@ fn upsell_max_tier_opens_qa_without_upgrade_payg_on() {
         &mut app,
         CreditLimitUpsellMode::LegacyPayg { enabled: true },
     );
-    let q = &agent_qv(&app).questions[0];
+    let q = first_question(agent_qv(&app));
     assert!(q.question.contains("spending cap"));
     assert_eq!(q.options.len(), 2);
-    assert_eq!(q.options[0].label, "Increase limit");
-    assert_eq!(q.options[1].label, "Try Again");
+    assert_eq!(option_at(q, 0).label, "Increase limit");
+    assert_eq!(option_at(q, 1).label, "Try Again");
 }
 
 #[test]
@@ -670,7 +697,7 @@ fn upsell_max_tier_buy_url_is_payg() {
         CreditLimitUpsellMode::LegacyPayg { enabled: false },
     );
     assert_eq!(
-        agent_qv(&app).questions[0].options[0].id.as_deref(),
+        option_at(first_question(agent_qv(&app)), 0).id.as_deref(),
         Some(UPSELL_URL_PAYG)
     );
 }
@@ -693,8 +720,6 @@ fn upsell_max_tier_idempotent_when_question_view_already_open() {
         "second call must not replace the open modal"
     );
 }
-
-// ── ShowUsage / session usage ───────────────────────────────────────
 
 fn is_session_usage_fetch(effects: &[Effect]) -> bool {
     matches!(
@@ -899,8 +924,6 @@ fn session_usage_failed_drops_stale_session() {
     assert!(fail_session_usage(&mut app, "old-session", "boom").is_empty());
     assert_eq!(agent_scrollback_len(&app), before);
 }
-
-// ── BillingFetched dispatch tests ───────────────────────────────────
 
 #[test]
 fn billing_fetched_updates_app_credit_balance() {
@@ -1173,8 +1196,6 @@ fn app_billing_error_keeps_cached_balance() {
     assert_eq!(app.credit_balance.as_ref().map(|b| b.usage_pct), Some(77.0));
 }
 
-// ── BillingError dispatch tests ─────────────────────────────────────
-
 #[test]
 fn billing_error_silent_does_not_push_scrollback() {
     let mut app = test_app_with_agent();
@@ -1214,8 +1235,6 @@ fn billing_error_non_silent_pushes_error_message() {
         "non-silent billing error should push an error message"
     );
 }
-
-// ── Free-usage paywall tests ────────────────────────────────────────
 
 #[test]
 fn free_usage_error_detected_by_embedded_code() {
@@ -1265,7 +1284,7 @@ fn free_usage_upsell_shows_three_options_with_exact_labels() {
             }
         )
     ));
-    let q = &qv.questions[0];
+    let q = first_question(qv);
     assert_eq!(q.question, "You hit your free usage limit.");
     let expected = [
         (
@@ -1328,10 +1347,10 @@ fn free_usage_failure_opens_paywall_modal() {
     // 1. Real send.
     let effects = dispatch(Action::SendPrompt("draw me a cat".into()), &mut app);
     assert!(
-        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "draw me a cat"),
+        matches!(effects.first(), Some(Effect::SendPrompt { text, .. }) if text == "draw me a cat"),
         "send must dispatch: {effects:?}"
     );
-    let prompt_id = app.agents[&id].session.current_prompt_id.clone();
+    let prompt_id = test_agent(&app, id).session.current_prompt_id.clone();
     assert!(prompt_id.is_some(), "send must mint a prompt id");
 
     // 2 and 3. Real notification sequence through the production handler.
@@ -1372,7 +1391,7 @@ fn free_usage_failure_opens_paywall_modal() {
         &mut app,
     );
     assert!(
-        app.agents[&id].question_view.is_some(),
+        test_agent(&app, id).question_view.is_some(),
         "paywall modal must open"
     );
 }
@@ -1393,15 +1412,13 @@ fn free_usage_translate_local_submit_maps_options() {
     };
 
     for idx in [0, 1, 2] {
-        qv.selections[0] = QuestionSelection::Single(Some(idx));
+        set_first_selection(&mut qv, QuestionSelection::Single(Some(idx)));
         match translate_local_submit_for_test(&qv, kind(), false) {
             InputOutcome::Action(Action::OpenUrl(url)) => assert_eq!(url, UPSELL_URL_UPGRADE),
             other => panic!("expected OpenUrl for option {idx}, got {other:?}"),
         }
     }
 }
-
-// ── Restricted-command upsell tests ─────────────────────────────────
 
 /// Submitting a tier-restricted command opens the three-option SuperGrok upsell and neither runs the command nor leaks the text to the model.
 #[test]
@@ -1419,7 +1436,7 @@ fn restricted_command_submit_opens_three_option_upsell() {
         effects.is_empty(),
         "restricted command must not produce a SendPrompt: {effects:?}"
     );
-    let agent = &app.agents[&id];
+    let agent = test_agent(&app, id);
     assert!(
         agent.session.pending_prompts.is_empty(),
         "restricted command must not be enqueued"
@@ -1435,15 +1452,15 @@ fn restricted_command_submit_opens_three_option_upsell() {
             }
         )
     ));
-    let q = &qv.questions[0];
+    let q = first_question(qv);
     assert_eq!(q.question, "Unlock all features with SuperGrok.");
     assert_eq!(q.options.len(), 3);
-    assert_eq!(q.options[0].label, "Upgrade to SuperGrok");
-    assert_eq!(q.options[0].id.as_deref(), Some(UPSELL_URL_UPGRADE));
-    assert_eq!(q.options[1].label, "Upgrade to SuperGrok Plus");
-    assert_eq!(q.options[1].id.as_deref(), Some(UPSELL_URL_UPGRADE));
-    assert_eq!(q.options[2].label, "Upgrade to SuperGrok Heavy");
-    assert_eq!(q.options[2].id.as_deref(), Some(UPSELL_URL_UPGRADE));
+    assert_eq!(option_at(q, 0).label, "Upgrade to SuperGrok");
+    assert_eq!(option_at(q, 0).id.as_deref(), Some(UPSELL_URL_UPGRADE));
+    assert_eq!(option_at(q, 1).label, "Upgrade to SuperGrok Plus");
+    assert_eq!(option_at(q, 1).id.as_deref(), Some(UPSELL_URL_UPGRADE));
+    assert_eq!(option_at(q, 2).label, "Upgrade to SuperGrok Heavy");
+    assert_eq!(option_at(q, 2).id.as_deref(), Some(UPSELL_URL_UPGRADE));
 }
 
 /// Aliases of a restricted command hit the same upsell (deny-list matching covers aliases via the registry).
@@ -1459,7 +1476,10 @@ fn restricted_command_alias_also_upsells() {
     let effects = dispatch(Action::SendPrompt("/cost".into()), &mut app);
 
     assert!(effects.is_empty());
-    assert!(app.agents[&id].question_view.is_some(), "upsell must open");
+    assert!(
+        test_agent(&app, id).question_view.is_some(),
+        "upsell must open"
+    );
 }
 
 /// A restricted submit while ANOTHER question modal is already open must not silently drop the typed text.
@@ -1482,7 +1502,7 @@ fn restricted_command_with_open_modal_keeps_composer_text() {
     let effects = dispatch(Action::SendPrompt("/imagine a sunset".into()), &mut app);
 
     assert!(effects.is_empty(), "no passthrough / send: {effects:?}");
-    let agent = &app.agents[&id];
+    let agent = test_agent(&app, id);
     assert_eq!(
         agent.prompt.text(),
         "/imagine a sunset",
@@ -1518,16 +1538,14 @@ fn unknown_non_restricted_command_still_passes_through() {
 
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/frobnicate arg"),
+        matches!(effects.first(), Some(Effect::SendPrompt { text, .. }) if text == "/frobnicate arg"),
         "unknown command must still pass through: {effects:?}"
     );
     assert!(
-        app.agents[&id].question_view.is_none(),
+        test_agent(&app, id).question_view.is_none(),
         "no upsell for genuinely unknown commands"
     );
 }
-
-// ── Browser-unavailable URL fallback ────────────────────────────────
 
 /// `Action::OpenUrl` for a billing CTA must push a scrollback system message that includes the full URL when the OS browser opener cannot run.
 /// The opener failure is simulated via a broken `GROK_TEST_OPEN_URL_FILE` path.
@@ -1559,7 +1577,7 @@ fn open_url_shows_manual_url_when_browser_unavailable() {
         text,
         crate::app::link_opener::browser_unavailable_message(url)
     );
-    let toast = app.agents[&AgentId(0)]
+    let toast = test_agent(&app, AgentId(0))
         .toast
         .as_ref()
         .map(|(m, _)| m.as_str());
@@ -1681,7 +1699,7 @@ fn credit_limit_upsell_submit_shows_url_when_browser_unavailable() {
         .take()
         .expect("expected credit-limit upsell modal");
     // Select option 1, "Buy more credits" (credits / usage URL)
-    qv.selections[0] = QuestionSelection::Single(Some(1));
+    set_first_selection(&mut qv, QuestionSelection::Single(Some(1)));
     let kind = LocalQuestionKind::CreditLimitUpsell {
         choices: vec![
             xai_grok_telemetry::events::CreditLimitChoice::UpgradeTier,
@@ -1719,7 +1737,7 @@ fn billing_fetched_clears_usage_modal_loading() {
         true,
         Some("SuperGrok".into()),
     );
-    let agent = &app.agents[&AgentId(0)];
+    let agent = test_agent(&app, AgentId(0));
     let Some(crate::views::modal::ActiveModal::UsageInfo { state }) = agent.active_modal.as_ref()
     else {
         panic!("expected the usage modal to be open");
@@ -1746,7 +1764,7 @@ fn background_billing_reply_does_not_settle_modal_loading() {
         &mut app,
     );
     let Some(crate::views::modal::ActiveModal::UsageInfo { state }) =
-        app.agents[&AgentId(0)].active_modal.as_ref()
+        test_agent(&app, AgentId(0)).active_modal.as_ref()
     else {
         panic!("expected the usage modal to be open");
     };
@@ -1770,7 +1788,7 @@ fn billing_error_surfaces_in_usage_modal_without_scrollback() {
         &mut app,
     );
     let Some(crate::views::modal::ActiveModal::UsageInfo { state }) =
-        app.agents[&AgentId(0)].active_modal.as_ref()
+        test_agent(&app, AgentId(0)).active_modal.as_ref()
     else {
         panic!("expected the usage modal to be open");
     };

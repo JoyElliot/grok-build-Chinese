@@ -1,5 +1,7 @@
 # Background Tasks and Monitoring
 
+[简体中文](zh-CN/20-background-tasks.md)
+
 Grok runs long-lived processes without blocking the conversation. This document covers background commands, the `/loop` command, the `monitor` tool, and the scheduler.
 
 ---

@@ -94,13 +94,21 @@ fn strip_system_reminder_blocks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find(OPEN) {
-        out.push_str(&rest[..start]);
-        let after_open = &rest[start + OPEN.len()..];
+        let Some(before) = rest.get(..start) else {
+            break;
+        };
+        out.push_str(before);
+        let Some(after_open) = rest.get(start + OPEN.len()..) else {
+            return out.trim().to_string();
+        };
         // An unterminated reminder drops the remainder; it is system text
         let Some(end) = after_open.find(CLOSE) else {
             return out.trim().to_string();
         };
-        rest = &after_open[end + CLOSE.len()..];
+        let Some(next) = after_open.get(end + CLOSE.len()..) else {
+            return out.trim().to_string();
+        };
+        rest = next;
     }
     out.push_str(rest);
     out.trim().to_string()

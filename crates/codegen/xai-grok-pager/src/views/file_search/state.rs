@@ -62,6 +62,8 @@ pub struct FileSearchState {
     /// Test-only count of daemon builds, to prove reuse (no drop-and-rebuild).
     #[cfg(test)]
     daemon_builds: usize,
+    #[cfg(test)]
+    poll_calls: u64,
     /// Latest results snapshot from the daemon.
     results: FuzzyMatcherDaemonResults,
     /// Current @-context (if cursor is inside an @-token).
@@ -89,6 +91,8 @@ impl FileSearchState {
             daemon: None,
             #[cfg(test)]
             daemon_builds: 0,
+            #[cfg(test)]
+            poll_calls: 0,
             results: FuzzyMatcherDaemonResults::default(),
             context: None,
             selected: 0,
@@ -262,6 +266,10 @@ impl FileSearchState {
     ///
     /// Call this on every tick (~4ms) while the dropdown is potentially visible.
     pub fn poll(&mut self) -> bool {
+        #[cfg(test)]
+        {
+            self.poll_calls += 1;
+        }
         if self.context.is_none() {
             return false;
         }
@@ -370,7 +378,10 @@ impl FileSearchState {
         // See `context::detect`
         // Step past that one char so typing resumes after the directory
         if no_op && !at_end {
-            cursor += src[range.end..].chars().next().map_or(1, char::len_utf8);
+            cursor += src
+                .get(range.end..)
+                .and_then(|s| s.chars().next())
+                .map_or(1, char::len_utf8);
         }
 
         Some(FileSearchReplacement {
@@ -422,6 +433,12 @@ impl FileSearchState {
     #[cfg(test)]
     pub(crate) fn daemon_build_count(&self) -> usize {
         self.daemon_builds
+    }
+
+    /// Test-only observable state: how many times [`Self::poll`] has run.
+    #[cfg(test)]
+    pub(crate) fn poll_calls(&self) -> u64 {
+        self.poll_calls
     }
 }
 

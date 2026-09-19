@@ -1122,7 +1122,7 @@ fn voice_submit_includes_interim() {
     };
 
     let effects = dispatch(Action::SendPrompt("hello".into()), &mut app);
-    let Effect::SendPrompt { text, .. } = &effects[0] else {
+    let Some(Effect::SendPrompt { text, .. }) = effects.first() else {
         panic!("expected SendPrompt, got {effects:?}");
     };
     assert_eq!(text, "hello world");
@@ -1169,7 +1169,7 @@ fn voice_submit_interim_only() {
     };
 
     let effects = dispatch(Action::SendPrompt(String::new()), &mut app);
-    let Effect::SendPrompt { text, .. } = &effects[0] else {
+    let Some(Effect::SendPrompt { text, .. }) = effects.first() else {
         panic!("expected SendPrompt, got {effects:?}");
     };
     assert_eq!(text, "ghost only");
@@ -1190,7 +1190,7 @@ fn voice_submit_follow_up_keeps_chip_literal() {
     };
 
     let effects = dispatch(Action::SubmitFollowUp("chip text".into()), &mut app);
-    let Effect::SendPrompt { text, .. } = &effects[0] else {
+    let Some(Effect::SendPrompt { text, .. }) = effects.first() else {
         panic!("expected SendPrompt, got {effects:?}");
     };
     assert_eq!(text, "chip text");

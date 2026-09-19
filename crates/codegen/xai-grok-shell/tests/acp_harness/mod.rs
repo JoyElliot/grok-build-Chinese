@@ -120,8 +120,8 @@ pub struct AgentPipes {
 }
 
 /// Stand up `MvpAgent` plus its ACP connection and IO tasks on the current `LocalSet`.
-/// `remote` is installed before `MvpAgent::new` so the grove gate does not fail
-/// closed as `remote_unavailable`.
+/// `remote` is installed before `MvpAgent::new` so tests can seed `RemoteSettings`
+/// (including a grove kill) before the first worktree RPC.
 fn spawn_agent_local(remote: Option<xai_grok_shell::util::config::RemoteSettings>) -> AgentPipes {
     let (c2a_a, c2a_b) = tokio::io::duplex(DUPLEX_BUFFER_BYTES);
     let (a2c_a, a2c_b) = tokio::io::duplex(DUPLEX_BUFFER_BYTES);

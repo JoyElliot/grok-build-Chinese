@@ -1,0 +1,40 @@
+name: 同步资料完整性
+on:
+  pull_request:
+    branches: [zh-dev]
+    paths:
+      - 'crates/codegen/*/src/**'
+      - 'crates/codegen/xai-grok-locale/**'
+      - 'crates/codegen/xai-grok-pager/docs/**'
+      - 'crates/codegen/xai-grok-shell/changelogs/**'
+      - 'crates/codegen/xai-grok-shell/Cargo.toml'
+      - '.github/scripts/**'
+      - '.github/workflows/upstream-localization.yml'
+  push:
+    branches: [zh-dev, 'sync/**']
+    paths:
+      - 'crates/codegen/*/src/**'
+      - 'crates/codegen/xai-grok-locale/**'
+      - 'crates/codegen/xai-grok-pager/docs/**'
+      - 'crates/codegen/xai-grok-shell/changelogs/**'
+      - 'crates/codegen/xai-grok-shell/Cargo.toml'
+      - '.github/scripts/**'
+      - '.github/workflows/upstream-localization.yml'
+permissions:
+  contents: read
+jobs:
+  localization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: 检查上游更新日志、配置表和本地化元数据
+        run: python3 .github/scripts/tests/test_upstream_localization.py
+      - name: 检查公告、包协议和 macOS 打包约定
+        run: |
+          python3 .github/scripts/tests/test_announcement_translations.py
+          python3 .github/scripts/tests/test_package_protocol.py
+          python3 .github/scripts/tests/test_macos_build.py
+          python3 packaging/macos/tests/test_install_lock.py

@@ -54,6 +54,12 @@
       "first_parent": "d67e0a52cf15d8a6b5dee26d0025959ed158f2c0",
       "upstream_tip": "37949780c144e37df692e3d669051a21fec24f20",
       "upstream_base": "72a61251fcffb464bcc687aeb5a998e5a98ec0c9"
+    },
+    {
+      "merge_sha": "6c1e721019ecda161d47d37cc426741ab2681ce5",
+      "first_parent": "50f53f06bab8309cb8299a50cd2751deb26db726",
+      "upstream_tip": "a28ee2b2063426e8816e380ccea528b9de95e5da",
+      "upstream_base": "37949780c144e37df692e3d669051a21fec24f20"
     }
   ],
   "local_merges": [
@@ -271,6 +277,16 @@
       "sha": "37949780c144e37df692e3d669051a21fec24f20",
       "source_subject": "Synced from monorepo",
       "title_zh": "同步上游记忆隔离、会话守护进程与交互修复"
+    },
+    {
+      "sha": "482711333c7195dc16a272777f86086d615e2afb",
+      "source_subject": "Synced from monorepo",
+      "title_zh": "同步上游 1.0.25 至 1.0.34：完善子智能体消息、精简反馈与跨平台交互"
+    },
+    {
+      "sha": "a28ee2b2063426e8816e380ccea528b9de95e5da",
+      "source_subject": "Synced from monorepo",
+      "title_zh": "同步上游 1.0.35：改进记忆管理、守护进程工具显示与终端性能"
     }
   ]
 }

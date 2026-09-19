@@ -116,16 +116,48 @@ mod tests {
         }"#;
         let r: BundleStatusResult = serde_json::from_str(json).expect("parse");
         assert_eq!(r.persona_details.len(), 1);
-        assert_eq!(r.persona_details[0].name, "researcher");
         assert_eq!(
-            r.persona_details[0].description.as_deref(),
+            r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .name,
+            "researcher"
+        );
+        assert_eq!(
+            r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .description
+                .as_deref(),
             Some("thorough researcher")
         );
-        assert!(r.persona_details[0].has_inputs);
-        assert!(!r.persona_details[0].has_outputs);
+        assert!(
+            r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .has_inputs
+        );
+        assert!(
+            !r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .has_outputs
+        );
         assert_eq!(r.role_details.len(), 1);
-        assert_eq!(r.role_details[0].name, "reviewer");
-        assert_eq!(r.role_details[0].description, "code reviewer");
+        assert_eq!(
+            r.role_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .name,
+            "reviewer"
+        );
+        assert_eq!(
+            r.role_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .description,
+            "code reviewer"
+        );
         assert_eq!(r.skills, vec!["commit", "design"]);
     }
 

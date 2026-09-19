@@ -613,6 +613,7 @@ mod tests {
         let published = std::sync::Arc::new(AtomicBool::new(false));
         let flag = published.clone();
         let task_tx = tx.clone();
+        // The owner stays private to this test: a global install could be aborted by any concurrent eligible warm.
         let owner = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(80)).await;
             flag.store(true, Ordering::SeqCst);
@@ -623,19 +624,6 @@ mod tests {
                 identity: String::new(),
             }));
         });
-        // Install the owner the way a warm would, so observations share its cell
-        // and a concurrent warm for the same scope cannot start a second load.
-        {
-            let mut state = super::lock_state();
-            state.owner = Some(super::Owner {
-                key: super::OwnerKey {
-                    origin: String::new(),
-                    identity: String::new(),
-                },
-                tx: tx.clone(),
-                abort: owner.abort_handle(),
-            });
-        }
 
         let wait = super::observe(
             tx.subscribe(),
@@ -652,7 +640,13 @@ mod tests {
             "timing out the observation must not stop the owner"
         );
 
-        let later = super::observe(tx.subscribe(), None, &CancellationToken::new()).await;
+        // Bounded so a regression fails fast instead of wedging the shard.
+        let later = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::observe(tx.subscribe(), None, &CancellationToken::new()),
+        )
+        .await
+        .expect("later publish must land");
         assert!(matches!(later, SettingsWait::Ready(_)));
         assert!(published.load(Ordering::SeqCst));
         owner.abort();

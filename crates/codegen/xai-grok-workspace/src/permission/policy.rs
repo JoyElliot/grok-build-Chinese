@@ -190,10 +190,13 @@ impl CompiledPolicy {
             InlineShellScript::Literal(index) if inline_depth_remaining > 0 => {
                 decision = combine_gate_decisions(
                     decision,
-                    self.evaluate_bash_command_segments(
-                        inner_words[index].as_str(),
-                        inline_depth_remaining - 1,
-                    ),
+                    match inner_words.get(index) {
+                        Some(inner) => self.evaluate_bash_command_segments(
+                            inner.as_str(),
+                            inline_depth_remaining - 1,
+                        ),
+                        None => Some(GateDecision::AskFailClosed),
+                    },
                 );
             }
             InlineShellScript::Literal(_)
@@ -279,7 +282,7 @@ impl CompiledPolicy {
         let mut matched_allow = false;
 
         for (rule, matcher) in self.config.rules.iter().zip(&self.matchers) {
-            if !tool_filter_matches(access, &rule.tool) {
+            if !rule_reaches(access, rule) {
                 continue;
             }
             let cr = CompiledRule {
@@ -376,8 +379,11 @@ impl CompiledPolicy {
             let shell_words: Vec<ShellWord<'_>> = inner_words.iter().map(ShellWord::from).collect();
             match shell_dash_c_script(&shell_words) {
                 InlineShellScript::Literal(index) if inline_depth_remaining > 0 => {
+                    let Some(inner) = inner_words.get(index) else {
+                        return false;
+                    };
                     if !self.bash_chain_fully_allowed(
-                        inner_words[index].as_str(),
+                        inner.as_str(),
                         inline_depth_remaining - 1,
                         scope,
                     ) {
@@ -561,7 +567,10 @@ pub(crate) fn shell_dash_c_script(words: &[ShellWord<'_>]) -> InlineShellScript 
             i += 1;
             continue;
         }
-        let flags = &word[1..];
+        let Some(flags) = word.get(1..) else {
+            i += 1;
+            continue;
+        };
         if flags.contains('o') || flags.contains('O') {
             return ambiguous(saw_c);
         }
@@ -577,11 +586,32 @@ pub(crate) fn shell_dash_c_script(words: &[ShellWord<'_>]) -> InlineShellScript 
     }
 }
 
+/// [`tool_filter_matches`], minus the widenings that must not cut both ways.
+///
+/// An `Edit` rule reaches a `Tool` only as a **tool-wide** lockdown (`Edit` / `Edit(*)`):
+/// deny/ask, never allow. A path glob (`Edit(src/**)`, `Edit(scheduler_create)`) is a path,
+/// not a tool id — comparing it to `scheduler_create` would match or miss the wrong thing.
+fn rule_reaches(access: &AccessKind, rule: &PermissionRule) -> bool {
+    if matches!(access, AccessKind::Tool(_)) && rule.tool == ToolFilter::Edit {
+        return matches!(rule.action, RuleAction::Deny | RuleAction::Ask)
+            && is_tool_wide_pattern(rule.pattern.as_deref());
+    }
+    tool_filter_matches(access, &rule.tool)
+}
+
+/// Bare `Edit` / `Edit(*)` (parser stores `*` as `None`). A non-empty path glob is not this.
+fn is_tool_wide_pattern(pattern: Option<&str>) -> bool {
+    matches!(pattern, None | Some("*") | Some(""))
+}
+
 fn tool_filter_matches(access: &AccessKind, filter: &ToolFilter) -> bool {
     match filter {
         ToolFilter::Any => true,
         ToolFilter::Bash => matches!(access, AccessKind::Bash(_)),
-        ToolFilter::Edit => matches!(access, AccessKind::Edit(_)),
+        // An Edit rule also *classifies* as reaching Tool (see [`rule_reaches`]): only a
+        // tool-wide deny/ask is a lockdown. Path globs stay on `Edit` paths.
+        // Session/folder edit grants stay on `Edit` alone.
+        ToolFilter::Edit => matches!(access, AccessKind::Edit(_) | AccessKind::Tool(_)),
         // A Read rule also governs the Grep tool: grep reads file contents, so a managed `Read` deny/ask on a path must block grepping it
         // Otherwise grep is a read-bypass
         // Grep-specific rules still use `Grep`
@@ -757,6 +787,14 @@ fn pattern_matches(access: &AccessKind, cr: &CompiledRule<'_>, cwd: Option<&Path
         AccessKind::AgentMessage { subagent_id } => {
             glob_matches(subagent_id, MatchContext::Freeform, cr.matcher)
                 || subagent_id.starts_with(pattern)
+        }
+        AccessKind::Tool(name) => {
+            // Path-scoped Edit rules can reach here only if `rule_reaches` is restored
+            // to the old "every Edit deny/ask" widening. Their pattern is a path.
+            if cr.rule.tool == ToolFilter::Edit {
+                return false;
+            }
+            glob_matches(name, MatchContext::Freeform, cr.matcher) || name.starts_with(pattern)
         }
     }
 }
@@ -1089,9 +1127,15 @@ mod tests {
 
     fn matches_at(access: &AccessKind, rule: &PermissionRule, cwd: Option<&Path>) -> bool {
         let policy = CompiledPolicy::new(PermissionConfig::new(vec![rule.clone()]));
+        let Some(rule) = policy.config.rules.first() else {
+            panic!("expected compiled rule");
+        };
+        let Some(matcher) = policy.matchers.first() else {
+            panic!("expected compiled matcher");
+        };
         let cr = CompiledRule {
-            rule: &policy.config.rules[0],
-            matcher: policy.matchers[0].as_ref(),
+            rule,
+            matcher: matcher.as_ref(),
         };
         pattern_matches(access, &cr, cwd)
     }
@@ -1362,6 +1406,72 @@ mod tests {
             &AccessKind::Edit("x".into()),
             &ToolFilter::Bash
         ));
+    }
+
+    /// An `Edit` rule reaches a `Tool` only to restrict it: `deny Edit(*)` locks a scheduler down,
+    /// `allow Edit(*)` leaves it to prompt.
+    #[test]
+    fn an_edit_rule_restricts_a_tool_but_never_allows_it() {
+        use crate::permission::rules::parse_permission_rule;
+        let tool = AccessKind::Tool("scheduler_create".into());
+        let edit = AccessKind::Edit("/tmp/a.rs".into());
+        let allow = CompiledPolicy::new(PermissionConfig::new(vec![
+            parse_permission_rule("Edit(*)", RuleAction::Allow).unwrap(),
+        ]));
+        assert_eq!(Some(Decision::Allow), allow.evaluate(&edit));
+        assert_eq!(
+            None,
+            allow.evaluate(&tool),
+            "an edit allow is not a tool allow"
+        );
+        for action in [RuleAction::Deny, RuleAction::Ask] {
+            let restrict = CompiledPolicy::new(PermissionConfig::new(vec![
+                parse_permission_rule("Edit(*)", action).unwrap(),
+            ]));
+            assert!(
+                restrict.evaluate(&tool).is_some(),
+                "{action:?} reaches the tool"
+            );
+        }
+    }
+
+    /// Path globs compare to paths; tool ids are not a path. `Edit(scheduler_create)` must deny
+    /// an edit of that path and must not deny the `scheduler_create` tool just because the
+    /// strings match.
+    #[test]
+    fn an_edit_path_deny_matches_the_path_not_a_tool_id() {
+        use crate::permission::rules::parse_permission_rule;
+        for action in [RuleAction::Deny, RuleAction::Ask] {
+            let path_as_id = CompiledPolicy::new(PermissionConfig::new(vec![
+                parse_permission_rule("Edit(scheduler_create)", action).unwrap(),
+            ]));
+            let on_path = path_as_id.evaluate(&AccessKind::Edit("scheduler_create".into()));
+            assert!(
+                on_path.is_some(),
+                "{action:?} Edit(scheduler_create) must fire on that path, got {on_path:?}"
+            );
+            assert_eq!(
+                None,
+                path_as_id.evaluate(&AccessKind::Tool("scheduler_create".into())),
+                "{action:?} must not treat the path glob as a tool id"
+            );
+        }
+
+        let src = CompiledPolicy::new(PermissionConfig::new(vec![
+            parse_permission_rule("Edit(src/**)", RuleAction::Deny).unwrap(),
+        ]));
+        assert!(
+            matches!(
+                src.evaluate(&AccessKind::Edit("src/main.rs".into())),
+                Some(Decision::Reject(_))
+            ),
+            "Edit(src/**) must deny an edit under src/"
+        );
+        assert_eq!(
+            None,
+            src.evaluate(&AccessKind::Tool("scheduler_create".into())),
+            "Edit(src/**) must not be compared to a tool id"
+        );
     }
 
     #[test]

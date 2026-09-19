@@ -48,7 +48,6 @@ OS Version: {os}
 Shell: {shell}
 Workspace Path: {cwd}
 {USER_INFO_DATE_MARKER} {today}
-Note: Prefer using relative paths over absolute paths as tool call args when possible.
 </user_info>"#,
     )
 }

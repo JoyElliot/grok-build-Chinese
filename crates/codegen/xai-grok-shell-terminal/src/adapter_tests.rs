@@ -85,8 +85,14 @@ fn scripted_gateway(outputs: Vec<(String, bool)>) -> GatewaySender {
                     wait_reply = Some(args.response_tx);
                 }
                 AcpClientMessage::TerminalOutput(args) => {
-                    let idx = next.min(outputs.len() - 1);
-                    let (text, truncated) = outputs[idx].clone();
+                    let idx = outputs
+                        .len()
+                        .checked_sub(1)
+                        .map(|last| next.min(last))
+                        .unwrap_or(0);
+                    let Some((text, truncated)) = outputs.get(idx).cloned() else {
+                        continue;
+                    };
                     let mut response = acp::TerminalOutputResponse::new(text, truncated);
                     if exited {
                         response = response
@@ -450,14 +456,24 @@ async fn wait_for_completion_increments_live_waiters_and_drop_decrements() {
             "wait must stay pending so Drop can be observed"
         );
         assert_eq!(
-            adapter.tasks.lock().unwrap()["t-inc"].live_waiters,
-            1,
+            adapter
+                .tasks
+                .lock()
+                .unwrap()
+                .get("t-inc")
+                .map(|t| t.live_waiters),
+            Some(1),
             "wait_for_completion must increment live_waiters"
         );
     }
     assert_eq!(
-        adapter.tasks.lock().unwrap()["t-inc"].live_waiters,
-        0,
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-inc")
+            .map(|t| t.live_waiters),
+        Some(0),
         "dropping the wait must decrement live_waiters"
     );
 
@@ -489,7 +505,15 @@ async fn wait_for_completion_live_waiter_makes_client_ui_kill_delivered() {
             .is_err(),
         "wait must stay pending"
     );
-    assert_eq!(adapter.tasks.lock().unwrap()["t-live"].live_waiters, 1);
+    assert_eq!(
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-live")
+            .map(|t| t.live_waiters),
+        Some(1)
+    );
 
     let outcome = adapter
         .kill_task_with_source("t-live", KillSource::ClientUi)
@@ -534,7 +558,15 @@ async fn client_ui_kill_does_not_mark_delivered_if_waiter_drops_during_kill() {
             .is_err(),
         "wait must stay pending so it is live when kill starts"
     );
-    assert_eq!(adapter.tasks.lock().unwrap()["t-race"].live_waiters, 1);
+    assert_eq!(
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-race")
+            .map(|t| t.live_waiters),
+        Some(1)
+    );
 
     let kill = adapter.kill_task_with_source("t-race", KillSource::ClientUi);
     tokio::pin!(kill);
@@ -545,7 +577,10 @@ async fn client_ui_kill_does_not_mark_delivered_if_waiter_drops_during_kill() {
     }
     drop(wait);
     {
-        let task = &adapter.tasks.lock().unwrap()["t-race"];
+        let tasks = adapter.tasks.lock().unwrap();
+        let Some(task) = tasks.get("t-race") else {
+            panic!("missing task t-race");
+        };
         assert_eq!(task.live_waiters, 0);
         assert!(
             !task.block_waited,
@@ -603,7 +638,9 @@ async fn model_tool_kill_marks_delivered_before_kill_rpc_returns() {
     }
     {
         let tasks = adapter.tasks.lock().unwrap();
-        let task = &tasks["t-model"];
+        let Some(task) = tasks.get("t-model") else {
+            panic!("missing task t-model");
+        };
         assert!(task.explicitly_killed);
         assert!(
             task.kill_result_delivered,
@@ -631,7 +668,14 @@ async fn kill_task_tracked_completed_answers_already_exited_without_round_trips(
 
     assert!(matches!(outcome, KillOutcome::AlreadyExited));
     assert!(sent.lock().unwrap().is_empty());
-    assert!(!adapter.tasks.lock().unwrap()["t-done"].explicitly_killed);
+    assert!(
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-done")
+            .is_some_and(|t| !t.explicitly_killed)
+    );
 }
 
 /// A resumed session rebuilds the adapter with an empty map while the client still holds live terminals.
@@ -992,9 +1036,11 @@ async fn list_tasks_preserves_running_output_from_log() {
     );
 
     let snapshots = adapter.list_tasks().await;
-    assert_eq!(snapshots.len(), 1);
-    assert_eq!(snapshots[0].output, "live streamed bytes");
-    assert!(!snapshots[0].completed);
+    let [snap] = snapshots.as_slice() else {
+        panic!("expected one snapshot: {snapshots:?}");
+    };
+    assert_eq!(snap.output, "live streamed bytes");
+    assert!(!snap.completed);
 }
 
 /// Hangs `terminal/output` only for `hang_id`; other ids get a quick live reply.

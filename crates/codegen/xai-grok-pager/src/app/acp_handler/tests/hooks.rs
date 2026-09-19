@@ -79,7 +79,7 @@
     #[test]
     fn successful_batch_leaves_no_scrollback_trace() {
         let mut app = make_app_with_agent("sess-hooks");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = test_agent(&app, AgentId(0)).scrollback.len();
         for event in ["pre_tool_use", "post_tool_use", "user_prompt_submit", "stop", "session_start"] {
             let affected = handle_ext_notification(
                 &xai_hook_execution_notif_with_runs(
@@ -97,7 +97,7 @@
             assert!(!affected, "{event}: nothing changed on screen, so no redraw");
         }
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.len(),
+            test_agent(&app, AgentId(0)).scrollback.len(),
             len_before,
             "successful and skipped runs must not push any block"
         );
@@ -128,7 +128,7 @@
         );
         assert!(affected);
         assert_eq!(
-            annotation_lines(&app.agents[&AgentId(0)].scrollback),
+            annotation_lines(&test_agent(&app, AgentId(0)).scrollback),
             vec!["pre_tool_use hook failed, ignored: timed out after 1000ms".to_string()],
             "one line per failed run, first error line only; the config spec path never reaches the user"
         );
@@ -155,7 +155,7 @@
             &mut app,
         );
         assert_eq!(
-            annotation_lines(&app.agents[&AgentId(0)].scrollback),
+            annotation_lines(&test_agent(&app, AgentId(0)).scrollback),
             vec!["post_tool_use hook (global/qa) failed, ignored: exit code 1: lint: 3 errors".to_string()],
         );
     }
@@ -164,7 +164,7 @@
     fn blocked_run_is_not_reported_twice() {
         // The shell annotates every deny with its reason; the batch outcome must not add a second line
         let mut app = make_app_with_agent("sess-hooks");
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = test_agent(&app, AgentId(0)).scrollback.len();
         let affected = handle_ext_notification(
             &xai_hook_execution_notif_with_runs(
                 "sess-hooks",
@@ -183,7 +183,7 @@
             &mut app,
         );
         assert!(!affected);
-        assert_eq!(app.agents[&AgentId(0)].scrollback.len(), len_before);
+        assert_eq!(test_agent(&app, AgentId(0)).scrollback.len(), len_before);
     }
 
     /// The phase ends only on the outcome whose `(event, tool)` identity armed it.
@@ -208,13 +208,13 @@
         let affected = handle_ext_notification(&xai_hook_execution_notif_for_tool("sess-hooks", "pre_tool_use", "grep"), &mut app);
         assert!(!affected);
         assert_eq!(
-            app.agents[&AgentId(0)].session.tracker.activity(),
+            test_agent(&app, AgentId(0)).session.tracker.activity(),
             Some(gate),
             "another tool's pre_tool_use outcome must not end this gate"
         );
         let affected = handle_ext_notification(&xai_hook_execution_notif_for_tool("sess-hooks", "pre_tool_use", "read_file"), &mut app);
         assert!(affected, "ending a revealed phase redraws the spinner");
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert!(
             !matches!(agent.session.tracker.activity(), Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))),
             "the batch outcome ends the phase"
@@ -244,7 +244,7 @@
         );
         assert!(!affected);
         assert_eq!(
-            app.agents[&AgentId(0)].session.tracker.activity(),
+            test_agent(&app, AgentId(0)).session.tracker.activity(),
             Some(gate),
             "a session_start outcome says nothing about the prompt gate"
         );
@@ -255,7 +255,7 @@
         );
         assert!(affected, "the gate's own outcome ends it");
         assert!(!matches!(
-            app.agents[&AgentId(0)].session.tracker.activity(),
+            test_agent(&app, AgentId(0)).session.tracker.activity(),
             Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))
         ));
     }
@@ -286,7 +286,7 @@
         );
         assert!(!affected);
         assert_eq!(
-            app.agents[&AgentId(0)].session.tracker.activity(),
+            test_agent(&app, AgentId(0)).session.tracker.activity(),
             Some(own_phase.clone()),
             "the foreign start must not steal the label or restart the reveal delay"
         );
@@ -302,7 +302,7 @@
             &mut app,
         );
         assert!(affected, "the foreign batch's failure line still renders");
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(agent.session.tracker.activity(), Some(own_phase), "the foreign outcome must not end the current gate");
         assert_eq!(
             annotation_lines(&agent.scrollback),
@@ -314,7 +314,7 @@
             &mut app,
         );
         assert!(
-            !matches!(app.agents[&AgentId(0)].session.tracker.activity(), Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))),
+            !matches!(test_agent(&app, AgentId(0)).session.tracker.activity(), Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))),
             "the gate's own outcome ends it"
         );
     }
@@ -323,7 +323,7 @@
     fn hook_notifications_are_inert_when_plugins_are_disabled() {
         let mut app = make_app_with_agent("sess-hooks");
         app.appearance.disable_plugins = true;
-        let len_before = app.agents[&AgentId(0)].scrollback.len();
+        let len_before = test_agent(&app, AgentId(0)).scrollback.len();
         let _ = handle_ext_notification(&xai_hook_run_started_notif("sess-hooks", "pre_tool_use", 1), &mut app);
         let _ = handle_ext_notification(
             &xai_hook_execution_notif_with_runs(
@@ -335,7 +335,7 @@
             ),
             &mut app,
         );
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(agent.scrollback.len(), len_before);
         assert!(!matches!(agent.session.tracker.activity(), Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))));
     }

@@ -117,7 +117,6 @@ path = "tests/scripted_scenarios.rs"
 [[test]]
 name = "pty_auto_mode"
 path = "tests/pty_auto_mode.rs"
-
 [[bin]]
 name = "pty-scenario"
 path = "src/bin/pty_scenario.rs"

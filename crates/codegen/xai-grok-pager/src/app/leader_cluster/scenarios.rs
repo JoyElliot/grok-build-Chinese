@@ -308,8 +308,10 @@ fn leader_kill_reconnect_reloads_without_duplicating_history() {
                 agent.session.cwd.clone()
             };
             let mut meta = serde_json::json!({ "yoloMode": false, "autoMode": false });
-            if let Some(ref cursor) = agent.last_seen_event_id {
-                meta["cursor"] = serde_json::Value::String(cursor.clone());
+            if let Some(ref cursor) = agent.last_seen_event_id
+                && let Some(obj) = meta.as_object_mut()
+            {
+                obj.insert("cursor".into(), serde_json::Value::String(cursor.clone()));
             }
             (*id, (agent.session.session_id.clone().unwrap(), cwd, meta))
         };

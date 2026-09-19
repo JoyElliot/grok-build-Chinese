@@ -394,11 +394,13 @@ mod tests {
             ],
         })));
         let opts = state.reasoning_effort_options();
-        assert_eq!(opts.len(), 2);
-        assert_eq!(opts[0].label, "Balanced");
-        assert_eq!(opts[0].value, ReasoningEffort::Medium);
-        assert_eq!(opts[1].id, "deep");
-        assert_eq!(opts[1].description.as_deref(), Some("Max"));
+        let [first, second] = opts.as_slice() else {
+            panic!("expected 2 options, got {}", opts.len());
+        };
+        assert_eq!(first.label, "Balanced");
+        assert_eq!(first.value, ReasoningEffort::Medium);
+        assert_eq!(second.id, "deep");
+        assert_eq!(second.description.as_deref(), Some("Max"));
     }
 
     #[test]

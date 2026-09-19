@@ -433,6 +433,13 @@ async fn scripted_mid_text_skill_token_echo() {
     run_scenario("mid_text_skill_token_echo.yaml").await;
 }
 
+/// A mid-message `/btw` token sends the whole message (minus the token) as one side question; no user turn is echoed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "scripted scenario; run with cargo test -- --ignored"]
+async fn scripted_mid_text_btw_sends_side_question() {
+    run_scenario("mid_text_btw_sends_side_question.yaml").await;
+}
+
 /// Auto-compact: shrinking to 14 rows drops the sticky previous-question header (compact chrome engages); growing back to 32 rows restores it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "scripted scenario; run with cargo test -- --ignored"]
@@ -511,6 +518,7 @@ fn scenarios_parse() {
         "plan_nudge_shows.yaml",
         "plan_nudge_opt_out_no_show.yaml",
         "mid_text_skill_token_echo.yaml",
+        "mid_text_btw_sends_side_question.yaml",
         "auto_compact_resize.yaml",
         "small_screen_tip_band.yaml",
         "small_screen_tip_no_show_tall.yaml",

@@ -97,7 +97,7 @@ impl SessionActor {
     /// Normalize interjection images for injection (shared pipeline above); notices append to `wrapped` (TEXT side only).
     /// Returns the images to attach structurally.
     /// Sessions whose template rejects inline images instead transcribe normalized survivors into the text via the describe pipeline.
-    async fn prepare_interjection_images(
+    pub(super) async fn prepare_interjection_images(
         &self,
         wrapped: &mut String,
         images: Vec<acp::ImageContent>,
@@ -134,8 +134,10 @@ impl SessionActor {
             "sessionId": self.session_info.id.0.as_ref(),
             "text": text,
         });
-        if let Some(id) = id {
-            payload["interjectionId"] = serde_json::json!(id);
+        if let Some(id) = id
+            && let Some(obj) = payload.as_object_mut()
+        {
+            obj.insert("interjectionId".into(), serde_json::json!(id));
         }
         if let Ok(params) = serde_json::value::to_raw_value(&payload) {
             self.notifications
@@ -255,11 +257,14 @@ impl SessionActor {
                     args_provided: !sk.args.is_empty(),
                 },
             );
+            let skill_source =
+                crate::session::telemetry::skill_source(sk.scope, sk.plugin_name.as_deref());
             xai_grok_telemetry::session_ctx::log_event(
                 xai_grok_telemetry::events::SkillDispatched {
                     skill_name: sk.name.clone(),
                     plugin_source: sk.plugin_name.clone(),
                     trigger: xai_grok_telemetry::events::SkillTrigger::SlashCommand,
+                    skill_source: Some(skill_source.to_owned()),
                 },
             );
         }

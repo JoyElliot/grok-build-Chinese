@@ -6,7 +6,7 @@
 //!
 //! SIGINT / SIGTERM / SIGHUP are handled in a tokio task.
 //! The handler runs in normal Rust context (not actual signal-handler context).
-//! It can therefore use the full [`super::emit_terminal_teardown_sequences`] path (locked stderr, conditional cursor-style reset, multiplexer flush).
+//! It can therefore use the full [`crate::app::terminal_restore::emit_terminal_teardown_sequences`] path (locked stderr, conditional cursor-style reset, multiplexer flush).
 //! It then runs `disable_raw_mode`, flushes Sentry/OpenTelemetry, and exits.
 //!
 //! SIGPIPE is intentionally left alone.
@@ -227,7 +227,7 @@ fn shutdown_with_terminal_restore(exit_code: i32) -> ! {
         ScreenMode::Inline
     };
     // Signal-path shutdown has no terminal handle, so fall back to the screen bottom for the final cursor position
-    super::emit_terminal_teardown_sequences(mode, None);
+    crate::app::terminal_restore::emit_terminal_teardown_sequences(mode, None);
     let _ = crossterm::terminal::disable_raw_mode();
     // Mark after teardown so concurrent paths see TERMINAL_OWNED == true until all escape sequences and tcsetattr have been written
     TERMINAL_OWNED.store(false, Ordering::Release);

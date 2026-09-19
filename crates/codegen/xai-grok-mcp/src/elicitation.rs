@@ -288,7 +288,14 @@ mod tests {
         let result = bridge_elicit(&bridge, "srv", params).await;
         handle.await.unwrap();
         assert_eq!(result.action, ElicitationAction::Accept);
-        assert_eq!(result.content.unwrap()["email"], "a@b.com");
+        assert_eq!(
+            result
+                .content
+                .as_ref()
+                .and_then(|c| c.get("email"))
+                .and_then(|e| e.as_str()),
+            Some("a@b.com")
+        );
     }
 
     /// Dropping the bridge future (server cancelled `elicitation/create`) must close the queued job's response channel.

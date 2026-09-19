@@ -368,7 +368,7 @@ mod tests {
         assert!(ui.status_line.problem().is_some());
 
         let saved = serde_json::to_value(&ui).expect("[ui] serializes");
-        assert_eq!(saved["theme"], "kanagawa");
+        assert_eq!(saved.get("theme"), Some(&serde_json::json!("kanagawa")));
         assert!(
             saved.get("status_line").is_none(),
             "a section we misread must not be written back over"

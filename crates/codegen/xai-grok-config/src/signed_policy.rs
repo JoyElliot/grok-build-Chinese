@@ -30,41 +30,38 @@ pub const EMBEDDED_V1_PUBKEY_SHA256_HEX: &str =
     "fb4dcc77c757465b953265146d495166527fcc1c2b365352f8d20c3d8f6de620";
 
 // Compile-time sanity for the key set.
+// `slice::get` is not const-stable, so the const checks walk with `split_first`.
 const _: () = {
-    let keys = EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS;
-    let mut i = 0;
-    while i < keys.len() {
+    let mut rest = EMBEDDED_DEPLOYMENT_CONFIG_PUBKEYS;
+    while let Some((key, tail)) = rest.split_first() {
         assert!(
-            keys[i].1.len() == 32,
+            key.1.len() == 32,
             "every embedded key must be exactly 32 raw Ed25519 bytes"
         );
-        assert!(
-            !keys[i].0.is_empty(),
-            "every embedded key id must be non-empty"
-        );
-        let mut j = i + 1;
-        while j < keys.len() {
+        assert!(!key.0.is_empty(), "every embedded key id must be non-empty");
+        let mut others = tail;
+        while let Some((other, more)) = others.split_first() {
             assert!(
-                !const_str_eq(keys[i].0, keys[j].0),
+                !const_str_eq(key.0, other.0),
                 "embedded key ids must be unique"
             );
-            j += 1;
+            others = more;
         }
-        i += 1;
+        rest = tail;
     }
 };
 
 const fn const_str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
     }
-    let mut i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
+    while let (Some((x, a_tail)), Some((y, b_tail))) = (a.split_first(), b.split_first()) {
+        if *x != *y {
             return false;
         }
-        i += 1;
+        a = a_tail;
+        b = b_tail;
     }
     true
 }

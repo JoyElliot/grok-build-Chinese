@@ -367,7 +367,13 @@ minimum_version = "not-a-version"
             result.get(FAIL_CLOSED_KEY).is_none(),
             "fail_closed must not leak into the returned config"
         );
-        assert_eq!(result["features"]["telemetry"].as_bool(), Some(true));
+        assert_eq!(
+            result
+                .get("features")
+                .and_then(|f| f.get("telemetry"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -388,7 +394,12 @@ minimum_version = "not-a-version"
         writeln!(f, "[features]\ntelemetry = true\n").unwrap();
 
         let v = load_user_requirements(Some(&dir)).expect("layer present");
-        assert_eq!(v["features"]["telemetry"].as_bool(), Some(true));
+        assert_eq!(
+            v.get("features")
+                .and_then(|f| f.get("telemetry"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -435,7 +446,13 @@ minimum_version = "not-a-version"
             toml::from_str("fail_closed = true\n[features]\nweb_fetch = false\n").unwrap();
         let normalized = normalize_requirements_value(raw, source).unwrap();
         assert!(normalized.get(FAIL_CLOSED_KEY).is_none());
-        assert_eq!(normalized["features"]["web_fetch"].as_bool(), Some(false));
+        assert_eq!(
+            normalized
+                .get("features")
+                .and_then(|f| f.get("web_fetch"))
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
 
         // Enforcement keeps fail_closed: a bad override under fail_closed errs; the same override without fail_closed soft-fails (Ok)
         let bad: toml::Value = toml::from_str(

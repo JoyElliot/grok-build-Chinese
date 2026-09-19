@@ -2,6 +2,8 @@
 //!
 //! This crate provides the common logic used by `xai-grok-shell` and `xai-grok-pager` for handling announcements (banner notifications).
 
+#![deny(clippy::indexing_slicing)]
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -282,7 +284,10 @@ mod tests {
         }
         let result = resolve_startup(None);
         assert!(result.is_some());
-        assert_eq!(result.unwrap()[0].id.as_deref(), Some("test"));
+        assert_eq!(
+            result.unwrap().first().and_then(|a| a.id.as_deref()),
+            Some("test")
+        );
         // SAFETY: test-only
         unsafe {
             std::env::remove_var("GROK_ANNOUNCEMENTS_OVERRIDE");
@@ -362,10 +367,13 @@ mod tests {
                 ..Default::default()
             },
         ];
+        let Some(second) = active.get(1) else {
+            panic!("expected two announcements: {active:?}");
+        };
         let mut ids: BTreeSet<String> = [
             "live".to_string(),
             "gone".to_string(),
-            announcement_hide_key(&active[1]),
+            announcement_hide_key(second),
         ]
         .into_iter()
         .collect();
@@ -373,7 +381,7 @@ mod tests {
         assert!(prune_hidden_announcement_ids(&mut ids, &active));
         assert_eq!(ids.len(), 2);
         assert!(ids.contains("live"));
-        assert!(ids.contains(&announcement_hide_key(&active[1])));
+        assert!(ids.contains(&announcement_hide_key(second)));
 
         // Second prune with the same list is a no-op.
         assert!(!prune_hidden_announcement_ids(&mut ids, &active));

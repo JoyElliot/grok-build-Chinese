@@ -105,7 +105,9 @@ fn a_root_off_the_anchor_is_measured_by_nobody() {
     let home = physical_buckets(&root, Volume::of(&root));
     assert!(home.total.bytes().is_some_and(|bytes| bytes >= 65536));
     assert!(
-        home.buckets[&worktree].bytes().is_some_and(|b| b >= 65536),
+        home.buckets
+            .get(&worktree)
+            .is_some_and(|m| m.bytes().is_some_and(|b| b >= 65536)),
         "on its own volume the worktree is a counted bucket"
     );
 

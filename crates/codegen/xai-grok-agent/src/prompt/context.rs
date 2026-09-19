@@ -239,6 +239,14 @@ impl PromptContext {
         let renderer = tool_bridge.template_renderer_snapshot().await?;
         self.render_with_renderer(&renderer)
     }
+    /// [`render`](Self::render), keeping the context the prompt came from so the pair cannot drift apart.
+    pub async fn render_paired(self, tool_bridge: &ToolBridge) -> Option<RenderedPrompt> {
+        let system_prompt = self.render(tool_bridge).await?;
+        Some(RenderedPrompt {
+            prompt_context: self,
+            system_prompt,
+        })
+    }
     /// Render the full system prompt from a finalized tool-name renderer.
     ///
     /// Hosts that do not own a [`ToolBridge`] use this path so they still consume the production base-template and prompt-body composition.
@@ -275,9 +283,23 @@ impl PromptContext {
         Some(prompt)
     }
 }
+/// A system prompt with the [`PromptContext`] it was rendered from; only [`PromptContext::render_paired`] produces one.
+pub struct RenderedPrompt {
+    prompt_context: PromptContext,
+    system_prompt: String,
+}
+impl RenderedPrompt {
+    pub(crate) fn into_parts(self) -> (PromptContext, String) {
+        (self.prompt_context, self.system_prompt)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Test-only lookup: `["k"]` would panic on a missing key, so index through a pointer path.
+    fn jp<'a>(v: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+        v.pointer(path).unwrap_or(&serde_json::Value::Null)
+    }
     /// Fixed timestamp for deterministic tests.
     const TEST_TIMESTAMP: &str = "2025-06-15T12:00:00+00:00";
     fn test_context() -> PromptContext {
@@ -316,7 +338,7 @@ mod tests {
         let block_start = on
             .find("\n\n<browser_verification>")
             .expect("flagged standard template must render browser verification");
-        assert_eq!(&on[..block_start], off);
+        assert_eq!(on.get(..block_start), Some(off.as_str()));
         assert!(on.ends_with("</browser_verification>"));
         assert!(!off.contains("<browser_verification>"));
     }
@@ -367,18 +389,23 @@ mod tests {
                 file_name: "AGENTS.md".to_string(),
                 file_path: "/repo/AGENTS.md".to_string(),
                 content: "# Repo instructions".to_string(),
+                source: Default::default(),
             },
             AgentConfigFile {
                 file_name: "AGENTS.md".to_string(),
                 file_path: "/repo/sub/AGENTS.md".to_string(),
                 content: "# Sub instructions".to_string(),
+                source: Default::default(),
             },
         ];
         let json = serde_json::to_string(&ctx).unwrap();
         let ctx2: PromptContext = serde_json::from_str(&json).unwrap();
         assert_eq!(ctx2.agents_md_files.len(), 2);
-        assert_eq!(ctx2.agents_md_files[0].content, "# Repo instructions");
-        assert_eq!(ctx2.agents_md_files[1].file_path, "/repo/sub/AGENTS.md");
+        let [first, second] = ctx2.agents_md_files.as_slice() else {
+            panic!("expected two agents.md files: {:?}", ctx2.agents_md_files);
+        };
+        assert_eq!(first.content, "# Repo instructions");
+        assert_eq!(second.file_path, "/repo/sub/AGENTS.md");
     }
     #[test]
     fn test_template_override_deserialize_new_format() {
@@ -445,18 +472,18 @@ mod tests {
     fn test_placeholders_contains_agent_fields() {
         let ctx = test_context();
         let p = ctx.placeholders();
-        assert_eq!(p["memory_enabled"], false);
-        assert_eq!(p["memory_v2_enabled"], false);
+        assert_eq!(jp(&p, "/memory_enabled"), false);
+        assert_eq!(jp(&p, "/memory_v2_enabled"), false);
         assert!(p.get("role_instructions").is_some());
         assert!(p.get("persona_instructions").is_some());
-        assert_eq!(p["system_prompt_label"], DEFAULT_SYSTEM_PROMPT_LABEL);
+        assert_eq!(jp(&p, "/system_prompt_label"), DEFAULT_SYSTEM_PROMPT_LABEL);
     }
     #[test]
     fn test_placeholders_system_prompt_label_override() {
         let mut ctx = test_context();
         ctx.system_prompt_label = "Grok Internal".into();
         let p = ctx.placeholders();
-        assert_eq!(p["system_prompt_label"], "Grok Internal");
+        assert_eq!(jp(&p, "/system_prompt_label"), "Grok Internal");
     }
     #[test]
     fn test_missing_system_prompt_label_deserializes_to_default() {
@@ -476,23 +503,23 @@ mod tests {
         ctx.role_instructions = Some("test role".into());
         ctx.persona_instructions = Some("test persona".into());
         let p = ctx.placeholders();
-        assert_eq!(p["os_name"], "linux");
-        assert_eq!(p["shell_path"], "/bin/bash");
-        assert_eq!(p["working_directory"], "/workspace");
-        assert_eq!(p["current_date"], "2026-03-26");
-        assert_eq!(p["memory_enabled"], true);
-        assert_eq!(p["memory_v2_enabled"], true);
-        assert_eq!(p["role_instructions"], "test role");
-        assert_eq!(p["persona_instructions"], "test persona");
+        assert_eq!(jp(&p, "/os_name"), "linux");
+        assert_eq!(jp(&p, "/shell_path"), "/bin/bash");
+        assert_eq!(jp(&p, "/working_directory"), "/workspace");
+        assert_eq!(jp(&p, "/current_date"), "2026-03-26");
+        assert_eq!(jp(&p, "/memory_enabled"), true);
+        assert_eq!(jp(&p, "/memory_v2_enabled"), true);
+        assert_eq!(jp(&p, "/role_instructions"), "test role");
+        assert_eq!(jp(&p, "/persona_instructions"), "test persona");
     }
     #[test]
     fn test_placeholders_user_info_defaults_to_empty() {
         let ctx = test_context();
         let p = ctx.placeholders();
-        assert_eq!(p["os_name"], "");
-        assert_eq!(p["shell_path"], "");
-        assert_eq!(p["working_directory"], "");
-        assert_eq!(p["current_date"], "");
+        assert_eq!(jp(&p, "/os_name"), "");
+        assert_eq!(jp(&p, "/shell_path"), "");
+        assert_eq!(jp(&p, "/working_directory"), "");
+        assert_eq!(jp(&p, "/current_date"), "");
     }
     #[test]
     fn test_user_info_fields_serialization_round_trip() {
@@ -550,6 +577,7 @@ mod tests {
             file_name: "AGENTS.md".to_string(),
             file_path: "/repo/AGENTS.md".to_string(),
             content: "# Instructions".to_string(),
+            source: Default::default(),
         }];
         let section = ctx.format_agents_md_section().unwrap();
         assert!(section.contains("# Instructions"));
@@ -573,6 +601,7 @@ mod tests {
             file_name: "AGENTS.md".to_string(),
             file_path: "/repo/AGENTS.md".to_string(),
             content: "# XYZZY_AGENTS_MD_MARKER".to_string(),
+            source: Default::default(),
         }];
         let section = ctx
             .agents_md_user_reminder()
@@ -588,6 +617,7 @@ mod tests {
             file_name: "AGENTS.md".to_string(),
             file_path: "/repo/AGENTS.md".to_string(),
             content: "# XYZZY_AGENTS_MD_MARKER".to_string(),
+            source: Default::default(),
         }];
         assert!(ctx.agents_md_user_reminder().is_none());
         assert!(ctx.format_agents_md_section().is_some());
@@ -638,6 +668,7 @@ mod tests {
             file_name: "AGENTS.md".to_string(),
             file_path: "/repo/AGENTS.md".to_string(),
             content: "X".repeat(5000),
+            source: Default::default(),
         }];
         assert_eq!(ctx.audience, super::PromptAudience::Subagent);
         let reminder = ctx.agents_md_user_reminder().unwrap();
@@ -922,6 +953,7 @@ mod tests {
                 file_name: "AGENTS.md".to_string(),
                 file_path: format!("{display_path}/AGENTS.md"),
                 content: "# Project rules".to_string(),
+                source: Default::default(),
             }],
             ..test_context()
         };
@@ -987,11 +1019,14 @@ mod tests {
             file_name: "AGENTS.md".to_string(),
             file_path: "/repo/AGENTS.md".to_string(),
             content: "X".repeat(5000),
+            source: Default::default(),
         }];
         ctx.normalize_for_persistence();
         assert_eq!(
-            ctx.agents_md_files[0].content.chars().count(),
-            5000,
+            ctx.agents_md_files
+                .first()
+                .map(|f| f.content.chars().count()),
+            Some(5000),
             "AGENTS content must be preserved in full for subagents (no cap)"
         );
     }
@@ -1002,9 +1037,13 @@ mod tests {
             file_name: "AGENTS.md".to_string(),
             file_path: "/repo/sub/AGENTS.md".to_string(),
             content: "Short rules".to_string(),
+            source: Default::default(),
         }];
         ctx.normalize_for_persistence();
-        assert_eq!(ctx.agents_md_files[0].content, "Short rules");
+        assert_eq!(
+            ctx.agents_md_files.first().map(|f| f.content.as_str()),
+            Some("Short rules")
+        );
     }
     #[test]
     fn normalize_preserves_role_and_persona_instructions() {

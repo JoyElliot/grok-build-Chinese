@@ -19,6 +19,7 @@ use agent_client_protocol as acp;
 use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
 use xai_grok_shell::agent::auth_method::AuthMethodKind;
 use xai_grok_shell::agent::config::Config as AgentConfig;
+use xai_grok_shell::extensions::memory::MemoryFlushResponse;
 use xai_grok_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
 use xai_grok_shell::sampling::error::{
     RATE_LIMITED_ERROR_CODE, error_detail_from_data, format_rate_limited_user_message,
@@ -39,11 +40,11 @@ use crate::app::worktree_session::{
 use crate::best_effort_stderr::eprint_line;
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use crate::headless::reducer::{
-    Lifecycle, McpServer, Reducer, SessionContext, StreamEvent, TurnEnd, map_session_update,
-    reducer_for,
+    Lifecycle, Reducer, SessionContext, StreamEvent, TurnEnd, map_session_update, reducer_for,
 };
 
 mod ext_protocol;
+mod mcp_init;
 mod prompt_ack;
 mod reducer;
 use ext_protocol::{ExtEvent, handle_ext_notification, reply_headless_ext_method};
@@ -325,8 +326,13 @@ impl HeadlessEmitter {
             "sessionId": session_id,
             "requestId": request_id
         });
-        if !self.thought_buffer.is_empty() {
-            result["thought"] = serde_json::Value::String(self.thought_buffer.clone());
+        if !self.thought_buffer.is_empty()
+            && let Some(obj) = result.as_object_mut()
+        {
+            obj.insert(
+                "thought".into(),
+                serde_json::Value::String(self.thought_buffer.clone()),
+            );
         }
         if let Some(usage) = &self.usage {
             attach_result_usage(&mut result, usage);
@@ -435,27 +441,6 @@ fn stop_reason_wire(reason: acp::StopReason) -> String {
     .to_string()
 }
 
-/// Configured MCP servers for the `init` line; all report `"connected"` (status is not resolved here).
-fn mcp_server_names(cwd: &Path) -> Vec<McpServer> {
-    let servers =
-        cli_config::load_mcp_servers(cwd, &xai_grok_tools::types::compat::CompatConfig::default());
-    servers
-        .iter()
-        .filter_map(|s| {
-            let name = match s {
-                acp::McpServer::Http(h) => h.name.clone(),
-                acp::McpServer::Sse(h) => h.name.clone(),
-                acp::McpServer::Stdio(h) => h.name.clone(),
-                _ => return None,
-            };
-            Some(McpServer {
-                name,
-                status: "connected".to_string(),
-            })
-        })
-        .collect()
-}
-
 fn auto_respond_to_permissions(
     args: &acp::RequestPermissionRequest,
     option_kinds: &[acp::PermissionOptionKind],
@@ -529,17 +514,25 @@ fn build_headless_init_request(
         "clientType": HEADLESS_CLIENT_TYPE,
         "clientVersion": PAGER_CLIENT_VERSION,
     });
-    if let Some(rules) = rules {
-        meta["rules"] = serde_json::json!(rules);
+    if let Some(obj) = meta.as_object_mut() {
+        if let Some(rules) = rules {
+            obj.insert("rules".into(), serde_json::json!(rules));
+        }
+        if let Some(system_prompt_override) = system_prompt_override {
+            obj.insert(
+                "systemPromptOverride".into(),
+                serde_json::json!(system_prompt_override),
+            );
+        }
+        obj.insert(
+            "startupHints".into(),
+            serde_json::json!({
+                "nonInteractive": true,
+                "skipGitStatus": true,
+                "skipProjectLayout": true,
+            }),
+        );
     }
-    if let Some(system_prompt_override) = system_prompt_override {
-        meta["systemPromptOverride"] = serde_json::json!(system_prompt_override);
-    }
-    meta["startupHints"] = serde_json::json!({
-        "nonInteractive": true,
-        "skipGitStatus": true,
-        "skipProjectLayout": true,
-    });
 
     acp::InitializeRequest::new(acp::ProtocolVersion::V1)
         .client_capabilities(
@@ -662,7 +655,12 @@ async fn fork_then_open(
     let mut payload = fork_session_params(parent_id, &write_cwd, new_id, parent_is_worktree);
     // Shared helper stamps `fork` for interactive `/fork`
     // `-p` children must stay headless: the load path below never restamps
-    payload["sessionKind"] = serde_json::Value::String("headless".into());
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "sessionKind".into(),
+            serde_json::Value::String("headless".into()),
+        );
+    }
     let fork_params = serde_json::value::to_raw_value(&payload)
         .map_err(|e| anyhow::anyhow!("serialize fork params: {e}"))?;
     let req = acp::ExtRequest::new("x.ai/session/fork", fork_params.into());
@@ -688,6 +686,7 @@ async fn open_session_in_new_worktree(
     cwd: &Path,
     spec: &WorktreeSpec,
     session_id: Option<&str>,
+    locale: &crate::locale::LocaleContext,
 ) -> anyhow::Result<OpenedSession> {
     let created = create_worktree(acp_tx, cwd, spec, &new_worktree_id(session_id))
         .await
@@ -705,7 +704,7 @@ async fn open_session_in_new_worktree(
     opened.map_err(|e| {
         anyhow::anyhow!(
             "{}",
-            note_orphaned_worktree(&e.to_string(), &created.worktree_root)
+            note_orphaned_worktree(&e.to_string(), &created.worktree_root, locale)
         )
     })
 }
@@ -750,7 +749,7 @@ async fn resume_session_in_new_worktree(
     .map_err(|e| {
         anyhow::anyhow!(
             "{}",
-            note_orphaned_worktree(&e.to_string(), &resumed.worktree_root)
+            note_orphaned_worktree(&e.to_string(), &resumed.worktree_root, locale)
         )
     })
 }
@@ -1090,10 +1089,17 @@ pub async fn run_single_turn(
     xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::SessionCreate);
     let opened = match (materialized, worktree.as_ref()) {
         (MaterializedStartup::NewAuto, Some(spec)) => {
-            open_session_in_new_worktree(&acp_tx, &cwd, spec, None).await
+            open_session_in_new_worktree(&acp_tx, &cwd, spec, None, options.locale.as_ref()).await
         }
         (MaterializedStartup::NewWithId { session_id }, Some(spec)) => {
-            open_session_in_new_worktree(&acp_tx, &cwd, spec, Some(&session_id)).await
+            open_session_in_new_worktree(
+                &acp_tx,
+                &cwd,
+                spec,
+                Some(&session_id),
+                options.locale.as_ref(),
+            )
+            .await
         }
         (
             MaterializedStartup::Resume {
@@ -1182,6 +1188,11 @@ pub async fn run_single_turn(
 
     // Seed the reducer's session context BEFORE applying model/effort so a later failure carries it.
     {
+        let mcp_servers = if options.output_format == OutputFormat::StreamingMessagesJson {
+            mcp_init::resolve_mcp_servers_for_init(&acp_tx, &session_id, &session_cwd).await
+        } else {
+            Vec::new()
+        };
         let model = options
             .model
             .clone()
@@ -1195,7 +1206,7 @@ pub async fn run_single_turn(
             model,
             cwd: session_cwd.to_string_lossy().to_string(),
             permission_mode,
-            mcp_servers: mcp_server_names(&session_cwd),
+            mcp_servers,
             include_partial_messages: options.include_partial_messages,
             api_key_auth: is_api_key_auth,
             context_window: session_models.get_context_window(),
@@ -1646,19 +1657,26 @@ async fn run_headless_memory_flush(
                 .replace("{error}", &e.to_string())
         )
     })?;
-    let flushed = serde_json::from_str::<serde_json::Value>(response.0.get())
-        .ok()
-        .and_then(|v| v.get("flushed")?.as_bool())
-        .unwrap_or(false);
-    if !flushed {
+    let response = serde_json::from_str::<MemoryFlushResponse>(response.0.get()).map_err(|e| {
+        anyhow::anyhow!(
+            emitter
+                .locale
+                .named_text(
+                    "headless.memory_flush.error.unreadable",
+                    "memory flush returned an unreadable response: {error}"
+                )
+                .replace("{error}", &e.to_string())
+        )
+    })?;
+    if !response.flushed {
         anyhow::bail!(
             emitter
                 .locale
                 .named_text(
-                    "headless.memory_flush.error.skipped",
-                    "memory flush skipped (already in progress or not started)",
+                    "headless.memory_flush.error.skipped_reason",
+                    "memory flush skipped: {reason}"
                 )
-                .into_owned()
+                .replace("{reason}", &response.summary())
         );
     }
     Ok(())

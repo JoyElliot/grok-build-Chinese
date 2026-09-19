@@ -69,7 +69,7 @@ fn initial_injection_backend_params_preserve_default_zero_min_score() {
     assert!((0.0 - effective_min_score as f32).abs() < f32::EPSILON);
 }
 #[allow(clippy::field_reassign_with_default)]
-async fn create_test_actor_with_memory(
+pub(super) async fn create_test_actor_with_memory(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
@@ -120,22 +120,10 @@ async fn create_test_actor_with_memory(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
-            mtls_cert_dir: None,
             model: "test".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            api_backend: Default::default(),
-            extra_headers: Default::default(),
-            conversation_group_id: None,
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
-            reasoning_effort: None,
-            stream_tool_calls: None,
+            ..Default::default()
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,
@@ -216,10 +204,21 @@ async fn create_test_actor_with_memory(
         },
         memory: crate::session::memory_state::SessionMemory {
             configured_mode: memory_config.as_ref().map(|mc| mc.mode),
+            v2_config: memory_config
+                .as_ref()
+                .map_or_else(Default::default, |mc| mc.v2),
             configured_storage: configured_storage.filter(|storage| {
                 storage.mode().is_v2()
                     || memory_config.as_ref().is_some_and(|config| config.enabled)
             }),
+            process_disabled: memory_config
+                .as_ref()
+                .is_some_and(|config| config.force_disabled),
+            config_opt_out: memory_config
+                .as_ref()
+                .is_some_and(|config| !config.enabled && !config.force_disabled),
+            v2_legacy_carryover: false,
+            prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
             flush_config: memory_config
                 .as_ref()
                 .filter(|mc| mc.mode.is_legacy())
@@ -231,7 +230,10 @@ async fn create_test_actor_with_memory(
                     },
                     |mc| mc.flush.clone(),
                 ),
-            is_flushing: std::sync::atomic::AtomicBool::new(false),
+            is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            capture_worker: std::cell::RefCell::new(None),
+            dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
+            last_capture_failure: std::cell::RefCell::new(None),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(memory_storage),
             save_on_end: memory_config
@@ -263,6 +265,7 @@ async fn create_test_actor_with_memory(
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
+            token_totals: Default::default(),
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: Duration::from_secs(300),
@@ -615,13 +618,18 @@ async fn v2_session_is_pinned_to_isolated_storage_and_disables_legacy_pipeline()
             let sessions = storage.sessions_dir();
             std::fs::create_dir_all(&sessions).unwrap();
             std::fs::write(sessions.join("seeded-legacy-input.md"), "must not be read").unwrap();
-            actor.run_dream_slash_command().await;
+            let outcome = actor.run_dream_slash_command().await;
+            assert_eq!(
+                outcome.disposition,
+                crate::extensions::memory::MemoryDreamDisposition::NoWork
+            );
             assert_eq!(
                 actor
                     .memory
                     .dream_count
                     .load(std::sync::atomic::Ordering::Relaxed),
-                0
+                1,
+                "the v2 Dream route should report a neutral no-work outcome"
             );
             assert!(!actor.memory.flush_config.enabled);
             assert_eq!(actor.idle_flush_timeout, None);
@@ -644,16 +652,38 @@ async fn v2_session_is_pinned_to_isolated_storage_and_disables_legacy_pipeline()
                 std::fs::read_to_string(legacy_root.join("MEMORY.md")).unwrap(),
                 "legacy sentinel"
             );
-            actor
-                .execute_builtin_slash_command(BuiltinAction::MemoryToggle { enabled: false })
-                .await
-                .unwrap();
+            let late_sample_cancelled = std::rc::Rc::new(std::cell::Cell::new(None));
+            actor.memory.dream_workers.track(tokio::task::spawn_local({
+                let actor = std::sync::Arc::clone(&actor);
+                let late_sample_cancelled = std::rc::Rc::clone(&late_sample_cancelled);
+                async move {
+                    let cancel = actor.memory.dream_workers.cancellation_token();
+                    late_sample_cancelled.set(Some(cancel.is_cancelled()));
+                    cancel.cancelled().await;
+                }
+            }));
+            actor.memory_toggle(false).await;
             assert!(!actor.memory.is_enabled());
             assert_eq!(actor.memory.mode(), Some(crate::config::MemoryMode::V2));
-            actor
-                .execute_builtin_slash_command(BuiltinAction::MemoryToggle { enabled: true })
-                .await
-                .unwrap();
+            assert_eq!(
+                actor.memory.disabled_reason(),
+                Some(crate::extensions::notification::MemoryDisabledReason::SessionToggle),
+            );
+            assert_eq!(
+                late_sample_cancelled.get(),
+                Some(true),
+                "a Dream worker first polled during /memory off must observe cancellation"
+            );
+            actor.memory_toggle(true).await;
+            assert!(
+                !actor
+                    .memory
+                    .dream_workers
+                    .cancellation_token()
+                    .is_cancelled(),
+                "/memory on must not inherit the cancelled Dream token"
+            );
+            assert_eq!(actor.memory.disabled_reason(), None);
             let reenabled_storage = actor.memory.storage().unwrap();
             assert_eq!(reenabled_storage.global_dir(), storage.global_dir());
             assert_eq!(reenabled_storage.workspace_dir(), storage.workspace_dir());
@@ -685,17 +715,228 @@ async fn v2_session_is_pinned_to_isolated_storage_and_disables_legacy_pipeline()
                     .build_local_command_availability(&[])
                     .memory_configured
             );
+            assert_eq!(
+                disabled_actor.memory.disabled_reason(),
+                Some(crate::extensions::notification::MemoryDisabledReason::ConfigOptOut),
+            );
             let disabled_actor = std::sync::Arc::new(disabled_actor);
+            std::fs::create_dir_all(
+                disabled_actor
+                    .memory
+                    .configured_storage
+                    .as_ref()
+                    .unwrap()
+                    .workspace_dir(),
+            )
+            .unwrap();
+            let bridge = disabled_actor.agent.borrow().tool_bridge().clone();
+            assert!(
+                bridge
+                    .read_resource::<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>()
+                    .await
+                    .is_none(),
+                "a config-disabled session starts without the v2 file-access policy"
+            );
+            assert!(
+                !disabled_actor
+                    .agent
+                    .borrow()
+                    .prompt_context()
+                    .memory_v2_enabled
+            );
             disabled_actor
-                .execute_builtin_slash_command(BuiltinAction::MemoryToggle { enabled: true })
-                .await
-                .unwrap();
+                .memory
+                .context_injected
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let message = disabled_actor.memory_toggle(true).await;
+            assert!(
+                message.contains("`[memory] enabled = false`"),
+                "the toggle must say the config default still applies, got: {message}"
+            );
             assert!(disabled_actor.memory.is_enabled());
+            assert_eq!(disabled_actor.memory.disabled_reason(), None);
             assert_eq!(
                 disabled_actor.memory.storage().unwrap().mode(),
                 crate::config::MemoryMode::V2
             );
             assert!(!disabled_actor.memory.uses_legacy_pipeline());
+            let access = bridge
+                .read_resource::<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>()
+                .await
+                .expect("/memory on installs the v2 file-access policy on the tool bridge");
+            let enabled_storage = disabled_actor.memory.storage().unwrap();
+            assert_eq!(
+                access.0.scope_roots(),
+                [
+                    enabled_storage.global_dir().to_path_buf(),
+                    enabled_storage.workspace_dir().to_path_buf(),
+                ]
+            );
+            assert!(
+                disabled_actor.rebuild_spec.memory_v2_access.get().is_some(),
+                "a later zero-turn rebuild must keep memory on"
+            );
+            {
+                let agent = disabled_actor.agent.borrow();
+                let context = agent.prompt_context();
+                assert!(context.memory_v2_enabled);
+                assert_eq!(
+                    context.memory_global_path.as_deref(),
+                    Some(enabled_storage.global_dir().to_string_lossy().as_ref())
+                );
+                assert!(
+                    agent.system_prompt().contains("<memory>"),
+                    "the system prompt must carry the memory section after /memory on"
+                );
+            }
+            assert!(
+                !disabled_actor
+                    .memory
+                    .context_injected
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "/memory on re-arms first-turn manifest injection"
+            );
+            assert!(
+                disabled_actor.memory.can_capture_v2(),
+                "capture is available once memory is on"
+            );
+            {
+                let head = disabled_actor
+                    .chat_state_handle
+                    .get_conversation()
+                    .await
+                    .into_iter()
+                    .find_map(|item| match item {
+                        xai_grok_sampling_types::ConversationItem::System(sys) => {
+                            Some(sys.content.to_string())
+                        }
+                        _ => None,
+                    })
+                    .expect("toggle-on installs a System head");
+                assert!(head.contains("<memory>"));
+                let with_index = format!(
+                    "{head}\n\n{}\nremembered note\n{}",
+                    xai_chat_state::MEMORY_CONTEXT_OPEN_TAG,
+                    xai_chat_state::MEMORY_CONTEXT_CLOSE_TAG
+                );
+                disabled_actor
+                    .chat_state_handle
+                    .replace_system_head(&with_index)
+                    .await;
+            }
+            disabled_actor.state.lock().await.running_task = Some(running_task_stub("busy"));
+            let message = disabled_actor.memory_toggle(false).await;
+            assert!(
+                message.contains("when the current turn finishes"),
+                "a deferred prompt swap must be reported, got: {message}"
+            );
+            assert!(!disabled_actor.memory.is_enabled());
+            assert!(
+                bridge
+                    .read_resource::<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>()
+                    .await
+                    .is_none()
+            );
+            assert!(disabled_actor.rebuild_spec.memory_v2_access.get().is_none());
+            assert!(
+                disabled_actor
+                    .memory
+                    .prompt_sync_pending
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            );
+            assert!(
+                disabled_actor
+                    .agent
+                    .borrow()
+                    .system_prompt()
+                    .contains("<memory>"),
+                "the running turn keeps its prompt"
+            );
+            assert_eq!(
+                disabled_actor.sync_v2_memory_prompt().await,
+                super::memory_control::MemoryPromptSync::DeferredForTurn
+            );
+            if let Some(task) = disabled_actor.state.lock().await.running_task.take() {
+                task.handle.abort();
+            }
+            assert_eq!(
+                disabled_actor.sync_v2_memory_prompt().await,
+                super::memory_control::MemoryPromptSync::Applied
+            );
+            assert!(
+                !disabled_actor
+                    .memory
+                    .prompt_sync_pending
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            );
+            {
+                let agent = disabled_actor.agent.borrow();
+                assert!(!agent.prompt_context().memory_v2_enabled);
+                assert!(!agent.system_prompt().contains("<memory>"));
+            }
+            let head = disabled_actor
+                .chat_state_handle
+                .get_conversation()
+                .await
+                .into_iter()
+                .find_map(|item| match item {
+                    xai_grok_sampling_types::ConversationItem::System(sys) => {
+                        Some(sys.content.to_string())
+                    }
+                    _ => None,
+                })
+                .expect("the System head survives the toggle");
+            assert!(!head.contains("<memory>"), "{head}");
+            assert!(
+                !head.contains(xai_chat_state::MEMORY_CONTEXT_OPEN_TAG),
+                "the injected index must not outlive /memory off: {head}"
+            );
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::field_reassign_with_default)]
+async fn process_force_disable_hides_memory_command_and_refuses_toggle() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let temp = tempfile::TempDir::new().unwrap();
+            let (gateway_tx, _) = mpsc::unbounded_channel();
+            let (persistence_tx, _) = mpsc::unbounded_channel();
+            let mut config = crate::config::MemoryConfig::default();
+            config.enabled = false;
+            config.force_disabled = true;
+            config.mode = crate::config::MemoryMode::V2;
+            config.root_dir_override = Some(temp.path().join("forced-off-memory-v2"));
+            let actor = std::sync::Arc::new(
+                create_test_actor_with_memory(
+                    50_000,
+                    100_000,
+                    85,
+                    gateway_tx,
+                    persistence_tx,
+                    Some(config),
+                )
+                .await,
+            );
+            assert!(!actor.memory.is_enabled());
+            assert_eq!(
+                actor.memory.disabled_reason(),
+                Some(crate::extensions::notification::MemoryDisabledReason::ProcessDisabled),
+            );
+            assert!(
+                !actor
+                    .build_local_command_availability(&[])
+                    .memory_configured,
+                "`--no-memory` / `GROK_MEMORY=0` hide /memory"
+            );
+            let message = actor.memory_toggle(true).await;
+            assert!(
+                message.contains("--no-memory"),
+                "the toggle must refuse a process-wide force-disable, got: {message}"
+            );
+            assert!(!actor.memory.is_enabled());
+            assert!(actor.rebuild_spec.memory_v2_access.get().is_none());
         })
         .await;
 }

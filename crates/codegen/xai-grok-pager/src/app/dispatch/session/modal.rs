@@ -28,6 +28,30 @@ pub(in crate::app::dispatch) fn remove_agent_and_cleanup(app: &mut AppView, agen
     }
     identity_rebind.apply(app);
 }
+/// Minimal has no dashboard: `/new` replaces the visible session. A leftover prior
+/// AgentView makes a later `/resume` of it focus-only (no `LoadSession`; GB-4877).
+/// Each dropped view that already has a session id must leave the crash-recovery registry.
+#[must_use]
+pub(in crate::app::dispatch) fn drop_other_agents_in_minimal(
+    app: &mut AppView,
+    keep: AgentId,
+) -> Vec<Effect> {
+    if !app.screen_mode.is_minimal() {
+        return vec![];
+    }
+    let stale: Vec<_> = app
+        .agents
+        .iter()
+        .filter(|(id, _)| **id != keep)
+        .map(|(id, agent)| (*id, agent.session.session_id.clone()))
+        .collect();
+    let mut effects = Vec::new();
+    for (id, session_id) in stale {
+        effects.extend(unregister_session_effect(session_id));
+        remove_agent_and_cleanup(app, id);
+    }
+    effects
+}
 /// Close (drop from this pager's in-memory list) the given agent.
 /// Refuse to close the only alive agent (toast "Cannot close the only session -- use /home to exit").
 /// Clear `forked_from` references on surviving agents so dangling parent pointers cannot resurface.

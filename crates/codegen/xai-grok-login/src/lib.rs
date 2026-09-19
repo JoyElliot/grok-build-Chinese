@@ -9,6 +9,7 @@
 //!
 //! Extracted from `xai-grok-shell::auth`; the shell re-exports this crate as
 //! `xai_grok_shell::auth` so existing `crate::*` paths keep resolving.
+#![deny(clippy::indexing_slicing)]
 pub use xai_grok_telemetry::unified_log;
 pub mod api_key_probe;
 pub mod attribution;

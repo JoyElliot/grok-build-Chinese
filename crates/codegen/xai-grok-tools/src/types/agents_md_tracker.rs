@@ -387,7 +387,7 @@ mod tests {
 
         let results = tracker.check_path(&sub.join("foo.rs")).await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].ends_with("AGENTS.md"));
+        assert!(results.first().is_some_and(|r| r.ends_with("AGENTS.md")));
     }
 
     #[tokio::test]
@@ -405,7 +405,7 @@ mod tests {
 
         let results = tracker.check_path(&sub.join("foo.rs")).await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].ends_with("Claude.md"));
+        assert!(results.first().is_some_and(|r| r.ends_with("Claude.md")));
     }
 
     #[tokio::test]
@@ -678,7 +678,12 @@ mod tests {
         let dotdot_path = b.join("..").join("b").join("file.rs");
         let results = tracker.check_path(&dotdot_path).await;
         assert_eq!(results.len(), 1);
-        assert!(!results[0].to_str().unwrap().contains(".."));
+        assert!(
+            results
+                .first()
+                .and_then(|p| p.to_str())
+                .is_some_and(|s| !s.contains(".."))
+        );
     }
 
     #[tokio::test]
@@ -721,7 +726,12 @@ mod tests {
 
         let results = tracker.check_path(&apps.join("foo.ts")).await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].to_str().unwrap().contains("frontend"));
+        assert!(
+            results
+                .first()
+                .and_then(|p| p.to_str())
+                .is_some_and(|s| s.contains("frontend"))
+        );
     }
 
     // ── Rules directory discovery tests ─────────────────────────────

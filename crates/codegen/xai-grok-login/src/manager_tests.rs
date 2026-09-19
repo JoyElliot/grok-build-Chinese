@@ -2771,17 +2771,26 @@ async fn update_writes_disk_before_user_enrichment() {
 /// Without it an interleaved enrichment write can resurrect the older `refresh_token`, re-opening the `invalid_grant` race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn enrichment_task_preserves_interleaved_token_rotation() {
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hits = Arc::new(AtomicU32::new(0));
+    let release_for_handler = Arc::clone(&release);
+    let hits_for_handler = Arc::clone(&hits);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let app = axum::Router::new().route(
         "/user",
-        axum::routing::get(|| async {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            axum::Json(serde_json::json!({
-                "userId": "stable-user",
-                "email": "user@corp.com",
-                "teamId": "team-alpha",
-            }))
+        axum::routing::get(move || {
+            let r = Arc::clone(&release_for_handler);
+            let h = Arc::clone(&hits_for_handler);
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                r.notified().await;
+                axum::Json(serde_json::json!({
+                    "userId": "stable-user",
+                    "email": "user@corp.com",
+                    "teamId": "team-alpha",
+                }))
+            }
         }),
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2804,9 +2813,22 @@ async fn enrichment_task_preserves_interleaved_token_rotation() {
     };
     mgr.update(auth_v1).await.unwrap();
     mgr.update(auth_v2).await.unwrap();
+    let mut seen = 0;
+    for _ in 0..50 {
+        seen = hits.load(Ordering::SeqCst);
+        if seen >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        seen, 2,
+        "both enrichment /user calls must be in flight before release, got {seen}"
+    );
+    release.notify_waiters();
     let auth_path = dir.path().join("auth.json");
     let mut final_state = None;
-    for _ in 0..30 {
+    for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let store = read_auth_json(&auth_path).unwrap();
         let entry = store.values().next().unwrap().clone();
@@ -2815,7 +2837,17 @@ async fn enrichment_task_preserves_interleaved_token_rotation() {
             break;
         }
     }
-    let final_state = final_state.expect("v2 + enrichment must land within 3s");
+    let Some(final_state) = final_state else {
+        let store = read_auth_json(&auth_path).unwrap();
+        let entry = store.values().next().cloned();
+        panic!(
+            "v2 + enrichment must land within 5s; disk key={:?} refresh={:?} team={:?} hits={}",
+            entry.as_ref().map(|e| e.key.as_str()),
+            entry.as_ref().and_then(|e| e.refresh_token.as_deref()),
+            entry.as_ref().and_then(|e| e.team_id.as_deref()),
+            hits.load(Ordering::SeqCst),
+        );
+    };
     assert_eq!(
         final_state.refresh_token.as_deref(),
         Some("rt-v2"),

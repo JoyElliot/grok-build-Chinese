@@ -51,7 +51,7 @@ fn normalize_for_exec_risk(words: &[String]) -> NormalizedArgv<'_> {
 }
 
 /// `min_len` is the shortest unique stem vs sibling options (e.g. sort `--co` vs `--check`).
-fn is_accepted_long_option_prefix(flag: &str, full: &str, min_len: usize) -> bool {
+pub(crate) fn is_accepted_long_option_prefix(flag: &str, full: &str, min_len: usize) -> bool {
     flag.starts_with("--")
         && flag.len() >= min_len
         && full.starts_with(flag)
@@ -164,7 +164,9 @@ fn git_global_option_takes_value(tok: &str) -> bool {
 pub(crate) fn git_has_exec_risk_global(words: &[String]) -> bool {
     let mut i = 1;
     while i < words.len() {
-        let tok = words[i].as_str();
+        let Some(tok) = words.get(i).map(String::as_str) else {
+            break;
+        };
         if tok == "--" {
             return false;
         }
@@ -307,7 +309,7 @@ pub(crate) fn git_words_have_unsafe_query_option(words: &[String]) -> bool {
         return true;
     }
     // `git grep -O<cmd>` / `-O <cmd>` executes <cmd>; the short-attached form is not a long-option abbreviation, so guard it verb-specifically
-    matches!(git_safe_query_verb_index(words), Some(i) if words[i] == "grep")
+    matches!(git_safe_query_verb_index(words), Some(i) if words.get(i).map(String::as_str) == Some("grep"))
         && words.iter().skip(1).any(|w| w.starts_with("-O"))
 }
 
@@ -323,7 +325,10 @@ pub(crate) fn git_words_are_read_only_query(words: &[String]) -> bool {
     let Some(verb_idx) = git_safe_query_verb_index(words) else {
         return false;
     };
-    if !SAFE_GIT_SUBCOMMANDS.contains(&words[verb_idx].as_str()) {
+    if !words
+        .get(verb_idx)
+        .is_some_and(|w| SAFE_GIT_SUBCOMMANDS.contains(&w.as_str()))
+    {
         return false;
     }
     !git_words_have_unsafe_query_option(words)
@@ -416,7 +421,9 @@ fn git_effective_cwd(words: &[String], start_cwd: &Path) -> Option<PathBuf> {
     let mut cwd = start_cwd.to_path_buf();
     let mut i = 1;
     while i < words.len() {
-        let tok = words[i].as_str();
+        let Some(tok) = words.get(i).map(String::as_str) else {
+            break;
+        };
         if tok == "--" || !tok.starts_with('-') || tok == "-" {
             break;
         }

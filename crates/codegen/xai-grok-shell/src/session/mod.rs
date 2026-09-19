@@ -575,6 +575,7 @@ pub(crate) mod summary;
 pub(crate) mod telemetry;
 #[cfg(feature = "test-support")]
 pub mod testkit;
+pub mod tool_definitions_artifact;
 pub mod tool_index;
 pub mod turn_completion;
 pub mod unified_list;

@@ -47,12 +47,18 @@ fn split_glob_root(workspace: &Path, glob: &str) -> (PathBuf, String) {
     let Some(first_glob_index) = segments.iter().position(|segment| is_glob(segment)) else {
         return (root, rest.to_string());
     };
-    for segment in &segments[..first_glob_index] {
-        if !segment.is_empty() {
-            root.push(segment);
+    if let Some(literal) = segments.get(..first_glob_index) {
+        for segment in literal {
+            if !segment.is_empty() {
+                root.push(segment);
+            }
         }
     }
-    (root, segments[first_glob_index..].join("/"))
+    let tail = match segments.get(first_glob_index..) {
+        Some(rest_segs) => rest_segs.join("/"),
+        None => rest.to_string(),
+    };
+    (root, tail)
 }
 
 /// Reject `{`/`}`/`\` so a deny glob means the same thing on both platforms: globset honors brace alternation and
@@ -98,7 +104,8 @@ pub(crate) fn validate_deny_glob(glob: &str) -> anyhow::Result<()> {
     let cc: Vec<char> = glob.chars().collect();
     let mut i = 0;
     while i < cc.len() {
-        if cc[i] != '[' {
+        let Some(&ch) = cc.get(i) else { break };
+        if ch != '[' {
             i += 1;
             continue;
         }
@@ -109,8 +116,12 @@ pub(crate) fn validate_deny_glob(glob: &str) -> anyhow::Result<()> {
         if cc.get(j) == Some(&']') {
             anyhow::bail!("deny glob {glob:?}: a literal ']' as first class member is unsupported");
         }
-        while j < cc.len() && cc[j] != ']' {
-            if cc[j] == '[' {
+        while j < cc.len() {
+            let Some(&inner) = cc.get(j) else { break };
+            if inner == ']' {
+                break;
+            }
+            if inner == '[' {
                 anyhow::bail!(
                     "deny glob {glob:?}: nested '[' / POSIX '[[:…:]]' classes are unsupported"
                 );
@@ -686,7 +697,10 @@ mod tests {
             }
             let regexes = glob_to_seatbelt_regexes(Path::new("/ws"), p);
             assert_eq!(regexes.len(), 1, "expected one regex for {p:?}");
-            let re = regex::Regex::new(&regexes[0]).unwrap_or_else(|e| panic!("{p:?}: {e}"));
+            let Some(regex_src) = regexes.first() else {
+                panic!("expected one regex for {p:?}");
+            };
+            let re = regex::Regex::new(regex_src).unwrap_or_else(|e| panic!("{p:?}: {e}"));
             let gs = globset::GlobBuilder::new(&format!("/ws/{p}"))
                 .literal_separator(true)
                 .build()

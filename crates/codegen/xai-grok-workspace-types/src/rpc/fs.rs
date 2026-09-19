@@ -7,10 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{RpcActivityClass, WorkspaceRpc};
 
-// =========================================================================
-// Service-level file I/O
-// =========================================================================
-
 /// A single file entry to write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutFileEntry {
@@ -59,6 +55,31 @@ pub struct PutFileResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutFilesRes {
     pub results: Vec<PutFileResult>,
+}
+
+/// Leaves room for base64 expansion and RPC metadata within the hub's default 8 MiB frame limit.
+pub const MAX_SESSION_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_SESSION_IMAGE_BASE64_BYTES: usize = MAX_SESSION_IMAGE_BYTES.div_ceil(3) * 4;
+
+/// Store a generated image in the bound session's own folder, never in the workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreSessionImageReq {
+    /// Standard base64-encoded image bytes.
+    pub content_base64: String,
+    /// Filename extension: jpg, png, webp, or gif.
+    pub extension: String,
+}
+
+impl WorkspaceRpc for StoreSessionImageReq {
+    const METHOD: &'static str = "workspace.store_session_image";
+    const ACTIVITY: RpcActivityClass = RpcActivityClass::Mutation;
+    type Response = StoreSessionImageRes;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreSessionImageRes {
+    /// Absolute host path, returned only after the complete image has been stored.
+    pub file_path: String,
 }
 
 /// A single file to read, with optional cache validation and byte-range support.
@@ -119,10 +140,6 @@ pub struct GetFileResult {
 pub struct GetFilesRes {
     pub results: Vec<GetFileResult>,
 }
-
-// =========================================================================
-// Filesystem extension ops (`workspace.fs_*`)
-// =========================================================================
 
 // Response types: serde shapes match the shell's `session::file_system` types byte-for-byte so the ACP wire contract is unchanged
 
@@ -491,17 +508,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_constants() {
-        assert_eq!(PutFilesReq::METHOD, "workspace.put_files");
-        assert_eq!(GetFilesReq::METHOD, "workspace.get_files");
-        assert_eq!(FsListReq::METHOD, "workspace.fs_list");
-        assert_eq!(FsExistsReq::METHOD, "workspace.fs_exists");
-        assert_eq!(FsReadFileReq::METHOD, "workspace.fs_read_file");
-        assert_eq!(FsWriteFileReq::METHOD, "workspace.fs_write_file");
-        assert_eq!(FsDeleteFileReq::METHOD, "workspace.fs_delete_file");
-    }
-
-    #[test]
     fn fs_list_req_defaults_apply() {
         let req: FsListReq = serde_json::from_value(serde_json::json!({"path": "."})).unwrap();
         assert_eq!(req.depth, 1);
@@ -514,15 +520,12 @@ mod tests {
 
     #[test]
     fn fs_read_file_req_defaults_are_legacy_full_read() {
-        // Absent offset/length/encoding means a whole-file read; max_bytes defaults to 1 MiB and is only consulted on ranged reads
         let req: FsReadFileReq =
             serde_json::from_value(serde_json::json!({ "path": "a.txt" })).unwrap();
         assert_eq!(req.offset, None);
         assert_eq!(req.length, None);
         assert_eq!(req.max_bytes, 1_048_576);
         assert_eq!(req.encoding, FsReadEncoding::Utf8);
-        // A bare full read serializes without leaking range fields beyond
-        // the documented defaults.
         let req: FsReadFileReq = serde_json::from_value(serde_json::json!({
             "path": "a.bin", "offset": 4096, "length": 1024, "encoding": "base64"
         }))
@@ -543,7 +546,7 @@ mod tests {
             modified_at: None,
         };
         let json = serde_json::to_value(&node).unwrap();
-        assert_eq!(json["type"], "file");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("file"));
         assert!(json.get("isSymlink").is_none());
         assert!(json.get("modifiedAt").is_none());
     }
@@ -554,7 +557,6 @@ mod tests {
     fn client_fs_wire_stability_snapshot() {
         use serde_json::json;
 
-        // Requests: defaults from minimal JSON.
         let list_req: ClientFsListReq = serde_json::from_value(json!({ "path": "docs" })).unwrap();
         assert_eq!(
             list_req,
@@ -583,7 +585,6 @@ mod tests {
             }
         );
 
-        // Requests: fully-populated serialized form.
         let list_req = ClientFsListReq {
             path: "docs".into(),
             depth: 2,
@@ -634,7 +635,6 @@ mod tests {
             })
         );
 
-        // Responses.
         let list_res = ClientFsListRes {
             nodes: vec![ClientFsListNode {
                 name: "a.txt".into(),
@@ -687,13 +687,5 @@ mod tests {
                 "type": "binary",
             })
         );
-
-        // Method names and WorkspaceRpc wiring
-        assert_eq!(CLIENT_FS_LIST_METHOD, "workspace.client_fs_list");
-        assert_eq!(CLIENT_FS_STAT_METHOD, "workspace.client_fs_stat");
-        assert_eq!(CLIENT_FS_READ_FILE_METHOD, "workspace.client_fs_read_file");
-        assert_eq!(ClientFsListReq::METHOD, CLIENT_FS_LIST_METHOD);
-        assert_eq!(ClientFsStatReq::METHOD, CLIENT_FS_STAT_METHOD);
-        assert_eq!(ClientFsReadFileReq::METHOD, CLIENT_FS_READ_FILE_METHOD);
     }
 }

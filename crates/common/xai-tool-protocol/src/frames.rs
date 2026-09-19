@@ -1030,8 +1030,9 @@ pub struct ToolsChanged {
 /// Lifecycle status of a tool server connection.
 ///
 /// `starting` → `ready` → `busy` ↔ `ready` → `draining` → `shutting_down`.
-/// `disconnected` is hub-only: set during disconnect cleanup, never sent
-/// by the tool server itself.
+/// `disconnected` is set by the hub during disconnect cleanup, and sent by a
+/// tool server tearing down gracefully (`push_disconnect_status`) — the hub
+/// accepts it only for the sender's own connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolServerLifecycleStatus {

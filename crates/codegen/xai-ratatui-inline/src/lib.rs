@@ -1,3 +1,5 @@
+#![deny(clippy::indexing_slicing)]
+
 mod common;
 mod resize;
 mod scrollback;

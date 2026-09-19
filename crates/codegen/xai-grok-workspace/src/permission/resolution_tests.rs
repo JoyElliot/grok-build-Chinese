@@ -177,7 +177,12 @@ fn parsed_permissions_with_bad_entry() {
     let (cfg, warnings) = perms.into_permission_config();
     assert_eq!(cfg.rules.len(), 1);
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].contains("EnterWorktree"));
+    assert!(
+        warnings
+            .first()
+            .unwrap_or_else(|| panic!("expected warning"))
+            .contains("EnterWorktree")
+    );
 }
 
 #[test]
@@ -363,11 +368,35 @@ fn default_mode_accept_edits_produces_allow_edit_rule() {
         resolve_claude_settings_inner(tmp.path(), true, None, UserDefaultModeLoad::Apply).unwrap();
     assert_eq!(cfg.rules.len(), 2);
     // Explicit permission rule comes first
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Bash);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Bash
+    );
     // Synthetic Allow Edit rule is last (catch-all fallback)
-    assert_eq!(cfg.rules[1].action, RuleAction::Allow);
-    assert_eq!(cfg.rules[1].tool, ToolFilter::Edit);
-    assert!(cfg.rules[1].pattern.is_none());
+    assert_eq!(
+        cfg.rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .action,
+        RuleAction::Allow
+    );
+    assert_eq!(
+        cfg.rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .tool,
+        ToolFilter::Edit
+    );
+    assert!(
+        cfg.rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .pattern
+            .is_none()
+    );
 }
 
 #[test]
@@ -384,8 +413,20 @@ fn default_mode_accept_edits_no_permissions_still_produces_rule() {
     let (cfg, skipped, _) =
         resolve_claude_settings_inner(tmp.path(), true, None, UserDefaultModeLoad::Apply).unwrap();
     assert_eq!(cfg.rules.len(), 1);
-    assert_eq!(cfg.rules[0].action, RuleAction::Allow);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Edit);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Allow
+    );
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Edit
+    );
     assert!(skipped.is_empty());
 }
 
@@ -403,7 +444,13 @@ fn claude_only_returns_claude_settings_source() {
     let (cfg, skipped, path) =
         resolve_claude_settings_inner(tmp.path(), true, None, UserDefaultModeLoad::Apply).unwrap();
     assert_eq!(cfg.rules.len(), 1);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Bash);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Bash
+    );
     assert!(skipped.is_empty());
     assert!(path.ends_with(".claude/settings.json"));
 }
@@ -431,11 +478,35 @@ fn default_mode_accept_edits_explicit_deny_takes_priority() {
         resolve_claude_settings_inner(tmp.path(), true, None, UserDefaultModeLoad::Apply).unwrap();
     assert_eq!(cfg.rules.len(), 2);
     // Explicit Deny Edit wins over the synthetic Allow (deny > ask > allow)
-    assert_eq!(cfg.rules[0].action, RuleAction::Deny);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Edit);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Deny
+    );
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Edit
+    );
     // Synthetic Allow Edit is appended last
-    assert_eq!(cfg.rules[1].action, RuleAction::Allow);
-    assert_eq!(cfg.rules[1].tool, ToolFilter::Edit);
+    assert_eq!(
+        cfg.rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .action,
+        RuleAction::Allow
+    );
+    assert_eq!(
+        cfg.rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .tool,
+        ToolFilter::Edit
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -605,12 +676,48 @@ fn parse_toml_compact_deny_rules() {
     let rules = parse_toml_permission_section(&toml_val).unwrap();
 
     assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0].action, RuleAction::Deny);
-    assert_eq!(rules[0].tool, ToolFilter::Read);
-    assert_eq!(rules[0].pattern, Some("**/.env*".to_string()));
-    assert_eq!(rules[1].action, RuleAction::Deny);
-    assert_eq!(rules[1].tool, ToolFilter::Bash);
-    assert_eq!(rules[1].pattern, Some("cat .env*".to_string()));
+    assert_eq!(
+        rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Deny
+    );
+    assert_eq!(
+        rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Read
+    );
+    assert_eq!(
+        rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .pattern,
+        Some("**/.env*".to_string())
+    );
+    assert_eq!(
+        rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .action,
+        RuleAction::Deny
+    );
+    assert_eq!(
+        rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .tool,
+        ToolFilter::Bash
+    );
+    assert_eq!(
+        rules
+            .get(1)
+            .unwrap_or_else(|| panic!("expected rule 1"))
+            .pattern,
+        Some("cat .env*".to_string())
+    );
 }
 
 /// A wrong-typed compact value (string instead of array) must warn, because the user believes a deny rule is in force.
@@ -656,8 +763,20 @@ fn parse_toml_non_array_compact_value_warns() {
 
     // The valid sibling still parses; the wrong-typed key yields no rules.
     assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0].action, RuleAction::Allow);
-    assert_eq!(rules[0].tool, ToolFilter::Read);
+    assert_eq!(
+        rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Allow
+    );
+    assert_eq!(
+        rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Read
+    );
 
     let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(out.contains("WARN"), "no WARN level in: {out}");
@@ -983,8 +1102,21 @@ fn untrusted_project_claude_permissions_are_not_honored() {
     let (cfg, _, _) =
         resolve_claude_settings_inner(tmp.path(), false, None, UserDefaultModeLoad::Apply).unwrap();
     assert_eq!(cfg.rules.len(), 1, "only global rule should load");
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Bash);
-    assert_eq!(cfg.rules[0].pattern.as_deref(), Some("git status"));
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Bash
+    );
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .pattern
+            .as_deref(),
+        Some("git status")
+    );
     assert!(
         !cfg.rules
             .iter()
@@ -1118,9 +1250,27 @@ fn bypass_permissions_produces_catch_all_allow() {
     let (cfg, _, path) =
         resolve_claude_settings_inner(tmp.path(), true, None, UserDefaultModeLoad::Apply).unwrap();
     assert_eq!(cfg.rules.len(), 1);
-    assert_eq!(cfg.rules[0].action, RuleAction::Allow);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Any);
-    assert!(cfg.rules[0].pattern.is_none());
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Allow
+    );
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Any
+    );
+    assert!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .pattern
+            .is_none()
+    );
     // source_path must point to the file that provided defaultMode, even when no explicit permissions block exists
     assert!(
         path.ends_with(".claude/settings.json"),
@@ -1180,7 +1330,13 @@ fn bypass_permissions_overrides_accept_edits_cross_file() {
         resolve_claude_settings_inner(&sub_dir, true, None, UserDefaultModeLoad::Apply).unwrap();
     // Should produce Allow Any (bypassPermissions), NOT Allow Edit (acceptEdits)
     assert_eq!(cfg.rules.len(), 1);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Any);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Any
+    );
 }
 
 const PIN: &str = YoloPinReason::DisableBypassPermissionsMode.message();
@@ -1240,7 +1396,13 @@ fn bypass_permissions_blocked_by_policy_pin() {
         resolve_claude_settings_inner(tmp.path(), true, Some(PIN), UserDefaultModeLoad::Apply)
             .unwrap();
     assert_eq!(cfg.rules.len(), 1, "only the explicit deny survives");
-    assert_eq!(cfg.rules[0].action, RuleAction::Deny);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Deny
+    );
     assert!(
         !cfg.rules
             .iter()
@@ -1248,8 +1410,20 @@ fn bypass_permissions_blocked_by_policy_pin() {
         "catch-all Allow Any must not be appended under the pin"
     );
     assert_eq!(skipped.len(), 1);
-    assert_eq!(skipped[0].rule, "defaultMode=bypassPermissions");
-    assert_eq!(skipped[0].reason, PIN);
+    assert_eq!(
+        skipped
+            .first()
+            .unwrap_or_else(|| panic!("expected skipped rule"))
+            .rule,
+        "defaultMode=bypassPermissions"
+    );
+    assert_eq!(
+        skipped
+            .first()
+            .unwrap_or_else(|| panic!("expected skipped rule"))
+            .reason,
+        PIN
+    );
 }
 
 /// A bypass-only file under the pin still resolves (zero rules) so the skip keeps provenance and reaches inspect instead of an early `None`.
@@ -1270,8 +1444,20 @@ fn bypass_permissions_blocked_pin_only_file_still_resolves() {
     assert!(cfg.rules.is_empty(), "no synthetic rule under the pin");
     assert_eq!(cfg.prompt_policy, PromptPolicy::Ask);
     assert_eq!(skipped.len(), 1);
-    assert_eq!(skipped[0].rule, "defaultMode=bypassPermissions");
-    assert_eq!(skipped[0].reason, PIN);
+    assert_eq!(
+        skipped
+            .first()
+            .unwrap_or_else(|| panic!("expected skipped rule"))
+            .rule,
+        "defaultMode=bypassPermissions"
+    );
+    assert_eq!(
+        skipped
+            .first()
+            .unwrap_or_else(|| panic!("expected skipped rule"))
+            .reason,
+        PIN
+    );
     assert!(
         path.ends_with(".claude/settings.json"),
         "provenance must point at the defaultMode file, got {path:?}"
@@ -1294,8 +1480,20 @@ fn accept_edits_unaffected_by_policy_pin() {
         resolve_claude_settings_inner(tmp.path(), true, Some(PIN), UserDefaultModeLoad::Apply)
             .unwrap();
     assert_eq!(cfg.rules.len(), 1);
-    assert_eq!(cfg.rules[0].action, RuleAction::Allow);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Edit);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .action,
+        RuleAction::Allow
+    );
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Edit
+    );
     assert!(skipped.is_empty());
 }
 
@@ -2235,7 +2433,7 @@ fn nested_additional_directories_preferred_over_root() {
     let settings = load_claude_settings(&path).expect("load");
     assert_eq!(
         settings.additional_directories.as_deref(),
-        Some(&["/nested".to_string()][..]),
+        Some(["/nested".to_string()].as_slice()),
     );
 }
 
@@ -2323,7 +2521,13 @@ fn notebook_tools_warn_and_skip_like_enter_worktree() {
     };
     let (cfg, warnings) = perms.into_permission_config();
     assert_eq!(cfg.rules.len(), 1, "rules: {:?}", cfg.rules);
-    assert_eq!(cfg.rules[0].tool, ToolFilter::Bash);
+    assert_eq!(
+        cfg.rules
+            .first()
+            .unwrap_or_else(|| panic!("expected rule 0"))
+            .tool,
+        ToolFilter::Bash
+    );
     assert_eq!(warnings.len(), 3, "warnings: {warnings:?}");
 }
 
@@ -2449,8 +2653,28 @@ async fn managed_config_toml_rules_resolve_as_non_admin_defaults() {
     .unwrap();
 
     let layers = xai_grok_config::managed_config_layers_at(Some(system.path()), Some(user.path()));
-    assert!(layers[0].is_system && layers[0].path.starts_with(system.path()));
-    assert!(!layers[1].is_system && layers[1].path.starts_with(user.path()));
+    assert!(
+        layers
+            .first()
+            .unwrap_or_else(|| panic!("expected layer 0"))
+            .is_system
+            && layers
+                .first()
+                .unwrap_or_else(|| panic!("expected layer 0"))
+                .path
+                .starts_with(system.path())
+    );
+    assert!(
+        !layers
+            .get(1)
+            .unwrap_or_else(|| panic!("expected layer 1"))
+            .is_system
+            && layers
+                .get(1)
+                .unwrap_or_else(|| panic!("expected layer 1"))
+                .path
+                .starts_with(user.path())
+    );
     let rules = managed_config_permissions(&layers);
     assert_eq!(rules.len(), 2);
     assert!(rules.iter().all(|s| {

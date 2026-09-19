@@ -15,7 +15,8 @@ fn main_turn_input(items: Vec<ConversationItem>) -> Vec<serde_json::Value> {
         ..Default::default()
     };
     let mapped = async_openai::types::responses::CreateResponse::from(&request);
-    serde_json::to_value(&mapped).expect("request serializes")["input"]
+    let value = serde_json::to_value(&mapped).expect("request serializes");
+    j(&value, "input")
         .as_array()
         .expect("input is an array")
         .clone()
@@ -28,15 +29,18 @@ fn assert_rides_parent_prefix(
     label: &str,
 ) {
     let expected = main_turn_input(parent);
-    let actual = body["input"].as_array().expect("input must be present");
+    let actual = j(body, "input").as_array().expect("input must be present");
     assert!(
         actual.len() > expected.len(),
         "{label}: auxiliary input ({}) must extend the parent ({})",
         actual.len(),
         expected.len()
     );
+    let Some(prefix) = actual.get(..expected.len()) else {
+        panic!("{label}: actual shorter than parent prefix: {actual:?}");
+    };
     assert_eq!(
-        &actual[..expected.len()],
+        prefix,
         expected.as_slice(),
         "{label}: prefix diverges from the main turn"
     );
@@ -78,8 +82,8 @@ fn assert_messages_rides_parent_prefix(
     };
     let expected = serde_json::to_value(xai_grok_sampling_types::build_messages_request(&request))
         .expect("main Messages request serializes");
-    let expected_messages = without_cache_control(expected["messages"].clone());
-    let actual_messages = without_cache_control(body["messages"].clone());
+    let expected_messages = without_cache_control(j(&expected, "messages").clone());
+    let actual_messages = without_cache_control(j(body, "messages").clone());
     let expected = expected_messages
         .as_array()
         .expect("main Messages request has messages");
@@ -91,8 +95,11 @@ fn assert_messages_rides_parent_prefix(
         actual.len() > expected.len(),
         "{label}: side-call Messages request must extend the parent"
     );
+    let Some(prefix) = actual.get(..expected.len()) else {
+        panic!("{label}: actual shorter than parent prefix: {actual:?}");
+    };
     assert_eq!(
-        &actual[..expected.len()],
+        prefix,
         expected.as_slice(),
         "{label}: Messages prefix diverges from the main turn"
     );
@@ -101,26 +108,34 @@ fn assert_messages_rides_parent_prefix(
         expected.len() + 1,
         "{label}: exactly one instruction message must be appended"
     );
-    assert_eq!(body["thinking"]["type"], "adaptive", "{label}: {body:#}");
-    assert_eq!(body["output_config"]["effort"], "high", "{label}: {body:#}");
+    assert_eq!(
+        j(j(body, "thinking"), "type"),
+        "adaptive",
+        "{label}: {body:#}"
+    );
+    assert_eq!(
+        j(j(body, "output_config"), "effort"),
+        "high",
+        "{label}: {body:#}"
+    );
 }
 
 fn assert_messages_reasoning_stripped(body: &serde_json::Value, label: &str) {
     assert!(
-        body.get("thinking").is_none() || body["thinking"].is_null(),
+        body.get("thinking").is_none() || j(body, "thinking").is_null(),
         "{label}: top-level thinking must be absent: {body:#}"
     );
-    for message in body["messages"]
+    for message in j(body, "messages")
         .as_array()
         .expect("Messages request has messages")
     {
-        let Some(blocks) = message["content"].as_array() else {
+        let Some(blocks) = j(message, "content").as_array() else {
             continue;
         };
         assert!(
             blocks.iter().all(|block| {
                 !matches!(
-                    block["type"].as_str(),
+                    j(block, "type").as_str(),
                     Some("thinking" | "redacted_thinking")
                 )
             }),
@@ -158,7 +173,7 @@ async fn side_question_projects_agent_messages_without_mutating_history() {
             actor.chat_state_handle.replace_conversation(raw);
 
             actor
-                .handle_side_question("what context matters?")
+                .handle_side_question("what context matters?", Vec::new())
                 .await
                 .expect("side question must succeed");
 
@@ -208,7 +223,7 @@ async fn auxiliary_calls_send_the_session_reasoning_effort() {
             ]);
 
             actor
-                .handle_side_question("what does xor mean here?")
+                .handle_side_question("what does xor mean here?", Vec::new())
                 .await
                 .expect("side question must succeed");
 
@@ -220,10 +235,10 @@ async fn auxiliary_calls_send_the_session_reasoning_effort() {
                 .and_then(|r| r.body.as_ref())
                 .expect("btw body must be JSON");
             assert_eq!(
-                body["reasoning"]["effort"].as_str(),
+                j(j(body, "reasoning"), "effort").as_str(),
                 Some("low"),
                 "side question must send the session's effort, not the model default: {}",
-                body["reasoning"]
+                j(body, "reasoning")
             );
         })
         .await;
@@ -257,7 +272,7 @@ async fn side_question_routes_on_the_session_id_when_the_key_is_not_forwarded() 
             ]);
 
             actor
-                .handle_side_question("what does xor mean here?")
+                .handle_side_question("what does xor mean here?", Vec::new())
                 .await
                 .expect("side question must succeed");
 
@@ -933,14 +948,14 @@ async fn recap_request_rides_parent_prompt_cache() {
 
             let body = recap_req.body.as_ref().expect("recap body must be JSON");
             assert_eq!(
-                body["prompt_cache_key"].as_str(),
+                j(body, "prompt_cache_key").as_str(),
                 Some(actor.session_info.id.to_string().as_str()),
                 "prompt_cache_key must be the parent session id for sticky routing"
             );
             let main_turn_specs =
                 actor.turn_base_tool_specs(&actor.prepare_tool_definitions().await);
             assert!(!main_turn_specs.is_empty(), "test env must expose tools");
-            let tools = body["tools"].as_array().expect("tools must be present");
+            let tools = j(body, "tools").as_array().expect("tools must be present");
             assert_eq!(
                 tools.len(),
                 main_turn_specs.len(),
@@ -1005,12 +1020,12 @@ async fn recap_request_sends_hosted_tools_under_backend_search() {
                 .find(|r| r.path.contains("responses"))
                 .expect("a responses request must be recorded");
             let body = recap_req.body.as_ref().expect("recap body must be JSON");
-            let tools = body["tools"].as_array().expect("tools must be present");
+            let tools = j(body, "tools").as_array().expect("tools must be present");
 
             assert!(
                 tools
                     .iter()
-                    .any(|t| t["type"].as_str() == Some("web_search")),
+                    .any(|t| j(t, "type").as_str() == Some("web_search")),
                 "recap must send the main turn's hosted tools: {tools:?}"
             );
             // Function tools must still match the main turn's specs exactly.
@@ -1019,7 +1034,7 @@ async fn recap_request_sends_hosted_tools_under_backend_search() {
             assert!(!main_turn_specs.is_empty(), "test env must expose tools");
             let function_tools = tools
                 .iter()
-                .filter(|t| t["type"].as_str() == Some("function"))
+                .filter(|t| j(t, "type").as_str() == Some("function"))
                 .count();
             assert_eq!(
                 function_tools,
@@ -1265,13 +1280,13 @@ async fn recap_hosted_tools_reflect_the_active_per_turn_override() {
                 .find(|r| r.path.contains("responses"))
                 .expect("a responses request must be recorded");
             let body = recap_req.body.as_ref().expect("recap body must be JSON");
-            let tools = body["tools"].as_array().expect("tools must be present");
+            let tools = j(body, "tools").as_array().expect("tools must be present");
             let x_search = tools
                 .iter()
-                .find(|t| t["type"].as_str() == Some("x_search"))
+                .find(|t| j(t, "type").as_str() == Some("x_search"))
                 .expect("recap must send the x_search hosted tool");
             assert_eq!(
-                x_search["to_date"].as_str(),
+                j(x_search, "to_date").as_str(),
                 Some("2024-03-15"),
                 "recap must serialize the per-turn override's cutoff, not the unbounded seed: {x_search:?}"
             );
@@ -1307,7 +1322,7 @@ async fn side_question_request_rides_parent_prompt_cache() {
             ]);
 
             let answer = actor
-                .handle_side_question("what does xor mean here?")
+                .handle_side_question("what does xor mean here?", Vec::new())
                 .await
                 .expect("side question must succeed against the mock server");
             assert!(!answer.is_empty());
@@ -1333,17 +1348,17 @@ async fn side_question_request_rides_parent_prompt_cache() {
 
             let body = btw_req.body.as_ref().expect("btw body must be JSON");
             assert_eq!(
-                body["prompt_cache_key"].as_str(),
+                j(body, "prompt_cache_key").as_str(),
                 Some(actor.session_info.id.to_string().as_str()),
                 "prompt_cache_key must be the parent session id for sticky routing"
             );
-            let tools = body["tools"].as_array().expect("tools must be present");
+            let tools = j(body, "tools").as_array().expect("tools must be present");
 
             // The fixture registers `update_goal`, so an empty or unrelated tool list cannot pass.
             let sent: Vec<&str> = tools
                 .iter()
-                .filter(|t| t["type"] == "function")
-                .map(|t| t["name"].as_str().unwrap_or_default())
+                .filter(|t| j(t, "type") == "function")
+                .map(|t| j(t, "name").as_str().unwrap_or_default())
                 .collect();
             assert_eq!(
                 sent,
@@ -1376,7 +1391,7 @@ async fn side_question_request_rides_parent_prompt_cache() {
                 "fixture must have backend search off"
             );
             assert!(
-                !tools.iter().any(|t| t["type"] != "function"),
+                !tools.iter().any(|t| j(t, "type") != "function"),
                 "no hosted tools may be added to a side question the main turn would not send: {tools:?}"
             );
         })
@@ -1416,7 +1431,7 @@ async fn auxiliary_calls_keep_the_main_turn_prefix() {
             actor.chat_state_handle.replace_conversation(parent.clone());
 
             actor
-                .handle_side_question("what does xor mean here?")
+                .handle_side_question("what does xor mean here?", Vec::new())
                 .await
                 .expect("side question must succeed");
             let requests = server.requests();
@@ -1492,7 +1507,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
             actor.chat_state_handle.replace_conversation(parent.clone());
 
             actor
-                .handle_side_question("what matters most?")
+                .handle_side_question("what matters most?", Vec::new())
                 .await
                 .expect("side question must succeed");
             let body = server
@@ -1602,7 +1617,7 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                 actor.chat_state_handle.replace_conversation(parent);
 
                 actor
-                    .handle_side_question("what matters most?")
+                    .handle_side_question("what matters most?", Vec::new())
                     .await
                     .expect("side question must succeed");
                 let body = server
@@ -1712,7 +1727,7 @@ async fn side_question_trims_reasoning_orphaned_by_mid_turn_truncation() {
             ]);
 
             actor
-                .handle_side_question("what does xor mean here?")
+                .handle_side_question("what does xor mean here?", Vec::new())
                 .await
                 .expect("side question must succeed against the mock server");
 
@@ -1723,11 +1738,11 @@ async fn side_question_trims_reasoning_orphaned_by_mid_turn_truncation() {
                 .find(|r| r.path.contains("responses"))
                 .expect("a responses request must be recorded");
             let body = btw_req.body.as_ref().expect("btw body must be JSON");
-            let input = body["input"].as_array().expect("input must be present");
+            let input = j(body, "input").as_array().expect("input must be present");
 
             let kinds: Vec<&str> = input
                 .iter()
-                .map(|i| i["type"].as_str().unwrap_or("message"))
+                .map(|i| j(i, "type").as_str().unwrap_or("message"))
                 .collect();
             assert!(
                 !kinds.contains(&"reasoning"),

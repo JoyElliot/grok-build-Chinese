@@ -1,3 +1,4 @@
+use super::test_hooks::{AttachPause, with_pause_at};
 use super::*;
 use crate::extensions::code_nav::CodeNavEligibility;
 /// Build an unsigned JWT with a `tier` claim (header.payload.sig base64url).
@@ -616,7 +617,9 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
         2,
         "both harness turns obtained a trace context"
     );
-    let ctx0 = &built[0].0;
+    let Some((ctx0, _, _)) = built.first() else {
+        panic!("expected two harness turns");
+    };
     record_artifact(
         &ctx0.artifact_tracker,
         "metadata.json",
@@ -641,7 +644,9 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
         Some(ArtifactStatus::Succeeded)
     ));
     assert!(m0.fully_uploaded, "both succeeded → fully_uploaded");
-    let ctx1 = &built[1].0;
+    let Some((ctx1, _, _)) = built.get(1) else {
+        panic!("expected two harness turns");
+    };
     let before = build_manifest(
         &ctx1.artifact_tracker,
         resolve_upload_method(&ctx1.gcs_config),
@@ -1645,12 +1650,11 @@ async fn restore_effort_via_load(
     tokio::spawn(async move {
         while let Some(cmd) = cmd_rx.recv().await {
             if let crate::session::SessionCommand::SetSessionModel {
-                sampling_config,
+                switch,
                 responds_to,
-                ..
             } = cmd
             {
-                let _ = responds_to.send(Ok(acp::ModelId::new(sampling_config.model)));
+                let _ = responds_to.send(Ok(acp::ModelId::new(switch.sampling_config.model)));
             }
         }
     });
@@ -1731,11 +1735,11 @@ async fn yolo_toggle_scoped_by_client_identifier() {
         apply_yolo_mode_to_matching_sessions(sessions.values_mut(), Some("grok-tui"), true);
     assert_eq!(updated, 1, "exactly one matching session should be updated");
     assert!(
-        sessions[&sid_tui].yolo_mode,
+        sessions.get(&sid_tui).is_some_and(|s| s.yolo_mode),
         "TUI session should have yolo=true after TUI toggle"
     );
     assert!(
-        !sessions[&sid_vscode].yolo_mode,
+        sessions.get(&sid_vscode).is_some_and(|s| !s.yolo_mode),
         "VS Code session must NOT be affected by TUI's yolo toggle"
     );
 }
@@ -1759,11 +1763,11 @@ async fn yolo_toggle_can_disable_session_started_with_yolo_enabled() {
         apply_yolo_mode_to_matching_sessions(sessions.values_mut(), Some("grok-tui"), false);
     assert_eq!(updated, 1, "only the sender's session should be updated");
     assert!(
-        !sessions[&sid_tui].yolo_mode,
+        sessions.get(&sid_tui).is_some_and(|s| !s.yolo_mode),
         "sender session should be switched to yolo=false"
     );
     assert!(
-        sessions[&sid_other].yolo_mode,
+        sessions.get(&sid_other).is_some_and(|s| s.yolo_mode),
         "other client's session must keep its previous yolo state"
     );
 }
@@ -2189,6 +2193,34 @@ async fn refresh_mcp_search_index_broadcasts_to_sessions() {
         .expect("channel should stay open");
     assert!(matches!(cmd, SessionCommand::RefreshMcpSearchIndex));
 }
+fn test_root_identity(agent: u128, attempt: u128) -> super::agent_directory::PendingRootIdentity {
+    super::agent_directory::PendingRootIdentity {
+        agent_id: xai_message_delivery_core::AgentId::mint(agent),
+        attempt_id: xai_message_delivery_core::AttemptId::mint(attempt),
+        origin: crate::agent::roster::RosterOrigin::Local,
+    }
+}
+fn assert_root_views(
+    agent: &MvpAgent,
+    sid: &acp::SessionId,
+    expected: Option<&super::agent_directory::RootDirectorySnapshot>,
+) {
+    assert_eq!(
+        expected.cloned(),
+        agent.session_registry.root_for_session(sid)
+    );
+    let live = agent.session_registry.snapshot_live_roots();
+    match expected {
+        Some(root) => {
+            assert_eq!(
+                Some(root.clone()),
+                agent.session_registry.root_for_agent(&root.agent_id)
+            );
+            assert!(live.contains(root));
+        }
+        None => assert!(live.iter().all(|root| root.session_id != *sid)),
+    }
+}
 fn build_minimal_agent_for_tests() -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;
     use xai_grok_login::{AuthManager, GrokComConfig};
@@ -2232,6 +2264,7 @@ async fn session_usage_dead_chat_state_actor_fails_closed() {
             .expect_err("dead chat-state actor");
     assert_eq!(err.code, acp::Error::internal_error().code);
 }
+/// Session responses publish the values this session's spawn pinned.
 #[tokio::test(flavor = "current_thread")]
 async fn session_meta_publishes_the_sessions_spawn_pins() {
     let agent = build_minimal_agent_for_tests();
@@ -2627,7 +2660,10 @@ async fn upload_trace_upload_failure_uses_an_isolated_directory() {
                 if n == 0 {
                     break;
                 }
-                seen.extend_from_slice(&buf[..n]);
+                let Some(chunk) = buf.get(..n) else {
+                    break;
+                };
+                seen.extend_from_slice(chunk);
                 if seen.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
@@ -2866,6 +2902,28 @@ async fn ensure_plugin_registry_lazily_populates_snapshot() {
         agent.plugin_registry_handle.snapshot().is_none(),
         "snapshot must start empty (boot discovery deferred past initialize)"
     );
+    let list_req = acp::ExtRequest::new(
+        "x.ai/plugins/list",
+        serde_json::value::to_raw_value(&serde_json::json!({ "sessionId": "no-such-session" }))
+            .unwrap()
+            .into(),
+    );
+    let resp = crate::extensions::plugins::handle(&agent, &list_req)
+        .await
+        .expect("plugins/list");
+    let listed: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
+    let names: Vec<&str> = listed
+        .get("result")
+        .and_then(|r| r.get("plugins"))
+        .and_then(|p| p.as_array())
+        .expect("plugins array")
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+        .collect();
+    assert!(
+        names.contains(&"regr-lazy-mcp-plugin"),
+        "session-less plugins/list must populate the snapshot first, got {names:?}"
+    );
     agent.ensure_plugin_registry();
     let snapshot = agent
         .plugin_registry_handle
@@ -2883,6 +2941,252 @@ async fn ensure_plugin_registry_lazily_populates_snapshot() {
             .is_some_and(|s| s.get("regr-lazy-mcp-plugin").is_some()),
         "repeat call must keep the populated snapshot"
     );
+}
+/// Regression: the shared snapshot was built from the boot-time in-memory `[plugins]` config, which
+/// `config.toml` edits never refresh. A plugin toggled after the agent started (marketplace install,
+/// `grok plugin enable|disable`, a client editing the file) kept its boot-time `enabled` for
+/// session-less `x.ai/plugins/list` / `x.ai/skills/list` callers until restart, while per-session
+/// registries, which read disk, were right. The shared rebuild must read disk too.
+///
+/// Exercised through a project `.grok/config.toml` (merged by `resolve_effective_plugins_config` for
+/// the given cwd): `grok_home()` is a process-wide `OnceLock`, so the user layer cannot be isolated
+/// per test.
+#[tokio::test]
+async fn shared_plugin_registry_snapshot_reads_plugins_config_from_disk() {
+    use crate::agent::config::Config as AgentConfig;
+    use xai_grok_login::{AuthManager, GrokComConfig};
+    let plugin_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        plugin_dir.path().join("plugin.json"),
+        r#"{"name": "regr-disk-disabled"}"#,
+    )
+    .unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    let project_config_dir = repo.path().join(".grok");
+    std::fs::create_dir_all(&project_config_dir).unwrap();
+    let auth_home = tempfile::tempdir().unwrap();
+    let auth_manager =
+        std::sync::Arc::new(AuthManager::new(auth_home.path(), GrokComConfig::default()));
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let gateway = GatewaySender::new(tx);
+    let mut cfg = AgentConfig::default();
+    cfg.plugins.cli_plugin_dirs = vec![plugin_dir.path().to_path_buf()];
+    let agent = MvpAgent::new(gateway, &cfg, auth_manager, None, None).expect("valid test config");
+    let rebuild = |label: &str| {
+        let (trusted, disk_cfg) = MvpAgent::registry_build_inputs(repo.path(), None);
+        agent
+            .plugin_registry_handle
+            .reload(Some(repo.path()), &disk_cfg, trusted, true);
+        agent
+            .plugin_registry_handle
+            .snapshot()
+            .unwrap_or_else(|| panic!("{label}: snapshot must be populated"))
+            .get("regr-disk-disabled")
+            .unwrap_or_else(|| panic!("{label}: plugin must be discovered"))
+            .enabled
+    };
+    assert!(rebuild("baseline"), "nothing disables the plugin yet");
+    std::fs::write(
+        project_config_dir.join("config.toml"),
+        "[plugins]\ndisabled = [\"regr-disk-disabled\"]\n",
+    )
+    .unwrap();
+    assert!(
+        !rebuild("after disk edit"),
+        "rebuild must take `disabled` from config on disk, not the boot-time config"
+    );
+}
+/// Scaffolding for the session-less `x.ai/plugins/reload` regressions: a hermetic GROK_HOME, the
+/// folder-trust feature in its release-build default (`GROK_FOLDER_TRUST` unset), and an agent whose
+/// launch dir is `repo` (captured from the process cwd at construction, so callers hold `serial`).
+struct ReloadHarness {
+    _env: Vec<xai_grok_test_support::EnvGuard>,
+    _home: tempfile::TempDir,
+    _auth_home: tempfile::TempDir,
+    _rx: tokio::sync::mpsc::UnboundedReceiver<<acp::AgentSide as xai_acp_lib::AcpSide>::OutMessage>,
+    agent: MvpAgent,
+}
+impl ReloadHarness {
+    fn launched_in(repo: &std::path::Path, cfg: &crate::agent::config::Config) -> Self {
+        use xai_grok_login::{AuthManager, GrokComConfig};
+        use xai_grok_test_support::EnvGuard;
+        let home = tempfile::tempdir().unwrap();
+        let env = vec![
+            EnvGuard::set("GROK_HOME", home.path()),
+            EnvGuard::unset("GROK_FOLDER_TRUST"),
+            EnvGuard::set(xai_grok_version::TEST_VERSION_ENV, "0.0.0-sim"),
+        ];
+        let previous_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let auth_home = tempfile::tempdir().unwrap();
+        let auth_manager =
+            std::sync::Arc::new(AuthManager::new(auth_home.path(), GrokComConfig::default()));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = MvpAgent::new(GatewaySender::new(tx), cfg, auth_manager, None, None)
+            .expect("valid test config");
+        std::env::set_current_dir(previous_cwd).unwrap();
+        assert_eq!(
+            dunce::canonicalize(&agent.launch_cwd).unwrap(),
+            dunce::canonicalize(repo).unwrap(),
+            "agent must have captured the repo as its launch dir"
+        );
+        Self {
+            _env: env,
+            _home: home,
+            _auth_home: auth_home,
+            _rx: rx,
+            agent,
+        }
+    }
+    async fn reload(&self) {
+        let req = acp::ExtRequest::new(
+            "x.ai/plugins/reload",
+            serde_json::value::to_raw_value(&serde_json::json!({}))
+                .unwrap()
+                .into(),
+        );
+        crate::extensions::session_admin::handle(&self.agent, &req)
+            .await
+            .expect("plugins/reload");
+    }
+}
+fn write_plugin_manifest(dir: &std::path::Path, name: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("plugin.json"), format!(r#"{{"name": "{name}"}}"#)).unwrap();
+}
+/// Kill-switch ordering through the production session-less `x.ai/plugins/reload` path (no resident
+/// session, so the rebuild targets the launch dir). `resolve_effective_plugins_config` consults the
+/// folder-trust gate, whose cold-key backstop resolves WITHOUT remote settings and records a durable
+/// verdict; if the disk read ran before the real-remote resolve, a cold launch dir under an org
+/// kill-switch (`folder_trust_enabled = Some(false)`) would be stamped with a kill-switch-blind deny
+/// that the store-only reconcile can never lift. Mirrors
+/// `kill_switched_cold_cwd_stays_allowed_through_plugins_config_read` for the shared rebuild.
+#[tokio::test]
+#[serial_test::serial]
+async fn plugins_reload_resolves_real_remote_trust_before_reading_disk_config() {
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    let proj_plugin = repo.path().join("proj-plugin");
+    write_plugin_manifest(&proj_plugin, "regr-killswitch-proj");
+    std::fs::create_dir_all(repo.path().join(".grok")).unwrap();
+    std::fs::write(
+        repo.path().join(".grok").join("config.toml"),
+        format!("[plugins]\npaths = ['{}']\n", proj_plugin.display()),
+    )
+    .unwrap();
+    let cfg = crate::agent::config::Config {
+        remote_settings: Some(crate::util::config::RemoteSettings {
+            folder_trust_enabled: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let h = ReloadHarness::launched_in(repo.path(), &cfg);
+    h.reload().await;
+    assert!(
+        crate::agent::folder_trust::project_scope_allowed(&h.agent.launch_cwd),
+        "kill-switched cold launch dir must stay allowed after the reload's config read"
+    );
+    let snapshot = h
+        .agent
+        .plugin_registry_handle
+        .snapshot()
+        .expect("reload must populate the snapshot");
+    assert!(
+        snapshot.get("regr-killswitch-proj").is_some(),
+        "kill-switched folder counts trusted, so the project [plugins].paths plugin must be discovered"
+    );
+}
+/// A session-less `x.ai/plugins/reload` must re-resolve the launch dir's folder trust rather than
+/// reuse the startup primer's memoized verdict. The primer records a point-in-time answer, and a
+/// no-configs launch dir yields a non-durable "trusted" allow; if repo-local plugin configs appear
+/// afterwards, a reload that reused that allow would grant them executable trust with no check.
+#[tokio::test]
+#[serial_test::serial]
+async fn plugins_reload_rechecks_launch_dir_trust() {
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    let h = ReloadHarness::launched_in(repo.path(), &crate::agent::config::Config::default());
+    h.agent.ensure_plugin_registry();
+    assert!(
+        crate::agent::folder_trust::project_scope_allowed(&h.agent.launch_cwd),
+        "a launch dir without repo-local configs is provisionally allowed"
+    );
+    write_plugin_manifest(
+        &repo
+            .path()
+            .join(".grok")
+            .join("plugins")
+            .join("regr-late-proj"),
+        "regr-late-proj",
+    );
+    h.reload().await;
+    assert!(
+        !crate::agent::folder_trust::project_scope_allowed(&h.agent.launch_cwd),
+        "reload must re-resolve trust: the repo now declares code-exec configs and is not store-trusted"
+    );
+    let snapshot = h
+        .agent
+        .plugin_registry_handle
+        .snapshot()
+        .expect("reload must populate the snapshot");
+    assert!(
+        !snapshot
+            .get("regr-late-proj")
+            .expect("project plugin must be discovered")
+            .trusted,
+        "the reload must not grant executable trust to a project plugin the folder-trust gate denies"
+    );
+    h.agent.ensure_plugin_registry();
+    h.agent.ensure_plugin_registry_async().await;
+    let plugin_trusted = h
+        .agent
+        .plugin_registry_handle
+        .snapshot()
+        .and_then(|s| s.get("regr-late-proj").map(|p| p.trusted));
+    assert_eq!(
+        plugin_trusted,
+        Some(false),
+        "ensure_plugin_registry after a reload must keep the reload's verdict"
+    );
+}
+/// The lazy boot build reads disk config through the folder-trust gate. It must not lean on the
+/// startup primer: with the gate on, a no-configs launch dir leaves the primer's allow non-durable
+/// (nothing recorded), so a later lazy build — reachable from a session-less `x.ai/plugins/list`
+/// long after startup, once repo-local configs have appeared and remote settings have moved to the
+/// kill-switch — would hit the gate's cold-key backstop, which resolves WITHOUT remote settings and
+/// records a kill-switch-blind deny that no reconcile can lift.
+#[tokio::test]
+#[serial_test::serial]
+async fn lazy_registry_build_resolves_real_remote_trust_before_reading_disk_config() {
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    let h = ReloadHarness::launched_in(repo.path(), &crate::agent::config::Config::default());
+    assert!(h.agent.prime_launch_dir_trust().1);
+    h.agent.cfg.borrow_mut().remote_settings = Some(crate::util::config::RemoteSettings {
+        folder_trust_enabled: Some(false),
+        ..Default::default()
+    });
+    write_plugin_manifest(
+        &repo
+            .path()
+            .join(".grok")
+            .join("plugins")
+            .join("regr-lazy-killswitch"),
+        "regr-lazy-killswitch",
+    );
+    h.agent.ensure_plugin_registry_async().await;
+    assert!(
+        crate::agent::folder_trust::project_scope_allowed(&h.agent.launch_cwd),
+        "kill-switched launch dir must stay allowed after the lazy build's config read"
+    );
+    let trusted = h
+        .agent
+        .plugin_registry_handle
+        .snapshot()
+        .and_then(|s| s.get("regr-lazy-killswitch").map(|p| p.trusted));
+    assert_eq!(trusted, Some(true), "kill-switched folder counts trusted");
 }
 mod list_running_heal_tests;
 #[cfg(unix)]
@@ -3071,17 +3375,23 @@ async fn push_roster_activity_delta_broadcasts_overridden_activity() {
     agent.push_roster_activity_delta(&sid, RosterActivity::Working);
     let changed = drain_roster_changed(&mut rx).expect("turn-start delta emitted");
     assert_eq!(changed.upserted.len(), 1);
-    assert_eq!(changed.upserted[0].session_id, sid.0.to_string());
-    assert!(changed.upserted[0].resident);
+    let Some(first) = changed.upserted.first() else {
+        panic!("expected one upserted roster row: {changed:?}");
+    };
+    assert_eq!(first.session_id, sid.0.to_string());
+    assert!(first.resident);
     assert_eq!(
-        changed.upserted[0].activity,
+        first.activity,
         RosterActivity::Working,
         "forced activity must override the Idle that resident_activity would read"
     );
     assert!(changed.removed.is_empty());
     agent.push_roster_activity_delta(&sid, RosterActivity::Idle);
     let changed = drain_roster_changed(&mut rx).expect("turn-end delta emitted");
-    assert_eq!(changed.upserted[0].activity, RosterActivity::Idle);
+    let Some(idle) = changed.upserted.first() else {
+        panic!("expected one upserted roster row: {changed:?}");
+    };
+    assert_eq!(idle.activity, RosterActivity::Idle);
 }
 #[expect(
     dead_code,
@@ -3205,8 +3515,8 @@ mod parse_json_object_env_tests {
         let result = parse_json_object_env("TEST_JSON_OBJ");
         unsafe { unset("TEST_JSON_OBJ") };
         let val = result.expect("should parse valid JSON object");
-        assert_eq!(val["team"], "platform");
-        assert_eq!(val["org"], "acme");
+        assert_eq!(val.get("team").and_then(|v| v.as_str()), Some("platform"));
+        assert_eq!(val.get("org").and_then(|v| v.as_str()), Some("acme"));
     }
     #[test]
     #[serial_test::serial]
@@ -3236,42 +3546,9 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
     let entry = |model: &str| ModelEntry {
         bundled_catalog_entry: false,
         info: config::ModelInfo {
-            user_selectable: true,
-            id: None,
-            variants: Vec::new(),
-            model_family: None,
             model: model.to_string(),
-            base_url: String::new(),
-            name: None,
-            description: None,
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            api_backend: crate::sampling::ApiBackend::default(),
-            auth_scheme: Default::default(),
-            extra_headers: IndexMap::new(),
-            query_params: IndexMap::new(),
-            env_http_headers: IndexMap::new(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),
-            auto_compact_threshold_percent: None,
-            system_prompt_label: None,
-            use_concise: false,
-            agent_type: config::default_agent_type(),
-            inference_idle_timeout_secs: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            subagent_rate_limit_max_attempts: None,
-            hidden: false,
-            supported_in_api: true,
-            reasoning_effort: None,
-            supports_reasoning_effort: false,
-            reasoning_efforts: Vec::new(),
-            supports_backend_search: false,
-            compactions_remaining: None,
-            compaction_at_tokens: None,
-            show_model_fingerprint: false,
-            stream_tool_calls: None,
-            laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
+            ..Default::default()
         },
         mtls_cert_dir: None,
         api_key: None,
@@ -3364,8 +3641,11 @@ fn orphaned_tasks_captures_command_and_cwd() {
     let path = write_updates(tmp.path(), &[&bg]);
     let result = MvpAgent::find_orphaned_background_tasks(&Some(path));
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0].command, "sleep 99");
-    assert_eq!(result[0].cwd, "/tmp");
+    let Some(task) = result.first() else {
+        panic!("expected one orphaned task");
+    };
+    assert_eq!(task.command, "sleep 99");
+    assert_eq!(task.cwd, "/tmp");
 }
 #[test]
 fn orphaned_tasks_skips_malformed_lines() {
@@ -3736,8 +4016,11 @@ async fn auth_info_returns_profile_when_token_expired() {
     .await
     .expect("auth/info must succeed with an expired token");
     let info: serde_json::Value = serde_json::from_str(resp.0.get()).unwrap();
-    assert_eq!(info["email"], "user@example.com");
-    assert_eq!(info["firstName"], "Test");
+    assert_eq!(
+        info.get("email").and_then(|v| v.as_str()),
+        Some("user@example.com")
+    );
+    assert_eq!(info.get("firstName").and_then(|v| v.as_str()), Some("Test"));
 }
 #[tokio::test]
 async fn data_collection_enabled_for_normal_user() {
@@ -4622,6 +4905,839 @@ fn chat_session_spawn_options_matches_thin_profile() {
     );
     assert!(opts.is_chat_kind);
 }
+/// Drives the real `session/new` path so a later `load_session_inner` is a genuine attach.
+async fn new_root_session(agent: &MvpAgent, cwd: &std::path::Path) -> acp::SessionId {
+    agent.set_auth_method(acp::AuthMethodId::new("cached_token"));
+    let init = acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_capabilities(
+        acp::ClientCapabilities::new()
+            .fs(acp::FileSystemCapabilities::new())
+            .terminal(false),
+    );
+    agent.initialize_request.set(init).unwrap();
+    let sid = uuid::Uuid::now_v7().to_string();
+    let meta = serde_json::json!({ "sessionId": sid, "modelId": "test-model" })
+        .as_object()
+        .cloned();
+    agent
+        .new_session_inner(acp::NewSessionRequest::new(cwd.to_path_buf()).meta(meta))
+        .await
+        .expect("session/new succeeds")
+        .session_id
+}
+/// Bindings the real spawn path took through the agent's (lazily built) local workspace ops.
+fn workspace_session_count(agent: &MvpAgent) -> usize {
+    agent
+        .workspace_ops
+        .borrow()
+        .as_ref()
+        .and_then(xai_grok_workspace::WorkspaceOps::workspace_handle)
+        .map_or(
+            0,
+            xai_grok_workspace::handle::WorkspaceHandle::session_count,
+        )
+}
+/// The toolset the real spawn path bound for `sid`; its pointer identifies that binding.
+fn workspace_toolset(
+    agent: &MvpAgent,
+    sid: &acp::SessionId,
+) -> std::sync::Arc<xai_grok_tools::registry::types::FinalizedToolset> {
+    agent
+        .workspace_ops
+        .borrow()
+        .as_ref()
+        .and_then(xai_grok_workspace::WorkspaceOps::workspace_handle)
+        .and_then(|handle| handle.session(sid.0.as_ref()))
+        .expect("the installed actor bound its workspace session")
+        .toolset()
+}
+/// The mailbox is FIFO, so once the ack returns every earlier stamp has been served and counted.
+async fn drain_persistence(agent: &MvpAgent, sid: &acp::SessionId) {
+    let handle = agent.resident_handle(sid).expect("resident actor to drain");
+    let (respond_to, ack) = tokio::sync::oneshot::channel();
+    handle
+        .persistence_tx
+        .send(crate::session::persistence::PersistenceMsg::FlushAndAck { respond_to })
+        .expect("persistence actor is alive");
+    ack.await
+        .expect("persistence acks the flush")
+        .expect("flush succeeds");
+}
+#[test]
+fn new_session_registers_root_identity() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        let root = agent
+            .session_registry
+            .root_for_session(&sid)
+            .expect("session/new registers root identity");
+        assert_root_views(&agent, &sid, Some(&root));
+        agent.remove_session(&sid);
+        assert_root_views(&agent, &sid, None);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (first, reached, release) = with_pause_at(
+            AttachPause::AfterInstall,
+            agent.load_session_inner(request()),
+        );
+        let overlap_generation = std::cell::Cell::new(None);
+        let overlap_attempt = std::cell::RefCell::new(None);
+        let second = async {
+            reached.await.expect("cold attach installed its actor");
+            agent.remove_session(&sid);
+            agent
+                .load_session_inner(request())
+                .await
+                .expect("overlapping cold attach settles");
+            let overlap_root = agent
+                .session_registry
+                .root_for_session(&sid)
+                .expect("winning warm attach publishes installed identity");
+            assert_eq!(root.agent_id, overlap_root.agent_id);
+            assert_ne!(root.generation, overlap_root.generation);
+            overlap_generation.set(Some(overlap_root.generation));
+            overlap_attempt.replace(Some(overlap_root.attempt_id.clone()));
+            assert_root_views(&agent, &sid, Some(&overlap_root));
+            let _ = release.send(());
+        };
+        let (first_result, ()) = tokio::join!(first, second);
+        let error = first_result.expect_err("superseded cold attach fails");
+        assert!(error.data.is_some());
+        assert_eq!(
+            1,
+            workspace_session_count(&agent),
+            "the superseded loader must leave its replacement's workspace binding alone"
+        );
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(
+            1,
+            crate::session::persistence::STAMPS_SERVED.get(),
+            "winner stamps once, superseded loader stamps zero"
+        );
+        let summary_path = crate::util::grok_home::sessions_cwd_dir(&cwd.path().to_string_lossy())
+            .join(sid.0.as_ref())
+            .join("summary.json");
+        let summary: crate::session::persistence::Summary =
+            serde_json::from_slice(&std::fs::read(summary_path).expect("winning summary persists"))
+                .expect("winning summary parses");
+        assert_eq!(
+            overlap_attempt.borrow().as_ref().map(ToString::to_string),
+            summary.attempt_id,
+        );
+        let warm = agent
+            .load_session_inner(request())
+            .await
+            .expect("warm attach succeeds");
+        drop(warm);
+        let warm_root = agent
+            .session_registry
+            .root_for_session(&sid)
+            .expect("warm attach republishes resident identity");
+        assert_eq!(root.agent_id, warm_root.agent_id);
+        assert_eq!(overlap_generation.get(), Some(warm_root.generation));
+        assert_ne!(root.attempt_id, warm_root.attempt_id);
+        assert_root_views(&agent, &sid, Some(&warm_root));
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        agent.remove_session(&sid);
+    });
+}
+#[test]
+fn new_session_records_setup_phases_for_bisection() {
+    xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let mark = xai_grok_telemetry::unified_log::snapshot_log()
+            .unwrap_or_default()
+            .len();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        let log = xai_grok_telemetry::unified_log::snapshot_log().unwrap_or_default();
+        let appended = String::from_utf8_lossy(log.get(mark.min(log.len())..).unwrap_or(&[]));
+        for phase in [
+            "resolve_workspace",
+            "plugin_registry",
+            "mcp_merge",
+            "persistence_init",
+            "spawn_session_actor",
+            "git_discovery",
+        ] {
+            let needle = format!("\"phase\":\"{phase}\"");
+            assert!(
+                appended.contains(needle.as_str()),
+                "session/new must record {phase} in unified.jsonl; got:\n{appended}"
+            );
+        }
+        assert!(appended.contains("\"msg\":\"session created\""));
+    });
+}
+#[test]
+fn cold_load_stamps_identity_exactly_once() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        agent
+            .load_session_inner(acp::LoadSessionRequest::new(
+                sid.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .expect("cold attach succeeds");
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        agent.remove_session(&sid);
+    });
+}
+#[test]
+fn failed_identity_stamp_fails_the_cold_load_closed() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        assert_eq!(0, workspace_session_count(&agent));
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        crate::session::persistence::FAIL_NEXT_STAMP.set(true);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (load, reached, release) = with_pause_at(
+            AttachPause::AfterInstall,
+            agent.load_session_inner(request()),
+        );
+        let toolset = async {
+            reached.await.expect("cold attach installed its actor");
+            let toolset = std::sync::Arc::downgrade(&workspace_toolset(&agent, &sid));
+            let _ = release.send(());
+            toolset
+        };
+        let (result, toolset) = tokio::join!(load, toolset);
+        let error = result.expect_err("a stamp that did not land fails the attach");
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            error.data
+        );
+        assert!(!crate::session::persistence::FAIL_NEXT_STAMP.get());
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        assert!(
+            !agent.is_resident(&sid),
+            "failed attach must not leak a resident actor"
+        );
+        assert_eq!(0, agent.resident_count());
+        assert_root_views(&agent, &sid, None);
+        assert_eq!(
+            0,
+            workspace_session_count(&agent),
+            "the failed install must release its workspace binding"
+        );
+        assert!(
+            toolset.upgrade().is_none(),
+            "nothing may keep the failed install's toolset alive"
+        );
+    });
+}
+/// The binding follows the registry's decision: an install the registry refuses never touches the
+/// workspace map, whether the id was closed or superseded while its actor was spawning.
+#[test]
+fn stale_install_takes_no_workspace_binding() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (stale, reached, release) =
+            with_pause_at(AttachPause::AfterSpawn, agent.load_session_inner(request()));
+        tokio::pin!(stale);
+        tokio::select! {
+            reached = reached => reached.expect("the install received its actor's init result"),
+            settled = &mut stale => panic!("the install settled without pausing: {settled:?}"),
+        }
+        assert_eq!(
+            0,
+            workspace_session_count(&agent),
+            "nothing binds before install"
+        );
+        agent.remove_session(&sid);
+        let _ = release.send(());
+        let error = stale.await.expect_err("a refused install fails closed");
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            error.data
+        );
+        assert_eq!(0, crate::session::persistence::STAMPS_SERVED.get());
+        assert!(!agent.is_resident(&sid));
+        assert_eq!(
+            0,
+            workspace_session_count(&agent),
+            "a refused install takes no binding"
+        );
+        let (stale, reached, release) =
+            with_pause_at(AttachPause::AfterSpawn, agent.load_session_inner(request()));
+        tokio::pin!(stale);
+        tokio::select! {
+            reached = reached => reached.expect("the install received its actor's init result"),
+            settled = &mut stale => panic!("the install settled without pausing: {settled:?}"),
+        }
+        let supersede = agent.begin_session_load(&sid);
+        let _ = release.send(());
+        let error = stale.await.expect_err("a refused install fails closed");
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            error.data
+        );
+        assert_eq!(0, workspace_session_count(&agent));
+        drop(supersede);
+        agent
+            .load_session_inner(request())
+            .await
+            .expect("the successor's cold attach succeeds");
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        assert_eq!(1, workspace_session_count(&agent));
+        assert!(agent.is_resident(&sid));
+        agent.remove_session(&sid);
+    });
+}
+/// The last-writer-wins ordering: the winner is resident and bound before the slower install's
+/// result is acted on. A bind from the loser's spawn would replace the winner's live binding and
+/// its rollback would then unmap it; the loser must never reach the workspace map at all.
+#[test]
+fn stale_install_never_binds_over_the_winners_workspace_session() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (loser, reached, release) =
+            with_pause_at(AttachPause::AfterSpawn, agent.load_session_inner(request()));
+        tokio::pin!(loser);
+        tokio::select! {
+            reached = reached => reached.expect("the install received its actor's init result"),
+            settled = &mut loser => panic!("the install settled without pausing: {settled:?}"),
+        }
+        assert_eq!(
+            0,
+            workspace_session_count(&agent),
+            "the loser's spawn binds nothing"
+        );
+        agent
+            .load_session_inner(request())
+            .await
+            .expect("the winning cold attach succeeds");
+        assert!(agent.is_resident(&sid));
+        let winner_toolset = workspace_toolset(&agent, &sid);
+        assert_eq!(1, workspace_session_count(&agent));
+        let _ = release.send(());
+        let error = loser.await.expect_err("a refused install fails closed");
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            error.data
+        );
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        assert_eq!(
+            1,
+            workspace_session_count(&agent),
+            "the loser's rollback must leave the winner's binding in place"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&winner_toolset, &workspace_toolset(&agent, &sid)),
+            "the winner's toolset is still the bound one; the loser's never was"
+        );
+        assert!(agent.is_resident(&sid));
+        agent.remove_session(&sid);
+    });
+}
+#[test]
+fn stamp_rollback_leaves_an_overlapping_attach_binding_intact() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        crate::session::persistence::FAIL_NEXT_STAMP.set(true);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (failing, reached, release) = with_pause_at(
+            AttachPause::BeforeRelease,
+            agent.load_session_inner(request()),
+        );
+        let successor = async {
+            reached.await.expect("rollback drained its actor");
+            agent
+                .load_session_inner(request())
+                .await
+                .expect("overlapping cold attach succeeds");
+            let toolset = workspace_toolset(&agent, &sid);
+            let _ = release.send(());
+            toolset
+        };
+        let (failing_result, successor_toolset) = tokio::join!(failing, successor);
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            failing_result.expect_err("failed stamp fails closed").data
+        );
+        assert_eq!(2, crate::session::persistence::STAMPS_SERVED.get());
+        assert_eq!(1, workspace_session_count(&agent));
+        assert!(
+            std::sync::Arc::ptr_eq(&successor_toolset, &workspace_toolset(&agent, &sid)),
+            "the rollback must not unbind its successor's workspace"
+        );
+        assert!(agent.session_registry.root_for_session(&sid).is_some());
+        agent.remove_session(&sid);
+    });
+}
+/// The inverse ordering for the stamp rollback: the id is re-bound over the install's toolset while
+/// its stamp is outstanding, so a capture of "whatever is bound now" would name the newer binding.
+/// No second `session/load` can bind here (one that starts before the install refuses it, one that
+/// starts after adopts it), so the re-bind goes through the workspace directly.
+#[test]
+fn stamp_rollback_leaves_a_binding_taken_during_the_stamp_intact() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        crate::session::persistence::FAIL_NEXT_STAMP.set(true);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (failing, reached, release) = with_pause_at(
+            AttachPause::AfterInstall,
+            agent.load_session_inner(request()),
+        );
+        let rebind = async {
+            reached.await.expect("cold attach installed its actor");
+            let installed_toolset = std::sync::Arc::downgrade(&workspace_toolset(&agent, &sid));
+            let newer_toolset = std::sync::Arc::new(
+                xai_grok_tools::registry::types::FinalizedToolset::empty_for_test(),
+            );
+            let rebound = agent
+                .workspace_ops
+                .borrow()
+                .as_ref()
+                .expect("the spawn built the local workspace ops")
+                .bind_local_session(
+                    sid.0.as_ref(),
+                    cwd.path().to_path_buf(),
+                    xai_hunk_tracker::HunkTrackerHandle::noop(),
+                    std::sync::Arc::clone(&newer_toolset),
+                    None,
+                )
+                .expect("re-binding the installed id succeeds");
+            assert!(rebound, "the re-bind replaces the installed toolset");
+            let _ = release.send(());
+            (installed_toolset, newer_toolset)
+        };
+        let (failing_result, (installed_toolset, newer_toolset)) = tokio::join!(failing, rebind);
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            failing_result.expect_err("failed stamp fails closed").data
+        );
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        assert!(!agent.is_resident(&sid));
+        assert_eq!(
+            1,
+            workspace_session_count(&agent),
+            "the rollback must not unbind a binding taken during its stamp"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&newer_toolset, &workspace_toolset(&agent, &sid)),
+            "the newer binding stays in place"
+        );
+        assert!(
+            installed_toolset.upgrade().is_none(),
+            "nothing may keep the withdrawn install's toolset alive"
+        );
+    });
+}
+/// Nothing of a withdrawn install may survive: no resident, no directory row, no workspace binding.
+fn assert_withdrawn(agent: &MvpAgent, sid: &acp::SessionId) {
+    assert!(
+        !agent.is_resident(sid),
+        "no unstamped actor may stay resident"
+    );
+    assert_eq!(0, agent.resident_count());
+    assert_root_views(agent, sid, None);
+    assert_eq!(0, workspace_session_count(agent));
+}
+/// Drives an adopting attach that must park on the installed actor's stamp, then fails that stamp.
+/// `before_adopt` runs with the installer parked after its install, before the adopting load starts.
+async fn adopting_attach_fails_with_the_stamp(
+    before_adopt: impl AsyncFn(&MvpAgent, &acp::SessionId),
+) {
+    let agent = build_minimal_agent_for_tests();
+    let cwd = tempfile::tempdir().unwrap();
+    let sid = new_root_session(&agent, cwd.path()).await;
+    agent.remove_session(&sid);
+    crate::session::persistence::STAMPS_SERVED.set(0);
+    let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+    let (cold, reached, release) = with_pause_at(
+        AttachPause::AfterInstall,
+        agent.load_session_inner(request()),
+    );
+    let adopt = async {
+        reached.await.expect("cold attach installed its actor");
+        before_adopt(&agent, &sid).await;
+        let adopt = agent.load_session_inner(request());
+        tokio::pin!(adopt);
+        let parked = async {
+            while agent.session_registry.identity_stamp_waiters(&sid) == 0 {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            () = parked => {}
+            settled = &mut adopt => panic!("warm attach settled ahead of the stamp: {settled:?}"),
+        }
+        crate::session::persistence::FAIL_NEXT_STAMP.set(true);
+        let _ = release.send(());
+        adopt
+            .await
+            .expect_err("the adopting attach fails with the stamp")
+    };
+    let (cold_result, adopt_error) = tokio::join!(cold, adopt);
+    assert_eq!(
+        Some(serde_json::json!("session load was superseded")),
+        cold_result.expect_err("cold attach fails closed").data
+    );
+    assert_eq!(
+        Some(serde_json::json!("session identity stamp failed")),
+        adopt_error.data
+    );
+    assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+    assert_withdrawn(&agent, &sid);
+    agent
+        .load_session_inner(request())
+        .await
+        .expect("a fresh cold load succeeds after the failure");
+    drain_persistence(&agent, &sid).await;
+    assert_eq!(2, crate::session::persistence::STAMPS_SERVED.get());
+    assert!(agent.session_registry.root_for_session(&sid).is_some());
+    agent.remove_session(&sid);
+}
+#[test]
+fn adopting_attach_waits_for_the_installed_actors_stamp() {
+    run_local_for_bridge_test(|| adopting_attach_fails_with_the_stamp(async |_, _| {}));
+}
+/// A load that supersedes the installer and fails validation before it could await the stamp.
+/// Its guard settles the record as `Resident` while the installed actor's stamp is outstanding.
+async fn supersede_with_invalid_load(agent: &MvpAgent, sid: &acp::SessionId) {
+    let relative = std::path::PathBuf::from("relative/cwd");
+    agent
+        .load_session_inner(acp::LoadSessionRequest::new(sid.clone(), relative))
+        .await
+        .expect_err("a relative cwd fails validation");
+    assert!(!agent.session_registry.is_attaching(sid));
+    assert!(
+        agent.is_resident(sid),
+        "the early-invalid load settles the installed actor as resident"
+    );
+    assert_root_views(agent, sid, None);
+}
+/// Installs the actor for `sid`, lets an early-invalid load settle it as `Resident` ahead of its
+/// stamp, then releases the installer with its stamp set to land or fail; returns the installer's result.
+async fn install_then_settle_ahead_of_the_stamp(
+    agent: &MvpAgent,
+    sid: &acp::SessionId,
+    cwd: &std::path::Path,
+    fail_stamp: bool,
+) -> Result<acp::LoadSessionResponse, acp::Error> {
+    let request = acp::LoadSessionRequest::new(sid.clone(), cwd.to_path_buf());
+    let (cold, reached, release) =
+        with_pause_at(AttachPause::AfterInstall, agent.load_session_inner(request));
+    let supersede = async {
+        reached.await.expect("cold attach installed its actor");
+        supersede_with_invalid_load(agent, sid).await;
+        crate::session::persistence::FAIL_NEXT_STAMP.set(fail_stamp);
+        let _ = release.send(());
+    };
+    let (cold_result, ()) = tokio::join!(cold, supersede);
+    cold_result
+}
+/// `Failed` against a record a superseding guard already settled: no guard is left, so the record
+/// withdraws itself the way a cold attach that produced nothing does, entry and all.
+#[test]
+fn stamp_failure_on_a_settled_resident_releases_the_entry() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        let error = install_then_settle_ahead_of_the_stamp(&agent, &sid, cwd.path(), true)
+            .await
+            .expect_err("a failed stamp fails the installer closed");
+        assert_eq!(
+            Some(serde_json::json!("session load was superseded")),
+            error.data
+        );
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        assert_withdrawn(&agent, &sid);
+        assert_eq!(None, agent.session_registry.live(&sid));
+        let counts = agent.session_registry.counts();
+        assert_eq!(0, counts.retained_resources + counts.resident_resources);
+        assert_eq!(
+            counts.session_threads, counts.entries,
+            "the failed load's entry goes with it; only a tracked thread may keep one"
+        );
+        agent
+            .load_session_inner(acp::LoadSessionRequest::new(
+                sid.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .expect("a fresh cold load succeeds after the failure");
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(2, crate::session::persistence::STAMPS_SERVED.get());
+        assert!(agent.session_registry.root_for_session(&sid).is_some());
+        agent.remove_session(&sid);
+    });
+}
+#[test]
+fn stamp_landing_on_a_settled_resident_publishes_it_once() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        let root = agent
+            .session_registry
+            .root_for_session(&sid)
+            .expect("session/new registers root identity");
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        install_then_settle_ahead_of_the_stamp(&agent, &sid, cwd.path(), false)
+            .await
+            .expect("the installer completes once its stamp lands");
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        let published = agent
+            .session_registry
+            .root_for_session(&sid)
+            .expect("the landed stamp publishes the settled resident");
+        assert_eq!(root.agent_id, published.agent_id);
+        assert_ne!(root.attempt_id, published.attempt_id);
+        assert_eq!(1, agent.session_registry.snapshot_live_roots().len());
+        assert_root_views(&agent, &sid, Some(&published));
+        agent
+            .load_session_inner(acp::LoadSessionRequest::new(
+                sid.clone(),
+                cwd.path().to_path_buf(),
+            ))
+            .await
+            .expect("a warm attach adopts the stamped resident");
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(
+            1,
+            crate::session::persistence::STAMPS_SERVED.get(),
+            "adopting a stamped resident does not re-stamp"
+        );
+        assert_root_views(&agent, &sid, Some(&published));
+        assert_eq!(1, workspace_session_count(&agent));
+        agent.remove_session(&sid);
+    });
+}
+/// A load cancelled with its actor installed and its stamp unresolved must withdraw that actor
+/// itself: a `Pending` slot nobody resolves would make every later adopter wait it out.
+#[test]
+fn a_cancelled_installer_withdraws_its_unstamped_actor() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        agent.remove_session(&sid);
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        let request = || acp::LoadSessionRequest::new(sid.clone(), cwd.path().to_path_buf());
+        let (cold, reached, _release) = with_pause_at(
+            AttachPause::AfterInstall,
+            agent.load_session_inner(request()),
+        );
+        let mut cold = Box::pin(cold);
+        tokio::select! {
+            reached = reached => reached.expect("cold attach installed its actor"),
+            settled = &mut cold => panic!("cold attach settled ahead of its pause: {settled:?}"),
+        }
+        drop(cold);
+        assert_withdrawn(&agent, &sid);
+        assert_eq!(None, agent.session_registry.live(&sid));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            agent.load_session_inner(request()),
+        )
+        .await
+        .expect("the next load must not wait out a stamp nobody will resolve")
+        .expect("the next load cold-spawns anew");
+        drain_persistence(&agent, &sid).await;
+        assert_eq!(
+            1,
+            crate::session::persistence::STAMPS_SERVED.get(),
+            "the cancelled installer never stamped; the fresh load stamps once"
+        );
+        assert_eq!(1, agent.session_registry.snapshot_live_roots().len());
+        assert!(agent.session_registry.root_for_session(&sid).is_some());
+        agent.remove_session(&sid);
+    });
+}
+/// A cancelled installer re-parks its still-running actor thread on the entry; settlement then
+/// restores the displaced presence, which carries a running thread of its own. Neither thread may
+/// be dropped: a dropped `JoinHandle` detaches the thread from the sweep.
+#[test]
+fn a_cancelled_installers_thread_stays_tracked_beside_the_displaced_one() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-cancelled-installer-threads");
+        let blocked_thread = |release_rx: std::sync::mpsc::Receiver<()>| {
+            crate::session::SessionThread::from_handle(std::thread::spawn(move || {
+                let _ = release_rx.recv();
+            }))
+        };
+        let (release_displaced, displaced_rx) = std::sync::mpsc::channel::<()>();
+        agent
+            .session_registry
+            .set_thread(&sid, blocked_thread(displaced_rx));
+        let (_attach_tx, waiter) = agent.session_registry.begin_attach(&sid);
+        let (handle, _cmd_tx, _cmd_rx) = make_live_session_handle(&sid, None);
+        let (release_installed, installed_rx) = std::sync::mpsc::channel::<()>();
+        let Ok((_, install_id)) = agent.session_registry.put_resident_for_attach(
+            &sid,
+            handle,
+            blocked_thread(installed_rx),
+            None,
+            &waiter,
+        ) else {
+            panic!("the install is accepted");
+        };
+        let StampResolution::Withdrawn(withdrawn) =
+            agent
+                .session_registry
+                .resolve_identity_stamp(&sid, install_id, IdentityStamp::Failed)
+        else {
+            panic!("the unstamped install is withdrawn");
+        };
+        agent.roll_back_install_sync(&sid, *withdrawn);
+        agent.session_registry.settle_attach(&sid, &waiter);
+        assert!(!agent.is_resident(&sid));
+        assert_eq!(
+            2,
+            agent.session_registry.counts().session_threads,
+            "the withdrawn thread must stay tracked beside the restored presence's own"
+        );
+        drop(release_displaced);
+        drop(release_installed);
+        for _ in 0..100 {
+            agent.sweep_dead_sessions();
+            if agent.session_registry.counts().session_threads == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            0,
+            agent.session_registry.counts().session_threads,
+            "the sweep must reap both threads once they exit"
+        );
+        assert_eq!(0, agent.session_registry.counts().entries);
+    });
+}
+/// The cancelled installer's guard re-parks its withdrawn actor's thread on the live `Attaching`
+/// slot. A load that began while the installer was still hosted then finds no handle, cold-spawns
+/// on the real path, and its install takes that slot: the displaced thread must be retired for the
+/// sweep, not dropped with its `JoinHandle`.
+#[test]
+fn a_cancelled_installer_retires_its_thread_when_a_reinstall_takes_the_slot() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let cwd = tempfile::tempdir().unwrap();
+        let sid = new_root_session(&agent, cwd.path()).await;
+        assert_eq!(
+            crate::agent::mvp_agent::session_lifecycle::CloseOutcome::Closed,
+            agent.close_active_session(&sid).await
+        );
+        crate::session::persistence::STAMPS_SERVED.set(0);
+        let (_installer_attach, installer_waiter) = agent.session_registry.begin_attach(&sid);
+        let (handle, _cmd_tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        tokio::task::spawn_local(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    TestSessionCommand::FlushComplete { respond_to } => {
+                        let _ = respond_to.send(Ok(()));
+                    }
+                    TestSessionCommand::IsBusy { respond_to } => {
+                        let _ = respond_to.send(false);
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let (release_installer, installer_rx) = std::sync::mpsc::channel::<()>();
+        let installer_thread =
+            crate::session::SessionThread::from_handle(std::thread::spawn(move || {
+                let _ = installer_rx.recv();
+            }));
+        let Ok((_, install_id)) = agent.session_registry.put_resident_for_attach(
+            &sid,
+            handle,
+            installer_thread,
+            None,
+            &installer_waiter,
+        ) else {
+            panic!("the install is accepted");
+        };
+        let reinstall = agent.load_session_inner(acp::LoadSessionRequest::new(
+            sid.clone(),
+            cwd.path().to_path_buf(),
+        ));
+        tokio::pin!(reinstall);
+        assert!(
+            futures::poll!(reinstall.as_mut()).is_pending(),
+            "the load parks before deciding cold against warm"
+        );
+        assert!(agent.session_registry.is_attaching(&sid));
+        let StampResolution::Withdrawn(withdrawn) =
+            agent
+                .session_registry
+                .resolve_identity_stamp(&sid, install_id, IdentityStamp::Failed)
+        else {
+            panic!("the unstamped install is withdrawn");
+        };
+        agent.roll_back_install_sync(&sid, *withdrawn);
+        assert!(!agent.is_resident(&sid));
+        assert!(
+            agent.session_registry.has_thread(&sid),
+            "the withdrawn thread is re-parked on the live attach"
+        );
+        reinstall
+            .await
+            .expect("the load finds no handle, cold-spawns and installs");
+        drain_persistence(&agent, &sid).await;
+        assert!(agent.is_resident(&sid));
+        assert_eq!(1, crate::session::persistence::STAMPS_SERVED.get());
+        assert_eq!(
+            2,
+            agent.session_registry.counts().session_threads,
+            "the reinstall's thread holds the slot and the withdrawn thread is retired, not dropped"
+        );
+        drop(release_installer);
+        for _ in 0..100 {
+            agent.sweep_dead_sessions();
+            if agent.session_registry.counts().session_threads == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            1,
+            agent.session_registry.counts().session_threads,
+            "the sweep reaps the retired thread once it exits; the resident's stays"
+        );
+        assert!(agent.is_resident(&sid));
+        agent.remove_session(&sid);
+    });
+}
 #[tokio::test(flavor = "current_thread")]
 async fn spawn_seeds_root_conversation_group_in_turn_config() {
     let local = tokio::task::LocalSet::new();
@@ -4699,7 +5815,14 @@ async fn remove_session_releases_workspace_binding_and_side_maps() {
         .set_permission_receiver(&sid, permission_rx);
     let _ = agent.session_registry.live_orphan_heal_lock(&sid);
     assert_eq!(agent.session_registry.counts().live_orphan_heal_locks, 1);
+    let root = agent
+        .session_registry
+        .register_root(sid.clone(), test_root_identity(1, 2));
+    assert_root_views(&agent, &sid, Some(&root));
+    agent.retire_root_session(&sid);
+    assert_root_views(&agent, &sid, None);
     agent.remove_session(&sid);
+    assert_root_views(&agent, &sid, None);
     assert_eq!(
         agent.session_registry.counts().live_orphan_heal_locks,
         0,
@@ -4828,7 +5951,10 @@ fn prompt_routes_only_non_send_now_through_human_delivery_handle() {
                             let _ = responds_to.send(Default::default());
                         }
                         SessionCommand::GetCurrentModel { responds_to } => {
-                            let _ = responds_to.send("test-model".to_owned());
+                            let _ = responds_to.send(crate::session::CurrentModel {
+                                id: "test-model".to_owned(),
+                                reasoning_effort: None,
+                            });
                         }
                         SessionCommand::Prompt {
                             prompt_blocks,
@@ -4843,7 +5969,10 @@ fn prompt_routes_only_non_send_now_through_human_delivery_handle() {
                         } => {
                             assert_eq!(actual, send_now);
                             assert_eq!(prompt_blocks.len(), 2);
-                            assert!(matches!(prompt_blocks[1], acp::ContentBlock::Image(_)));
+                            let Some(image) = prompt_blocks.get(1) else {
+                                panic!("expected image content block: {prompt_blocks:?}");
+                            };
+                            assert!(matches!(image, acp::ContentBlock::Image(_)));
                             assert_eq!(client_identifier.as_deref(), Some("client"));
                             assert_eq!(screen_mode.as_deref(), Some("minimal"));
                             assert!(verbatim);
@@ -5534,6 +6663,10 @@ fn disconnect_mixed_batch_keeps_busy_unloads_idle() {
         let (idle_handle, _idle_tx, idle_rx) = make_live_session_handle(&sid_idle, None);
         agent.insert_resident(&sid_busy, busy_handle);
         agent.insert_resident(&sid_idle, idle_handle);
+        let idle_root = agent
+            .session_registry
+            .register_root(sid_idle.clone(), test_root_identity(3, 4));
+        assert_root_views(&agent, &sid_idle, Some(&idle_root));
         let mut busy_observed = spawn_fake_actor(busy_rx, true);
         let mut idle_observed = spawn_fake_actor(idle_rx, false);
         drive_disconnect_many(&agent, &[&sid_busy, &sid_idle]).await;
@@ -5555,6 +6688,7 @@ fn disconnect_mixed_batch_keeps_busy_unloads_idle() {
             Some(SessionLiveState::Dormant),
             "the idle session must be Dormant"
         );
+        assert_root_views(&agent, &sid_idle, None);
         let idle_shutdown =
             tokio::time::timeout(std::time::Duration::from_secs(1), idle_observed.recv())
                 .await
@@ -6563,13 +7697,15 @@ fn interactive_trust_prompt_grant_reloads_project_mcp() {
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let params = answer_folder_trust_request(&mut gw_rx, "trust").await;
         assert!(
-            params["configKinds"]
-                .as_array()
+            params
+                .get("configKinds")
+                .and_then(|v| v.as_array())
                 .is_some_and(|k| k.iter().any(|v| v == "mcp")),
             "request must summarize detected config kinds; got {params}"
         );
         assert_eq!(
-            params["sessionId"], "sess-trust",
+            params.get("sessionId").and_then(|v| v.as_str()),
+            Some("sess-trust"),
             "trust request must carry the session id for leader routing; got {params}"
         );
         let mut saw_project_mcp = false;
@@ -7132,10 +8268,11 @@ fn announcements_push_gate_emits_on_expiry_crossing() {
         None
     );
 }
-/// A poll apply must touch ONLY `remote_settings.announcements`.
+/// A poll apply must touch ONLY `remote_settings.announcements` (and the request-encoding advertisement).
 /// Every other stored field keeps its pre-poll value (full reapply stays owned by startup, auth, and `/new`).
 #[tokio::test]
-async fn polled_announcements_apply_touches_announcements_only() {
+#[serial_test::serial(remote_sig_disarm)]
+async fn polled_settings_apply_touches_announcements_only() {
     let agent = build_minimal_agent_for_tests();
     let mut stored = settings_with(Some(vec![ann("old")]));
     stored.tips = Some(vec!["stored-tip".to_string()]);
@@ -7146,7 +8283,7 @@ async fn polled_announcements_apply_touches_announcements_only() {
     fresh.tips = Some(vec!["fresh-tip".to_string()]);
     fresh.allow_access = Some(false);
     fresh.default_model = Some("fresh-model".to_string());
-    agent.apply_polled_announcements(fresh, Some(vec![ann("old")]));
+    agent.apply_polled_settings(fresh, Some((Some(vec![ann("old")]), vec![])));
     let cfg = agent.cfg.borrow();
     let after = cfg
         .remote_settings
@@ -7169,13 +8306,120 @@ async fn polled_announcements_apply_touches_announcements_only() {
         "default_model must be untouched by a poll apply"
     );
 }
+/// The request-encoding advertisement is read per turn, so a poll must carry it:
+/// turning the proxy flag off has to stop compression before the next `/new` or restart.
+#[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(remote_sig_disarm)]
+async fn polled_settings_apply_refreshes_accept_request_encodings() {
+    use xai_grok_config_types::RemoteRequestEncoding;
+    use xai_grok_sampler::RequestCompression;
+    let _env = crate::env::EnvVarGuard::remove("GROK_REQUEST_COMPRESSION");
+    let agent = build_minimal_agent_for_tests();
+    let proxy = agent.cfg.borrow().endpoints.proxy_url();
+    let mut stored = settings_with(Some(vec![ann("old")]));
+    stored.accept_request_encodings = vec![RemoteRequestEncoding::Zstd];
+    crate::util::config::cache_remote_accept_request_encodings(
+        &proxy,
+        &stored.accept_request_encodings,
+    );
+    agent.cfg.borrow_mut().remote_settings = Some(stored);
+    assert_eq!(
+        crate::util::config::request_compression_for_url(&proxy),
+        RequestCompression::Zstd
+    );
+    agent.apply_polled_settings(
+        settings_with(Some(vec![ann("old")])),
+        Some((Some(vec![ann("old")]), vec![RemoteRequestEncoding::Zstd])),
+    );
+    assert_eq!(
+        crate::util::config::request_compression_for_url(&proxy),
+        RequestCompression::None,
+        "a poll that no longer advertises zstd must disarm compression"
+    );
+    assert!(
+        agent
+            .cfg
+            .borrow()
+            .remote_settings
+            .as_ref()
+            .is_some_and(|s| s.accept_request_encodings.is_empty()),
+        "the stored copy must match so a later re-apply cannot re-arm it"
+    );
+}
+/// `--cli-chat-proxy-base-url` points `cfg.endpoints` away from the disk config and the
+/// post-auth fetch reads `/v1/settings` from `cfg.endpoints`: the advertisement must be
+/// keyed under that origin, the one the poll and the model routes also use.
+#[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(remote_sig_disarm)]
+async fn settings_apply_keys_the_advertisement_under_the_configured_proxy() {
+    use xai_grok_config_types::RemoteRequestEncoding;
+    use xai_grok_sampler::RequestCompression;
+    let _env = crate::env::EnvVarGuard::remove("GROK_REQUEST_COMPRESSION");
+    let agent = build_minimal_agent_for_tests();
+    let flag_proxy = "http://localhost:20016/v1";
+    {
+        let mut cfg = agent.cfg.borrow_mut();
+        cfg.endpoints.cli_chat_proxy_base_url = Some(flag_proxy.to_owned());
+        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+            accept_request_encodings: vec![RemoteRequestEncoding::Zstd],
+            ..Default::default()
+        });
+    }
+    agent.on_remote_settings_changed();
+    assert_eq!(
+        crate::util::config::request_compression_for_url(flag_proxy),
+        RequestCompression::Zstd,
+        "the proxy that served the settings must be the one compressed toward"
+    );
+    let prod = crate::env::PROD_CLI_CHAT_PROXY_BASE_URL;
+    assert_eq!(
+        crate::util::config::request_compression_for_url(prod),
+        RequestCompression::None,
+        "{prod} did not serve these settings"
+    );
+    crate::util::config::cache_remote_accept_request_encodings(flag_proxy, &[]);
+}
+/// A poll response that straddles a full reapply carries an older server view: when the
+/// reapply withdrew the advertisement mid-fetch, the poll must skip rather than re-arm it.
+#[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(remote_sig_disarm)]
+async fn polled_settings_apply_skips_when_the_advertisement_changed_mid_fetch() {
+    use xai_grok_config_types::RemoteRequestEncoding;
+    use xai_grok_sampler::RequestCompression;
+    let _env = crate::env::EnvVarGuard::remove("GROK_REQUEST_COMPRESSION");
+    let agent = build_minimal_agent_for_tests();
+    let proxy = agent.cfg.borrow().endpoints.proxy_url();
+    let mut advertised = settings_with(Some(vec![ann("old")]));
+    advertised.accept_request_encodings = vec![RemoteRequestEncoding::Zstd];
+    let pre_fetch = Some((Some(vec![ann("old")]), vec![RemoteRequestEncoding::Zstd]));
+    agent.cfg.borrow_mut().remote_settings = Some(settings_with(Some(vec![ann("old")])));
+    crate::util::config::cache_remote_accept_request_encodings(&proxy, &[]);
+    agent.apply_polled_settings(advertised, pre_fetch);
+    assert_eq!(
+        crate::util::config::request_compression_for_url(&proxy),
+        RequestCompression::None,
+        "a stale poll must not re-arm an advertisement a full reapply withdrew"
+    );
+    assert!(
+        agent
+            .cfg
+            .borrow()
+            .remote_settings
+            .as_ref()
+            .is_some_and(|s| s.accept_request_encodings.is_empty()),
+        "the mid-fetch writer's store must win over the stale poll result"
+    );
+}
 /// A poll apply must never fabricate `remote_settings` from scratch.
 /// The full-refresh owners key their retry and gating on `is_none()`, so absence must stay observable.
 #[tokio::test]
-async fn polled_announcements_apply_never_fabricates_settings() {
+async fn polled_settings_apply_never_fabricates_settings() {
     let agent = build_minimal_agent_for_tests();
     agent.cfg.borrow_mut().remote_settings = None;
-    agent.apply_polled_announcements(settings_with(Some(vec![ann("a")])), None);
+    agent.apply_polled_settings(settings_with(Some(vec![ann("a")])), None);
     assert!(
         agent.cfg.borrow().remote_settings.is_none(),
         "a poll must leave absent remote_settings absent"
@@ -7184,11 +8428,11 @@ async fn polled_announcements_apply_never_fabricates_settings() {
 /// A full-refresh writer landing during the poll's fetch makes the poll's result stale.
 /// The apply must skip rather than clobber the fresher store (the next tick reconciles).
 #[tokio::test]
-async fn polled_announcements_apply_skips_when_writer_landed_mid_fetch() {
+async fn polled_settings_apply_skips_when_writer_landed_mid_fetch() {
     let agent = build_minimal_agent_for_tests();
-    let pre_fetch = Some(vec![ann("old")]);
+    let pre_fetch = Some((Some(vec![ann("old")]), vec![]));
     agent.cfg.borrow_mut().remote_settings = Some(settings_with(Some(vec![ann("mid-fetch")])));
-    agent.apply_polled_announcements(settings_with(Some(vec![ann("stale-poll")])), pre_fetch);
+    agent.apply_polled_settings(settings_with(Some(vec![ann("stale-poll")])), pre_fetch);
     assert_eq!(
         agent
             .cfg

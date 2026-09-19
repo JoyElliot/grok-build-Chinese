@@ -302,7 +302,10 @@ fn initial_connect_retryable_classifies_errors() {
         "bye".into()
     )));
     assert!(!initial_connect_retryable(
-        &ClientError::HandshakeAuthFailed { status: 401 }
+        &ClientError::HandshakeAuthFailed {
+            status: 401,
+            refusal: None,
+        }
     ));
     assert!(!initial_connect_retryable(&ClientError::InvalidConfig(
         "cfg".into()
@@ -340,13 +343,17 @@ async fn initial_connect_times_out_and_bounds_retries_against_black_hole() {
         on_reconnect: None,
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
         server_metadata: None,
         outbound_buffer: None,
         tuning: ConnectionTuning {
-            initial_connect_attempt_timeout: Some(Duration::from_millis(100)),
+            initial_connect: InitialConnectPolicy {
+                attempt_timeout: Some(Duration::from_millis(100)),
+                ..Default::default()
+            },
             reconnect_backoff: Some(Arc::from([Duration::from_millis(10)])),
             ..Default::default()
         },
@@ -370,6 +377,257 @@ async fn initial_connect_times_out_and_bounds_retries_against_black_hole() {
         elapsed < Duration::from_secs(5),
         "initial connect was not bounded: {elapsed:?}"
     );
+}
+#[tokio::test]
+async fn initial_connect_hedge_wins_when_first_transport_stalls() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock hub");
+    let addr = listener.local_addr().expect("mock addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let hellos = Arc::new(AtomicUsize::new(0));
+    let accepted_server = accepted.clone();
+    let hellos_server = hellos.clone();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let connection = accepted_server.fetch_add(1, Ordering::SeqCst);
+            let hellos = hellos_server.clone();
+            tokio::spawn(async move {
+                if connection == 0 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                let Ok(mut ws) = tokio_tungstenite::accept_async(tcp).await else {
+                    return;
+                };
+                if connection == 0 {
+                    while let Some(Ok(frame)) = ws.next().await {
+                        if frame.is_text() {
+                            hellos.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    return;
+                }
+                let Some(Ok(frame)) = ws.next().await else {
+                    return;
+                };
+                if !frame.is_text() {
+                    return;
+                }
+                hellos.fetch_add(1, Ordering::SeqCst);
+                let ack = serde_json::json!({
+                    "connection_id": format!("mock-conn-{connection}"),
+                    "user_id": "test",
+                    "computer_hub_version": "test",
+                    "supported_protocol_versions": ["1.0.0"],
+                });
+                if ws
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        ack.to_string().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                while ws.next().await.is_some() {}
+            });
+        }
+    });
+    let started = std::time::Instant::now();
+    let conn = HubConnection::connect(ConnectionConfig {
+        url: Url::parse(&format!("ws://{addr}/")).expect("valid url"),
+        credential: Arc::new(AuthCredential::bearer("test-token")),
+        kind: ConnectionKind::Harness,
+        on_reconnect: None,
+        on_disconnect: None,
+        on_terminal_close: None,
+        on_handshake_refused: None,
+        on_connect: None,
+        server_id: None,
+        server_description: None,
+        server_metadata: None,
+        outbound_buffer: None,
+        tuning: ConnectionTuning {
+            initial_connect: InitialConnectPolicy {
+                attempt_timeout: Some(Duration::from_secs(5)),
+                hedge_after: Some(Duration::from_millis(100)),
+                deadline: None,
+            },
+            ..Default::default()
+        },
+        alpha_test_key: None,
+        allow_insecure_ws: false,
+        on_fatal: None,
+    })
+    .await
+    .expect("hedged initial connect");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "hedged connect took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(2, accepted.load(Ordering::SeqCst));
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(1, hellos.load(Ordering::SeqCst));
+    conn.request_shutdown();
+    conn.await_shutdown().await;
+}
+#[tokio::test]
+async fn initial_connect_hedge_returns_non_retryable_error_immediately() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock hub");
+    let addr = listener.local_addr().expect("mock addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_server = accepted.clone();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            let connection = accepted_server.fetch_add(1, Ordering::SeqCst);
+            if connection == 0 {
+                held.push(tcp);
+                continue;
+            }
+            tokio::spawn(async move {
+                let _ = tcp
+                    .write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    let started = std::time::Instant::now();
+    let result = HubConnection::connect(ConnectionConfig {
+        url: Url::parse(&format!("ws://{addr}/")).expect("valid url"),
+        credential: Arc::new(AuthCredential::bearer("test-token")),
+        kind: ConnectionKind::Harness,
+        on_reconnect: None,
+        on_disconnect: None,
+        on_terminal_close: None,
+        on_handshake_refused: None,
+        on_connect: None,
+        server_id: None,
+        server_description: None,
+        server_metadata: None,
+        outbound_buffer: None,
+        tuning: ConnectionTuning {
+            initial_connect: InitialConnectPolicy {
+                attempt_timeout: Some(Duration::from_secs(5)),
+                hedge_after: Some(Duration::from_millis(100)),
+                deadline: Some(Duration::from_secs(3)),
+            },
+            reconnect_backoff: Some(Arc::from([Duration::from_millis(10)])),
+            ..Default::default()
+        },
+        alpha_test_key: None,
+        allow_insecure_ws: false,
+        on_fatal: None,
+    })
+    .await;
+    assert!(matches!(
+        result,
+        Err(ClientError::HandshakeAuthFailed { status: 401, .. })
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a 401 on the hedge must end the connect before the 3s deadline; took {:?}",
+        started.elapsed()
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(2, accepted.load(Ordering::SeqCst));
+}
+async fn black_hole_initial_connect(
+    policy: InitialConnectPolicy,
+) -> (Result<Arc<HubConnection>, ClientError>, Duration, usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_server = accepted.clone();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            accepted_server.fetch_add(1, Ordering::SeqCst);
+            held.push(sock);
+        }
+    });
+    let started = std::time::Instant::now();
+    let result = HubConnection::connect(ConnectionConfig {
+        url: Url::parse(&format!("ws://{addr}/")).expect("valid url"),
+        credential: Arc::new(AuthCredential::bearer("test-token")),
+        kind: ConnectionKind::Harness,
+        on_reconnect: None,
+        on_disconnect: None,
+        on_terminal_close: None,
+        on_handshake_refused: None,
+        on_connect: None,
+        server_id: None,
+        server_description: None,
+        server_metadata: None,
+        outbound_buffer: None,
+        tuning: ConnectionTuning {
+            initial_connect: policy,
+            reconnect_backoff: Some(Arc::from([Duration::from_millis(10)])),
+            ..Default::default()
+        },
+        alpha_test_key: None,
+        allow_insecure_ws: false,
+        on_fatal: None,
+    })
+    .await;
+    let elapsed = started.elapsed();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    (result, elapsed, accepted.load(Ordering::SeqCst))
+}
+#[tokio::test]
+async fn initial_connect_deadline_bounds_total_time_past_three_attempts() {
+    let deadline = Duration::from_secs(3);
+    let (result, elapsed, accepted) = black_hole_initial_connect(InitialConnectPolicy {
+        attempt_timeout: Some(Duration::from_millis(50)),
+        hedge_after: None,
+        deadline: Some(deadline),
+    })
+    .await;
+    match result {
+        Err(ClientError::NetworkError(message)) => {
+            assert!(message.contains("timed out"), "{message}");
+            assert!(message.contains("deadline"), "{message}");
+        }
+        Err(other) => panic!("expected NetworkError timeout; got {other:?}"),
+        Ok(_) => panic!("expected NetworkError timeout; got a live connection"),
+    }
+    assert!(
+        elapsed >= deadline - Duration::from_millis(100),
+        "elapsed: {elapsed:?}"
+    );
+    assert!(elapsed < deadline * 3, "elapsed: {elapsed:?}");
+    assert!(
+        accepted > INITIAL_CONNECT_MAX_ATTEMPTS as usize,
+        "accepted {accepted} connections"
+    );
+    let (legacy_result, _, legacy_accepted) = black_hole_initial_connect(InitialConnectPolicy {
+        attempt_timeout: Some(Duration::from_millis(100)),
+        hedge_after: None,
+        deadline: None,
+    })
+    .await;
+    assert!(matches!(legacy_result, Err(ClientError::NetworkError(_))));
+    assert_eq!(3, legacy_accepted);
+}
+#[tokio::test]
+async fn initial_connect_hedge_is_skipped_when_it_cannot_fit_the_round() {
+    let (result, _, accepted) = black_hole_initial_connect(InitialConnectPolicy {
+        attempt_timeout: Some(Duration::from_millis(100)),
+        hedge_after: Some(Duration::from_millis(100)),
+        deadline: None,
+    })
+    .await;
+    assert!(matches!(result, Err(ClientError::NetworkError(_))));
+    assert_eq!(3, accepted);
 }
 fn bearer_credential() -> AuthCredential {
     AuthCredential::bearer("test-token")
@@ -1458,6 +1716,7 @@ fn test_connection() -> (Arc<HubConnection>, Arc<Demux>, mpsc::Receiver<String>)
         on_reconnect: None,
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         server_id: None,
         server_description: None,
         server_metadata: None,
@@ -1832,6 +2091,7 @@ async fn forced_reconnect_retries_past_failed_attempt_without_repolling_old_stre
         on_reconnect: None,
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -1924,6 +2184,7 @@ async fn successful_reconnect_resets_attempt_after_stable_dwell() {
         on_reconnect: Some(on_reconnect),
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -2022,6 +2283,7 @@ async fn flapping_reconnect_does_not_reset_attempt() {
         on_reconnect: Some(on_reconnect),
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -2124,6 +2386,7 @@ async fn connect_tracking_attempts(
         on_reconnect: Some(on_reconnect),
         on_disconnect,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -2279,6 +2542,7 @@ async fn drain_4409_then_quick_redrop_climbs_attempt() {
         on_reconnect: Some(on_reconnect),
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -2360,6 +2624,7 @@ async fn distinct_connections_use_distinct_jitter_seeds() {
             on_reconnect: None,
             on_disconnect: None,
             on_terminal_close: None,
+            on_handshake_refused: None,
             on_connect: None,
             server_id: None,
             server_description: None,
@@ -2930,6 +3195,7 @@ async fn terminal_close_fires_on_terminal_close_then_on_disconnect() {
                 .expect("events")
                 .push(format!("terminal:{code}"));
         }))),
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -2968,6 +3234,7 @@ async fn terminal_close_stops_actor_by_default() {
         on_reconnect: None,
         on_disconnect: None,
         on_terminal_close: None,
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -3051,6 +3318,7 @@ async fn terminal_close_reconnects_when_embedder_opts_in() {
         on_terminal_close: Some(Arc::new(Box::new(move |_code| {
             terminals_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }))),
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,
@@ -3108,6 +3376,7 @@ async fn non_allowlisted_terminal_close_stops_actor_despite_allowlist() {
             on_terminal_close: Some(Arc::new(Box::new(move |_code| {
                 terminals_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }))),
+            on_handshake_refused: None,
             on_connect: None,
             server_id: None,
             server_description: None,
@@ -3155,6 +3424,7 @@ async fn default_terminal_close_never_reconnects_for_any_41xx() {
             }))),
             on_disconnect: None,
             on_terminal_close: None,
+            on_handshake_refused: None,
             on_connect: None,
             server_id: None,
             server_description: None,
@@ -3199,6 +3469,7 @@ async fn socket_close_does_not_fire_on_terminal_close() {
         on_terminal_close: Some(Arc::new(Box::new(move |_code| {
             terminal_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }))),
+        on_handshake_refused: None,
         on_connect: None,
         server_id: None,
         server_description: None,

@@ -219,6 +219,8 @@ pub(crate) struct SessionSpawnOptions<'a> {
     pub initial_client_mcp_servers: Vec<acp::McpServer>,
     pub mcp_meta_config_map: McpMetaConfigMap,
     pub persistence: PersistenceHandle,
+    pub(super) root_identity: Option<agent_directory::PendingRootIdentity>,
+    pub(super) attach_waiter: Option<&'a tokio::sync::watch::Receiver<bool>>,
     pub chat_history: Vec<crate::sampling::ConversationItem>,
     pub rewind_points_file_path: Option<std::path::PathBuf>,
     pub initial_total_tokens: u64,
@@ -366,6 +368,8 @@ pub(crate) fn chat_session_spawn_options<'a>(
         initial_client_mcp_servers: Vec::new(),
         mcp_meta_config_map: Default::default(),
         persistence: crate::session::persistence::PersistenceHandle::noop(),
+        root_identity: None,
+        attach_waiter: None,
         chat_history: Vec::new(),
         rewind_points_file_path: None,
         initial_total_tokens: 0,
@@ -718,8 +722,9 @@ pub struct MvpAgent {
     pub(crate) trace_upload_live: Arc<std::sync::atomic::AtomicBool>,
     /// Shell-issued one-shot upload capabilities. Each token is bound to one session and consumed before archive I/O.
     feedback_trace_upload_grants: RefCell<VecDeque<(String, acp::SessionId)>>,
-    /// Memory system configuration (None when memory is disabled).
-    memory_config: Option<crate::config::MemoryConfig>,
+    /// Memory system configuration for future session spawns.
+    /// Replaced after runtime config is re-resolved; running sessions retain their cloned snapshot.
+    memory_config: RefCell<Option<crate::config::MemoryConfig>>,
     /// Optional channel to the leader's `ConfigFileWatcher` for dynamic per-cwd registration as new sessions open.
     /// Each successful session insert in `spawn_and_register_session` sends the session's cwd to the watcher task spawned in `agent/app.rs`.
     /// That task calls [`crate::config::watcher::ConfigFileWatcher::watch_path`] (a **non-recursive** watch on `<cwd>/` and `<cwd>/.grok/`). `None` outside leader mode and in tests; the registration is a no-op in that case. That is fine: the existing per-extra-path loop already covers the leader's startup cwd. Plain `Option` (not `RefCell`). It is only read thereafter, so no interior mutability is required.
@@ -1220,7 +1225,7 @@ pub(super) const DRAIN_OLD_THREAD_WAIT: std::time::Duration = std::time::Duratio
 pub(crate) struct SessionLoadGuard<'a> {
     agent: &'a MvpAgent,
     session_id: acp::SessionId,
-    rx: tokio::sync::watch::Receiver<bool>,
+    pub(super) rx: tokio::sync::watch::Receiver<bool>,
     /// Dropped with the guard; closes the watch channel, waking waiters.
     _tx: tokio::sync::watch::Sender<bool>,
 }
@@ -1229,6 +1234,7 @@ impl Drop for SessionLoadGuard<'_> {
         self.agent.session_registry.settle_attach(&self.session_id, &self.rx);
     }
 }
+mod agent_directory;
 mod agent_runtime;
 mod code_nav;
 mod folder_trust_prompt;
@@ -1241,10 +1247,13 @@ mod acp_agent;
 pub(crate) mod reasoning_effort;
 mod sampler_prewarm;
 mod session_setup;
+pub use session_setup::SessionSetupPhase;
 mod subagent_spawn;
 pub(crate) mod test_hooks;
 mod turn_end;
-use session_registry::SessionRegistry;
+use session_registry::{
+    IdentityStamp, SessionRegistry, StampResolution, WithdrawnInstall,
+};
 pub(crate) use session_lifecycle::RegistrySnapshot;
 pub(super) use super::ext_parsers;
 /// Named `auth.lifecycle` (not `auth`) to avoid colliding with the pre-existing per-request `AuthManager::auth()` `#[instrument]` span.
@@ -1305,26 +1314,37 @@ impl MvpAgent {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            let update = &v["params"]["update"];
-            match update["sessionUpdate"].as_str() {
+            let Some(update) = v.get("params").and_then(|p| p.get("update")) else {
+                continue;
+            };
+            match update.get("sessionUpdate").and_then(|s| s.as_str()) {
                 Some(tag) if tag == *TASK_BACKGROUNDED => {
-                    if let Some(id) = update["task_id"].as_str() {
+                    if let Some(id) = update.get("task_id").and_then(|v| v.as_str()) {
                         pending
                             .insert(
                                 id.to_string(),
                                 OrphanedTask {
                                     task_id: id.to_string(),
-                                    command: update["command"]
-                                        .as_str()
+                                    command: update
+                                        .get("command")
+                                        .and_then(|v| v.as_str())
                                         .unwrap_or_default()
                                         .to_string(),
-                                    cwd: update["cwd"].as_str().unwrap_or_default().to_string(),
+                                    cwd: update
+                                        .get("cwd")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string(),
                                 },
                             );
                     }
                 }
                 Some(tag) if tag == *TASK_COMPLETED => {
-                    if let Some(id) = update["task_snapshot"]["task_id"].as_str() {
+                    if let Some(id) = update
+                        .get("task_snapshot")
+                        .and_then(|s| s.get("task_id"))
+                        .and_then(|v| v.as_str())
+                    {
                         pending.remove(id);
                     }
                 }
@@ -1736,6 +1756,7 @@ impl MvpAgent {
                     gate,
                     subscription_tier,
                     feedback_trace_offer: self.feedback_trace_offer(),
+                    backend_billed: false,
                 };
                 serde_json::to_value(auth_meta)
                     .ok()

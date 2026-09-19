@@ -51,6 +51,8 @@ disabled = ["wip-skill"]              # 保留在列表中但不激活的技能�
 
 `paths` 中的每个条目可以是 `SKILL.md` 文件，或 Grok 会递归遍历的目录。`ignore` 会完全隐藏技能；`disabled` 会将技能保留在列表中，但从系统提示和调用中排除。`paths` 和 `ignore` 接受文件系统路径并支持 `~` 展开；`disabled` 接受技能名称。
 
+`[paths] extra_skill_dirs` 由 `/import-claude` 写入，但不会注入技能。需要额外目录时，请使用 `[skills] paths`。
+
 ---
 
 <a id="creating-a-skill"></a>
@@ -239,10 +241,14 @@ Grok 将平台技能与个人技能分开分发。捆绑技能缓存于 `~/.grok
 
 2. **包含具体步骤。** 技能最好提供 Grok 可以遵循的清晰、有序流程。
 
-3. **按名称引用工具。** 如果技能依赖特定工具（例如 `run_terminal_command` 或 `search_replace`），请写出工具名称，让模型知道使用什么。
+3. **按名称引用工具。** 如果技能依赖特定工具（例如 `run_terminal_cmd` 或 `search_replace`），请写出工具名称，让模型知道使用什么。
 
 4. **保持技能专注。** 每个工作流编写一项技能。“deploy”技能和“rollback”技能比分别合并为一个“deploy-and-rollback”技能更好。
 
 5. **对项目技能进行版本控制。** 将 `.grok/skills/` 提交到仓库，让整个团队受益。`~/.grok/skills/` 中的用户技能仍是个人且不会共享。
 
 6. **通过运行进行测试。** 调用 `/name` 并确认技能工作正常，然后再依赖自动调用。
+
+### 技能正文大小上限
+
+Grok 最多内联技能正文的前 25,000 个 Token，与 `read_file` 的读取上限相同。将较长的参考资料放在同级文件，并在技能中指示使用行偏移和行数限制读取。

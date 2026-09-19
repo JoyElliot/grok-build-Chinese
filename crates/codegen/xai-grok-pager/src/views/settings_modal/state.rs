@@ -15,10 +15,6 @@ use crate::views::modal_window::ModalWindowState;
 
 use xai_grok_shell::agent::config::UiConfig;
 
-// ---------------------------------------------------------------------------
-// Public constants
-// ---------------------------------------------------------------------------
-
 /// Public display title of the modal, also used by `views/modal.rs::ActiveModal::message` so renames stay in one place.
 pub const MODAL_TITLE: &str = "Settings";
 
@@ -56,10 +52,6 @@ pub enum SettingsKeyOutcome {
     /// No-op.
     Unchanged,
 }
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 /// One row in the visible flat list: either a category header (non-selectable) or a setting row (selectable, dispatchable).
 #[derive(Debug, Clone)]
@@ -160,6 +152,12 @@ pub(super) fn mode_is_consent_chooser(mode: &SettingsMode) -> bool {
     )
 }
 
+/// Settings-domain visibility policy, snapshotted at OpenSettings.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowVisibility {
+    pub hide_appearance: bool,
+}
+
 /// Settings modal state. Boxed inside `ActiveModal::Settings` to avoid clippy `large_enum_variant`.
 pub struct SettingsModalState {
     pub window: ModalWindowState,
@@ -177,7 +175,7 @@ pub struct SettingsModalState {
     /// Row indices matching `query`, recomputed per mutation (not per frame).
     pub(super) filtered_cache: Vec<usize>,
 
-    // -- Mouse hit-test rects (populated by render) --
+    /// List viewport; mouse hit-test rects below are populated by render.
     pub list_area: Rect,
     /// Click-hit rect per row, parallel to `rows`.
     pub row_rects: Vec<Rect>,
@@ -207,16 +205,36 @@ pub struct SettingsModalState {
     pub close_on_picker_exit: bool,
     /// Last left-click on a picker radio: `(choice index, when)`.
     pub(super) picker_last_click: Option<(usize, std::time::Instant)>,
+    /// Row visibility policy, snapshotted at open.
+    visibility: RowVisibility,
 }
 
 impl SettingsModalState {
-    /// Construct a new modal state from a registry and snapshots.
+    /// Appearance rows stay visible. Test helpers use this; production open
+    /// passes a [`RowVisibility`] snapshot via [`Self::new_with_row_visibility`].
     pub fn new(
         registry: Arc<SettingsRegistry>,
         ui_snapshot: UiConfig,
         pager_snapshot: PagerLocalSnapshot,
     ) -> Self {
-        let rows = build_rows(&registry);
+        Self::new_with_row_visibility(
+            registry,
+            ui_snapshot,
+            pager_snapshot,
+            RowVisibility {
+                hide_appearance: false,
+            },
+        )
+    }
+
+    /// Like [`Self::new`], but `visibility` controls which registry rows are dropped.
+    pub(crate) fn new_with_row_visibility(
+        registry: Arc<SettingsRegistry>,
+        ui_snapshot: UiConfig,
+        pager_snapshot: PagerLocalSnapshot,
+        visibility: RowVisibility,
+    ) -> Self {
+        let rows = build_rows(&registry, visibility);
         // Start on the first selectable (non-header) row.
         let selected = rows
             .iter()
@@ -247,6 +265,7 @@ impl SettingsModalState {
             hover_row: None,
             close_on_picker_exit: false,
             picker_last_click: None,
+            visibility,
         }
     }
 
@@ -291,7 +310,7 @@ impl SettingsModalState {
         &self.filtered_cache
     }
 
-    /// Rebuild rows from current process gates (voice / kitty / minimal).
+    /// Rebuild rows from current process gates (voice / kitty) and the open-time visibility snapshot.
     /// Keeps focus on the same key when possible; exits sub-panes if the key vanished.
     pub fn rebuild_rows(&mut self) {
         let prev_key = self.focused_setting().map(|(k, _)| k);
@@ -303,7 +322,7 @@ impl SettingsModalState {
             SettingsMode::Browse | SettingsMode::FilterFocused => None,
         };
 
-        self.rows = build_rows(&self.registry);
+        self.rows = build_rows(&self.registry, self.visibility);
         self.invalidate_filter();
 
         if let Some(key) = subpane_key {
@@ -414,7 +433,11 @@ impl SettingsModalState {
         }
         // Snap to first selectable row in the visible filter.
         for &row_idx in &self.filtered_cache {
-            if matches!(self.rows[row_idx], RowEntry::Setting { .. }) {
+            if self
+                .rows
+                .get(row_idx)
+                .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+            {
                 self.selected = row_idx;
                 return;
             }
@@ -435,8 +458,14 @@ impl SettingsModalState {
             None => 0,
         };
         while next < self.filtered_cache.len() {
-            let row_idx = self.filtered_cache[next];
-            if matches!(self.rows[row_idx], RowEntry::Setting { .. }) {
+            let Some(&row_idx) = self.filtered_cache.get(next) else {
+                break;
+            };
+            if self
+                .rows
+                .get(row_idx)
+                .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+            {
                 self.selected = row_idx;
                 return true;
             }
@@ -458,8 +487,14 @@ impl SettingsModalState {
             None => self.filtered_cache.len() - 1,
         };
         loop {
-            let row_idx = self.filtered_cache[prev];
-            if matches!(self.rows[row_idx], RowEntry::Setting { .. }) {
+            let Some(&row_idx) = self.filtered_cache.get(prev) else {
+                break;
+            };
+            if self
+                .rows
+                .get(row_idx)
+                .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+            {
                 self.selected = row_idx;
                 return true;
             }
@@ -476,7 +511,11 @@ impl SettingsModalState {
         if idx >= self.rows.len() {
             return false;
         }
-        if !matches!(self.rows[idx], RowEntry::Setting { .. }) {
+        if !self
+            .rows
+            .get(idx)
+            .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+        {
             return false;
         }
         if self.selected == idx {
@@ -797,12 +836,13 @@ pub(super) fn compute_filtered(
     result
 }
 
-/// Row visibility: voice rows need the voice gate; capture needs key releases; `hidden_in_minimal` rows are dropped in minimal mode.
+/// Row visibility: voice rows need the voice gate; capture needs key releases;
+/// `hidden_in_minimal` rows drop when `hide_appearance` is set.
 /// Pure for unit tests.
 pub(super) fn setting_row_visible(
     meta: &SettingMeta,
     kitty_releases: bool,
-    minimal: bool,
+    hide_appearance: bool,
     voice_mode: bool,
 ) -> bool {
     if !voice_mode
@@ -816,15 +856,14 @@ pub(super) fn setting_row_visible(
     if meta.key == "voice_capture_mode" && !kitty_releases {
         return false;
     }
-    if minimal && meta.hidden_in_minimal {
+    if hide_appearance && meta.hidden_in_minimal {
         return false;
     }
     true
 }
 
-fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
+fn build_rows(registry: &SettingsRegistry, visibility: RowVisibility) -> Vec<RowEntry> {
     let kitty_releases = crate::app::kitty_releases_reported();
-    let minimal = crate::app::minimal_mode_active();
     let voice_mode = crate::app::voice_mode_enabled();
     // Keys that belong to a group sub-sheet are rendered only inside that sheet, never as their own top-level rows
     let group_children: std::collections::HashSet<SettingKey> = registry
@@ -844,7 +883,7 @@ fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
             if meta.category != *cat {
                 continue;
             }
-            if !setting_row_visible(meta, kitty_releases, minimal, voice_mode) {
+            if !setting_row_visible(meta, kitty_releases, visibility.hide_appearance, voice_mode) {
                 continue;
             }
             if group_children.contains(meta.key) {

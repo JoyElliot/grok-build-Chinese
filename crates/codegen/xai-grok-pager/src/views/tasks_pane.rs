@@ -4,6 +4,7 @@
 //! Items are sorted running-first, then by start time (newest first).
 //! Each entry dispatches to the correct action type (kill task vs kill agent, view output vs view session) based on its variant.
 
+use chrono::{DateTime, Utc};
 use crossterm::event::{KeyEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -24,16 +25,11 @@ use crate::scrollback::layout::HorizontalLayout;
 use crate::syntax::get_syntect;
 use crate::theme::{Theme, ThemeKind};
 use crate::util::format_duration;
-use chrono::{DateTime, Utc};
 
 use super::list_pane::{
     ListItem, ListPane, ListPaneConfig, ListPaneState, ListPaneStyle, WrapMode,
 };
 use super::overlay::OverlayState;
-
-// ---------------------------------------------------------------------------
-// Spinner
-// ---------------------------------------------------------------------------
 
 const SPINNER_DIVISOR: u64 = 4;
 
@@ -59,7 +55,6 @@ fn tasks_text<'a>(
 
 // ---------------------------------------------------------------------------
 // Shell command syntax highlighting (used by other modules too)
-// ---------------------------------------------------------------------------
 
 /// Highlight a shell command string into styled spans. Uses syntect with the best available grammar
 /// for the platform: tries "powershell" first on Windows, falls back to "bash". Returns plain
@@ -133,10 +128,6 @@ fn dim_spans(spans: &[Span<'static>], blend_factor: f32) -> Vec<Span<'static>> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Line count badge formatting
-// ---------------------------------------------------------------------------
-
 /// Format an stdout line count as a compact `(N)` badge with SI scaling. Truncation (not rounding)
 /// is used throughout so the badge never overstates the count. When `truncated` is `true`, a `+` is
 /// inserted before the closing paren (`(2.0k+)`) to signal "at least this many".
@@ -161,10 +152,6 @@ fn format_line_count_badge(count: usize, truncated: bool) -> String {
     }
     format!("({}M{suffix})", count / 1_000_000)
 }
-
-// ---------------------------------------------------------------------------
-// TaskEntryId: identifies which entry a button belongs to
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskEntryId {
@@ -218,10 +205,6 @@ impl GroupKind {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// TaskEntry: unified entry for the combined list
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum TaskEntry {
@@ -340,8 +323,10 @@ impl TaskEntry {
         } else {
             let trimmed = task.command.trim();
             let label = if let Some(nl) = trimmed.find('\n') {
-                let first_line = trimmed[..nl].trim_end();
-                format!("{first_line}\u{2026}")
+                match trimmed.get(..nl) {
+                    Some(first_line) => format!("{}\u{2026}", first_line.trim_end()),
+                    None => trimmed.to_string(),
+                }
             } else {
                 trimmed.to_string()
             };
@@ -510,48 +495,7 @@ impl TaskEntry {
             Style::default().fg(theme.gray_bright)
         };
 
-        let suffix = if running {
-            let phase = run
-                .current_phase
-                .as_deref()
-                .map(str::trim)
-                .filter(|p| !p.is_empty());
-            let agents = match run.agents.iter().filter(|a| a.state == "running").count() {
-                0 => None,
-                1 => Some(
-                    tasks_text(locale, "tasks.agent.one", "{count} agent").replace("{count}", "1"),
-                ),
-                n => Some(
-                    tasks_text(locale, "tasks.agent.many", "{count} agents")
-                        .replace("{count}", &n.to_string()),
-                ),
-            };
-            match (phase, agents) {
-                (Some(p), Some(a)) => format!("{p} · {a}"),
-                (Some(p), None) => p.to_string(),
-                (None, Some(a)) => a,
-                (None, None) => {
-                    tasks_static(locale, "workflows.status.active", "running").to_string()
-                }
-            }
-        } else {
-            let english = run.status.replace('_', " ");
-            let id = match run.status.as_str() {
-                "complete" => Some("workflows.status.complete"),
-                "user_paused" => Some("workflows.status.user_paused"),
-                "back_off_paused" => Some("workflows.status.back_off_paused"),
-                "no_progress_paused" => Some("workflows.status.no_progress_paused"),
-                "infra_paused" => Some("workflows.status.infra_paused"),
-                "blocked" => Some("workflows.status.blocked"),
-                "budget_limited" => Some("workflows.status.budget_limited"),
-                "interrupted" => Some("workflows.status.interrupted"),
-                "failed" => Some("workflows.status.failed"),
-                "cancelled" => Some("workflows.status.cancelled"),
-                _ => None,
-            };
-            id.map(|id| tasks_text(locale, id, &english).into_owned())
-                .unwrap_or(english)
-        };
+        let suffix = run.activity_label_with_locale(locale);
 
         let workflow_prefix = tasks_static(locale, "tasks.kind.workflow_prefix", "Workflow ");
         let mut spans = vec![
@@ -587,6 +531,7 @@ impl TaskEntry {
     fn from_scheduled(
         info: &ScheduledTaskInfo,
         linked: Option<(String, bool)>,
+        now: DateTime<Utc>,
         locale: Option<&crate::locale::LocaleContext>,
     ) -> Self {
         let linked_running = linked.as_ref().is_some_and(|(_, running)| *running);
@@ -596,43 +541,13 @@ impl TaskEntry {
         } else {
             info.prompt.clone()
         };
-        let countdown = |schedule: &str, created: std::time::Instant| -> String {
-            if let Some(secs) = crate::util::parse_schedule_interval_secs(schedule) {
-                let approx = created + std::time::Duration::from_secs(secs);
-                let now = std::time::Instant::now();
-                if approx > now {
-                    let duration = format_duration(approx.duration_since(now));
-                    tasks_text(locale, "tasks.schedule.next_in", " (next in {duration})")
-                        .replace("{duration}", &duration)
-                } else {
-                    tasks_static(locale, "tasks.schedule.due_now", " (due now)").to_string()
-                }
-            } else {
-                String::new()
-            }
-        };
         let is_provisional = info.task_id.starts_with("provisional-");
         let suffix = if linked_running {
             tasks_static(locale, "tasks.schedule.running", " (running)").to_string()
         } else if is_provisional {
-            tasks_static(locale, "tasks.schedule.starting", " (starting)").to_string()
-        } else if let Some(n) = &info.next_fire_at {
-            if let Ok(dt) = DateTime::<chrono::FixedOffset>::parse_from_rfc3339(n) {
-                let dt = dt.with_timezone(&Utc);
-                let now = Utc::now();
-                if dt > now {
-                    let dur = (dt - now).to_std().unwrap_or_default();
-                    let duration = format_duration(dur);
-                    tasks_text(locale, "tasks.schedule.next_in", " (next in {duration})")
-                        .replace("{duration}", &duration)
-                } else {
-                    tasks_static(locale, "tasks.schedule.due_now", " (due now)").to_string()
-                }
-            } else {
-                countdown(&info.human_schedule, info.created_at)
-            }
+            tasks_static(locale, "tasks.schedule.starting", " (starting)").to_owned()
         } else {
-            countdown(&info.human_schedule, info.created_at)
+            super::scheduled_next::next_suffix_with_locale(info, now, locale)
         };
         // Capitalize the tag for display (`loop` → `Loop`) so it reads as a
         // proper label, matching the monitor row's `Monitor` tag.
@@ -804,10 +719,6 @@ impl ListItem for TaskEntry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TasksPane
-// ---------------------------------------------------------------------------
-
 /// Temporary data for the overlay pass (avoids borrowing entries during mutation).
 enum OverlayEntryData {
     BgTask(String),
@@ -947,8 +858,6 @@ impl TasksPane {
         }
     }
 
-    // -- Data sync -----------------------------------------------------------
-
     pub fn sync(
         &mut self,
         bg_tasks: &std::collections::BTreeMap<String, BgTaskState>,
@@ -1004,6 +913,7 @@ impl TasksPane {
         }
 
         // Add scheduled task items (always "running")
+        let now = Utc::now();
         for info in scheduled.values() {
             let linked = info.last_subagent_id.as_deref().and_then(|sid| {
                 subagents
@@ -1012,7 +922,7 @@ impl TasksPane {
                     .map(|s| (sid.to_string(), s.is_running()))
             });
             self.items
-                .push(TaskEntry::from_scheduled(info, linked, locale));
+                .push(TaskEntry::from_scheduled(info, linked, now, locale));
         }
 
         self.workflow_runs = workflow_runs.to_vec();
@@ -1071,10 +981,12 @@ impl TasksPane {
         if !self.collapsed_groups.is_empty() {
             let mut present = [false; GROUP_KIND_COUNT];
             for it in &self.items {
-                present[it.group_kind().order() as usize] = true;
+                if let Some(slot) = present.get_mut(it.group_kind().order() as usize) {
+                    *slot = true;
+                }
             }
             self.collapsed_groups
-                .retain(|g| present[g.order() as usize]);
+                .retain(|g| present.get(g.order() as usize).copied().unwrap_or(false));
         }
 
         // Build the display list: group headers and (non-collapsed) items
@@ -1117,7 +1029,9 @@ impl TasksPane {
         // Per-group item counts (indexed by `GroupKind::order`).
         let mut counts: [usize; GROUP_KIND_COUNT] = [0; GROUP_KIND_COUNT];
         for it in &self.items {
-            counts[it.group_kind().order() as usize] += 1;
+            if let Some(count) = counts.get_mut(it.group_kind().order() as usize) {
+                *count += 1;
+            }
         }
         let mut last: Option<GroupKind> = None;
         for it in &self.items {
@@ -1126,7 +1040,7 @@ impl TasksPane {
                 let collapsed = self.collapsed_groups.contains(&group);
                 self.entries.push(TaskEntry::header(
                     group,
-                    counts[group.order() as usize],
+                    counts.get(group.order() as usize).copied().unwrap_or(0),
                     collapsed,
                     Some(&locale),
                 ));
@@ -1211,10 +1125,12 @@ impl TasksPane {
         }
     }
 
-    // -- Visibility ----------------------------------------------------------
-
     pub fn show_done(&self) -> bool {
         self.show_done
+    }
+
+    pub fn toggle_show_done(&mut self) {
+        self.show_done = !self.show_done;
     }
 
     pub fn is_visible(&self) -> bool {
@@ -1250,8 +1166,6 @@ impl TasksPane {
         (count as u16).min(max).max(1) + bar
     }
 
-    // -- Tick ----------------------------------------------------------------
-
     pub fn tick(&mut self) -> bool {
         self.tick += 1;
         self.entries.iter().any(|e| e.is_running())
@@ -1264,8 +1178,6 @@ impl TasksPane {
     pub fn needs_tick(&self) -> bool {
         self.entries.iter().any(|e| e.is_running())
     }
-
-    // -- Input handling ------------------------------------------------------
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> bool {
         if crate::key!('h').matches(key) && self.list_state.input_mode().is_none() {
@@ -1331,8 +1243,6 @@ impl TasksPane {
             _ => None,
         }
     }
-
-    // -- Rendering -----------------------------------------------------------
 
     fn content_area(area: Rect, layout_cfg: &LayoutConfig) -> Rect {
         let pad_left = HorizontalLayout::ACCENT + layout_cfg.block_pad_left;
@@ -1568,7 +1478,10 @@ impl TasksPane {
         let (icon, icon_style) = if running {
             let frames = crate::glyphs::dot_spinner_frames();
             let frame_idx = (self.tick / SPINNER_DIVISOR) as usize % frames.len();
-            (frames[frame_idx], Style::default().fg(theme.accent_running))
+            (
+                frames.get(frame_idx).copied().unwrap_or(""),
+                Style::default().fg(theme.accent_running),
+            )
         } else if run.status == "complete" {
             (
                 crate::glyphs::check_mark(),
@@ -1638,7 +1551,7 @@ impl TasksPane {
             let frames = crate::glyphs::dot_spinner_frames();
             let frame_idx = (self.tick / SPINNER_DIVISOR) as usize % frames.len();
             (
-                frames[frame_idx],
+                frames.get(frame_idx).copied().unwrap_or(""),
                 Style::default().fg(theme.accent_error),
                 tasks_static(locale, "tasks.status.killing", "killing\u{2026} ").to_string(),
                 Style::default().fg(theme.accent_error),
@@ -1650,7 +1563,7 @@ impl TasksPane {
                     let frame_idx = (self.tick / SPINNER_DIVISOR) as usize % frames.len();
                     let elapsed = format_duration(task.elapsed());
                     (
-                        frames[frame_idx],
+                        frames.get(frame_idx).copied().unwrap_or(""),
                         Style::default().fg(theme.accent_running),
                         format!("{elapsed} "),
                         Style::default().fg(theme.gray),
@@ -1781,7 +1694,7 @@ impl TasksPane {
             let frames = crate::glyphs::dot_spinner_frames();
             let frame_idx = (self.tick / SPINNER_DIVISOR) as usize % frames.len();
             (
-                frames[frame_idx],
+                frames.get(frame_idx).copied().unwrap_or(""),
                 Style::default().fg(theme.accent_error),
                 tasks_static(locale, "tasks.status.killing", "killing\u{2026} ").to_string(),
                 Style::default().fg(theme.accent_error),
@@ -1791,7 +1704,7 @@ impl TasksPane {
             let frame_idx = (self.tick / SPINNER_DIVISOR) as usize % frames.len();
             let elapsed = format_duration(info.display_elapsed());
             (
-                frames[frame_idx],
+                frames.get(frame_idx).copied().unwrap_or(""),
                 Style::default().fg(theme.accent_running),
                 format!("{elapsed} "),
                 Style::default().fg(theme.gray),
@@ -1931,7 +1844,10 @@ impl TasksPane {
         buf.set_span(
             area.x,
             y,
-            &Span::styled(frames[frame_idx], Style::default().fg(theme.accent_running)),
+            &Span::styled(
+                frames.get(frame_idx).copied().unwrap_or(""),
+                Style::default().fg(theme.accent_running),
+            ),
             2,
         );
 
@@ -2001,6 +1917,20 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
     use std::time::Instant;
+
+    fn pane_item(pane: &TasksPane, i: usize) -> &TaskEntry {
+        let Some(item) = pane.items.get(i) else {
+            panic!("items[{i}] missing, have {}", pane.items.len());
+        };
+        item
+    }
+
+    fn pane_entry(pane: &TasksPane, i: usize) -> &TaskEntry {
+        let Some(entry) = pane.entries.get(i) else {
+            panic!("entries[{i}] missing, have {}", pane.entries.len());
+        };
+        entry
+    }
 
     fn make_info() -> SubagentInfo {
         let now = Instant::now();
@@ -2185,10 +2115,13 @@ mod tests {
         };
         let theme = Theme::current();
         assert_eq!(styled.spans.len(), 2);
-        assert_eq!(styled.spans[0].content.as_ref(), "Task ");
-        assert_eq!(styled.spans[0].style.fg, Some(theme.text_secondary));
-        assert_eq!(styled.spans[1].content.as_ref(), "Run release tests");
-        assert_eq!(styled.spans[1].style.fg, Some(theme.text_primary));
+        let [prefix, desc] = styled.spans.as_slice() else {
+            panic!("expected two spans: {:?}", styled.spans);
+        };
+        assert_eq!(prefix.content.as_ref(), "Task ");
+        assert_eq!(prefix.style.fg, Some(theme.text_secondary));
+        assert_eq!(desc.content.as_ref(), "Run release tests");
+        assert_eq!(desc.style.fg, Some(theme.text_primary));
     }
 
     #[test]
@@ -2206,13 +2139,13 @@ mod tests {
         let theme = Theme::current();
         assert_eq!(label, "Monitor incrementing event counter every 3s");
         assert_eq!(styled.spans.len(), 2);
-        assert_eq!(styled.spans[0].content.as_ref(), "Monitor ");
-        assert_eq!(styled.spans[0].style.fg, Some(theme.accent_system));
-        assert_eq!(
-            styled.spans[1].content.as_ref(),
-            "incrementing event counter every 3s"
-        );
-        assert_eq!(styled.spans[1].style.fg, Some(theme.text_secondary));
+        let [prefix, desc] = styled.spans.as_slice() else {
+            panic!("expected two spans: {:?}", styled.spans);
+        };
+        assert_eq!(prefix.content.as_ref(), "Monitor ");
+        assert_eq!(prefix.style.fg, Some(theme.accent_system));
+        assert_eq!(desc.content.as_ref(), "incrementing event counter every 3s");
+        assert_eq!(desc.style.fg, Some(theme.text_secondary));
     }
 
     #[test]
@@ -2556,7 +2489,10 @@ mod tests {
                 .collect();
             if let Some(x) = row.iter().position(|s| s == "\u{2717}") {
                 found = true;
-                for cell in &row[x + 2..] {
+                let Some(tail) = row.get(x + 2..) else {
+                    panic!("cells after kill glyph missing: {row:?}");
+                };
+                for cell in tail {
                     assert!(
                         cell.trim().is_empty(),
                         "non-blank cell after `[✗]` on loop row: {row:?}",
@@ -2641,8 +2577,14 @@ mod tests {
         pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
 
         assert!(pane.items.len() >= 2);
-        assert!(pane.items[0].is_running(), "first entry should be running",);
-        assert!(!pane.items[1].is_running(), "second entry should be done",);
+        assert!(
+            pane_item(&pane, 0).is_running(),
+            "first entry should be running",
+        );
+        assert!(
+            !pane_item(&pane, 1).is_running(),
+            "second entry should be done",
+        );
     }
 
     #[test]
@@ -2663,11 +2605,11 @@ mod tests {
 
         assert_eq!(pane.items.len(), 2);
         assert!(
-            matches!(&pane.items[0], TaskEntry::Agent { .. }),
+            matches!(pane_item(&pane, 0), TaskEntry::Agent { .. }),
             "agents should sort before bg tasks",
         );
         assert!(
-            matches!(&pane.items[1], TaskEntry::BgTask { .. }),
+            matches!(pane_item(&pane, 1), TaskEntry::BgTask { .. }),
             "bg tasks should sort after agents",
         );
     }
@@ -2691,12 +2633,12 @@ mod tests {
 
         assert_eq!(pane.items.len(), 3);
         assert!(
-            matches!(&pane.items[0], TaskEntry::Agent { .. }),
+            matches!(pane_item(&pane, 0), TaskEntry::Agent { .. }),
             "subagent first",
         );
         assert!(
             matches!(
-                &pane.items[1],
+                pane_item(&pane, 1),
                 TaskEntry::BgTask {
                     is_monitor: false,
                     ..
@@ -2706,7 +2648,7 @@ mod tests {
         );
         assert!(
             matches!(
-                &pane.items[2],
+                pane_item(&pane, 2),
                 TaskEntry::BgTask {
                     is_monitor: true,
                     ..
@@ -2738,17 +2680,17 @@ mod tests {
         // items: monitor first, then loop.
         assert_eq!(pane.items.len(), 2);
         assert!(matches!(
-            &pane.items[0],
+            pane_item(&pane, 0),
             TaskEntry::BgTask {
                 is_monitor: true,
                 ..
             }
         ));
-        assert!(matches!(&pane.items[1], TaskEntry::Scheduled { .. }));
+        assert!(matches!(pane_item(&pane, 1), TaskEntry::Scheduled { .. }));
 
         // entries: ONE Watchers header (count 2), then monitor, then loop.
         assert_eq!(pane.entries.len(), 3);
-        let header_text: String = match &pane.entries[0] {
+        let header_text: String = match pane_entry(&pane, 0) {
             TaskEntry::Header {
                 group: GroupKind::Watchers,
                 styled,
@@ -2758,13 +2700,13 @@ mod tests {
         assert!(header_text.contains("Watchers"), "got: {header_text}");
         assert!(header_text.contains('2'), "combined count: {header_text}");
         assert!(matches!(
-            &pane.entries[1],
+            pane_entry(&pane, 1),
             TaskEntry::BgTask {
                 is_monitor: true,
                 ..
             }
         ));
-        assert!(matches!(&pane.entries[2], TaskEntry::Scheduled { .. }));
+        assert!(matches!(pane_entry(&pane, 2), TaskEntry::Scheduled { .. }));
     }
 
     #[test]
@@ -2784,7 +2726,7 @@ mod tests {
         pane.sync(&bg_tasks, &HashMap::new(), &HashMap::new(), &[]);
 
         assert_eq!(pane.items.len(), 1, "only running tasks shown by default");
-        assert!(pane.items[0].is_running());
+        assert!(pane_item(&pane, 0).is_running());
     }
 
     #[test]
@@ -2800,24 +2742,24 @@ mod tests {
         // Display list interleaves a header before each group's items: [Header(Subagents), Agent, Header(Tasks), BgTask]
         assert_eq!(pane.entries.len(), 4);
         assert!(matches!(
-            &pane.entries[0],
+            pane_entry(&pane, 0),
             TaskEntry::Header {
                 group: GroupKind::Subagents,
                 ..
             }
         ));
-        assert!(matches!(&pane.entries[1], TaskEntry::Agent { .. }));
+        assert!(matches!(pane_entry(&pane, 1), TaskEntry::Agent { .. }));
         assert!(matches!(
-            &pane.entries[2],
+            pane_entry(&pane, 2),
             TaskEntry::Header {
                 group: GroupKind::Tasks,
                 ..
             }
         ));
-        assert!(matches!(&pane.entries[3], TaskEntry::BgTask { .. }));
+        assert!(matches!(pane_entry(&pane, 3), TaskEntry::BgTask { .. }));
 
         // The header text carries the label and the count.
-        let header_text: String = match &pane.entries[0] {
+        let header_text: String = match pane_entry(&pane, 0) {
             TaskEntry::Header { styled, .. } => {
                 styled.spans.iter().map(|s| s.content.as_ref()).collect()
             }
@@ -2841,13 +2783,13 @@ mod tests {
 
         // Expanded: header and item
         assert_eq!(pane.entries.len(), 2);
-        assert!(matches!(&pane.entries[1], TaskEntry::Agent { .. }));
+        assert!(matches!(pane_entry(&pane, 1), TaskEntry::Agent { .. }));
 
         // Collapse: only the header remains
         pane.toggle_group(GroupKind::Subagents);
         assert_eq!(pane.entries.len(), 1);
         assert!(matches!(
-            &pane.entries[0],
+            pane_entry(&pane, 0),
             TaskEntry::Header {
                 group: GroupKind::Subagents,
                 ..
@@ -2857,7 +2799,7 @@ mod tests {
         // Expand: the item returns
         pane.toggle_group(GroupKind::Subagents);
         assert_eq!(pane.entries.len(), 2);
-        assert!(matches!(&pane.entries[1], TaskEntry::Agent { .. }));
+        assert!(matches!(pane_entry(&pane, 1), TaskEntry::Agent { .. }));
     }
 
     #[test]
@@ -2885,7 +2827,7 @@ mod tests {
         // Right expands it again
         assert!(pane.set_group_collapsed(GroupKind::Subagents, false));
         assert_eq!(pane.entries.len(), 2);
-        assert!(matches!(&pane.entries[1], TaskEntry::Agent { .. }));
+        assert!(matches!(pane_entry(&pane, 1), TaskEntry::Agent { .. }));
         // Right again: already expanded, no change
         assert!(!pane.set_group_collapsed(GroupKind::Subagents, false));
         assert_eq!(pane.entries.len(), 2);
@@ -2930,7 +2872,7 @@ mod tests {
             &[],
         );
         assert_eq!(pane.entries.len(), 2);
-        assert!(matches!(&pane.entries[1], TaskEntry::Agent { .. }));
+        assert!(matches!(pane_entry(&pane, 1), TaskEntry::Agent { .. }));
     }
 
     #[test]
@@ -3070,7 +3012,9 @@ mod tests {
             TaskEntry::Agent { label, styled, .. } => (label, styled),
             _ => panic!("expected Agent variant"),
         };
-        let desc = styled.spans[1].content.as_ref();
+        let Some(desc) = styled.spans.get(1).map(|s| s.content.as_ref()) else {
+            panic!("expected description span: {:?}", styled.spans);
+        };
         assert!(
             desc.ends_with('\u{2026}') && desc.chars().count() <= 40,
             "description must be capped when an activity suffix renders: {desc}"
@@ -3087,7 +3031,10 @@ mod tests {
             TaskEntry::Agent { styled, .. } => styled,
             _ => panic!("expected Agent variant"),
         };
-        assert_eq!(styled.spans[1].content.as_ref(), long_desc);
+        assert_eq!(
+            styled.spans.get(1).map(|s| s.content.as_ref()),
+            Some(long_desc.as_str())
+        );
     }
 
     fn make_scheduled_info(
@@ -3117,7 +3064,7 @@ mod tests {
             make_scheduled_info("t1", "every 1m", "do x", Some(&next)),
         );
         pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
-        let label = match &pane.items[0] {
+        let label = match pane_item(&pane, 0) {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
         };
@@ -3168,7 +3115,7 @@ mod tests {
             make_scheduled_info("provisional-abc", "every 10s", "soon", None),
         );
         pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
-        let label = match &pane.items[0] {
+        let label = match pane_item(&pane, 0) {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
         };
@@ -3188,7 +3135,7 @@ mod tests {
             make_scheduled_info("due", "every 1h", "past", Some(&past)),
         );
         pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
-        let label = match &pane.items[0] {
+        let label = match pane_item(&pane, 0) {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
         };
@@ -3208,7 +3155,7 @@ mod tests {
             make_scheduled_info("uni", "every 1s", &unicode_prompt, None),
         );
         pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
-        let entry = &pane.items[0];
+        let entry = pane_item(&pane, 0);
         let label = match entry {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
@@ -3229,7 +3176,7 @@ mod tests {
             make_scheduled_info("bad", "every 30s", "fallback", Some("not-a-date")),
         );
         pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
-        let label = match &pane.items[0] {
+        let label = match pane_item(&pane, 0) {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
         };
@@ -3252,7 +3199,7 @@ mod tests {
             make_scheduled_info("unk", "unknown schedule", "x", None),
         );
         pane.sync(&BTreeMap::new(), &HashMap::new(), &scheduled, &[]);
-        let label = match &pane.items[0] {
+        let label = match pane_item(&pane, 0) {
             TaskEntry::Scheduled { label, .. } => label,
             _ => panic!("expected Scheduled"),
         };

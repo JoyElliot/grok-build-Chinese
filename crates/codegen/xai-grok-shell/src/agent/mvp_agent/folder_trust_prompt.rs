@@ -380,8 +380,11 @@ mod tests {
         assert!(json.get("config_kinds").is_none());
         // Leader Tier-2 routing reads `params.sessionId`; it must be present and non-empty
         // Regression guard: without it the leader silently drops the request
-        assert_eq!(json["sessionId"], "sess-1");
-        assert!(!json["sessionId"].as_str().unwrap().is_empty());
+        let Some(session_id) = json.get("sessionId").and_then(|v| v.as_str()) else {
+            panic!("sessionId missing: {json:?}");
+        };
+        assert_eq!(session_id, "sess-1");
+        assert!(!session_id.is_empty());
     }
 
     #[test]

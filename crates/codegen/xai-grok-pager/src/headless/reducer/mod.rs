@@ -27,12 +27,20 @@ pub(crate) fn attach_structured_output(
     target: &mut Value,
     structured: Option<Result<Value, String>>,
 ) {
+    let Some(structured) = structured else { return };
+    if !target.is_object() {
+        *target = Value::Object(serde_json::Map::new());
+    }
+    let Some(obj) = target.as_object_mut() else {
+        return;
+    };
     match structured {
-        None => {}
-        Some(Ok(value)) => target["structuredOutput"] = value,
-        Some(Err(err)) => {
-            target["structuredOutput"] = Value::Null;
-            target["structuredOutputError"] = err.into();
+        Ok(value) => {
+            obj.insert("structuredOutput".into(), value);
+        }
+        Err(err) => {
+            obj.insert("structuredOutput".into(), Value::Null);
+            obj.insert("structuredOutputError".into(), err.into());
         }
     }
 }
@@ -117,6 +125,13 @@ pub(crate) enum Lifecycle {
         result: String,
         path: Option<String>,
     },
+    MemoryCaptureActivity {
+        activity: String,
+        from_turn: u32,
+        through_turn: u32,
+        attempt: u32,
+        detail: Option<String>,
+    },
 }
 
 impl Lifecycle {
@@ -140,10 +155,35 @@ impl Lifecycle {
             Lifecycle::AutoContinue { .. } => "Resumed after compaction.".to_string(),
             Lifecycle::ImageCompressed { message } => message.clone(),
             Lifecycle::MemoryFlushStarted => "Memory flush started.".to_string(),
-            Lifecycle::MemoryFlushCompleted { result, path } => match path {
-                Some(path) => format!("Memory flush {result}: {path}"),
-                None => format!("Memory flush {result}."),
-            },
+            // `result`, `path`, and capture `detail` remain available in the
+            // structured lifecycle event. Plain lines are trusted UI copy and
+            // must not promote model/parser errors or local paths into it.
+            Lifecycle::MemoryFlushCompleted { .. } => "Memory flush completed.".to_string(),
+            Lifecycle::MemoryCaptureActivity {
+                activity,
+                from_turn,
+                through_turn,
+                attempt,
+                detail: _,
+            } => {
+                let activity = match activity.as_str() {
+                    "queued" => "queued",
+                    "running" => "running",
+                    "completed" => "completed",
+                    "no_op" => "completed with no changes",
+                    "retry" => "scheduled for retry",
+                    "failed" => "failed",
+                    _ => "updated",
+                };
+                let attempt_suffix = if *attempt > 1 {
+                    format!(" (attempt {attempt})")
+                } else {
+                    String::new()
+                };
+                format!(
+                    "Memory capture {activity} for turns {from_turn}-{through_turn}{attempt_suffix}."
+                )
+            }
         }
     }
 
@@ -175,92 +215,58 @@ impl Lifecycle {
                     "Memory flush started.",
                 )
                 .into_owned(),
-            Lifecycle::MemoryFlushCompleted { result, path } => {
-                let result = localized_memory_flush_result(locale, result);
-                match path {
-                    Some(path) => replace_lifecycle_placeholders_once(
-                        &locale.named_text(
-                            "headless.lifecycle.memory_flush.completed_path",
-                            "Memory flush {result}: {path}",
-                        ),
-                        &[("{result}", &result), ("{path}", path)],
-                    ),
-                    None => locale
-                        .named_text(
-                            "headless.lifecycle.memory_flush.completed",
-                            "Memory flush {result}.",
-                        )
-                        .replace("{result}", &result),
-                }
+            // Keep the upstream privacy boundary in every display locale.
+            // Detailed results and paths belong only to structured lifecycle data.
+            Lifecycle::MemoryFlushCompleted { .. } => locale
+                .named_text(
+                    "headless.lifecycle.memory_flush.finished",
+                    "Memory flush completed.",
+                )
+                .into_owned(),
+            Lifecycle::MemoryCaptureActivity {
+                activity,
+                from_turn,
+                through_turn,
+                attempt,
+                detail: _,
+            } => {
+                let message = crate::scrollback::blocks::memory_capture_status_text(
+                    activity,
+                    *from_turn,
+                    *through_turn,
+                    *attempt,
+                    locale,
+                );
+                locale
+                    .named_text("headless.lifecycle.memory_capture.notice", "{message}.")
+                    .replace("{message}", &message)
             }
-            _ => self.plain_message(),
+            Lifecycle::CompactStarted { percentage } => locale
+                .named_text(
+                    "headless.lifecycle.compact_started",
+                    "Auto-compacting conversation ({percentage}% full)...",
+                )
+                .replace("{percentage}", &percentage.to_string()),
+            Lifecycle::CompactCompleted { .. } => locale
+                .named_text(
+                    "headless.lifecycle.compact_completed",
+                    "Conversation compacted.",
+                )
+                .into_owned(),
+            Lifecycle::CompactCancelled => locale
+                .named_text(
+                    "headless.lifecycle.compact_cancelled",
+                    "Auto-compact cancelled.",
+                )
+                .into_owned(),
+            Lifecycle::AutoContinue { .. } => locale
+                .named_text(
+                    "headless.lifecycle.auto_continue",
+                    "Resumed after compaction.",
+                )
+                .into_owned(),
+            Lifecycle::ImageCompressed { message } => message.clone(),
         }
-    }
-}
-
-fn replace_lifecycle_placeholders_once(template: &str, replacements: &[(&str, &str)]) -> String {
-    let mut output = String::with_capacity(template.len());
-    let mut remaining = template;
-    loop {
-        let Some((index, placeholder, value)) = replacements
-            .iter()
-            .filter_map(|(placeholder, value)| {
-                remaining
-                    .find(placeholder)
-                    .map(|index| (index, *placeholder, *value))
-            })
-            .min_by_key(|(index, _, _)| *index)
-        else {
-            output.push_str(remaining);
-            break;
-        };
-        output.push_str(&remaining[..index]);
-        output.push_str(value);
-        remaining = &remaining[index + placeholder.len()..];
-    }
-    output
-}
-
-fn localized_memory_flush_result(locale: &crate::locale::LocaleContext, result: &str) -> String {
-    let text = |id: &str, english: &str| locale.named_text(id, english).into_owned();
-    match result {
-        "written" => text("headless.lifecycle.memory_flush.result.written", "written"),
-        "nothing to store" => text(
-            "headless.lifecycle.memory_flush.result.nothing_to_store",
-            "nothing to store",
-        ),
-        "semantic duplicate" => text(
-            "headless.lifecycle.memory_flush.result.semantic_duplicate",
-            "semantic duplicate",
-        ),
-        "storage not configured" => text(
-            "headless.lifecycle.memory_flush.result.storage_not_configured",
-            "storage not configured",
-        ),
-        _ => [
-            (
-                "write failed: ",
-                "headless.lifecycle.memory_flush.result.write_failed",
-                "write failed: {detail}",
-            ),
-            (
-                "rejected: ",
-                "headless.lifecycle.memory_flush.result.rejected",
-                "rejected: {detail}",
-            ),
-            (
-                "skipped: ",
-                "headless.lifecycle.memory_flush.result.skipped",
-                "skipped: {detail}",
-            ),
-        ]
-        .into_iter()
-        .find_map(|(prefix, id, english)| {
-            result
-                .strip_prefix(prefix)
-                .map(|detail| text(id, english).replace("{detail}", detail))
-        })
-        .unwrap_or_else(|| result.to_owned()),
     }
 }
 
@@ -506,5 +512,103 @@ pub(crate) fn reducer_for(format: OutputFormat) -> Option<Box<dyn Reducer>> {
         OutputFormat::StreamingJson => Some(Box::new(AcpReducer)),
         OutputFormat::StreamingMessagesJson => Some(Box::new(MessagesReducer::new())),
         OutputFormat::Plain | OutputFormat::Json => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Lifecycle;
+
+    #[test]
+    fn memory_plain_messages_do_not_promote_untrusted_diagnostics() {
+        let secret = "/Users/alice/private/session.jsonl\nhttps://untrusted.example";
+        let flush = Lifecycle::MemoryFlushCompleted {
+            result: format!("terminal failure: {secret}"),
+            path: Some(secret.to_owned()),
+        }
+        .plain_message();
+        assert_eq!(flush, "Memory flush completed.");
+        assert!(!flush.contains(secret));
+
+        let capture = Lifecycle::MemoryCaptureActivity {
+            activity: "failed".to_owned(),
+            from_turn: 2,
+            through_turn: 3,
+            attempt: 1,
+            detail: Some(secret.to_owned()),
+        }
+        .plain_message();
+        assert_eq!(capture, "Memory capture failed for turns 2-3.");
+        assert!(!capture.contains(secret));
+
+        let retry = Lifecycle::MemoryCaptureActivity {
+            activity: "failed".to_owned(),
+            from_turn: 2,
+            through_turn: 3,
+            attempt: 2,
+            detail: None,
+        }
+        .plain_message();
+        assert_eq!(retry, "Memory capture failed for turns 2-3 (attempt 2).");
+    }
+
+    #[test]
+    fn unknown_capture_activity_is_not_rendered_verbatim() {
+        let message = Lifecycle::MemoryCaptureActivity {
+            activity: "https://untrusted.example".to_owned(),
+            from_turn: 1,
+            through_turn: 1,
+            attempt: 1,
+            detail: None,
+        }
+        .plain_message();
+        assert_eq!(message, "Memory capture updated for turns 1-1.");
+    }
+    #[test]
+    fn zh_localization_review135_lifecycle_capture_keeps_diagnostics_out_of_display() {
+        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let en = LocaleContext::default();
+        for (activity, expected) in [
+            ("queued", "已排队"),
+            ("running", "进行中"),
+            ("completed", "已完成"),
+            ("no_op", "已完成，无更改"),
+            ("retry", "已安排重试"),
+            ("failed", "失败"),
+            ("https://untrusted.example/{from}", "已更新"),
+        ] {
+            for attempt in [1, 2] {
+                let event = Lifecycle::MemoryCaptureActivity {
+                    activity: activity.to_owned(),
+                    from_turn: 2,
+                    through_turn: 4,
+                    attempt,
+                    detail: Some("/Users/alice/private/session.jsonl\n\u{1b}[31msecret".into()),
+                };
+                let suffix = if attempt == 1 {
+                    ""
+                } else {
+                    "（第 2 次尝试）"
+                };
+                assert_eq!(
+                    event.plain_message_with_locale(&zh),
+                    format!("第 2–4 回合的记忆捕获{expected}{suffix}。")
+                );
+                assert_eq!(event.plain_message_with_locale(&en), event.plain_message());
+            }
+        }
+        for event in [
+            Lifecycle::CompactStarted { percentage: 75 },
+            Lifecycle::CompactCompleted { pre_tokens: 10 },
+            Lifecycle::CompactCancelled,
+            Lifecycle::AutoContinue { total_tokens: 15 },
+        ] {
+            assert_eq!(event.plain_message_with_locale(&en), event.plain_message());
+            assert_ne!(event.plain_message_with_locale(&zh), event.plain_message());
+        }
     }
 }

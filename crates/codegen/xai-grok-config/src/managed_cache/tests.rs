@@ -598,7 +598,8 @@ fn team_path_keys_on_principal_not_key_fingerprint() {
     let marker = std::fs::read_to_string(dir.join(MANAGED_CONFIG_CACHE_FILE)).unwrap();
     let v: serde_json::Value = serde_json::from_str(&marker).unwrap();
     assert!(
-        v["key_fingerprint"].is_null(),
+        v.get("key_fingerprint")
+            .is_none_or(serde_json::Value::is_null),
         "team path must not record a key fingerprint: {marker}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1270,10 +1271,13 @@ fn floor_bump_preserves_unknown_marker_fields() {
     raise_rollback_floor(home, 1_700_000_100);
     let marker = std::fs::read_to_string(home.join(MANAGED_CONFIG_CACHE_FILE)).unwrap();
     let v: serde_json::Value = serde_json::from_str(&marker).unwrap();
-    assert_eq!(v["rollback_floor"].as_u64(), Some(1_700_000_100));
     assert_eq!(
-        v["from_the_future"],
-        serde_json::Value::Bool(true),
+        v.get("rollback_floor").and_then(serde_json::Value::as_u64),
+        Some(1_700_000_100)
+    );
+    assert_eq!(
+        v.get("from_the_future"),
+        Some(&serde_json::Value::Bool(true)),
         "the RMW must not strip fields a newer binary wrote: {marker}"
     );
 }

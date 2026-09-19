@@ -149,7 +149,10 @@ async fn same_prompt_restart_accumulates_segments_via_handler() {
                 1,
                 "the first generation must be folded into segments, not wiped",
             );
-            assert_eq!(cap.segments[0].reasoning_text, "first gen reasoning");
+            assert_eq!(
+                cap.segments.first().map(|s| s.reasoning_text.as_str()),
+                Some("first gen reasoning")
+            );
             assert_eq!(
                 cap.reasoning_text, "second gen reasoning",
                 "the second generation is the in-progress slot",
@@ -242,8 +245,8 @@ async fn completed_event_clears_slot_keeps_prior_uncommitted_segments() {
                 "the prior uncommitted generation must be retained",
             );
             assert_eq!(
-                cap.segments[0].reasoning_text,
-                "prior uncommitted reasoning"
+                cap.segments.first().map(|s| s.reasoning_text.as_str()),
+                Some("prior uncommitted reasoning")
             );
             assert!(
                 cap.reasoning_text.is_empty(),
@@ -1069,8 +1072,10 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                 .await;
 
             let cap = actor.streaming_turn_capture.lock().clone();
-            assert_eq!(cap.segments.len(), 2, "doomed fold + text-free accept");
-            let resampled = cap.segments[0].doom_loop.as_ref().expect("stamped");
+            let [resampled_seg, accepted_seg] = cap.segments.as_slice() else {
+                panic!("doomed fold + text-free accept: {:?}", cap.segments);
+            };
+            let resampled = resampled_seg.doom_loop.as_ref().expect("stamped");
             assert_eq!(resampled.action, "resampled");
             assert_eq!(resampled.attempt, 1);
             assert_eq!(resampled.aborted_at_chunk, Some(421));
@@ -1078,11 +1083,11 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                 resampled.doom_loop_triggers,
                 vec!["tail_repetition:8@thinking".to_string()]
             );
-            assert_eq!(cap.segments[0].reasoning_text, "loop loop loop");
-            let accepted = cap.segments[1].doom_loop.as_ref().expect("stamped");
+            assert_eq!(resampled_seg.reasoning_text, "loop loop loop");
+            let accepted = accepted_seg.doom_loop.as_ref().expect("stamped");
             assert_eq!(accepted.action, "accepted_after_budget");
             assert!(
-                cap.segments[1].reasoning_text.is_empty(),
+                accepted_seg.reasoning_text.is_empty(),
                 "committed text lives in history, not the capture"
             );
             assert!(cap.has_doom_loop_segments());
@@ -1398,8 +1403,11 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 2,
                 "both reasoning-only generations must be retained as segments",
             );
-            assert_eq!(capture.segments[0].reasoning_text, "thinking attempt 1");
-            assert_eq!(capture.segments[1].reasoning_text, "thinking attempt 2");
+            let [first, second] = capture.segments.as_slice() else {
+                panic!("expected two reasoning segments: {:?}", capture.segments);
+            };
+            assert_eq!(first.reasoning_text, "thinking attempt 1");
+            assert_eq!(second.reasoning_text, "thinking attempt 2");
             assert_eq!(capture.empty_reason.as_deref(), Some("reasoning_only"));
         })
         .await;

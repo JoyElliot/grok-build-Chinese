@@ -60,16 +60,19 @@ grok-zh --sandbox strict
 必要的系统路径和 `~/.grok`。写入范围限制为 CWD、`~/.grok/sessions` 和临时目录，
 而不是整个 `~/.grok` 树。Linux 上会阻止子进程网络（macOS 上为空操作）。
 
-### 全局 hook 的直接写入保护
+### 全局路径的直接写入保护
 
 在 `workspace`、`read-only` 和 `strict`（以及扩展这些基础配置的自定义配置）下，
-内核会**拒绝写入** Grok 用作用户全局 hook 源的直接磁盘路径（在已授予读取权限时
+内核会**拒绝写入** Grok 用作用户全局 hook 源的直接磁盘路径，以及配置和信任文件（在已授予读取权限时
 仍可读取）。内置 `strict` 可以读取 `~/.grok`，但只能写入 CWD、
 `~/.grok/sessions` 和临时目录；即使配置原本授予写入，下列路径仍受拒绝写入保护：
 
 - `~/.grok/hooks/`（hook 目录）
 - `~/.grok/hooks-paths`（注册表文件；不会作为 hook JSON 加载，只加载其中的绝对目标）
 - `hooks-paths` 中列出的绝对目标（相对路径行会忽略；缺少目标会拒绝启动沙箱）
+- `~/.grok/config.toml`、`~/.grok/trusted_folders.toml`、`~/.grok/managed_config.toml`、`~/.grok/requirements.toml`、`~/.grok/sandbox.toml`（设置、文件夹信任、托管策略、要求和沙箱配置）。
+
+这些配置下相关文件为只读，因此接受文件夹信任、通过 `/model` 切换模型或更改权限模式（`/auto`、Shift+Tab）只对当前会话生效，不保存。要持久保存信任，请在启动沙箱前在该目录执行 `grok-zh --trust`；默认模型或权限模式需直接编辑用户 `config.toml`。
 
 在这些配置下首次启动时，如果 `hooks/` 目录和 `hooks-paths` 文件缺失，Grok 会创建
 真正的空 `hooks/` 目录和空 `hooks-paths` 文件（绝不会创建符号链接或错误类型）。

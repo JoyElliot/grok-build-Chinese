@@ -8,6 +8,17 @@ use crate::scrollback::wrappers::EntryRenderer;
 use pretty_assertions::assert_eq;
 use ratatui::style::Color;
 
+fn at<'a, T>(xs: &'a [T], i: usize) -> &'a T {
+    xs.get(i)
+        .unwrap_or_else(|| panic!("index {i} out of bounds, len={}", xs.len()))
+}
+
+fn at_mut<'a, T>(xs: &'a mut [T], i: usize) -> &'a mut T {
+    let n = xs.len();
+    xs.get_mut(i)
+        .unwrap_or_else(|| panic!("index {i} out of bounds, len={n}"))
+}
+
 fn make_entries(count: usize) -> Vec<ScrollbackEntry> {
     (0..count)
         .map(|i| ScrollbackEntry::new(RenderBlock::stub(format!("Entry {i}"), Color::Blue)))
@@ -60,19 +71,27 @@ fn compute_layouts(
 
     // Compute gap_after using the pairwise rule
     for i in 0..n.saturating_sub(1) {
-        let a_groupable = entries[i].block.is_groupable();
-        let b_groupable = entries[i + 1].block.is_groupable();
-        let a_collapsed = entries[i].display_mode == DisplayMode::Collapsed;
-        let b_collapsed = entries[i + 1].display_mode == DisplayMode::Collapsed;
-        layouts[i].gap_after = if a_groupable && b_groupable && a_collapsed && b_collapsed {
-            0
-        } else {
-            1
+        let Some(a) = entries.get(i) else {
+            break;
         };
+        let Some(b) = entries.get(i + 1) else {
+            break;
+        };
+        let a_groupable = a.block.is_groupable();
+        let b_groupable = b.block.is_groupable();
+        let a_collapsed = a.display_mode == DisplayMode::Collapsed;
+        let b_collapsed = b.display_mode == DisplayMode::Collapsed;
+        if let Some(slot) = layouts.get_mut(i) {
+            slot.gap_after = if a_groupable && b_groupable && a_collapsed && b_collapsed {
+                0
+            } else {
+                1
+            };
+        }
     }
     // Last entry: trailing gap of 1
-    if n > 0 {
-        layouts[n - 1].gap_after = 1;
+    if let Some(slot) = layouts.last_mut() {
+        slot.gap_after = 1;
     }
     layouts
 }
@@ -206,7 +225,7 @@ fn count_reversed(buf: &Buffer) -> usize {
 /// The plain text of buffer row `y` (viewport x starts at 0, so a byte index into this string equals the buffer column for ASCII content).
 fn buffer_row_text(buf: &Buffer, y: u16) -> String {
     (buf.area.left()..buf.area.right())
-        .map(|x| buf[(x, y)].symbol())
+        .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(""))
         .collect()
 }
 
@@ -214,9 +233,8 @@ fn buffer_row_text(buf: &Buffer, y: u16) -> String {
 fn reversed_cols_on_row(buf: &Buffer, y: u16) -> Vec<u16> {
     (buf.area.left()..buf.area.right())
         .filter(|&x| {
-            buf[(x, y)]
-                .modifier
-                .contains(ratatui::style::Modifier::REVERSED)
+            buf.cell((x, y))
+                .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
         })
         .collect()
 }
@@ -225,7 +243,7 @@ fn reversed_cols_on_row(buf: &Buffer, y: u16) -> Vec<u16> {
 fn expected_match_cols(row: &str, needle: &str) -> Vec<u16> {
     let mut cols = Vec::new();
     let mut from = 0;
-    while let Some(rel) = row[from..].find(needle) {
+    while let Some(rel) = row.get(from..).and_then(|s| s.find(needle)) {
         let start = from + rel;
         cols.extend((start as u16)..(start + needle.len()) as u16);
         from = start + needle.len();
@@ -383,7 +401,10 @@ fn large_scrollback_mid_offset_viewport_window_matches_full_pass() {
         end - first < N / 10,
         "paint window should be << total history: first={first} end={end} N={N}"
     );
-    let window_refs: Vec<&ScrollbackEntry> = entries[first..end].iter().collect();
+    let Some(window) = entries.get(first..end) else {
+        panic!("window {first}..{end} out of bounds, len={}", entries.len());
+    };
+    let window_refs: Vec<&ScrollbackEntry> = window.iter().collect();
     let mut win_buf = Buffer::empty(viewport);
     let windowed = render_scrolled_entries_with_scratch(
         &mut win_buf,
@@ -393,7 +414,9 @@ fn large_scrollback_mid_offset_viewport_window_matches_full_pass() {
         Some(selected_abs),
         &theme,
         &appearance,
-        &layouts[first..end],
+        layouts
+            .get(first..end)
+            .unwrap_or_else(|| panic!("layouts slice")),
         0,
         None,
         None,
@@ -467,7 +490,7 @@ fn windowed_paint_renders_full_verb_group_label_for_offscreen_members() {
     let virtual_y = state.get_cached_virtual_y().expect("layout cache");
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
     // Header row on the viewport's last row: all 50 members are off-screen.
-    let scroll = virtual_y[header] + 1 - viewport.height as usize;
+    let scroll = at(virtual_y, header) + 1 - viewport.height as usize;
     let (paint_range, content_y0) =
         state.paint_window(0..state.len(), scroll, viewport.height as usize);
     assert_eq!(
@@ -486,7 +509,9 @@ fn windowed_paint_renders_full_verb_group_label_for_offscreen_members() {
         None,
         &Theme::current(),
         state.appearance(),
-        &layouts[paint_range.clone()],
+        layouts
+            .get(paint_range.clone())
+            .unwrap_or_else(|| panic!("layouts slice")),
         0,
         None,
         None,
@@ -530,10 +555,13 @@ fn windowed_paint_labels_truncation_header_on_last_viewport_row() {
 
     let virtual_y = state.get_cached_virtual_y().expect("layout cache");
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(!layouts[header].verb_group_header, "truncation, not verb");
-    assert_eq!(layouts[header].group_header_count, 2);
+    assert!(
+        !at(layouts, header).verb_group_header,
+        "truncation, not verb"
+    );
+    assert_eq!(at(layouts, header).group_header_count, 2);
     // Header row on the viewport's last row: the hidden prefix and tail sit past the window bottom
-    let scroll = virtual_y[header] + 1 - viewport.height as usize;
+    let scroll = at(virtual_y, header) + 1 - viewport.height as usize;
     let (paint_range, content_y0) =
         state.paint_window(0..state.len(), scroll, viewport.height as usize);
     assert_eq!(
@@ -552,7 +580,9 @@ fn windowed_paint_labels_truncation_header_on_last_viewport_row() {
         None,
         &Theme::current(),
         state.appearance(),
-        &layouts[paint_range.clone()],
+        layouts
+            .get(paint_range.clone())
+            .unwrap_or_else(|| panic!("layouts slice")),
         0,
         None,
         None,
@@ -589,7 +619,7 @@ fn rendered_verb_group_label_spans_hidden_thinking_inside_folded_run() {
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
     assert!(
-        layouts[0].verb_group_header,
+        at(layouts, 0).verb_group_header,
         "fold must span the hidden thinking entry"
     );
 
@@ -642,8 +672,11 @@ fn rendered_verb_group_label_stays_tools_only_across_folded_thought() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(layouts[0].verb_group_header, "run folds across the thought");
-    assert_eq!(layouts[1].height, 0, "the thought claims into the fold");
+    assert!(
+        at(layouts, 0).verb_group_header,
+        "run folds across the thought"
+    );
+    assert_eq!(at(layouts, 1).height, 0, "the thought claims into the fold");
 
     let refs = state.entries_in_range(0..state.len());
     let mut buf = Buffer::empty(viewport);
@@ -702,9 +735,9 @@ fn rendered_verb_group_singleton_folds_tool_and_trailing_thoughts() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(layouts[0].verb_group_header, "singleton run folds");
-    assert_eq!(layouts[1].height, 0, "thoughts claim into the fold");
-    assert_eq!(layouts[2].height, 0, "thoughts claim into the fold");
+    assert!(at(layouts, 0).verb_group_header, "singleton run folds");
+    assert_eq!(at(layouts, 1).height, 0, "thoughts claim into the fold");
+    assert_eq!(at(layouts, 2).height, 0, "thoughts claim into the fold");
 
     let refs = state.entries_in_range(0..state.len());
     let mut buf = Buffer::empty(viewport);
@@ -762,8 +795,15 @@ fn rendered_verb_group_folds_subagent_row_and_expansion_keeps_activity() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(layouts[0].verb_group_header, "run folds with the subagent");
-    assert_eq!(layouts[1].height, 0, "subagent row claims into the fold");
+    assert!(
+        at(layouts, 0).verb_group_header,
+        "run folds with the subagent"
+    );
+    assert_eq!(
+        at(layouts, 1).height,
+        0,
+        "subagent row claims into the fold"
+    );
 
     let refs = state.entries_in_range(0..state.len());
     let mut buf = Buffer::empty(viewport);
@@ -891,9 +931,12 @@ fn truncation_header_renders_bucket_label_with_spans_and_plain_count_without() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(!layouts[0].verb_group_header, "commands never verb-fold");
+    assert!(
+        !at(layouts, 0).verb_group_header,
+        "commands never verb-fold"
+    );
     // 6 participants with max_visible 3 leave 3 hidden; the plain count shows one less while the label describes all 3 hidden participants
-    assert_eq!(layouts[0].group_header_count, 2);
+    assert_eq!(at(layouts, 0).group_header_count, 2);
 
     let labeled = truncation_header_row(&state, viewport, true);
     assert!(
@@ -926,7 +969,7 @@ fn truncation_header_keeps_plain_count_when_group_tool_verbs_off() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert_eq!(layouts[0].group_header_count, 2, "run still truncates");
+    assert_eq!(at(layouts, 0).group_header_count, 2, "run still truncates");
 
     let row = truncation_header_row(&state, viewport, true);
     assert!(
@@ -957,8 +1000,8 @@ fn expanded_truncation_collapse_header_renders_whole_run_label() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(layouts[0].group_collapse_header);
-    assert_eq!(layouts[0].group_header_count, 5);
+    assert!(at(layouts, 0).group_collapse_header);
+    assert_eq!(at(layouts, 0).group_header_count, 5);
 
     let labeled = truncation_header_row(&state, viewport, true);
     assert!(
@@ -1018,13 +1061,13 @@ fn labeled_truncation_header_synthetic_line_copies_label_text() {
     let model = &result.selection_model;
     let header = model.range(0, GROUP_HEADER_RANGE_ID).expect("header range");
     assert_eq!(header.lines.len(), 1);
-    assert_eq!(header.lines[0].text, "Ran 3 commands");
-    assert_eq!(header.lines[0].screen_y, 0);
+    assert_eq!(at(&header.lines, 0).text, "Ran 3 commands");
+    assert_eq!(at(&header.lines, 0).screen_y, 0);
     // Pin the hitbox to the DRAWN glyphs, not just to the chrome helper
     // The frame's own cells must spell the label starting at screen_x, so a chrome edit that misaligned highlight from paint would fail here
-    let screen_x = header.lines[0].screen_x;
-    let drawn: String = (screen_x..screen_x + header.lines[0].selectable_cols.end)
-        .map(|x| buf[(x, 0)].symbol())
+    let screen_x = at(&header.lines, 0).screen_x;
+    let drawn: String = (screen_x..screen_x + at(&header.lines, 0).selectable_cols.end)
+        .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(""))
         .collect();
     assert_eq!(
         drawn, "Ran 3 commands",
@@ -1037,8 +1080,8 @@ fn labeled_truncation_header_synthetic_line_copies_label_text() {
         screen_x, expected_x,
         "hitbox sits past accent chrome + diamond prefix"
     );
-    let copy =
-        reconstruct_selection_text(model, &full_row_drag(&header.lines[0])).expect("header copy");
+    let copy = reconstruct_selection_text(model, &full_row_drag(at(&header.lines, 0)))
+        .expect("header copy");
     assert_eq!(copy, "Ran 3 commands");
 
     // Expanded: the collapse header describes the whole run and copies it.
@@ -1050,8 +1093,8 @@ fn labeled_truncation_header_synthetic_line_copies_label_text() {
     let header = model
         .range(0, GROUP_HEADER_RANGE_ID)
         .expect("expanded header range");
-    assert_eq!(header.lines[0].text, "Ran 6 commands");
-    let copy = reconstruct_selection_text(model, &full_row_drag(&header.lines[0]))
+    assert_eq!(at(&header.lines, 0).text, "Ran 6 commands");
+    let copy = reconstruct_selection_text(model, &full_row_drag(at(&header.lines, 0)))
         .expect("expanded header copy");
     assert_eq!(copy, "Ran 6 commands");
 }
@@ -1120,9 +1163,9 @@ fn verb_and_truncation_headers_share_one_label_channel() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(layouts[0].verb_group_header, "reads verb-fold");
+    assert!(at(layouts, 0).verb_group_header, "reads verb-fold");
     assert!(
-        !layouts[2].verb_group_header && layouts[2].is_group_header(),
+        !at(layouts, 2).verb_group_header && at(layouts, 2).is_group_header(),
         "commands truncation-fold behind the verb run"
     );
 
@@ -1143,11 +1186,11 @@ fn verb_and_truncation_headers_share_one_label_channel() {
     let verb = model
         .range(0, GROUP_HEADER_RANGE_ID)
         .expect("verb header range");
-    assert_eq!(verb.lines[0].text, "Read 2 files");
+    assert_eq!(at(&verb.lines, 0).text, "Read 2 files");
     let trunc = model
         .range(2, GROUP_HEADER_RANGE_ID)
         .expect("truncation header range");
-    assert_eq!(trunc.lines[0].text, "Ran 3 commands");
+    assert_eq!(at(&trunc.lines, 0).text, "Ran 3 commands");
 }
 
 #[test]
@@ -1183,14 +1226,14 @@ fn test_selection_model_maps_visible_lines_for_markdown_entry() {
     let result = render_with_scratch(&entries, viewport, 0, None);
 
     assert!(!result.selection_model.ranges.is_empty());
-    let range = &result.selection_model.ranges[0];
+    let range = &at(&result.selection_model.ranges, 0);
     assert_eq!(range.entry_idx, 0);
     assert!(range.lines.len() > 1);
     assert!(
         range
             .lines
             .windows(2)
-            .all(|w| w[0].screen_y < w[1].screen_y)
+            .all(|w| matches!(w, [a, b] if a.screen_y < b.screen_y))
     );
 }
 
@@ -1202,8 +1245,8 @@ fn test_selection_model_top_clipped_markdown_entry() {
     let viewport = Rect::new(0, 0, 20, 3);
     let result = render_with_scratch(&entries, viewport, 1, None);
 
-    let range = &result.selection_model.ranges[0];
-    assert_eq!(range.lines[0].screen_y, 0);
+    let range = &at(&result.selection_model.ranges, 0);
+    assert_eq!(at(&range.lines, 0).screen_y, 0);
 }
 
 #[test]
@@ -1214,7 +1257,7 @@ fn test_selection_model_bottom_clipped_markdown_entry() {
     let viewport = Rect::new(0, 0, 20, 2);
     let result = render_with_scratch(&entries, viewport, 0, None);
 
-    let range = &result.selection_model.ranges[0];
+    let range = &at(&result.selection_model.ranges, 0);
     assert!(range.lines.len() <= 2);
 }
 
@@ -1237,7 +1280,7 @@ fn test_selected_entry_output_divergence_uses_selected_branch() {
     let result = render_with_scratch(&entries, viewport, 0, Some(0));
 
     assert!(!result.selection_model.visible_blocks.is_empty());
-    assert_eq!(result.selection_model.visible_blocks[0].entry_idx, 0);
+    assert_eq!(at(&result.selection_model.visible_blocks, 0).entry_idx, 0);
 }
 
 /// `VisibleBlockGeometry.content_width` must report the same reduced width that was used to populate the cache.
@@ -1254,7 +1297,7 @@ fn message_block_content_width_subtracts_timestamp_reservation() {
     let result = render_with_scratch(&entries, viewport, 0, None);
 
     let pane_content_width = result.selection_model.content_area.width;
-    let block = &result.selection_model.visible_blocks[0];
+    let block = &at(&result.selection_model.visible_blocks, 0);
     assert_eq!(
         block.content_width,
         pane_content_width.saturating_sub(10),
@@ -1265,13 +1308,13 @@ fn message_block_content_width_subtracts_timestamp_reservation() {
     // Re-deriving them at the same width must produce the same line count so block_line_idx values remain valid
     // Deriving at the wider `pane_content_width` produces a different wrapping (the bug `finish_text_drag` previously triggered)
     let appearance = AppearanceConfig::default();
-    let model_lines = result.selection_model.ranges[0].lines.len();
-    let entry_lines_narrow = entries[0]
+    let model_lines = at(&result.selection_model.ranges, 0).lines.len();
+    let entry_lines_narrow = at(&entries, 0)
         .effective_output(block.content_width, &appearance, false, None)
         .output()
         .lines
         .len();
-    let entry_lines_wide = entries[0]
+    let entry_lines_wide = at(&entries, 0)
         .effective_output(pane_content_width, &appearance, false, None)
         .output()
         .lines
@@ -1327,7 +1370,7 @@ fn overlay_single_line_link() {
     map_hyperlinks_to_overlay(&links, &output, 0, 10, 20, 4, 0, &[], None, &mut overlay);
 
     assert_eq!(overlay.links().len(), 1);
-    let link = &overlay.links()[0];
+    let link = &at(overlay.links(), 0);
     assert_eq!(link.screen_row, 10);
     assert_eq!(link.col_start, 4);
     assert_eq!(link.col_end, 9);
@@ -1364,7 +1407,7 @@ fn overlay_relative_link_resolves_against_cwd() {
         &mut overlay,
     );
     assert_eq!(overlay.links().len(), 1);
-    let url = resolve_link_target(&overlay.links()[0].target)
+    let url = resolve_link_target(&at(overlay.links(), 0).target)
         .and_then(|resolved| resolved.osc8_url)
         .expect("file url");
     assert!(
@@ -1398,7 +1441,7 @@ fn overlay_markdown_relative_link_opens_as_file_url() {
     let media = vec![dir.path().join("images/1.png")];
 
     let mut entries = vec![make_markdown_entry("Saved [images/1.png](images/1.png)\n")];
-    if let RenderBlock::AgentMessage(b) = &mut entries[0].block {
+    if let RenderBlock::AgentMessage(b) = &mut at_mut(&mut entries, 0).block {
         b.finish();
     }
     let viewport = Rect::new(0, 0, 80, 10);
@@ -1458,18 +1501,18 @@ fn overlay_word_wrap_splits_link() {
 
     assert_eq!(overlay.links().len(), 2);
     // First segment: cols 0..5 on screen row 0
-    assert_eq!(overlay.links()[0].screen_row, 0);
-    assert_eq!(overlay.links()[0].col_start, 0);
-    assert_eq!(overlay.links()[0].col_end, 5);
+    assert_eq!(at(overlay.links(), 0).screen_row, 0);
+    assert_eq!(at(overlay.links(), 0).col_start, 0);
+    assert_eq!(at(overlay.links(), 0).col_end, 5);
     // Second segment: cols 0..5 on screen row 1
-    assert_eq!(overlay.links()[1].screen_row, 1);
-    assert_eq!(overlay.links()[1].col_start, 0);
-    assert_eq!(overlay.links()[1].col_end, 5);
+    assert_eq!(at(overlay.links(), 1).screen_row, 1);
+    assert_eq!(at(overlay.links(), 1).col_start, 0);
+    assert_eq!(at(overlay.links(), 1).col_end, 5);
     assert_eq!(
-        &*resolve_link_target(&overlay.links()[0].target)
+        &*resolve_link_target(&at(overlay.links(), 0).target)
             .and_then(|resolved| resolved.osc8_url)
             .expect("url"),
-        &*resolve_link_target(&overlay.links()[1].target)
+        &*resolve_link_target(&at(overlay.links(), 1).target)
             .and_then(|resolved| resolved.osc8_url)
             .expect("url")
     );
@@ -1489,12 +1532,12 @@ fn overlay_content_skip_hides_scrolled_lines() {
 
     assert_eq!(overlay.links().len(), 1);
     assert_eq!(
-        &*resolve_link_target(&overlay.links()[0].target)
+        &*resolve_link_target(&at(overlay.links(), 0).target)
             .and_then(|resolved| resolved.osc8_url)
             .expect("url"),
         "https://visible.com"
     );
-    assert_eq!(overlay.links()[0].screen_row, 0);
+    assert_eq!(at(overlay.links(), 0).screen_row, 0);
 }
 
 #[test]
@@ -1510,7 +1553,7 @@ fn overlay_max_screen_y_clips_links() {
 
     assert_eq!(overlay.links().len(), 1);
     assert_eq!(
-        &*resolve_link_target(&overlay.links()[0].target)
+        &*resolve_link_target(&at(overlay.links(), 0).target)
             .and_then(|resolved| resolved.osc8_url)
             .expect("url"),
         "https://visible.com"
@@ -1532,9 +1575,9 @@ fn overlay_content_line_offset_skips_header_lines() {
     map_hyperlinks_to_overlay(&links, &output, 0, 0, 10, 0, 2, &[], None, &mut overlay);
 
     assert_eq!(overlay.links().len(), 1);
-    assert_eq!(overlay.links()[0].screen_row, 2);
-    assert_eq!(overlay.links()[0].col_start, 0);
-    assert_eq!(overlay.links()[0].col_end, 4);
+    assert_eq!(at(overlay.links(), 0).screen_row, 2);
+    assert_eq!(at(overlay.links(), 0).col_start, 0);
+    assert_eq!(at(overlay.links(), 0).col_end, 4);
 }
 
 #[test]
@@ -1557,7 +1600,7 @@ fn overlay_partial_column_overlap() {
     map_hyperlinks_to_overlay(&links, &output, 0, 5, 10, 2, 0, &[], None, &mut overlay);
 
     assert_eq!(overlay.links().len(), 1);
-    let link = &overlay.links()[0];
+    let link = &at(overlay.links(), 0);
     assert_eq!(link.screen_row, 5);
     assert_eq!(link.col_start, 5); // content_x(2) + local_col_start(3)
     assert_eq!(link.col_end, 8); // content_x(2) + local_col_end(6)
@@ -1584,7 +1627,7 @@ fn execute_block_urls_get_overlay_links() {
     ))];
     // Force expanded mode so output is visible.
     let mut entries = entries;
-    entries[0].display_mode = DisplayMode::Expanded;
+    at_mut(&mut entries, 0).display_mode = DisplayMode::Expanded;
 
     let viewport = Rect::new(0, 0, 80, 20);
     let result = render_with_scratch(&entries, viewport, 0, None);
@@ -1661,7 +1704,7 @@ fn markdown_wrapped_project_media_path_fully_linkified() {
         path_links.len(),
         "each visual row gets one region"
     );
-    assert!(rows.windows(2).all(|w| w[1] == w[0] + 1));
+    assert!(rows.windows(2).all(|w| matches!(w, [a, b] if *b == *a + 1)));
 }
 
 #[test]
@@ -1736,7 +1779,7 @@ fn collapsed_block_body_urls_not_visible() {
         None::<String>,
     ))];
     let mut entries = entries;
-    entries[0].display_mode = DisplayMode::Collapsed;
+    at_mut(&mut entries, 0).display_mode = DisplayMode::Collapsed;
 
     let viewport = Rect::new(0, 0, 80, 10);
     let result = render_with_scratch(&entries, viewport, 0, None);
@@ -1755,7 +1798,7 @@ fn collapsed_block_header_file_path_is_scanned() {
         "file1\nfile2",
         None::<String>,
     ))];
-    entries[0].display_mode = DisplayMode::Collapsed;
+    at_mut(&mut entries, 0).display_mode = DisplayMode::Collapsed;
 
     let viewport = Rect::new(0, 0, 80, 10);
     let result = render_with_scratch(&entries, viewport, 0, None);
@@ -2314,21 +2357,21 @@ fn verb_group_expanded_slot_header_and_member_select_independently() {
     // The two rows resolve to two distinct ranges, one line each on their own screen rows
     let header = model.range(0, GROUP_HEADER_RANGE_ID).expect("header range");
     assert_eq!(header.lines.len(), 1);
-    assert_eq!(header.lines[0].text, "Read 2 files");
-    assert_eq!(header.lines[0].screen_y, 0);
+    assert_eq!(at(&header.lines, 0).text, "Read 2 files");
+    assert_eq!(at(&header.lines, 0).screen_y, 0);
     let member = model
         .range(0, crate::scrollback::blocks::tool::TOOL_HEADER_RANGE)
         .expect("member range");
     assert_eq!(member.lines.len(), 1);
-    assert!(member.lines[0].text.contains("b1.rs"));
-    assert_eq!(member.lines[0].screen_y, 1);
+    assert!(at(&member.lines, 0).text.contains("b1.rs"));
+    assert_eq!(at(&member.lines, 0).screen_y, 1);
 
     // A same-row drag over each row reconstructs that row's text only.
-    let header_copy =
-        reconstruct_selection_text(model, &full_row_drag(&header.lines[0])).expect("header copy");
+    let header_copy = reconstruct_selection_text(model, &full_row_drag(at(&header.lines, 0)))
+        .expect("header copy");
     assert_eq!(header_copy, "Read 2 files");
-    let member_copy =
-        reconstruct_selection_text(model, &full_row_drag(&member.lines[0])).expect("member copy");
+    let member_copy = reconstruct_selection_text(model, &full_row_drag(at(&member.lines, 0)))
+        .expect("member copy");
     assert!(
         member_copy.contains("b1.rs") && !member_copy.contains("Read 2 files"),
         "member drag must not drag the header along: {member_copy:?}"
@@ -2525,7 +2568,7 @@ fn truncated_execute_block_detects_urls_in_head_and_tail() {
         &output,
         None::<String>,
     ))];
-    entries[0].display_mode = DisplayMode::Truncated;
+    at_mut(&mut entries, 0).display_mode = DisplayMode::Truncated;
 
     let viewport = Rect::new(0, 0, 80, 30);
     let result = render_with_scratch(&entries, viewport, 0, None);
@@ -2585,13 +2628,13 @@ fn tool_header_link_target_overlay_covers_path_after_bullet() {
         locale: Default::default(),
     };
     let painted = entry.block.output(&ctx);
-    let header = &painted.lines[0];
+    let header = &at(&painted.lines, 0);
     assert!(
         header.content.spans.len() >= 3,
         "expected [bullet, Edit , path], got {} spans",
         header.content.spans.len()
     );
-    let path_span = header.content.spans[2].content.as_ref();
+    let path_span = at(&header.content.spans, 2).content.as_ref();
     assert_eq!(path_span, "foo.rs");
     let target = header.link_target.as_ref().expect("link target on header");
     assert_eq!(
@@ -2601,8 +2644,8 @@ fn tool_header_link_target_overlay_covers_path_after_bullet() {
 
     let cols = selectable_cols(&header.content, &header.selectable)
         .expect("path span should be selectable");
-    let bullet_w = header.content.spans[0].content.width() as u16;
-    let verb_w = header.content.spans[1].content.width() as u16;
+    let bullet_w = at(&header.content.spans, 0).content.width() as u16;
+    let verb_w = at(&header.content.spans, 1).content.width() as u16;
     let path_w = path_span.width() as u16;
     assert_eq!(
         cols,
@@ -2653,12 +2696,12 @@ fn tool_header_link_target_overlay_covers_path_after_bullet() {
     );
     let hlayout = HorizontalLayout::new(viewport, &appearance.scrollback.layout);
     assert_eq!(
-        file_links[0].col_start,
+        at(&file_links, 0).col_start,
         hlayout.content.x.saturating_add(cols.start),
         "overlay must start on path, not bullet/verb"
     );
     assert_eq!(
-        file_links[0].col_end,
+        at(&file_links, 0).col_end,
         hlayout.content.x.saturating_add(cols.end),
         "overlay must end at path end"
     );
@@ -3029,9 +3072,12 @@ fn url_overlay_group<'a>(result: &'a ScrollRenderResult, url: &str) -> Vec<&'a O
 /// Catches partial regressions where the middle of a wrapped URL is silently skipped.
 fn assert_consecutive_rows(fragments: &[&OverlayLink]) {
     for w in fragments.windows(2) {
+        let [a, b] = w else {
+            panic!("windows(2) yielded {w:?}");
+        };
         assert_eq!(
-            w[1].screen_row,
-            w[0].screen_row + 1,
+            b.screen_row,
+            a.screen_row + 1,
             "wrapped URL fragments must be on consecutive screen rows: {:?}",
             fragments
                 .iter()
@@ -3176,7 +3222,7 @@ fn overlay_pretty_link_url_in_blockquote_wraps_correctly() {
     let indent_width: u16 = 2;
 
     // Continuation rows (all but the first) must start after the indent
-    for frag in &group[1..] {
+    for frag in group.get(1..).into_iter().flatten() {
         assert_eq!(
             frag.col_start,
             content_x + indent_width,
@@ -3236,7 +3282,7 @@ fn overlay_pretty_link_url_in_list_wraps_correctly() {
 
     // Top-level list items render as "• …" with no quote-bar indent on continuation rows
     // Continuation OverlayLinks start at content_x (no indent offset)
-    for frag in &group[1..] {
+    for frag in group.get(1..).into_iter().flatten() {
         assert_eq!(
             frag.col_start, content_x,
             "OverlayLink on list continuation row must start at content_x (no quote-bar indent); got col_start={} but expected {}",
@@ -3297,7 +3343,7 @@ fn overlay_parenthetical_arxiv_url_wraps_correctly() {
     // All fragments must share the same id
     let ids: Vec<_> = group.iter().filter_map(|o| o.id).collect();
     assert!(
-        !ids.is_empty() && ids.windows(2).all(|w| w[0] == w[1]),
+        !ids.is_empty() && ids.windows(2).all(|w| matches!(w, [a, b] if a == b)),
         "all wrap fragments must share the same nonempty id; got ids: {:?}",
         ids
     );
@@ -3354,7 +3400,7 @@ fn overlay_list_arxiv_pretty_link_wraps_correctly() {
 
     // Top-level list items render as "• …" with no quote-bar indent on continuation rows
     // Continuation OverlayLinks start at content_x (no indent offset)
-    for frag in &group[1..] {
+    for frag in group.get(1..).into_iter().flatten() {
         assert_eq!(
             frag.col_start, content_x,
             "OverlayLink on list continuation row must start at content_x (no quote-bar indent); got col_start={} but expected {}",
@@ -3365,7 +3411,7 @@ fn overlay_list_arxiv_pretty_link_wraps_correctly() {
     // All fragments must share the same id
     let ids: Vec<_> = group.iter().filter_map(|o| o.id).collect();
     assert!(
-        !ids.is_empty() && ids.windows(2).all(|w| w[0] == w[1]),
+        !ids.is_empty() && ids.windows(2).all(|w| matches!(w, [a, b] if a == b)),
         "all wrap fragments must share the same nonempty id; got ids: {:?}",
         ids
     );
@@ -3402,7 +3448,7 @@ fn overlay_url_hyperlinks_survive_width_change() {
     let url = "https://example.com/long/url/path/with/many/segments-and-hyphens";
     let markdown = format!("[link]({url})\n");
     let mut entries = vec![make_markdown_entry(&markdown)];
-    if let RenderBlock::AgentMessage(b) = &mut entries[0].block {
+    if let RenderBlock::AgentMessage(b) = &mut at_mut(&mut entries, 0).block {
         b.finish();
     }
     // Exercise multiple width transitions and back-and-forth: a wide viewport where the URL fits on one row, a narrow
@@ -3422,7 +3468,10 @@ fn overlay_url_hyperlinks_survive_width_change() {
                     .collect::<Vec<_>>(),
             );
             assert_eq!(
-                (group[0].col_end - group[0].col_start) as usize,
+                group
+                    .first()
+                    .map(|g| (g.col_end - g.col_start) as usize)
+                    .unwrap_or_else(|| panic!("expected a URL fragment")),
                 url.len(),
                 "single-row URL fragment width must equal URL display width",
             );
@@ -3469,7 +3518,10 @@ fn overlay_pretty_link_url_no_wrap_single_row() {
         "short URL must produce exactly one OverlayLink fragment",
     );
     assert_eq!(
-        (group[0].col_end - group[0].col_start) as usize,
+        group
+            .first()
+            .map(|g| (g.col_end - g.col_start) as usize)
+            .unwrap_or_else(|| panic!("expected a URL fragment")),
         url.len(),
         "single-row URL fragment width must equal URL display width",
     );
@@ -3490,8 +3542,14 @@ fn overlay_pretty_two_wrapping_links_distinct_ids() {
     let group_a = url_overlay_group(&result, url_a);
     let group_b = url_overlay_group(&result, url_b);
 
-    let id_a = group_a[0].id.expect("URL fragment must have id");
-    let id_b = group_b[0].id.expect("URL fragment must have id");
+    let id_a = group_a
+        .first()
+        .and_then(|g| g.id)
+        .unwrap_or_else(|| panic!("URL fragment must have id"));
+    let id_b = group_b
+        .first()
+        .and_then(|g| g.id)
+        .unwrap_or_else(|| panic!("URL fragment must have id"));
     assert_ne!(
         id_a, id_b,
         "two distinct URLs must produce distinct OSC 8 ids",
@@ -3566,7 +3624,9 @@ fn diagram_emits_affordance_placement_not_inline_image() {
         1,
         "a ready diagram emits one affordance placement",
     );
-    let aff = &result.diagram_affordances[0];
+    let Some(aff) = result.diagram_affordances.first() else {
+        panic!("expected a diagram affordance");
+    };
     assert_eq!(aff.source, "A-->B\n");
 
     // Exact placement geometry: one row tall, anchored at the content-area x, a non-empty width that stays within the content column band
@@ -3631,7 +3691,9 @@ fn tool_media_overlay_exposes_filepath_click_rect() {
 
     // Exactly the overlay/image placement (button row reserved); no separate text-`[Open]` placement when the overlay hosts the buttons
     assert_eq!(result.inline_media.len(), 1, "one overlay placement");
-    let media = &result.inline_media[0];
+    let Some(media) = result.inline_media.first() else {
+        panic!("expected inline media");
+    };
     assert!(media.has_button_row, "overlay/image tool-media placement");
 
     // The tool block has no vpad, so its second output line (the filepath) is screen row 1: a one-row click-to-copy target at the image's x

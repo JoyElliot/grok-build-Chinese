@@ -1,0 +1,27 @@
+[
+  {
+    "category": "fixes",
+    "description": "**运行时长显示**现在会进位为小时（例如 `3h14m`），不再停在 60 分钟。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**会话标题栏**重新设计为单行，承载覆盖视图上下文和仪表盘按钮。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**停靠面板中的监视器与循环任务行**现在会显示下次执行时间。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "通过省略逐帧同步更新包装，修复 **tmux 窗格中的卡顿**。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**工作流状态**现在会在停靠面板中显示为可点击的一行。",
+    "breaking_change": false
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "category": "features",
+    "description": "**`/btw` 现在可以出现在消息中间**：该行其余内容会作为旁支问题，不进入主会话记录。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**自动更新**不再删除仍被其他进程使用的 grok 可执行文件。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "现在可以在 config.toml 中为 Responses API 端点配置**每个模型的 `reasoning_summary`**。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**提示编辑器**在软换行之间按上下方向键移动时，不再卡住光标或跳过一行。",
+    "breaking_change": false
+  }
+]

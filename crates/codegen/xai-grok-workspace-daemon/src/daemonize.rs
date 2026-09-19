@@ -518,8 +518,8 @@ impl PredecessorTarget {
         if result.is_err() {
             return None;
         }
-        basename_contains(&String::from_utf16_lossy(&buf[..size as usize]), fragment)
-            .then_some(target)
+        let name = buf.get(..size as usize).unwrap_or(buf.as_slice());
+        basename_contains(&String::from_utf16_lossy(name), fragment).then_some(target)
     }
 
     /// `TerminateProcess` on the pinned handle (Windows has no graceful signal for a detached process).

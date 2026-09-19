@@ -30,3 +30,17 @@ fn parse_slash_prefix_extracts_name_and_args() {
     );
     assert_eq!(parse_slash_prefix(&[text_block("not a slash")]), None);
 }
+
+#[test]
+fn parse_slash_prefix_distinguishes_paths_from_commands() {
+    assert_eq!(
+        parse_slash_prefix(&[text_block(
+            "/workspace/project/src/lib.rs has a compile error"
+        )]),
+        None
+    );
+    assert_eq!(
+        parse_slash_prefix(&[text_block("/memory status")]),
+        Some(("memory", "status"))
+    );
+}

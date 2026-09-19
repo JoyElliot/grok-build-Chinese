@@ -673,7 +673,6 @@ mod link_click_tests {
             },
             &bundle,
             false,
-            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -978,10 +977,15 @@ mod link_click_tests {
         let mut parent = make_agent();
         let mut child = make_agent();
         super::test_fixtures::add_running_execute(&mut child);
-        parent
-            .subagent_views
-            .insert("child-sid".into(), Box::new(child));
-        assert!(!parent.subagent_views["child-sid"].is_subagent_view);
+        parent.insert_test_child("child-sid".into(), Box::new(child));
+        assert_eq!(
+            crate::app::agent_view::ViewSurface::ChildTakeover,
+            parent
+                .subagent_views
+                .get("child-sid")
+                .unwrap_or_else(|| panic!("missing map entry"))
+                .surface()
+        );
         parent.open_subagent_fullscreen("child-sid".into());
         let child = parent.subagent_views.get_mut("child-sid").unwrap();
         draw_banner_frame(child, &reg, &[], 0);
@@ -1233,6 +1237,39 @@ mod link_click_tests {
             InputOutcome::Action(Action::SetYoloMode(_))
         ));
     }
+    /// The header reserves the CTA's columns before the location is truncated, so a path that would fill the row still
+    /// leaves the button painted: the path gives way, not the CTA.
+    #[test]
+    fn header_upgrade_cta_survives_a_long_path() {
+        let reg = ActionRegistry::defaults();
+        let mut agent = make_agent();
+        agent.last_terminal_size = (80, 30);
+        agent.session.cwd = std::path::PathBuf::from(format!("/{}", "x".repeat(200)));
+        let promo = [xai_grok_announcements::RemoteAnnouncement {
+            id: Some("promo-long".into()),
+            severity: Some("promo".into()),
+            message: Some("ZZPROMO".into()),
+            cta: Some(xai_grok_announcements::AnnouncementCta {
+                label: Some("Upgrade Account".into()),
+                url: Some("https://x.ai/promo".into()),
+                caption: None,
+            }),
+            ..Default::default()
+        }];
+        let buf = draw_frame_sized(&mut agent, &reg, &promo, 1, 80);
+        let rect = agent
+            .hit_upgrade_cta
+            .rect
+            .expect("the reserved columns must hold the CTA when the path overflows");
+        let row: String = (0..80)
+            .filter_map(|x| buf.cell((x, rect.y)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(row.contains("[Upgrade Account]"), "row={row:?}");
+        assert!(
+            row.contains('…'),
+            "the path is the part that truncates; row={row:?}"
+        );
+    }
     /// A non-dismissible promo draws with the CTA armed but NO [hide] click target (`BannerHits.hide` is None, so the mouse hide path is dead).
     #[test]
     fn non_dismissible_promo_arms_cta_but_no_hide_rect() {
@@ -1309,11 +1346,24 @@ mod link_click_tests {
         agent.push_promo_cta_link_span(&mut spans, &promo, &no_hidden);
         assert_eq!(spans.len(), 1, "overlay-free frame must emit the span");
         assert_eq!(
-            (spans[0].row, spans[0].col_start, spans[0].col_end),
+            (
+                spans.first().unwrap_or_else(|| panic!("missing index")).row,
+                spans
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index"))
+                    .col_start,
+                spans
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index"))
+                    .col_end
+            ),
             (cta.y, cta.x, cta.x + cta.width),
             "span must cover exactly the [label] button cells"
         );
-        assert_eq!(&*spans[0].url, "https://x.ai/promo");
+        assert_eq!(
+            &*spans.first().unwrap_or_else(|| panic!("missing index")).url,
+            "https://x.ai/promo"
+        );
         let outcome = agent.handle_input(&Event::Mouse(mouse_down(cta.x + 1, cta.y)), &reg);
         assert!(
             matches!(
@@ -1821,24 +1871,21 @@ mod link_click_tests {
         let style = Style::default().add_modifier(ratatui::style::Modifier::UNDERLINED);
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
         agent.paint_link_highlights(&mut buf, style, 0..agent.visible_link_map.len());
-        assert!(
-            buf[(5, 4)]
-                .style()
+        assert!(buf.cell((5, 4)).is_some_and(|c| {
+            c.style()
                 .add_modifier
                 .contains(ratatui::style::Modifier::UNDERLINED)
-        );
-        assert!(
-            !buf[(5, 3)]
-                .style()
+        }));
+        assert!(!buf.cell((5, 3)).is_some_and(|c| {
+            c.style()
                 .add_modifier
                 .contains(ratatui::style::Modifier::UNDERLINED)
-        );
-        assert!(
-            !buf[(5, 5)]
-                .style()
+        }));
+        assert!(!buf.cell((5, 5)).is_some_and(|c| {
+            c.style()
                 .add_modifier
                 .contains(ratatui::style::Modifier::UNDERLINED)
-        );
+        }));
     }
     #[test]
     fn colliding_ids_modifier_click_opens_hit_url() {
@@ -2012,9 +2059,7 @@ mod link_click_tests {
                 e.display_mode = crate::scrollback::types::DisplayMode::Collapsed;
             }
         }
-        agent
-            .subagent_views
-            .insert("child-sid".into(), Box::new(make_agent()));
+        agent.insert_test_child("child-sid".into(), Box::new(make_agent()));
         agent.scrollback.prepare_layout(80, 40);
         agent.scrollback.set_selected(Some(0));
         assert!(agent.scrollback.is_selected_group_header());
@@ -2464,7 +2509,6 @@ mod link_click_tests {
             crate::app::agent_view::BannerSlotParams::none(),
             &bundle,
             false,
-            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -2583,7 +2627,6 @@ mod link_click_tests {
             },
             &bundle,
             false,
-            false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
         );
@@ -2595,7 +2638,12 @@ mod link_click_tests {
             !(0..tall.height).any(|y| buffer_row(&buf, tall.width, y).contains("ZZSESSIONTIPZZ")),
             "session tip must not remain visible in the agent view"
         );
-        let start = row[..row.find("Status").expect("tip text")].chars().count() as u16;
+        let start = row
+            .find("Status")
+            .and_then(|i| row.get(..i))
+            .expect("tip text")
+            .chars()
+            .count() as u16;
         let bold_cols: Vec<u16> = (0..tall.width)
             .filter(|&x| {
                 buf.cell((x, tip_y))
@@ -2662,7 +2710,6 @@ mod link_click_tests {
                 tip: Some(long_tip.as_str()),
             },
             &bundle,
-            false,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
@@ -2839,9 +2886,7 @@ mod link_click_tests {
         type_query(&mut child, &reg, "foo");
         assert!(child.scrollback_search.is_some());
         let child_sid = "child-sid".to_string();
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
+        parent.insert_test_child(child_sid.clone(), Box::new(child));
         parent.active_subagent = Some(child_sid.clone());
         let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         parent.handle_input(&esc, &reg);
@@ -2850,7 +2895,10 @@ mod link_click_tests {
             "view stays open while the child's search is cancelled"
         );
         assert!(
-            parent.subagent_views[&child_sid]
+            parent
+                .subagent_views
+                .get(&child_sid)
+                .unwrap_or_else(|| panic!("missing map entry"))
                 .scrollback_search
                 .is_none(),
             "the forwarded Esc cancels the child's search"
@@ -2870,9 +2918,7 @@ mod link_click_tests {
         type_query(&mut child, &reg, "fo");
         assert!(child.scrollback_search.as_ref().unwrap().is_composing());
         let child_sid = "child-sid".to_string();
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
+        parent.insert_test_child(child_sid.clone(), Box::new(child));
         parent.active_subagent = Some(child_sid.clone());
         let q = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         parent.handle_input(&q, &reg);
@@ -2881,7 +2927,10 @@ mod link_click_tests {
             "view stays open while a search is composing"
         );
         assert_eq!(
-            parent.subagent_views[&child_sid]
+            parent
+                .subagent_views
+                .get(&child_sid)
+                .unwrap_or_else(|| panic!("missing map entry"))
                 .scrollback_search
                 .as_ref()
                 .unwrap()
@@ -2898,9 +2947,7 @@ mod link_click_tests {
         press(&mut child, &reg, KeyCode::Char('/'));
         assert!(child.scrollback_search.is_some());
         let child_sid = "child-sid".to_string();
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
+        parent.insert_test_child(child_sid.clone(), Box::new(child));
         parent.active_subagent = Some(child_sid.clone());
         for c in "foo".chars() {
             parent.handle_input(
@@ -2922,7 +2969,10 @@ mod link_click_tests {
             }
             assert!(delivered, "child search daemon did not publish a result");
         }
-        let search = parent.subagent_views[&child_sid]
+        let search = parent
+            .subagent_views
+            .get(&child_sid)
+            .unwrap_or_else(|| panic!("missing map entry"))
             .scrollback_search
             .as_ref()
             .unwrap();

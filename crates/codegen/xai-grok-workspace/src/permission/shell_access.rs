@@ -8,6 +8,7 @@ use crate::permission::bash_command_splitting::{
     MAX_INLINE_SHELL_DEPTH, decode_shell_literal_spelling, normalize_command_words,
     try_parse_shell, unwrap_wrappers,
 };
+use crate::permission::exec_risk::is_accepted_long_option_prefix;
 use crate::permission::policy::{
     CompiledPolicy, GateDecision, InlineShellScript, ShellWord, SymlinkFollow,
     combine_gate_decisions, follow_absolute_symlink, resolve_following_symlinks,
@@ -91,7 +92,7 @@ impl CompiledPolicy {
                 InlineShellScript::Literal(index) => {
                     if inline_depth_remaining == 0 {
                         forced_ask = true;
-                    } else if let ShellWord::Literal(inner) = shell_words[index] {
+                    } else if let Some(ShellWord::Literal(inner)) = shell_words.get(index) {
                         decision = combine_gate_decisions(
                             decision,
                             self.evaluate_shell_file_access_inner(
@@ -536,16 +537,32 @@ fn protected_grok_config_file_with_home(
     components: &[&str],
     user_grok_home: Option<&Path>,
 ) -> Option<ProtectedEditReason> {
-    let reason = match components.last().copied() {
-        Some(
-            xai_grok_config::USER_CONFIG_FILENAME
-            | xai_grok_config::MANAGED_CONFIG_FILENAME
-            | xai_grok_config::REQUIREMENTS_FILENAME,
-        ) => ProtectedEditReason::GrokConfig,
-        Some(xai_grok_config::SANDBOX_CONFIG_FILENAME) => ProtectedEditReason::GrokSandbox,
+    let file = components.last().copied()?;
+    // Session grant store: `{home}/sessions/<scope>/permission.toml` (or permission_*.toml).
+    if (file == "permission.toml" || (file.starts_with("permission_") && file.ends_with(".toml")))
+        && components.len() >= 3
+        && components.get(components.len() - 3) == Some(&"sessions")
+    {
+        let n = components.len();
+        let in_dot_grok = n >= 4 && components.get(n - 4) == Some(&".grok");
+        let in_grok_home = grok_home_matches(user_grok_home, |home| {
+            path.parent()
+                .and_then(Path::parent)
+                .is_some_and(|sessions| sessions == home.join("sessions"))
+        });
+        return (in_dot_grok || in_grok_home).then_some(ProtectedEditReason::GrokConfig);
+    }
+    let reason = match file {
+        xai_grok_config::USER_CONFIG_FILENAME
+        | xai_grok_config::MANAGED_CONFIG_FILENAME
+        | xai_grok_config::REQUIREMENTS_FILENAME => ProtectedEditReason::GrokConfig,
+        // Spawn configs: the daemon hot-reloads `mcp.json` and starts what it names; `lsp.json` starts servers at the next load
+        "mcp.json" | "lsp.json" => ProtectedEditReason::GrokConfig,
+        xai_grok_config::SANDBOX_CONFIG_FILENAME => ProtectedEditReason::GrokSandbox,
         _ => return None,
     };
-    let in_dot_grok = components.len() >= 2 && components[components.len() - 2] == ".grok";
+    let in_dot_grok =
+        components.len() >= 2 && components.get(components.len() - 2) == Some(&".grok");
     let in_grok_home = || grok_home_matches(user_grok_home, |home| path.parent() == Some(home));
     (in_dot_grok || in_grok_home()).then_some(reason)
 }
@@ -578,10 +595,9 @@ fn protected_git_hooks_path(components: &[&str]) -> bool {
         || components.iter().enumerate().any(|(git, component)| {
             *component == ".git"
                 && components.get(git + 1) == Some(&"modules")
-                && components[git + 2..]
-                    .iter()
-                    .skip(1)
-                    .any(|component| *component == "hooks")
+                && components
+                    .get(git + 2..)
+                    .is_some_and(|rest| rest.iter().skip(1).any(|component| *component == "hooks"))
         })
 }
 
@@ -1058,16 +1074,47 @@ fn shell_sed_in_place(words: &[String]) -> bool {
     })
 }
 
-fn shell_output_flag_values(words: &[String]) -> impl Iterator<Item = &str> {
-    words.iter().enumerate().filter_map(|(i, token)| {
-        token
-            .strip_prefix("--output=")
-            .or_else(|| token.strip_prefix("-o").filter(|value| !value.is_empty()))
-            .or_else(|| {
-                (token == "--output" || token == "-o")
-                    .then(|| words.get(i + 1).map(String::as_str))
-                    .flatten()
-            })
+/// `--output` (or any unique GNU abbreviation: `--out=`, `--o` …) and `-o` write targets.
+/// `clustered_o` enables GNU getopt clusters (`-no FILE`); only `sort` sets it so git `-uno` / go `-json` stay non-writes.
+fn shell_output_flag_values(
+    words: &[String],
+    clustered_o: bool,
+) -> impl Iterator<Item = &str> + '_ {
+    words.iter().enumerate().filter_map(move |(i, token)| {
+        // Missing value is an empty path so FileWrite still fires.
+        let next_or_empty = || words.get(i + 1).map(String::as_str).unwrap_or("");
+        if token.starts_with("--") {
+            let (flag, attached) = match token.split_once('=') {
+                Some((flag, value)) => (flag, Some(value)),
+                None => (token.as_str(), None),
+            };
+            // `--o` is sort's only `--o*` long option; go accepts `--o` as `-o`, git/rustc either error or resolve to a benign sibling, so a match never under-reports
+            if is_accepted_long_option_prefix(flag, "--output", 3) {
+                return Some(attached.unwrap_or_else(next_or_empty));
+            }
+            return None;
+        }
+        if token == "-o" {
+            return Some(next_or_empty());
+        }
+        // Glued `-oFILE`; GNU getopt takes the rest of the token even when it starts with `-`
+        if let Some(value) = token.strip_prefix("-o").filter(|value| !value.is_empty()) {
+            return Some(value);
+        }
+        if !clustered_o {
+            return None;
+        }
+        let flags = token.strip_prefix('-')?;
+        if flags.is_empty() || flags.starts_with('o') || flags.contains('=') {
+            return None;
+        }
+        // GNU getopt: `-no FILE` is `-n` plus `-o FILE`.
+        let after_o = flags.split_once('o')?.1;
+        if after_o.is_empty() {
+            Some(next_or_empty())
+        } else {
+            Some(after_o)
+        }
     })
 }
 
@@ -1109,13 +1156,16 @@ fn special_file_operands(program: &str, words: &[String]) -> Vec<(String, ShellF
                     })
             })
             .collect(),
-        // `--output`/`-o` write the output file
+        // `--output`/`-o` write the output file.
         // (`git`'s `-O` is a READ order-file, NOT a write, so it is intentionally excluded.)
-        "sort" | "go" | "git" => shell_output_flag_values(words)
+        "sort" => shell_output_flag_values(words, /*clustered_o*/ true)
+            .map(|output| (output.to_owned(), ShellFileMode::Write))
+            .collect(),
+        "go" | "git" => shell_output_flag_values(words, /*clustered_o*/ false)
             .map(|output| (output.to_owned(), ShellFileMode::Write))
             .collect(),
         // `rustc` writes its compiled output via `-o`/`--out-dir` (mirrors `go`).
-        "rustc" => shell_output_flag_values(words)
+        "rustc" => shell_output_flag_values(words, /*clustered_o*/ false)
             .chain(value_flag_values(words, "--out-dir"))
             .map(|output| (output.to_owned(), ShellFileMode::Write))
             .collect(),
@@ -1458,6 +1508,11 @@ mod tests {
                 "/home/user/.grok/requirements.toml",
                 ProtectedEditReason::GrokConfig,
             ),
+            ("/home/user/.grok/mcp.json", ProtectedEditReason::GrokConfig),
+            (
+                "/work/project/.grok/lsp.json",
+                ProtectedEditReason::GrokConfig,
+            ),
             (
                 "/home/user/.claude/settings.json",
                 ProtectedEditReason::ClaudeSettings,
@@ -1475,10 +1530,34 @@ mod tests {
             );
             assert!(reason.description().is_some(), "{path}");
         }
+        let grant_client = std::path::PathBuf::from("/home/user")
+            .join(".grok")
+            .join("sessions")
+            .join("ws")
+            .join("permission_grok-pager.toml");
+        let grant_default = std::path::PathBuf::from("/home/user")
+            .join(".grok")
+            .join("sessions")
+            .join("ws")
+            .join("permission.toml");
+        assert_eq!(
+            edit_target_protection(&grant_client),
+            Some(ProtectedEditReason::GrokConfig)
+        );
+        assert_eq!(
+            edit_target_protection(&grant_default),
+            Some(ProtectedEditReason::GrokConfig)
+        );
         assert_eq!(
             edit_target_protection(Path::new("/home/user/project/src/main.rs")),
             None
         );
+        let workspace_grant = std::path::PathBuf::from("/home/user")
+            .join("project")
+            .join("sessions")
+            .join("x")
+            .join("permission_grok-pager.toml");
+        assert_eq!(edit_target_protection(&workspace_grant), None);
         assert!(ProtectedEditReason::Sensitive.description().is_none());
     }
 
@@ -1612,6 +1691,19 @@ mod tests {
                 "{file} directly under $GROK_HOME must be protected"
             );
         }
+        let grant = home_path
+            .join("sessions")
+            .join("ws")
+            .join("permission_grok-pager.toml");
+        assert_eq!(
+            protected_grok_config_file_with_home(
+                &grant,
+                &["sessions", "ws", "permission_grok-pager.toml"],
+                Some(home_path)
+            ),
+            Some(ProtectedEditReason::GrokConfig),
+            "per-client grant store under $GROK_HOME/sessions must be protected"
+        );
         // Same file names elsewhere (or with no resolvable home) stay ordinary.
         let elsewhere = home_path
             .join("sub")
@@ -1655,6 +1747,18 @@ mod tests {
                 Some(&link)
             ),
             Some(ProtectedEditReason::GrokSandbox)
+        );
+        let grant = physical_home
+            .join("sessions")
+            .join("ws")
+            .join("permission.toml");
+        assert_eq!(
+            protected_grok_config_file_with_home(
+                &grant,
+                &["sessions", "ws", "permission.toml"],
+                Some(&link)
+            ),
+            Some(ProtectedEditReason::GrokConfig)
         );
     }
 
@@ -1884,6 +1988,8 @@ mod tests {
             "sed -i.bak s/FAKE/HACKED/ .env",
             "sed -ni s/FAKE/HACKED/ .env",
             "sort README.md -o .env",
+            "sort README.md --out=.env",
+            "sort -no .env README.md",
             "truncate -s 0 .env",
             "Tee-Object .env",
         ] {

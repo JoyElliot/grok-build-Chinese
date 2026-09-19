@@ -1,10 +1,8 @@
 //! User-message construction for `SessionActor`.
-//! Covers the templated prefix, rules partitioning, large-prompt offload and truncation, and image payload preparation.
+//! Covers the templated prefix, rules partitioning, and image payload preparation; large-prompt offload lives in `prompt_offload`.
 #![allow(clippy::items_after_test_module)]
 use super::*;
 use crate::session::repo_status_prefix::RepoStatusSnapshot;
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
 /// Replaces anything outside `[A-Za-z0-9._-]` with `_` so the result is a portable directory name on macOS/Linux.
 /// Whether `url` is an `http://` or `https://` URL, one the upstream API can fetch directly.
 /// `file://` and other local schemes are rejected by the API and must be inlined as a `data:` URL instead.
@@ -24,6 +22,7 @@ pub(super) fn pick_user_image_url(image: &agent_client_protocol::ImageContent) -
         format!("data:{};base64,{}", image.mime_type, image.data)
     }
 }
+/// A `Configured` file is a user rule wherever its dir sits; everything else is scoped by path.
 fn partition_rules_by_scope(
     files: Vec<xai_grok_agent::prompt::agents_md::AgentConfigFile>,
     grok_home: &std::path::Path,
@@ -36,12 +35,14 @@ fn partition_rules_by_scope(
     let mut workspace = Vec::new();
     let mut user = Vec::new();
     for file in files {
-        let is_user_rule = crate::util::is_user_instruction_path(
-            std::path::Path::new(&file.file_path),
-            grok_home,
-            vendor_homes,
-            workspace_roots,
-        );
+        let is_user_rule = file.source
+            == xai_grok_agent::prompt::agents_md::InstructionSource::Configured
+            || crate::util::is_user_instruction_path(
+                std::path::Path::new(&file.file_path),
+                grok_home,
+                vendor_homes,
+                workspace_roots,
+            );
         let entry = xai_grok_agent::prompt::user_message::RuleEntry::from(file);
         if is_user_rule {
             user.push(entry);
@@ -65,7 +66,33 @@ mod partition_rules_by_scope_tests {
                 .into_owned(),
             file_path: path.to_string(),
             content: path.to_string(),
+            source: Default::default(),
         }
+    }
+    #[test]
+    fn configured_rule_dir_is_a_user_rule_wherever_it_sits() {
+        use xai_grok_agent::prompt::agents_md::InstructionSource;
+        let configured = |path: &str| AgentConfigFile {
+            source: InstructionSource::Configured,
+            ..file(path)
+        };
+        let files = vec![
+            configured("/home/user/team-rules/a.md"),
+            // A configured dir under the workspace that a project root also covers
+            configured("/repo/.claude/rules/b.md"),
+            file("/repo/src/AGENTS.md"),
+        ];
+        let (workspace, user) = partition_rules_by_scope(
+            files,
+            Path::new("/home/user/.grok"),
+            &[],
+            &[Path::new("/repo")],
+        );
+        assert_eq!(vec!["/repo/src/AGENTS.md"], paths(&workspace));
+        assert_eq!(
+            vec!["/home/user/team-rules/a.md", "/repo/.claude/rules/b.md"],
+            paths(&user)
+        );
     }
     fn paths(entries: &[xai_grok_agent::prompt::user_message::RuleEntry]) -> Vec<&str> {
         entries.iter().map(|entry| entry.content.as_str()).collect()
@@ -180,26 +207,31 @@ mod partition_rules_by_scope_tests {
                 file_name: "AGENTS.md".into(),
                 file_path: "/repo/AGENTS.md".into(),
                 content: "repo-agents-body".into(),
+                source: Default::default(),
             },
             AgentConfigFile {
                 file_name: "CLAUDE.md".into(),
                 file_path: "/repo/CLAUDE.md".into(),
                 content: "repo-claude-body".into(),
+                source: Default::default(),
             },
             AgentConfigFile {
                 file_name: "AGENTS.md".into(),
                 file_path: "/home/user/.grok/AGENTS.md".into(),
                 content: "home-grok-body".into(),
+                source: Default::default(),
             },
             AgentConfigFile {
                 file_name: "CLAUDE.md".into(),
                 file_path: "/home/user/.claude/CLAUDE.md".into(),
                 content: "home-claude-body".into(),
+                source: Default::default(),
             },
             AgentConfigFile {
                 file_name: "x.md".into(),
                 file_path: "/repo/.grok/rules/x.md".into(),
                 content: "repo-grok-rules-x".into(),
+                source: Default::default(),
             },
         ];
         let vendor_homes = vec![(Path::new("/home/user/.claude").to_path_buf(), true)];
@@ -268,7 +300,7 @@ pub(super) fn is_project_instructions(item: &ConversationItem) -> bool {
     let ConversationItem::User(u) = item else {
         return false;
     };
-    if u.synthetic_reason == Some(SyntheticReason::ProjectInstructions) {
+    if u.synthetic_reason == SyntheticReason::ProjectInstructions {
         return true;
     }
     u.content
@@ -299,6 +331,92 @@ pub(super) fn install_system_prompt(
         }
     }
 }
+/// A resumed head keeps its enriched prompt, but its `<memory>` section must match this
+/// process's memory state: a `/memory` toggle persists the section into the head, while
+/// enablement is re-resolved from config on every spawn. On a mismatch the fresh prompt replaces
+/// the head; an injected manifest block is kept only while memory is on. Returns whether it changed.
+pub(super) fn reconcile_resumed_memory_section(
+    conversation: &mut [ConversationItem],
+    system_prompt: &str,
+) -> bool {
+    let Some(ConversationItem::System(sys)) = conversation.first_mut() else {
+        return false;
+    };
+    let manifest_start = sys.content.find(xai_chat_state::MEMORY_CONTEXT_OPEN_TAG);
+    let head_prompt = manifest_start
+        .and_then(|start| sys.content.get(..start))
+        .unwrap_or(&sys.content);
+    let fresh_has_memory = has_memory_section(system_prompt);
+    if has_memory_section(head_prompt) == fresh_has_memory {
+        return false;
+    }
+    let manifest_block = manifest_start
+        .filter(|_| fresh_has_memory)
+        .and_then(|start| sys.content.get(start..))
+        .map(str::to_owned);
+    sys.content = match manifest_block {
+        Some(block) => std::sync::Arc::<str>::from(format!(
+            "{}\n\n{block}",
+            system_prompt.trim_end_matches('\n')
+        )),
+        None => std::sync::Arc::<str>::from(system_prompt),
+    };
+    true
+}
+/// The `<memory>` block rendered by `templates/prompt.md` when `memory_v2_enabled` is set.
+fn has_memory_section(prompt: &str) -> bool {
+    prompt.contains("\n<memory>\n")
+}
+#[cfg(test)]
+mod reconcile_resumed_memory_section_tests {
+    use super::reconcile_resumed_memory_section;
+    use xai_chat_state::MEMORY_CONTEXT_OPEN_TAG;
+    use xai_grok_sampling_types::conversation::ConversationItem;
+    const WITH_MEMORY: &str = "rules\n\n<memory>\nuse memory\n</memory>\n\nmore";
+    const WITHOUT_MEMORY: &str = "rules\n\nmore";
+    fn head(conv: &[ConversationItem]) -> &str {
+        match conv.first() {
+            Some(ConversationItem::System(s)) => s.content.as_ref(),
+            _ => panic!("first item is not System"),
+        }
+    }
+    #[test]
+    fn matching_heads_are_left_alone() {
+        let mut conv = vec![ConversationItem::system(format!(
+            "{WITH_MEMORY} (enriched)"
+        ))];
+        assert!(!reconcile_resumed_memory_section(&mut conv, WITH_MEMORY));
+        assert_eq!(head(&conv), format!("{WITH_MEMORY} (enriched)"));
+        let mut conv = vec![ConversationItem::system(WITHOUT_MEMORY)];
+        assert!(!reconcile_resumed_memory_section(&mut conv, WITHOUT_MEMORY));
+    }
+    #[test]
+    fn memory_now_off_drops_section_and_manifest() {
+        let manifest = format!("{MEMORY_CONTEXT_OPEN_TAG}\nindex\n</memory-context>");
+        let mut conv = vec![ConversationItem::system(format!(
+            "{WITH_MEMORY}\n\n{manifest}"
+        ))];
+        assert!(reconcile_resumed_memory_section(&mut conv, WITHOUT_MEMORY));
+        assert_eq!(head(&conv), WITHOUT_MEMORY);
+    }
+    #[test]
+    fn memory_now_on_adds_section_and_keeps_manifest() {
+        let manifest = format!("{MEMORY_CONTEXT_OPEN_TAG}\nindex\n</memory-context>");
+        let mut conv = vec![ConversationItem::system(format!(
+            "{WITHOUT_MEMORY}\n\n{manifest}"
+        ))];
+        assert!(reconcile_resumed_memory_section(&mut conv, WITH_MEMORY));
+        assert_eq!(head(&conv), format!("{WITH_MEMORY}\n\n{manifest}"));
+    }
+    #[test]
+    fn memory_word_inside_manifest_does_not_count_as_a_section() {
+        let manifest = format!("{MEMORY_CONTEXT_OPEN_TAG}\nnote says\n<memory>\n</memory-context>");
+        let mut conv = vec![ConversationItem::system(format!(
+            "{WITHOUT_MEMORY}\n\n{manifest}"
+        ))];
+        assert!(!reconcile_resumed_memory_section(&mut conv, WITHOUT_MEMORY));
+    }
+}
 #[cfg(test)]
 mod install_system_prompt_tests {
     use super::install_system_prompt;
@@ -317,7 +435,7 @@ mod install_system_prompt_tests {
         ];
         let mut prefix = Some(1);
         install_system_prompt(&mut conv, &mut prefix, true, false, "fresh");
-        assert_eq!(system_text(&conv[0]), "fresh");
+        assert_eq!(conv.first().map(system_text), Some("fresh"));
         assert_eq!(prefix, Some(1), "prefix unchanged — System already present");
     }
     #[test]
@@ -329,8 +447,8 @@ mod install_system_prompt_tests {
         let mut prefix = Some(2);
         install_system_prompt(&mut conv, &mut prefix, true, true, "child fresh prompt");
         assert_eq!(
-            system_text(&conv[0]),
-            "parent system verbatim",
+            conv.first().map(system_text),
+            Some("parent system verbatim"),
             "preserve_inherited_system must not overwrite the inherited head"
         );
         assert_eq!(prefix, Some(2), "prefix unchanged — System already present");
@@ -344,8 +462,8 @@ mod install_system_prompt_tests {
         let mut prefix = Some(2);
         install_system_prompt(&mut conv, &mut prefix, true, false, "child subagent system");
         assert_eq!(
-            system_text(&conv[0]),
-            "child subagent system",
+            conv.first().map(system_text),
+            Some("child subagent system"),
             "summarized fork (preserve=false) must overwrite [0] with the child system"
         );
     }
@@ -357,139 +475,19 @@ mod install_system_prompt_tests {
         ];
         let mut prefix = None;
         install_system_prompt(&mut conv, &mut prefix, false, false, "fresh");
-        assert_eq!(system_text(&conv[0]), "stored");
+        assert_eq!(conv.first().map(system_text), Some("stored"));
     }
     #[test]
     fn inserts_system_and_bumps_prefix_when_absent() {
         let mut conv = vec![ConversationItem::user("hi")];
         let mut prefix = Some(0);
         install_system_prompt(&mut conv, &mut prefix, true, false, "fresh");
-        assert_eq!(system_text(&conv[0]), "fresh");
+        assert_eq!(conv.first().map(system_text), Some("fresh"));
         assert_eq!(
             prefix,
             Some(1),
             "inserted System grows the preserved prefix"
         );
-    }
-}
-pub(crate) const LARGE_PROMPT_THRESHOLD: usize = 25_000;
-pub(super) const TRUNCATED_PROMPT_PREFIX_SIZE: usize = 25_000;
-/// Percent of the bounded-prompt budget given to the query (capped; rest is context head).
-const LARGE_QUERY_BUDGET_PERCENT: usize = 80;
-/// Bytes kept at the TAIL when bounding head+tail, so a trailing question survives.
-const BOUNDED_TAIL_BUDGET: usize = 4_000;
-/// Bytes reserved for skill instructions (own budget, not crowded out by the query).
-pub(super) const SKILL_INLINE_BUDGET: usize = 4_000;
-/// Marker between the head and tail of an elided block. Single source of truth.
-pub(super) const ELISION_MARKER: &str =
-    "\n\n…[middle truncated — full text in the offloaded file]…\n\n";
-/// Stable marker opening the offload notice. Single source of truth (for a future strip-on-re-read).
-pub(super) const OFFLOAD_NOTICE_MARKER: &str = "[Full request offloaded to file]";
-/// In-band notice that REPLACES the offload notice when the full request could not be persisted (write error or task-join failure).
-/// It references no path, there is no file to read, so the model is never told to `read_file` a file that does not exist.
-/// The bounded head+tail excerpt remains.
-const OFFLOAD_FAILED_NOTICE: &str = "\n\n[Full request could not be saved to a file — the excerpt above is truncated. Answer from it, and ask the user to resend the full content if anything essential is missing.]";
-/// UTF-8-safe suffix: the last `<= max_bytes` bytes of `s`, on a char boundary.
-pub(super) fn truncate_bytes_suffix(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut start = s.len() - max_bytes;
-    while !s.is_char_boundary(start) {
-        start += 1;
-    }
-    &s[start..]
-}
-/// Bound `s` to `budget` as HEAD + [`ELISION_MARKER`] + TAIL (trailing question survives). UTF-8-safe.
-pub(super) fn bound_head_tail(s: &str, budget: usize) -> String {
-    if s.len() <= budget {
-        return s.to_string();
-    }
-    if budget <= ELISION_MARKER.len() {
-        return truncate_bytes(s, budget).to_string();
-    }
-    let content_budget = budget - ELISION_MARKER.len();
-    let tail_len = BOUNDED_TAIL_BUDGET.min(content_budget / 2);
-    let head_len = content_budget - tail_len;
-    let head = truncate_bytes(s, head_len);
-    let tail = truncate_bytes_suffix(s, tail_len);
-    format!("{head}{ELISION_MARKER}{tail}")
-}
-/// Build the offload notice: the marker, then the path to the file with the user's full request.
-pub(super) fn build_offload_notice(full_message_len: usize, file_path: &std::path::Path) -> String {
-    format!(
-        "\n\n{OFFLOAD_NOTICE_MARKER} The text above was truncated ({full_message_len} bytes total). \
-The user's FULL request — which may include their actual question and any skill instructions not shown above — is in this file:\n{}\n\
-Read this file with read_file before responding; the question you must answer may only be there.",
-        file_path.display(),
-    )
-}
-/// Build the bounded in-band message for an oversized prompt already written to `file_path`.
-/// Pure; preserves message ordering, stays within budget.
-pub(super) fn build_truncated_prompt_message(
-    context: &str,
-    query: &str,
-    skill_information: &str,
-    is_cursor: bool,
-    file_path: &std::path::Path,
-    full_message_len: usize,
-) -> String {
-    let notice = build_offload_notice(full_message_len, file_path);
-    debug_assert!(
-        notice.len() < TRUNCATED_PROMPT_PREFIX_SIZE,
-        "offload notice must be far smaller than the budget"
-    );
-    let available = TRUNCATED_PROMPT_PREFIX_SIZE.saturating_sub(notice.len());
-    let skill_inline = bound_head_tail(skill_information, SKILL_INLINE_BUDGET.min(available));
-    let skill_overhead = if skill_inline.is_empty() {
-        0
-    } else {
-        1 + skill_inline.len()
-    };
-    let rest = available.saturating_sub(skill_overhead);
-    let query_budget = rest.saturating_mul(LARGE_QUERY_BUDGET_PERCENT) / 100;
-    let query_inline = bound_head_tail(query, query_budget);
-    let context_budget = rest.saturating_sub(query_inline.len()).saturating_sub(2);
-    let context_inline = truncate_bytes(context, context_budget);
-    let query_block = if skill_inline.is_empty() {
-        query_inline
-    } else {
-        format!("{query_inline}\n{skill_inline}")
-    };
-    if is_cursor {
-        format!("{context_inline}{notice}\n\n{query_block}")
-    } else if context_inline.is_empty() {
-        format!("{query_block}{notice}")
-    } else {
-        format!("{query_block}\n\n{context_inline}{notice}")
-    }
-}
-/// Replace the file-referencing offload `notice` embedded in `message` with the no-file [`OFFLOAD_FAILED_NOTICE`].
-/// A failed offload therefore never leaves the model chasing a "read this file" pointer to a file that does not exist.
-/// Returns `message` unchanged if the notice is absent (defensive).
-pub(super) fn strip_offload_notice(message: &str, notice: &str) -> String {
-    message.replacen(notice, OFFLOAD_FAILED_NOTICE, 1)
-}
-/// On write failure the bounded message is still returned (never the oversized original that would re-overflow the context window).
-/// The failure path swaps the file-referencing notice for [`OFFLOAD_FAILED_NOTICE`], so the model isn't told to read a file that was never written.
-/// The injected `writer` makes this testable without touching the filesystem.
-pub(super) fn write_offload_and_build(
-    full_message: &str,
-    message: String,
-    file_path: std::path::PathBuf,
-    writer: impl FnOnce(&std::path::Path, &[u8]) -> std::io::Result<()>,
-) -> (String, Option<std::path::PathBuf>) {
-    match writer(&file_path, full_message.as_bytes()) {
-        Ok(()) => (message, Some(file_path)),
-        Err(e) => {
-            tracing::warn!(
-                ?e,
-                full_bytes = full_message.len(),
-                "failed to write large-prompt offload file; sending bounded preview with no file reference"
-            );
-            let notice = build_offload_notice(full_message.len(), &file_path);
-            (strip_offload_notice(&message, &notice), None)
-        }
     }
 }
 impl SessionActor {
@@ -503,10 +501,12 @@ impl SessionActor {
     ) {
         let is_prefix_slot = matches!(
             conversation.get(1),
-            Some(ConversationItem::User(u)) if u.synthetic_reason.is_none()
+            Some(ConversationItem::User(u)) if u.synthetic_reason.is_human()
         );
         if is_prefix_slot {
-            conversation[1] = ConversationItem::user(new_prefix);
+            if let Some(slot) = conversation.get_mut(1) {
+                *slot = ConversationItem::user(new_prefix);
+            }
         } else {
             let insert_at = conversation.len().min(1);
             conversation.insert(insert_at, ConversationItem::user(new_prefix));
@@ -517,7 +517,7 @@ impl SessionActor {
                     item,
                     ConversationItem::User(u)
                         if u.synthetic_reason
-                            == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                            == xai_grok_sampling_types::SyntheticReason::SystemReminder
                 )
             });
         }
@@ -851,61 +851,6 @@ impl SessionActor {
             &self.session_info.cwd,
             self.display_cwd.get().map(|s| s.as_str()),
         )
-    }
-    /// If the prompt exceeds LARGE_PROMPT_THRESHOLD, write the full content to a file.
-    /// Return a truncated version with the local path embedded for the model to read.
-    /// Returns `(assembled_message, Some(local_path))` when truncated, or `(assembled, None)`.
-    pub(super) async fn maybe_truncate_large_prompt_with_skills(
-        &self,
-        context: String,
-        query: String,
-        skill_information: String,
-        is_cursor: bool,
-        prompt_index: usize,
-    ) -> (String, Option<std::path::PathBuf>) {
-        let full_message = crate::session::prompt_parser::ParsedPrompt::assemble_parts_with_skills(
-            &context,
-            &query,
-            &skill_information,
-            is_cursor,
-        );
-        if full_message.len() <= LARGE_PROMPT_THRESHOLD {
-            return (full_message, None);
-        }
-        let file_path = get_prompt_file_path(&self.session_info, prompt_index);
-        let full_len = full_message.len();
-        let bounded = build_truncated_prompt_message(
-            &context,
-            &query,
-            &skill_information,
-            is_cursor,
-            &file_path,
-            full_len,
-        );
-        let join_fallback =
-            strip_offload_notice(&bounded, &build_offload_notice(full_len, &file_path));
-        let offload_span = region!("turn.prompt_offload_write", Parent::Inherit);
-        let offload = tokio::task::spawn_blocking(move || {
-            write_offload_and_build(
-                &full_message,
-                bounded,
-                file_path,
-                crate::util::secure_file::write_secure_file,
-            )
-        })
-        .await;
-        offload_span.close();
-        match offload {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::warn!(
-                    ?e,
-                    full_bytes = full_len,
-                    "spawn_blocking join failed for large-prompt offload"
-                );
-                (join_fallback, None)
-            }
-        }
     }
     /// Add a followup message from the permission panel as a user turn in the conversation.
     /// This sends the message to the scrollback and adds it to the conversation context.

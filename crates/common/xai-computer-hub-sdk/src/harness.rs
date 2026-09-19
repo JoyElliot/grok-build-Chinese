@@ -481,6 +481,7 @@ impl ToolHarnessBuilder {
             None, // on_disconnect (unused for harness connections)
             None, // on_connect (unused for harness connections)
             None, // on_terminal_close (unused for harness connections)
+            None, // on_handshake_refused (unused for harness connections)
             None,
             None,
             None,
@@ -2406,7 +2407,7 @@ fn client_error_to_tool_error(err: ClientError) -> ToolError {
         ClientError::NetworkError(message) => ToolError::network_error(message),
         ClientError::ProtocolError(message) => ToolError::custom("protocol_error", message),
         ClientError::AuthError(message) => ToolError::permission_denied(message),
-        ClientError::HandshakeAuthFailed { status } => {
+        ClientError::HandshakeAuthFailed { status, .. } => {
             ToolError::permission_denied(format!("handshake auth failed (HTTP {status})"))
         }
         ClientError::RegistrationConflict(message) => {

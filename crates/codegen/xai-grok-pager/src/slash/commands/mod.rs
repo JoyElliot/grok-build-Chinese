@@ -35,6 +35,8 @@ pub mod login;
 pub mod logout;
 pub mod loop_cmd;
 pub mod mcps;
+pub mod memory;
+pub mod memory_ops;
 pub mod model;
 pub mod multiline;
 pub mod new;
@@ -95,6 +97,9 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(plan::PlanCommand),
         Arc::new(view_plan::ViewPlanCommand),
         Arc::new(remember::RememberCommand),
+        Arc::new(memory::MemoryCommand),
+        Arc::new(memory_ops::FlushCommand),
+        Arc::new(memory_ops::DreamCommand),
         Arc::new(recap::RecapCommand),
         Arc::new(rewind::RewindCommand),
         Arc::new(jump::JumpCommand),

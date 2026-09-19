@@ -234,10 +234,7 @@ impl xai_tool_runtime::Tool for WaitTasksTool {
             initial.results
         };
 
-        let completed_count = results
-            .iter()
-            .filter(|r| super::is_terminal_status(&r.status))
-            .count();
+        let completed_count = results.iter().filter(|r| r.is_terminal()).count();
         let total = results.len();
         let summary = format!("{completed_count}/{total} tasks completed (wait_any)");
 

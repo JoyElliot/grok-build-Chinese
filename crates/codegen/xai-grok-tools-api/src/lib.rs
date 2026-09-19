@@ -5,6 +5,7 @@
 //! that must not depend on the tools implementation crate.
 
 #![allow(clippy::derive_partial_eq_without_eq)]
+#![deny(clippy::indexing_slicing)]
 
 /// Generated protobuf types.
 pub mod pb {

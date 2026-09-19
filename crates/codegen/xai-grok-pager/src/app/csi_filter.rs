@@ -244,10 +244,14 @@ mod tests {
             press(KeyCode::Enter),
         ];
         let result = CsiFragmentFilter::new().filter(events);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0], press(KeyCode::Char('h')));
-        assert_eq!(result[1], press(KeyCode::Char('i')));
-        assert_eq!(result[2], press(KeyCode::Enter));
+        assert_eq!(
+            result.as_slice(),
+            [
+                press(KeyCode::Char('h')),
+                press(KeyCode::Char('i')),
+                press(KeyCode::Enter),
+            ]
+        );
     }
 
     #[test]
@@ -298,10 +302,14 @@ mod tests {
         events.extend(sgr_fragment("35", "261", "67", 'M'));
         events.push(press(KeyCode::Char('!')));
         let result = CsiFragmentFilter::new().filter(events);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0], press(KeyCode::Char('h')));
-        assert_eq!(result[1], press(KeyCode::Char('i')));
-        assert_eq!(result[2], press(KeyCode::Char('!')));
+        assert_eq!(
+            result.as_slice(),
+            [
+                press(KeyCode::Char('h')),
+                press(KeyCode::Char('i')),
+                press(KeyCode::Char('!')),
+            ]
+        );
     }
 
     #[test]
@@ -322,9 +330,11 @@ mod tests {
             arrived_at: test_instant(),
         });
         let result = CsiFragmentFilter::new().filter(events);
-        assert_eq!(result.len(), 2);
-        assert!(matches!(result[0].event, Event::Resize(80, 24)));
-        assert!(matches!(result[1].event, Event::Resize(100, 30)));
+        let [first, second] = result.as_slice() else {
+            panic!("expected two events: {result:?}");
+        };
+        assert!(matches!(first.event, Event::Resize(80, 24)));
+        assert!(matches!(second.event, Event::Resize(100, 30)));
     }
 
     #[test]
@@ -332,9 +342,10 @@ mod tests {
         let mut events = vec![press(KeyCode::Esc), press(KeyCode::Char('x'))];
         events.extend(sgr_fragment("35", "261", "67", 'M'));
         let result = CsiFragmentFilter::new().filter(events);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], press(KeyCode::Esc));
-        assert_eq!(result[1], press(KeyCode::Char('x')));
+        assert_eq!(
+            result.as_slice(),
+            [press(KeyCode::Esc), press(KeyCode::Char('x'))]
+        );
     }
 
     #[test]
@@ -421,8 +432,7 @@ mod tests {
         // Batch 1: just the Esc
         let r1 = f.filter(vec![press(KeyCode::Esc)]);
         // Esc is emitted (can't be retracted across batches)
-        assert_eq!(r1.len(), 1);
-        assert_eq!(r1[0], press(KeyCode::Esc));
+        assert_eq!(r1.as_slice(), [press(KeyCode::Esc)]);
 
         // Batch 2: the remaining SGR fragment chars
         let r2 = f.filter(sgr_fragment("64", "91", "51", 'M'));
@@ -594,9 +604,11 @@ mod tests {
         ];
 
         let result = CsiFragmentFilter::new().filter(events);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].event, Event::FocusGained);
-        assert_eq!(result[0].arrived_at, complete);
+        let [got] = result.as_slice() else {
+            panic!("expected one event: {result:?}");
+        };
+        assert_eq!(got.event, Event::FocusGained);
+        assert_eq!(got.arrived_at, complete);
     }
 
     #[test]

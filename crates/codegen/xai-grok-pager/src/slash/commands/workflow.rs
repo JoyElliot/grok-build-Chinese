@@ -199,7 +199,13 @@ fn parse_launch_flags(ctx: &AppCtx, rest: &str) -> LaunchFlagState {
             };
         }
 
-        let token = tokens[index];
+        let Some(&token) = tokens.get(index) else {
+            return LaunchFlagState::Closed;
+        };
+        let Some(completed) = tokens.get(..index) else {
+            return LaunchFlagState::Closed;
+        };
+        let completed_args = completed.join(" ");
         let (flag_name, equals_value) = token
             .split_once('=')
             .map_or((token, None), |(name, value)| (name, Some(value)));
@@ -215,7 +221,7 @@ fn parse_launch_flags(ctx: &AppCtx, rest: &str) -> LaunchFlagState {
             }
             return LaunchFlagState::Flags {
                 used,
-                completed_args: tokens[..index].join(" "),
+                completed_args,
                 prefix: token.to_string(),
             };
         };
@@ -231,7 +237,7 @@ fn parse_launch_flags(ctx: &AppCtx, rest: &str) -> LaunchFlagState {
                 return if spec.matches_value(ctx, value, LaunchValueCompletion::Prefix) {
                     LaunchFlagState::Value {
                         used,
-                        completed_args: tokens[..index].join(" "),
+                        completed_args,
                         spec,
                         syntax: LaunchValueSyntax::Equals,
                     }
@@ -251,25 +257,27 @@ fn parse_launch_flags(ctx: &AppCtx, rest: &str) -> LaunchFlagState {
             return match spec.value_provider {
                 LaunchValueProvider::ReasoningEffort => LaunchFlagState::Value {
                     used,
-                    completed_args: tokens[..index].join(" "),
+                    completed_args,
                     spec,
                     syntax: LaunchValueSyntax::Separate,
                 },
                 LaunchValueProvider::Opaque if !has_trailing_whitespace => LaunchFlagState::Flags {
                     used,
-                    completed_args: tokens[..index].join(" "),
+                    completed_args,
                     prefix: token.to_string(),
                 },
                 LaunchValueProvider::Opaque => LaunchFlagState::Closed,
             };
         }
 
-        let value = tokens[index + 1];
+        let Some(&value) = tokens.get(index + 1) else {
+            return LaunchFlagState::Closed;
+        };
         if index + 2 == tokens.len() && !has_trailing_whitespace {
             return if spec.matches_value(ctx, value, LaunchValueCompletion::Prefix) {
                 LaunchFlagState::Value {
                     used,
-                    completed_args: tokens[..index].join(" "),
+                    completed_args,
                     spec,
                     syntax: LaunchValueSyntax::Separate,
                 }

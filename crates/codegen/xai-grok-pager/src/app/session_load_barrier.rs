@@ -320,6 +320,7 @@ mod tests {
             agent_id: AgentId(id),
             session_id: sid(session),
             models: None,
+            modes: None,
             code_restored: false,
             restore_summary: None,
             restore_degree: None,
@@ -347,6 +348,8 @@ mod tests {
         TaskResult::WorktreeSessionFailed {
             agent_id: AgentId(9),
             error: "nope".into(),
+            orphaned_worktree_root: None,
+            timed_out: false,
         }
     }
 

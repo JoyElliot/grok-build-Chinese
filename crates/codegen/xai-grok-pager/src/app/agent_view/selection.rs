@@ -29,11 +29,9 @@ fn prewrap_line_index(
     lines: &[crate::scrollback::types::BlockLine],
     block_line: usize,
 ) -> Option<usize> {
-    if block_line >= lines.len() {
-        return None;
-    }
     Some(
-        lines[..=block_line]
+        lines
+            .get(..=block_line)?
             .iter()
             .filter(|line| line.joiner.is_none())
             .count()
@@ -1100,8 +1098,7 @@ impl AgentView {
         let entry_block = self.scrollback.entry(idx).map(|e| &e.block);
         let is_bg_task = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::BgTask(_)));
-        let is_subagent = entry_block
-            .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::Subagent(_)));
+        let is_child_row = entry_block.is_some_and(|b| b.child_session_id().is_some());
         let is_workflow = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::Workflow(_)));
 
@@ -1184,15 +1181,10 @@ impl AgentView {
                     );
                 }
             }
-            2 if is_subagent => {
-                // Double-click subagent: open subagent view (same as Enter)
-                if let Some(entry) = self.scrollback.entry(idx)
-                    && let crate::scrollback::block::RenderBlock::Subagent(ref sb) = entry.block
-                {
-                    let child_sid = sb.child_session_id.clone();
-                    if self.subagent_views.contains_key(&child_sid) {
-                        self.open_subagent_fullscreen(child_sid);
-                    }
+            2 if is_child_row => {
+                // Same as Enter; a message row whose child view is gone folds like any other tool row
+                if !self.try_open_child_from_selected_row() && foldable {
+                    self.scrollback.toggle_fold_selected();
                 }
             }
             2 if is_workflow => {
@@ -2000,9 +1992,7 @@ mod tests {
             rendered.selection_boundaries,
         );
         let child_id = "child".to_string();
-        parent
-            .subagent_views
-            .insert(child_id.clone(), Box::new(child));
+        parent.insert_test_child(child_id.clone(), Box::new(child));
         parent.active_subagent = Some(child_id.clone());
 
         let source_text = parent
@@ -2019,7 +2009,12 @@ mod tests {
             let entry = child.scrollback.get(0).expect("child Read entry");
             let cached = entry.cached_output_ref();
             assert_eq!(
-                derive_selection_text(&cached.lines[line.block_line_idx]),
+                derive_selection_text(
+                    cached
+                        .lines
+                        .get(line.block_line_idx)
+                        .unwrap_or_else(|| panic!("missing index"))
+                ),
                 "src/lib.rs",
                 "copy helper must not rebuild the child cache against parent cwd"
             );

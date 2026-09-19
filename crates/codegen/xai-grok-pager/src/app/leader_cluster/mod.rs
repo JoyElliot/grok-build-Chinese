@@ -119,7 +119,16 @@ impl ClusterClient {
     /// The event loop's `process_effects`, minus terminal/auth-handle wiring (that fn is event_loop-private; this mirrors its body).
     fn process_effects(&mut self, effs: Vec<super::actions::Effect>) {
         let flags = super::event_loop::session_flags_for_effects(&mut self.app, &effs);
-        for eff in effs {
+        let mut effs = effs.into_iter().peekable();
+        while let Some(eff) = effs.next() {
+            let Some(eff) = effects::take_coalesced_interjects(
+                eff,
+                &mut effs,
+                &mut self.tasks,
+                &self.app.acp_tx,
+            ) else {
+                continue;
+            };
             let (_quit, _meta) = effects::execute(
                 eff,
                 &mut self.tasks,
@@ -142,7 +151,10 @@ impl ClusterClient {
     /// No fixed sleeps beyond the pump tick; panics with `what` on expiry.
     /// Single-client sugar over [`pump_clients_until`] so there is exactly one pump loop.
     async fn pump_until(&mut self, what: &str, pred: impl Fn(&AppView) -> bool) {
-        pump_clients_until(&mut [self], what, |clients| pred(&clients[0].app)).await;
+        pump_clients_until(&mut [self], what, |clients| {
+            clients.first().is_some_and(|c| pred(&c.app))
+        })
+        .await;
     }
 
     /// The most recently created agent view (scenarios add tabs in order).

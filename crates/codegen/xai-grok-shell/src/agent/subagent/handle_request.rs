@@ -18,7 +18,9 @@ use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 use xai_grok_telemetry::subagent_spawn::{SubagentSpawnPhase, phase_region};
 use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
+use xai_grok_tools::implementations::grok_build::task::types::SubagentCapabilityModeExt;
 use xai_grok_tools::implementations::{grok_build, opencode};
+use xai_grok_tools::types::tool::ToolKind;
 static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
     xai_grok_telemetry::activity::ActivityGauge::work(
         xai_grok_telemetry::activity::SUBAGENTS_ACTIVE_KEY,
@@ -336,6 +338,8 @@ pub(crate) async fn run_shell_child(
         cancellation: cancel_token,
         reporter,
         attempt_id: attempt_identity,
+        generation: target_generation,
+        mut agent_message_sender,
         wake_origin,
         queued_for,
         session_running,
@@ -611,6 +615,8 @@ pub(crate) async fn run_shell_child(
         let subagent_id = request.id.clone();
         let creation_mode: xai_fast_worktree::CreationMode = ctx.worktree_type.into();
         let btrfs_delegate = crate::session::worktree::btrfs_delegate_from_env();
+        let (grove_enabled, grove_gate_source) =
+            crate::util::config::grove_worktree_gate(ctx.remote_settings.as_ref());
         let worktree_create_span = region!(
             "subagent_spawn.worktree_create",
             Parent::Explicit(spawn_prepare_span.span())
@@ -623,6 +629,11 @@ pub(crate) async fn run_shell_child(
                     .creation_mode(creation_mode)
                     .worktree_kind(xai_fast_worktree::WorktreeKind::Subagent)
                     .session_id(subagent_id);
+                if let Some(opts) =
+                    crate::util::config::grove_worktree_opts_if_enabled(grove_enabled)
+                {
+                    builder = builder.grove_worktree(opts);
+                }
                 if let Some(delegate) = btrfs_delegate {
                     builder = builder.btrfs_delegate(delegate);
                 }
@@ -638,6 +649,8 @@ pub(crate) async fn run_shell_child(
                     commit = %report.commit,
                     resolved_strategy = report.resolved_strategy,
                     skipped = %xai_fast_worktree::render_arm_skips(&report.skipped),
+                    grove_worktree = grove_enabled,
+                    grove_gate_source,
                     "Created isolated worktree for subagent"
                 );
                 Some(report.worktree_path)
@@ -646,7 +659,11 @@ pub(crate) async fn run_shell_child(
                 tracing::warn!(
                     subagent_id = %request.id,
                     error = %e,
-                    "Failed to create worktree, falling back to shared workspace"
+                    resolved_strategy = "none",
+                    skipped = "",
+                    grove_worktree = grove_enabled,
+                    grove_gate_source,
+                    "Failed to create worktree (grove gate {grove_gate_source}), falling back to shared workspace"
                 );
                 None
             }
@@ -654,7 +671,11 @@ pub(crate) async fn run_shell_child(
                 tracing::warn!(
                     subagent_id = %request.id,
                     error = %e,
-                    "Worktree creation task panicked, falling back to shared workspace"
+                    resolved_strategy = "none",
+                    skipped = "",
+                    grove_worktree = grove_enabled,
+                    grove_gate_source,
+                    "Worktree creation task panicked (grove gate {grove_gate_source}), falling back to shared workspace"
                 );
                 None
             }
@@ -708,6 +729,7 @@ pub(crate) async fn run_shell_child(
         effective_runtime.capability_mode,
         definition.capability_mode,
     );
+    definition.capability_mode = effective_runtime.capability_mode;
     let child_depth = request
         .runtime_overrides
         .spawn_depth
@@ -1146,6 +1168,14 @@ pub(crate) async fn run_shell_child(
     )
     .with_hunk_tracking_enabled(ctx.hunk_tracking_enabled);
     tool_ctx.subagent_event_tx = Some(ctx.subagent_event_tx.clone());
+    let active_agent_messages_enabled = ctx.active_agent_messages_enabled
+        && agent_message_sender.is_some()
+        && definition
+            .capability_mode
+            .is_none_or(|mode| mode.allows_tool_kind(ToolKind::ActiveAgentMessage));
+    if !active_agent_messages_enabled {
+        drop(agent_message_sender.take());
+    }
     let task_output_budget = request
         .runtime_overrides
         .output_token_budget
@@ -1524,6 +1554,7 @@ pub(crate) async fn run_shell_child(
             None
         },
         ctx.parent_compat,
+        ctx.parent_paths_config.clone(),
         false,
         None,
         None,
@@ -1565,7 +1596,8 @@ pub(crate) async fn run_shell_child(
         ctx.video_gen_config.clone(),
         ctx.app_builder_deployer_config.clone(),
         ctx.write_file_enabled,
-        false,
+        active_agent_messages_enabled,
+        agent_message_sender,
         ctx.goal_enabled,
         ctx.background_workflows_enabled,
         true,
@@ -1628,7 +1660,7 @@ pub(crate) async fn run_shell_child(
     );
     session_bootstrap_span.close();
     let session_ready_at = std::time::Instant::now();
-    let (child_handle, mut permission_rx, _system_prompt, child_thread) = match spawn_result {
+    let (child_init, child_thread) = match spawn_result {
         Ok(r) => r,
         Err(e) => {
             let msg = format!("Failed to spawn child session: {e}");
@@ -1647,6 +1679,19 @@ pub(crate) async fn run_shell_child(
             return child_run_output(result, completion_data, None);
         }
     };
+    let session::SessionInitResult {
+        handle: child_handle,
+        permission_events_rx: mut permission_rx,
+        toolset: child_toolset,
+        ..
+    } = child_init;
+    session::bind_installed_toolset(
+        &ctx.workspace_ops,
+        &child_handle.info.id,
+        child_handle.tool_context.cwd.as_path(),
+        &child_handle.hunk_tracker_handle,
+        &child_toolset,
+    );
     let ready_to_first_turn_span = phase_region(SubagentSpawnPhase::ReadyToFirstTurn);
     let (receipt_sink, receipt_stream) = mpsc::channel(ACTIVE_MESSAGE_RECEIPT_CAPACITY);
     let receipt_drain = PromptTurnReceiptDrain::start(
@@ -1715,6 +1760,8 @@ pub(crate) async fn run_shell_child(
                     child_cmd_tx: child_handle.cmd_tx.clone(),
                     message_delivery: child_handle.message_delivery(),
                     active_message_target_session_id: child_session_id.0.to_string(),
+                    active_message_target_agent_id: agent_id.clone(),
+                    active_message_target_generation: target_generation,
                     child_signals: child_handle.signals_handle.clone(),
                     _child_thread: None,
                     receipt_sink,

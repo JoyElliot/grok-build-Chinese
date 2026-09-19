@@ -1,9 +1,10 @@
-//! Product E2E: ACP `create_from_worktree_sync` through a live grove daemon.
+//! Product E2E: ACP `create_from_worktree_sync` through grove.
 //!
-//! Session `-w` / fork / resume never call `ensure_daemon`; the daemon is
-//! started out of band. This process isolates `GROVE_CONTROL_SOCK` and
-//! `XDG_RUNTIME_DIR`; `run_agent_test` isolates `GROK_HOME`. The daemon child
-//! also gets a private HOME/XDG.
+//! Success cells either start the daemon out of band or rely on
+//! `UnixArm::on_unreachable` to spawn it. `install_env` isolates
+//! so an auto-started daemon cannot share the host grove data dir.
+//! `run_agent_test` isolates `GROK_HOME`. Drop reaps whoever still holds
+//! the unix socket (`lsof`/`fuser`); `ensure_daemon` argv has no sock path.
 
 #![cfg(unix)]
 
@@ -155,30 +156,47 @@ impl IsolatedGrove {
         }
     }
 
+    fn private_home_dirs(&self) -> (PathBuf, PathBuf, PathBuf) {
+        let home = self._tmp.path().join("home");
+        let config = self._tmp.path().join("config");
+        let share = self._tmp.path().join("share");
+        for p in [&home, &config, &share] {
+            std::fs::create_dir_all(p).unwrap();
+            chmod_private(p);
+        }
+        (home, config, share)
+    }
+
     fn install_env(&self) -> Vec<EnvRestore> {
+        let mut paths = vec![self.bin.parent().expect("grove bin dir").to_path_buf()];
+        if let Some(path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&path));
+        }
+        let path = std::env::join_paths(paths).expect("PATH");
+        let (home, config, share) = self.private_home_dirs();
         vec![
             EnvRestore::set("GROVE_CONTROL_SOCK", &self.sock),
             EnvRestore::set("XDG_RUNTIME_DIR", &self.runtime_dir),
             EnvRestore::set(ENV_WORKTREE_TYPE, "grove"),
+            EnvRestore::set("PATH", path),
+            EnvRestore::set("HOME", home),
+            EnvRestore::set("XDG_CONFIG_HOME", config),
+            EnvRestore::set("XDG_DATA_HOME", share),
         ]
     }
 
     fn start_daemon(&mut self) {
+        let (home, config, share) = self.private_home_dirs();
         let mut cmd = Command::new(&self.bin);
         cmd.env("GROVE_CONTROL_SOCK", &self.sock)
             .env("XDG_RUNTIME_DIR", &self.runtime_dir)
-            .env("HOME", self._tmp.path().join("home"))
-            .env("XDG_CONFIG_HOME", self._tmp.path().join("config"))
-            .env("XDG_DATA_HOME", self._tmp.path().join("share"))
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", config)
+            .env("XDG_DATA_HOME", share)
             .args(["daemon", "--foreground"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        for dir in ["home", "config", "share"] {
-            let p = self._tmp.path().join(dir);
-            std::fs::create_dir_all(&p).unwrap();
-            chmod_private(&p);
-        }
         #[allow(clippy::disallowed_methods)] // Drop SIGKILLs this child
         let child = cmd.spawn().expect("spawn grove daemon");
         self.child = Some(child);
@@ -234,6 +252,16 @@ impl IsolatedGrove {
                 .output();
         }
     }
+
+    fn forget(&self, dest: &Path) -> std::process::Output {
+        let dest_s = dest.display().to_string();
+        let mut cmd = Command::new(&self.bin);
+        cmd.env("GROVE_CONTROL_SOCK", &self.sock)
+            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+            .args(["unmount", dest_s.as_str(), "--forget"])
+            .stdin(Stdio::null());
+        cmd.output().expect("grove unmount --forget")
+    }
 }
 
 impl Drop for IsolatedGrove {
@@ -246,7 +274,40 @@ impl Drop for IsolatedGrove {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // cannot see it. Reap whoever still holds the unix socket.
+        reap_unix_socket_holders(&self.sock);
     }
+}
+
+/// PIDs that have `sock` open (`lsof -t`, then `fuser`). Never kill ourselves.
+fn reap_unix_socket_holders(sock: &Path) {
+    let me = std::process::id();
+    let mut pids = pids_from_cmd(&["lsof", "-t", "--"], sock);
+    if pids.is_empty() {
+        pids = pids_from_cmd(&["fuser", "--"], sock);
+    }
+    for pid in pids {
+        if pid == me {
+            continue;
+        }
+        let pid_s = pid.to_string();
+        let _ = Command::new("kill").args(["-TERM", &pid_s]).status();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = Command::new("kill").args(["-KILL", &pid_s]).status();
+    }
+}
+
+fn pids_from_cmd(argv: &[&str], sock: &Path) -> Vec<u32> {
+    let mut cmd = Command::new(argv[0]);
+    cmd.args(&argv[1..]).arg(sock).stdin(Stdio::null());
+    let Ok(out) = cmd.output() else {
+        return Vec::new();
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    text.split(|c: char| !c.is_ascii_digit())
+        .filter_map(|s| s.parse().ok())
+        .collect()
 }
 
 fn init_repo(cwd: &Path) {
@@ -271,6 +332,16 @@ fn strategy_of(resp: &Value) -> &Value {
         .unwrap_or(resp)
         .get("strategy")
         .unwrap_or_else(|| panic!("response carries no strategy report: {resp}"))
+}
+
+fn worktree_path(resp: &Value) -> PathBuf {
+    PathBuf::from(
+        resp.get("result")
+            .unwrap_or(resp)
+            .get("worktreePath")
+            .and_then(Value::as_str)
+            .expect("worktreePath"),
+    )
 }
 
 fn dest_is_live_mount(path: &Path) -> bool {
@@ -352,7 +423,7 @@ fn worktree_create_grove_success_reports_fuse() {
 }
 
 #[test]
-fn worktree_create_daemon_down_falls_back_with_named_reason() {
+fn worktree_create_daemon_down_starts_daemon_and_reports_fuse() {
     if !require_fuse_or_skip() {
         return;
     }
@@ -360,21 +431,198 @@ fn worktree_create_daemon_down_falls_back_with_named_reason() {
         return;
     }
     run_agent_test(|cwd, _mock| async move {
-        let grove = IsolatedGrove::dirs();
+        let mut grove = IsolatedGrove::dirs();
         let _env = grove.install_env();
         init_repo(&cwd);
         let (conn, _init) =
             connect_and_auth_with_remote(AutoApproveClient, "test", Some(gate_remote())).await;
         let resp = ext_method(&conn, CREATE_SYNC, create_params(&cwd, "grove-down")).await;
+        if let Some(dest) = resp
+            .get("result")
+            .unwrap_or(&resp)
+            .get("worktreePath")
+            .and_then(Value::as_str)
+        {
+            grove.note_mount(Path::new(dest));
+        }
         let strategy = strategy_of(&resp);
         assert_eq!(strategy["requestedStrategy"], json!("grove"));
-        assert_eq!(strategy["resolvedStrategy"], json!("copy"));
-        let reason = strategy["fallbackReason"]
-            .as_str()
-            .unwrap_or_else(|| panic!("named fallback required: {strategy}"));
-        assert!(
-            reason.contains("grove-fuse") && reason.contains("unreachable"),
-            "daemon-down must name the grove skip, got {reason}"
+        assert_eq!(
+            strategy["resolvedStrategy"],
+            json!("grove-fuse"),
+            "ping-fail must spawn the daemon and resolve grove-fuse: {strategy}"
         );
+        assert!(
+            strategy.get("fallbackReason").is_none(),
+            "auto-started daemon is not a fallback: {strategy}"
+        );
+        let dest = resp
+            .get("result")
+            .unwrap_or(&resp)
+            .get("worktreePath")
+            .and_then(Value::as_str)
+            .expect("worktreePath");
+        let dest = PathBuf::from(dest);
+        assert!(
+            dest_is_live_mount(&dest),
+            "create dest must be a live mount"
+        );
+        grove.unmount(&dest);
+    });
+}
+
+/// Second attach: `create_from_worktree_sync` from a live Grove dest (grok -w
+/// from a Grove cwd). Must stay grove-fuse, preserve dirty, isolate the child.
+#[test]
+fn worktree_create_from_grove_dest_forks_fuse() {
+    if !require_fuse_or_skip() {
+        return;
+    }
+    if require_grove_bin().is_none() {
+        return;
+    }
+    run_agent_test(|cwd, _mock| async move {
+        let mut grove = IsolatedGrove::dirs();
+        grove.start_daemon();
+        let _env = grove.install_env();
+        init_repo(&cwd);
+        let (conn, _init) =
+            connect_and_auth_with_remote(AutoApproveClient, "test", Some(gate_remote())).await;
+        let first = ext_method(&conn, CREATE_SYNC, create_params(&cwd, "grove-parent")).await;
+        let dest1 = worktree_path(&first);
+        grove.note_mount(&dest1);
+        assert_eq!(
+            strategy_of(&first)["resolvedStrategy"],
+            json!("grove-fuse"),
+            "first attach must be grove-fuse: {}",
+            strategy_of(&first)
+        );
+        assert!(
+            dest_is_live_mount(&dest1),
+            "parent dest must be a live mount"
+        );
+        std::fs::write(dest1.join("from-parent.txt"), b"p").expect("dirty parent");
+
+        let second = ext_method(&conn, CREATE_SYNC, create_params(&dest1, "grove-child")).await;
+        let dest2 = worktree_path(&second);
+        grove.note_mount(&dest2);
+        let strategy = strategy_of(&second);
+        assert_eq!(strategy["requestedStrategy"], json!("grove"));
+        assert_eq!(
+            strategy["resolvedStrategy"],
+            json!("grove-fuse"),
+            "second attach from a Grove dest must fork grove-fuse, not copy: {strategy}"
+        );
+        assert_eq!(
+            strategy["transport"],
+            json!("fuse"),
+            "Linux must never label FUSE as NFS: {strategy}"
+        );
+        assert!(
+            strategy.get("fallbackReason").is_none(),
+            "Grove-parent fork must not fall back: {strategy}"
+        );
+        assert!(
+            dest_is_live_mount(&dest2),
+            "child dest must be a live mount"
+        );
+        assert_ne!(dest1, dest2);
+        assert_eq!(
+            std::fs::read_to_string(dest2.join("from-parent.txt")).expect("child dirty"),
+            "p",
+            "dirty preserve must copy the parent file into the child"
+        );
+        std::fs::write(dest2.join("only-child.txt"), b"c").expect("child write");
+        assert!(
+            !dest1.join("only-child.txt").exists(),
+            "child write must not appear on the parent mount"
+        );
+        assert!(
+            dest_is_live_mount(&dest1),
+            "parent must stay mounted after the child forks"
+        );
+
+        let forget = grove.forget(&dest1);
+        let mut err = String::from_utf8_lossy(&forget.stdout).into_owned();
+        err.push_str(&String::from_utf8_lossy(&forget.stderr));
+        assert!(
+            !forget.status.success(),
+            "forget parent with live child must fail: {err}"
+        );
+        assert!(
+            err.contains("live fork children"),
+            "forget must name live fork children: {err}"
+        );
+
+        grove.unmount(&dest2);
+        grove.unmount(&dest1);
+    });
+}
+
+/// Isolated subagent spawn from a live Grove dest must not share the parent.
+#[test]
+fn isolated_subagent_from_grove_dest_is_isolated() {
+    if !require_fuse_or_skip() {
+        return;
+    }
+    if require_grove_bin().is_none() {
+        return;
+    }
+    run_agent_test(|cwd, mock| async move {
+        mock.set_response("ordinary output");
+        let mut grove = IsolatedGrove::dirs();
+        grove.start_daemon();
+        let _env = grove.install_env();
+        init_repo(&cwd);
+        let (conn, _init) =
+            connect_and_auth_with_remote(AutoApproveClient, "test", Some(gate_remote())).await;
+        let first = ext_method(&conn, CREATE_SYNC, create_params(&cwd, "grove-sa-parent")).await;
+        let dest1 = worktree_path(&first);
+        grove.note_mount(&dest1);
+        assert_eq!(
+            strategy_of(&first)["resolvedStrategy"],
+            json!("grove-fuse"),
+            "parent attach must be grove-fuse: {}",
+            strategy_of(&first)
+        );
+        assert!(dest_is_live_mount(&dest1));
+        std::fs::write(dest1.join("from-parent.txt"), b"p").expect("dirty parent");
+
+        let spawned = xai_grok_shell::agent::testkit::spawn_isolated_subagent_for_e2e(
+            &dest1,
+            RemoteSettings {
+                grove_worktree: Some(true),
+                ..Default::default()
+            },
+            &mock.url(),
+        )
+        .await;
+        assert!(
+            spawned.success,
+            "isolated spawn must succeed: {:?}",
+            spawned.error
+        );
+        let dest2 = spawned
+            .worktree_path
+            .expect("isolated spawn must create a worktree, not share the parent");
+        grove.note_mount(&dest2);
+        assert_ne!(dest1, dest2);
+        assert!(
+            dest_is_live_mount(&dest2),
+            "child dest must be a live Grove mount"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest2.join("from-parent.txt")).expect("child dirty"),
+            "p"
+        );
+        std::fs::write(dest2.join("only-child.txt"), b"c").expect("child write");
+        assert!(
+            !dest1.join("only-child.txt").exists(),
+            "child write must not appear on the parent"
+        );
+        assert!(dest_is_live_mount(&dest1));
+
+        grove.unmount(&dest2);
+        grove.unmount(&dest1);
     });
 }

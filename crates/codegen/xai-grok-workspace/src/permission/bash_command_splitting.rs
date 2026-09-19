@@ -144,8 +144,8 @@ pub(crate) fn is_setup_command(cmd: &[String]) -> bool {
     }
 
     matches!(
-        cmd[0].as_str(),
-        "cd" | "pushd" | "popd" | "export" | "unset" | "set" | "sleep" | "timeout"
+        cmd.first().map(String::as_str),
+        Some("cd" | "pushd" | "popd" | "export" | "unset" | "set" | "sleep" | "timeout")
     )
 }
 
@@ -154,7 +154,9 @@ fn is_env_assignment(tok: &str) -> bool {
     let Some(eq) = tok.find('=') else {
         return false;
     };
-    let name = &tok[..eq];
+    let Some(name) = tok.get(..eq) else {
+        return false;
+    };
     !name.is_empty()
         && name
             .bytes()
@@ -250,7 +252,9 @@ fn classify_env_short(tok: &str) -> EnvShort<'_> {
     if !tok.starts_with('-') || tok.starts_with("--") || tok == "-" {
         return EnvShort::Uncertain;
     }
-    let body = &tok[1..];
+    let Some(body) = tok.get(1..) else {
+        return EnvShort::Uncertain;
+    };
     if body.is_empty() {
         return EnvShort::Uncertain;
     }
@@ -264,10 +268,10 @@ fn classify_env_short(tok: &str) -> EnvShort<'_> {
     let chars: Vec<char> = body.chars().collect();
     let mut idx = 0usize;
     while idx < chars.len() {
-        match chars[idx] {
-            'i' | 'v' | '0' => idx += 1,
-            'S' => return EnvShort::SplitStringDetect,
-            kind @ ('u' | 'C' | 'P' | 'a') => {
+        match chars.get(idx).copied() {
+            Some('i' | 'v' | '0') => idx += 1,
+            Some('S') => return EnvShort::SplitStringDetect,
+            Some(kind @ ('u' | 'C' | 'P' | 'a')) => {
                 let has_glued = body.char_indices().nth(idx + 1).is_some();
                 return if has_glued {
                     EnvShort::ArgGlued { kind }
@@ -459,8 +463,11 @@ pub(crate) fn strip_wrapper_command(cmd: &[String]) -> Option<&[String]> {
     match head {
         // `timeout [OPTIONS] DURATION COMMAND [ARGS]`
         "timeout" => {
-            while i < cmd.len() && cmd[i].starts_with('-') {
-                if matches!(cmd[i].as_str(), "-k" | "-s" | "--kill-after" | "--signal") {
+            while cmd.get(i).is_some_and(|t| t.starts_with('-')) {
+                if matches!(
+                    cmd.get(i).map(String::as_str),
+                    Some("-k" | "-s" | "--kill-after" | "--signal")
+                ) {
                     i += 2;
                 } else {
                     i += 1;
@@ -474,8 +481,8 @@ pub(crate) fn strip_wrapper_command(cmd: &[String]) -> Option<&[String]> {
         }
         // `nice [OPTIONS] [COMMAND]`
         "nice" => {
-            while i < cmd.len() && cmd[i].starts_with('-') {
-                if matches!(cmd[i].as_str(), "-n" | "--adjustment") {
+            while cmd.get(i).is_some_and(|t| t.starts_with('-')) {
+                if matches!(cmd.get(i).map(String::as_str), Some("-n" | "--adjustment")) {
                     i += 2;
                 } else {
                     i += 1;
@@ -484,18 +491,20 @@ pub(crate) fn strip_wrapper_command(cmd: &[String]) -> Option<&[String]> {
         }
         // `ionice [OPTIONS] [COMMAND]`
         "ionice" => {
-            while i < cmd.len() && cmd[i].starts_with('-') {
+            while cmd.get(i).is_some_and(|t| t.starts_with('-')) {
                 if matches!(
-                    cmd[i].as_str(),
-                    "-c" | "-n"
-                        | "-p"
-                        | "-P"
-                        | "-u"
-                        | "--class"
-                        | "--classdata"
-                        | "--pid"
-                        | "--pgid"
-                        | "--uid"
+                    cmd.get(i).map(String::as_str),
+                    Some(
+                        "-c" | "-n"
+                            | "-p"
+                            | "-P"
+                            | "-u"
+                            | "--class"
+                            | "--classdata"
+                            | "--pid"
+                            | "--pgid"
+                            | "--uid"
+                    )
                 ) {
                     i += 2;
                 } else {
@@ -505,7 +514,7 @@ pub(crate) fn strip_wrapper_command(cmd: &[String]) -> Option<&[String]> {
         }
         // `chrt [OPTIONS] PRIORITY COMMAND [ARGS]`
         "chrt" => {
-            while i < cmd.len() && cmd[i].starts_with('-') {
+            while cmd.get(i).is_some_and(|t| t.starts_with('-')) {
                 i += 1;
             }
             // mandatory PRIORITY token
@@ -516,8 +525,8 @@ pub(crate) fn strip_wrapper_command(cmd: &[String]) -> Option<&[String]> {
         }
         // `stdbuf OPTIONS COMMAND [ARGS]`
         "stdbuf" => {
-            while i < cmd.len() && cmd[i].starts_with('-') {
-                if matches!(cmd[i].as_str(), "-i" | "-o" | "-e") {
+            while cmd.get(i).is_some_and(|t| t.starts_with('-')) {
+                if matches!(cmd.get(i).map(String::as_str), Some("-i" | "-o" | "-e")) {
                     i += 2;
                 } else {
                     i += 1;
@@ -881,17 +890,17 @@ pub fn primary_command_from_script(script: &str) -> Option<BashCommandHighlights
             return None;
         }
         let peeled_off = c.words.len() - peeled.len();
-        let peeled_words = c.words[peeled_off..].to_vec();
+        let peeled_words = c.words.get(peeled_off..)?.to_vec();
         Some((c, peeled_off, peeled_words))
     });
     let (primary, peeled_off, peeled_words) = primary?;
 
-    let prefix_str = &script[..primary.span_start];
-    let suffix_str = &script[primary.span_end..];
+    let prefix_str = script.get(..primary.span_start)?;
+    let suffix_str = script.get(primary.span_end..)?;
 
     // Peeled wrapper words stay visible as prefix context so the rendered command is still the full invocation; only the grant scope narrows
     let mut prefix = sh_split_simple(prefix_str);
-    prefix.extend_from_slice(&primary.words[..peeled_off]);
+    prefix.extend_from_slice(primary.words.get(..peeled_off)?);
 
     Some(BashCommandHighlights {
         prefix,
@@ -1159,13 +1168,17 @@ pub fn split_physical_line_at_soft_breaks<'a>(
     let mut chunks = Vec::with_capacity(rel.len() + 1);
     let mut start = 0usize;
     for b in rel {
-        if b > start {
-            chunks.push(&line[start..b]);
+        if b > start
+            && let Some(chunk) = line.get(start..b)
+        {
+            chunks.push(chunk);
             start = b;
         }
     }
-    if start < line.len() {
-        chunks.push(&line[start..]);
+    if start < line.len()
+        && let Some(chunk) = line.get(start..)
+    {
+        chunks.push(chunk);
     }
     if chunks.is_empty() {
         chunks.push(line);
@@ -1183,13 +1196,18 @@ pub fn soft_break_chunks(script: &str) -> Vec<&str> {
     let mut out = Vec::with_capacity(breaks.len() + 1);
     let mut start = 0usize;
     for b in breaks {
-        if b > start && b <= script.len() {
-            out.push(&script[start..b]);
+        if b > start
+            && b <= script.len()
+            && let Some(chunk) = script.get(start..b)
+        {
+            out.push(chunk);
             start = b;
         }
     }
-    if start < script.len() {
-        out.push(&script[start..]);
+    if start < script.len()
+        && let Some(chunk) = script.get(start..)
+    {
+        out.push(chunk);
     }
     out
 }
@@ -1595,7 +1613,9 @@ mod tests {
         soft_break_offsets_after_operators(script)
             .into_iter()
             .map(|b| {
-                let prefix = &script[..b];
+                let Some(prefix) = script.get(..b) else {
+                    return String::new();
+                };
                 // Take the trailing operator token (&&, ||, |, ;).
                 if prefix.ends_with("&&") {
                     "&&".to_owned()
@@ -1625,7 +1645,12 @@ mod tests {
         let ops = break_operator_suffixes(script);
         assert_eq!(ops, vec!["&&", "||", ";", "|"]);
         let chunks = soft_break_chunks(script);
-        assert!(chunks[0].ends_with("&&"));
+        assert!(
+            chunks
+                .first()
+                .unwrap_or_else(|| panic!("expected chunk 0"))
+                .ends_with("&&")
+        );
         assert!(chunks.last().unwrap().contains("cat"));
     }
 
@@ -1637,9 +1662,24 @@ mod tests {
         assert_eq!(ops, vec!["&&"]);
         let chunks = soft_break_chunks(script);
         assert_eq!(chunks.len(), 2);
-        assert!(chunks[0].contains(r#""a && b""#));
-        assert!(chunks[0].ends_with("&&"));
-        assert!(chunks[1].contains("echo real"));
+        assert!(
+            chunks
+                .first()
+                .unwrap_or_else(|| panic!("expected chunk 0"))
+                .contains(r#""a && b""#)
+        );
+        assert!(
+            chunks
+                .first()
+                .unwrap_or_else(|| panic!("expected chunk 0"))
+                .ends_with("&&")
+        );
+        assert!(
+            chunks
+                .get(1)
+                .unwrap_or_else(|| panic!("expected chunk 1"))
+                .contains("echo real")
+        );
     }
 
     #[test]
@@ -1663,12 +1703,14 @@ mod tests {
         let breaks = soft_break_offsets_after_operators(script);
         assert_eq!(breaks.len(), 1);
         let first_nl = script.find('\n').unwrap();
+        let Some(&first_break) = breaks.first() else {
+            panic!("expected one soft-break: {breaks:?}");
+        };
         assert!(
-            breaks[0] <= first_nl,
-            "break at {} should be on the opener line (nl at {first_nl})",
-            breaks[0]
+            first_break <= first_nl,
+            "break at {first_break} should be on the opener line (nl at {first_nl})"
         );
-        assert!(script[..breaks[0]].ends_with("&&"));
+        assert!(script.get(..first_break).is_some_and(|p| p.ends_with("&&")));
     }
 
     #[test]
@@ -1698,7 +1740,12 @@ mod tests {
         assert_eq!(ops, vec!["&&"]);
         let breaks = soft_break_offsets_after_operators(script);
         // The break is on the second line.
-        assert!(script[..breaks[0]].contains("echo real"));
+        assert!(
+            script
+                .get(..*breaks.first().unwrap_or_else(|| panic!("expected break")))
+                .unwrap_or("")
+                .contains("echo real")
+        );
     }
 
     #[test]
@@ -1746,15 +1793,37 @@ mod tests {
         let line0 = "a && b";
         let chunks0 = split_physical_line_at_soft_breaks(line0, 0, &breaks);
         assert_eq!(chunks0.len(), 2);
-        assert!(chunks0[0].ends_with("&&"));
-        assert_eq!(chunks0[1].trim(), "b");
+        assert!(
+            chunks0
+                .first()
+                .unwrap_or_else(|| panic!("expected chunks0[0]"))
+                .ends_with("&&")
+        );
+        assert_eq!(
+            chunks0
+                .get(1)
+                .unwrap_or_else(|| panic!("expected chunks0[1]"))
+                .trim(),
+            "b"
+        );
 
         let line1_start = script.find('\n').unwrap() + 1;
         let line1 = "c && d";
         let chunks1 = split_physical_line_at_soft_breaks(line1, line1_start, &breaks);
         assert_eq!(chunks1.len(), 2);
-        assert!(chunks1[0].ends_with("&&"));
-        assert_eq!(chunks1[1].trim(), "d");
+        assert!(
+            chunks1
+                .first()
+                .unwrap_or_else(|| panic!("expected chunks1[0]"))
+                .ends_with("&&")
+        );
+        assert_eq!(
+            chunks1
+                .get(1)
+                .unwrap_or_else(|| panic!("expected chunks1[1]"))
+                .trim(),
+            "d"
+        );
     }
 
     #[test]

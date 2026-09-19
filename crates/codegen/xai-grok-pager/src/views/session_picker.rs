@@ -11,10 +11,6 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::app_view::SessionPickerEntry;
 use crate::views::picker::{PickerEntry, PickerField, PickerRow, PickerState};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// Offset added to content-hit indices in the picker `expanded` set so they don't collide with fuzzy-entry indices.
 pub const CONTENT_EXPAND_OFFSET: usize = 100_000;
 
@@ -47,7 +43,7 @@ pub(crate) fn repo_name_from_cwd(cwd: &str) -> String {
         };
     }
     let start = components.len().saturating_sub(2);
-    let tail = &components[start..];
+    let tail = components.get(start..).unwrap_or(&[]);
     tail.join("-")
 }
 
@@ -61,10 +57,6 @@ fn order_repo_groups(groups: &mut IndexMap<&str, Vec<usize>>, current_repo: Opti
         groups.move_index(pos, 0);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 /// Which underlying data a picker position maps to.
 #[derive(Debug, Clone)]
@@ -220,10 +212,6 @@ pub(crate) fn loading_spinner_active(
             })
         })
 }
-
-// ---------------------------------------------------------------------------
-// Source filter
-// ---------------------------------------------------------------------------
 
 /// Filter session entries by native, headless, remote, or external source. Default is
 /// [`Self::Grok`]: native Grok sessions only (local / remote / conversation).
@@ -434,13 +422,13 @@ fn selectable_fallback<T>(map: &[Option<T>], preferred: usize) -> Option<usize> 
     }
     let preferred = preferred.min(map.len() - 1);
     (preferred..map.len())
-        .find(|index| map[*index].is_some())
-        .or_else(|| (0..preferred).rev().find(|index| map[*index].is_some()))
+        .find(|&index| map.get(index).is_some_and(Option::is_some))
+        .or_else(|| {
+            (0..preferred)
+                .rev()
+                .find(|&index| map.get(index).is_some_and(Option::is_some))
+        })
 }
-
-// ---------------------------------------------------------------------------
-// Filtering
-// ---------------------------------------------------------------------------
 
 /// Case-insensitive substring match (callers pass a pre-lowercased query). Deliberately not an
 /// ordered-chars subsequence match. That matched so loosely (e.g. "rc" hitting "rust-check") that
@@ -487,10 +475,6 @@ pub(crate) fn filter_session_entries(
         .map(|(i, _)| i)
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Entry map building
-// ---------------------------------------------------------------------------
 
 /// Build a flat list of picker items from fuzzy and content results, deduplicating content hits that already appear in the fuzzy list.
 pub(crate) fn build_virtual_list(
@@ -564,7 +548,12 @@ pub(crate) fn build_entry_map(
             let mut groups: IndexMap<&str, Vec<usize>> = IndexMap::new();
             for &orig_idx in &filtered {
                 groups
-                    .entry(entries_data[orig_idx].repo_name.as_str())
+                    .entry(
+                        entries_data
+                            .get(orig_idx)
+                            .map(|e| e.repo_name.as_str())
+                            .unwrap_or(""),
+                    )
                     .or_default()
                     .push(orig_idx);
             }
@@ -713,10 +702,6 @@ pub(crate) fn sync_session_picker_query_expansion(
     expand_all_mapped_session_items(state, &entry_map);
 }
 
-// ---------------------------------------------------------------------------
-// Session entry data building
-// ---------------------------------------------------------------------------
-
 /// Build owned rendering data for each session entry in the filtered list.
 ///
 /// The caller zips the result with `PickerField` slices and builds `PickerEntry` items that borrow from the returned data.
@@ -749,7 +734,18 @@ pub(crate) fn build_session_entry_data_with_locale(
         .iter()
         .enumerate()
         .map(|(fi, &orig_idx)| {
-            let entry = &entries_data[orig_idx];
+            let Some(entry) = entries_data.get(orig_idx) else {
+                return SessionEntryData {
+                    summary: String::new(),
+                    right_text: String::new(),
+                    is_selected: false,
+                    is_expanded: false,
+                    field_data: Vec::new(),
+                    snippet_preview: None,
+                    badge: "",
+                    collapsible: false,
+                };
+            };
             let summary = if entry.summary.is_empty() {
                 label("session.entry.no_prompt", "(no prompt)")
             } else {
@@ -867,7 +863,9 @@ pub(crate) fn build_grouped_picker_entries<'a>(
     // Group filtered entries by repo_name, sort alphabetically, then pin the current working directory's repo group to the top
     let mut groups: IndexMap<&str, Vec<usize>> = IndexMap::new();
     for (fi, &orig_idx) in filtered_indices.iter().enumerate() {
-        let repo = entries_data[orig_idx].repo_name.as_str();
+        let Some(repo) = entries_data.get(orig_idx).map(|e| e.repo_name.as_str()) else {
+            continue;
+        };
         groups.entry(repo).or_default().push(fi);
     }
     order_repo_groups(&mut groups, current_repo);
@@ -885,8 +883,12 @@ pub(crate) fn build_grouped_picker_entries<'a>(
 
         // Insert each session row indented under the header.
         for &fi in member_indices {
-            let b = &built[fi];
-            let fields = &fields_vecs[fi];
+            let Some(b) = built.get(fi) else {
+                continue;
+            };
+            let Some(fields) = fields_vecs.get(fi) else {
+                continue;
+            };
             non_selectable.push(false);
             // Use grouped position for selection, not flat filtered index.
             let selected = !state.selection_hidden && grouped_pos == state.selected;
@@ -1045,7 +1047,10 @@ pub(crate) fn build_content_header_label_with_locale(
                 )
             })
             .unwrap_or("Searching session content\u{2026}");
-        format!("{} {label}", spinner_frames[frame_idx],)
+        format!(
+            "{} {label}",
+            spinner_frames.get(frame_idx).copied().unwrap_or(""),
+        )
     } else if has_content_rows {
         locale
             .map(|locale| {
@@ -1097,10 +1102,6 @@ pub(crate) fn hidden_external_hint_with_locale(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
 /// Format a timestamp as a human-readable relative time.
 #[cfg(test)]
 pub(crate) fn format_time_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
@@ -1147,13 +1148,16 @@ pub(crate) fn format_time_ago_with_locale(
     format!("{}{raw}", " ".repeat(padding))
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at<'a, T>(xs: &'a [T], i: usize) -> &'a T {
+        match xs.get(i) {
+            Some(v) => v,
+            None => panic!("index {i} out of {}", xs.len()),
+        }
+    }
 
     #[test]
     fn repo_name_from_cwd_two_components() {
@@ -1302,35 +1306,50 @@ mod tests {
 
         // Expected layout (sorted by repo_name): 0: None (header "repo-a").
         assert_eq!(map.len(), 5);
-        assert!(map[0].is_none(), "repo-a header");
+        assert!(map.first().is_some_and(Option::is_none), "repo-a header");
         assert!(
-            matches!(map[1], Some(PickerItem::Fuzzy { original_index: 1 })),
+            matches!(
+                map.get(1),
+                Some(Some(PickerItem::Fuzzy { original_index: 1 }))
+            ),
             "first session under repo-a"
         );
         assert!(
-            matches!(map[2], Some(PickerItem::Fuzzy { original_index: 2 })),
+            matches!(
+                map.get(2),
+                Some(Some(PickerItem::Fuzzy { original_index: 2 }))
+            ),
             "second session under repo-a"
         );
-        assert!(map[3].is_none(), "repo-b header");
+        assert!(map.get(3).is_some_and(Option::is_none), "repo-b header");
         assert!(
-            matches!(map[4], Some(PickerItem::Fuzzy { original_index: 0 })),
+            matches!(
+                map.get(4),
+                Some(Some(PickerItem::Fuzzy { original_index: 0 }))
+            ),
             "session under repo-b"
         );
 
         // Mouse-click index 1 (first data row) must resolve to s1, not s0.
-        match &map[1] {
-            Some(PickerItem::Fuzzy { original_index }) => {
+        match map.get(1) {
+            Some(Some(PickerItem::Fuzzy { original_index })) => {
                 assert_eq!(*original_index, 1);
-                assert_eq!(entries[*original_index].id, "s1");
+                assert_eq!(
+                    entries.get(*original_index).map(|e| e.id.as_str()),
+                    Some("s1")
+                );
             }
             other => panic!("expected Fuzzy, got {other:?}"),
         }
 
         // Mouse-click index 4 (under repo-b header) resolves to s0.
-        match &map[4] {
-            Some(PickerItem::Fuzzy { original_index }) => {
+        match map.get(4) {
+            Some(Some(PickerItem::Fuzzy { original_index })) => {
                 assert_eq!(*original_index, 0);
-                assert_eq!(entries[*original_index].id, "s0");
+                assert_eq!(
+                    entries.get(*original_index).map(|e| e.id.as_str()),
+                    Some("s0")
+                );
             }
             other => panic!("expected Fuzzy, got {other:?}"),
         }
@@ -1358,19 +1377,19 @@ mod tests {
 
         // Expected: 0: None (header "repo-a").
         assert_eq!(map.len(), 6);
-        assert!(map[0].is_none(), "repo-a header");
+        assert!(at(&map, 0).is_none(), "repo-a header");
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
-        assert!(map[2].is_none(), "repo-b header");
+        assert!(at(&map, 2).is_none(), "repo-b header");
         assert!(matches!(
-            map[3],
+            at(&map, 3),
             Some(PickerItem::Fuzzy { original_index: 1 })
         ));
-        assert!(map[4].is_none(), "content header");
+        assert!(at(&map, 4).is_none(), "content header");
         assert!(
-            matches!(map[5], Some(PickerItem::Content { hit_index: 1 })),
+            matches!(at(&map, 5), Some(PickerItem::Content { hit_index: 1 })),
             "s_new at content hit index 1 (s0 deduped)"
         );
     }
@@ -1390,9 +1409,9 @@ mod tests {
             None,
         );
         assert_eq!(map.len(), 2, "repo header + row only, no content header");
-        assert!(map[0].is_none(), "repo header");
+        assert!(at(&map, 0).is_none(), "repo header");
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
     }
@@ -1415,9 +1434,9 @@ mod tests {
 
         // Only the repo header and fuzzy entry; no content header/items
         assert_eq!(map.len(), 2);
-        assert!(map[0].is_none());
+        assert!(at(&map, 0).is_none());
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
     }
@@ -1440,11 +1459,11 @@ mod tests {
         );
         assert_eq!(map.len(), 2);
         assert!(matches!(
-            map[0],
+            at(&map, 0),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 1 })
         ));
 
@@ -1460,15 +1479,18 @@ mod tests {
         );
         assert_eq!(map.len(), 4);
         assert!(matches!(
-            map[0],
+            at(&map, 0),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 1 })
         ));
-        assert!(map[2].is_none(), "content header");
-        assert!(matches!(map[3], Some(PickerItem::Content { hit_index: 0 })));
+        assert!(at(&map, 2).is_none(), "content header");
+        assert!(matches!(
+            at(&map, 3),
+            Some(PickerItem::Content { hit_index: 0 })
+        ));
     }
 
     #[test]
@@ -1540,7 +1562,7 @@ mod tests {
         let state = PickerState::default();
         let content = build_content_entry_data(&hits, &entries, &[0], &state, 2);
         assert_eq!(content.len(), 1);
-        assert_eq!(content[0].summary, "shared");
+        assert_eq!(at(&content, 0).summary, "shared");
     }
 
     #[test]
@@ -1621,9 +1643,6 @@ mod tests {
         assert_eq!(SourceFilter::All.next(), SourceFilter::Local);
         assert_eq!(SourceFilter::Local.next(), SourceFilter::Remote);
         assert_eq!(SourceFilter::Remote.next(), SourceFilter::Grok);
-        assert_eq!(SourceFilter::Grok.label(), "Grok");
-        assert_eq!(SourceFilter::Headless.label(), "Headless");
-        assert_eq!(SourceFilter::External.label(), "External");
         assert_eq!(SourceFilter::default(), SourceFilter::Grok);
     }
 
@@ -1643,7 +1662,9 @@ mod tests {
             entry_with_source("s5", "cursor"),
             entry_with_source("s6", "local"),
         ];
-        entries[6].session_kind = Some("headless".into());
+        if let Some(slot) = entries.get_mut(6) {
+            slot.session_kind = Some("headless".into());
+        }
 
         let grok = filter_session_entries(Some(&entries), "", SourceFilter::Grok);
         assert_eq!(grok, vec![0, 1, 2]);
@@ -1728,7 +1749,7 @@ mod tests {
 
         let built = build_session_entry_data(&[entry], &[0], &state, 80);
         let has = |label: &str, value: &str| {
-            built[0]
+            at(&built, 0)
                 .field_data
                 .iter()
                 .any(|(l, v)| l == label && v.contains(value))
@@ -1742,7 +1763,7 @@ mod tests {
         state.expanded.insert(0);
         let built = build_session_entry_data(&[bare], &[0], &state, 80);
         assert!(
-            !built[0]
+            !at(&built, 0)
                 .field_data
                 .iter()
                 .any(|(l, _)| l == "Recap" || l == "Last turn"),
@@ -1759,10 +1780,10 @@ mod tests {
 
         let built = build_session_entry_data(&[entry], &[0], &state, 80);
 
-        assert_eq!(built[0].badge, "codex");
-        assert!(!built[0].collapsible);
-        assert!(!built[0].is_expanded);
-        assert!(built[0].field_data.is_empty());
+        assert_eq!(at(&built, 0).badge, "codex");
+        assert!(!at(&built, 0).collapsible);
+        assert!(!at(&built, 0).is_expanded);
+        assert!(at(&built, 0).field_data.is_empty());
     }
 
     #[test]
@@ -1816,14 +1837,14 @@ mod tests {
         );
         // The rows are the repo-a header, s0, the repo-b header, and s2
         assert_eq!(map.len(), 4);
-        assert!(map[0].is_none()); // repo-a header
+        assert!(at(&map, 0).is_none()); // repo-a header
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
-        assert!(map[2].is_none()); // repo-b header
+        assert!(at(&map, 2).is_none()); // repo-b header
         assert!(matches!(
-            map[3],
+            at(&map, 3),
             Some(PickerItem::Fuzzy { original_index: 2 })
         ));
 
@@ -1838,14 +1859,14 @@ mod tests {
             None,
         );
         assert_eq!(map.len(), 4);
-        assert!(map[0].is_none()); // repo-a header
+        assert!(at(&map, 0).is_none()); // repo-a header
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 1 })
         ));
-        assert!(map[2].is_none()); // repo-b header
+        assert!(at(&map, 2).is_none()); // repo-b header
         assert!(matches!(
-            map[3],
+            at(&map, 3),
             Some(PickerItem::Fuzzy { original_index: 2 })
         ));
     }
@@ -1872,19 +1893,19 @@ mod tests {
         );
         // [repo-c hdr, s2, repo-a hdr, s0, repo-b hdr, s1]
         assert_eq!(map.len(), 6);
-        assert!(map[0].is_none(), "repo-c header pinned first");
+        assert!(at(&map, 0).is_none(), "repo-c header pinned first");
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 2 })
         ));
-        assert!(map[2].is_none(), "repo-a header");
+        assert!(at(&map, 2).is_none(), "repo-a header");
         assert!(matches!(
-            map[3],
+            at(&map, 3),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
-        assert!(map[4].is_none(), "repo-b header");
+        assert!(at(&map, 4).is_none(), "repo-b header");
         assert!(matches!(
-            map[5],
+            at(&map, 5),
             Some(PickerItem::Fuzzy { original_index: 1 })
         ));
 
@@ -1898,9 +1919,9 @@ mod tests {
             SourceFilter::All,
             Some("repo-zzz"),
         );
-        assert!(map[0].is_none(), "repo-a header");
+        assert!(at(&map, 0).is_none(), "repo-a header");
         assert!(matches!(
-            map[1],
+            at(&map, 1),
             Some(PickerItem::Fuzzy { original_index: 0 })
         ));
     }

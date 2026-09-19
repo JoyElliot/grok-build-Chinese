@@ -245,6 +245,14 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
             #[serde(default)]
             path: Option<String>,
         },
+        MemoryCaptureActivity {
+            activity: String,
+            from_turn: u32,
+            through_turn: u32,
+            attempt: u32,
+            #[serde(default)]
+            detail: Option<String>,
+        },
         SubagentSpawned {
             subagent_id: String,
             #[serde(default)]
@@ -340,6 +348,19 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
         XaiUpdate::MemoryFlushCompleted { result, path } => {
             ExtEvent::Lifecycle(Lifecycle::MemoryFlushCompleted { result, path })
         }
+        XaiUpdate::MemoryCaptureActivity {
+            activity,
+            from_turn,
+            through_turn,
+            attempt,
+            detail,
+        } => ExtEvent::Lifecycle(Lifecycle::MemoryCaptureActivity {
+            activity,
+            from_turn,
+            through_turn,
+            attempt,
+            detail,
+        }),
         XaiUpdate::SubagentSpawned {
             subagent_id,
             attempt_id,

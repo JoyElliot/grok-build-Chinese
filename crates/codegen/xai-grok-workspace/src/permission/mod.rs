@@ -3,11 +3,14 @@ pub mod bash_command_splitting;
 pub mod claude_settings;
 mod exec_risk;
 mod gate_preflight;
+mod grants;
+mod hub_gate;
 mod hub_permission;
 pub mod managed_policy;
 mod manager;
 mod policy;
 mod prompter;
+pub mod reasons;
 pub mod resolution;
 pub mod rules;
 mod shell_access;
@@ -51,20 +54,27 @@ pub use auto_mode::{
     is_auto_mode_allowlisted_access, is_auto_mode_allowlisted_tool_name,
     parse_classifier_model_output, parse_classifier_model_text, permission_decision_args,
 };
-#[cfg(test)]
-pub(crate) use hub_permission::build_permission_payload_for_test;
+pub use gate_preflight::GatePreflight;
+
+pub(crate) use hub_gate::{SessionApproval, approve_hub_call};
+pub use hub_gate::{ToolApprovalGate, approval_gate_for};
 pub use hub_permission::{
-    PermissionHookTransport, ToolServerPermissionTransport, access_kind_for_hub_tool,
-    hitl_permission_live_enabled, prompt_outcome_allows, request_permission_via_hub,
+    PermissionHookTransport, ToolServerPermissionTransport, hitl_permission_live_enabled,
+    prompt_outcome_allows, request_permission_via_hub,
 };
 
 pub(crate) fn init_metrics() {
     hub_permission::init_metrics();
+    hub_gate::init_metrics();
 }
-pub use manager::{
-    AUTO_DENY_CONSECUTIVE_LIMIT, AUTO_DENY_TOTAL_LIMIT, PermissionHandle,
+
+pub use grants::{
     always_allow_scope_persists, default_always_allow_scope, default_always_deny_scope,
-    minimum_always_allow_scope, reasons, spawn_permission_manager,
+    minimum_always_allow_scope,
+};
+pub use manager::{
+    AUTO_DENY_CONSECUTIVE_LIMIT, AUTO_DENY_TOTAL_LIMIT, PROMPT_POLICY_DENY_REASON,
+    PermissionHandle, broad_allow_floor_requires_prompt, spawn_permission_manager,
     spawn_permission_manager_with_hub, spawn_permission_manager_with_pin,
 };
 pub use policy::{

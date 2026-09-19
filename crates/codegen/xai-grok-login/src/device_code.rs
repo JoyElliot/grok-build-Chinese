@@ -456,10 +456,10 @@ async fn build_auth(
 fn decode_jwt_claims(jwt: &str) -> (String, Option<String>) {
     use base64::Engine;
     let parts: Vec<&str> = jwt.splitn(3, '.').collect();
-    if parts.len() < 2 {
+    let Some(payload_b64) = parts.get(1) else {
         return (String::new(), None);
-    }
-    let payload = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) {
+    };
+    let payload = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64) {
         Ok(bytes) => bytes,
         Err(_) => return (String::new(), None),
     };
@@ -730,10 +730,11 @@ pub mod tests {
                 let counter = counter.clone();
                 let responses = responses.clone();
                 async move {
-                    let idx = counter
-                        .fetch_add(1, Ordering::SeqCst)
-                        .min(responses.len() - 1);
-                    let (status, body) = &responses[idx];
+                    let idx = counter.fetch_add(1, Ordering::SeqCst);
+                    let Some((status, body)) = responses.get(idx).or_else(|| responses.last())
+                    else {
+                        panic!("token mock needs at least one scripted response");
+                    };
                     (
                         axum::http::StatusCode::from_u16(*status).unwrap(),
                         axum::Json(body.clone()),

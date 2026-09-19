@@ -531,6 +531,39 @@ impl ChatStateHandle {
         .await
     }
 
+    /// Apply the same tool-result prune a turn request uses (`total_tokens` over half the window).
+    /// Returns `items` unchanged when the mailbox is closed. If the actor dies after
+    /// accepting the command, returns empty.
+    pub async fn apply_turn_request_pruning(
+        &self,
+        items: Vec<ConversationItem>,
+    ) -> Vec<ConversationItem> {
+        let (tx, rx) = oneshot::channel();
+        if let Err(error) = self
+            .cmd_tx
+            .send(ChatStateCommand::ApplyTurnRequestPruning { items, reply: tx })
+        {
+            tracing::error!(
+                cmd_name = "ApplyTurnRequestPruning",
+                "ChatStateActor dead: send failed"
+            );
+            return match error.0 {
+                ChatStateCommand::ApplyTurnRequestPruning { items, .. } => items,
+                _ => unreachable!("sent ApplyTurnRequestPruning"),
+            };
+        }
+        match rx.await {
+            Ok(pruned) => pruned,
+            Err(_) => {
+                tracing::error!(
+                    cmd_name = "ApplyTurnRequestPruning",
+                    "ChatStateActor dead: reply dropped"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Get the set of agent-edited file paths.
     pub async fn get_agent_edited_paths(&self) -> BTreeSet<String> {
         self.query("GetAgentEditedPaths", |reply| {

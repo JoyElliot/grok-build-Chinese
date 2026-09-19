@@ -460,9 +460,11 @@ mod tests {
         let manifest: PluginManifest = serde_json::from_str(json).unwrap();
         match manifest.skills.unwrap() {
             PathOrPaths::Multiple(paths) => {
-                assert_eq!(paths.len(), 2);
-                assert_eq!(paths[0], "./skills-a/");
-                assert_eq!(paths[1], "./skills-b/");
+                let [a, b] = paths.as_slice() else {
+                    panic!("expected two skill paths: {paths:?}");
+                };
+                assert_eq!(a, "./skills-a/");
+                assert_eq!(b, "./skills-b/");
             }
             _ => panic!("expected Multiple"),
         }
@@ -596,7 +598,7 @@ mod tests {
         };
         let dirs = manifest.skill_dirs(&root);
         assert_eq!(dirs.len(), 1);
-        assert!(dirs[0].ends_with("skills"));
+        assert!(dirs.first().is_some_and(|d| d.ends_with("skills")));
     }
 
     #[test]

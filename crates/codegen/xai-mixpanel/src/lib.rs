@@ -5,6 +5,8 @@
 //!
 //! Only the `track` API is implemented since that's all we use.
 
+#![deny(clippy::indexing_slicing)]
+
 use base64::Engine;
 use std::collections::HashMap;
 
@@ -135,8 +137,14 @@ mod tests {
 
         let prepared = mp.prepare_properties(props);
 
-        assert_eq!(prepared["token"], project_token, "project token redacted");
-        let error = prepared["error"].as_str().unwrap();
+        assert_eq!(
+            prepared.get("token"),
+            Some(&serde_json::json!(project_token)),
+            "project token redacted"
+        );
+        let Some(error) = prepared.get("error").and_then(|v| v.as_str()) else {
+            panic!("missing json key error: {prepared:?}");
+        };
         assert!(
             !error.contains("abcdef0123456789abcdef"),
             "secret leaked: {error}"

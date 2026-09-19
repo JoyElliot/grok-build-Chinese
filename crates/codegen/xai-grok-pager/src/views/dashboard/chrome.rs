@@ -10,8 +10,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::render::line_utils::truncate_line;
 use crate::theme::Theme;
+use crate::views::agent_status::AgentStatusBar;
+use crate::views::dashboard::animation::{Animation, SPINNER_DIVISOR};
 use crate::views::dashboard::row::DashboardRow;
-use crate::views::dashboard::state::{ActionsFocus, DashboardState, RowState, SPINNER_DIVISOR};
+use crate::views::dashboard::state::{ActionsFocus, DashboardState, RowState};
 use crate::views::location::{
     LocationParts, location_parts_with_locale, worktree_badge_with_locale,
 };
@@ -27,9 +29,7 @@ pub struct HeaderUpgradeCta<'a> {
     pub caption: Option<&'a str>,
 }
 
-/// Render the dashboard header row:
-/// ```text
-///   main worktree ~/wt/wt1 (worktree of ~/proj) [Choose Ctrl+l]   ◆ 2 awaiting │ ⋮ 3 working │ ◇ 1 idle
+/// Paint the dashboard header into `area` and write `location_hit` / `upgrade_cta_hit`.
 pub(super) fn render_header(
     buf: &mut Buffer,
     area: Rect,
@@ -39,9 +39,7 @@ pub(super) fn render_header(
     registry: &crate::actions::ActionRegistry,
     upgrade_cta: Option<HeaderUpgradeCta<'_>>,
 ) {
-    use crate::views::agent_status::AgentStatusBar;
     let locale = state.ui_locale().clone();
-
     if area.area() == 0 {
         return;
     }
@@ -49,7 +47,7 @@ pub(super) fn render_header(
     let dim = theme.dim().bg(theme.bg_base);
     buf.set_style(area, bg);
 
-    // Count top-level rows per state. Subagents inherit their parent's group so we explicitly skip `indent > 0` rows.
+    // Subagents inherit the parent's group; skip `indent > 0` so they are not counted twice.
     let mut awaiting = 0usize;
     let mut working = 0usize;
     let mut idle = 0usize;
@@ -60,19 +58,19 @@ pub(super) fn render_header(
             RowState::NeedsInput => awaiting += 1,
             RowState::Working => working += 1,
             RowState::Idle => idle += 1,
-            // Inactive (roster-only) sessions get no header chip; the chips show actionable local state
-            // The section header already carries the inactive count
+            // Inactive count lives on the section header, not a chip.
             RowState::Inactive => {}
             RowState::Completed => done += 1,
             RowState::Failed => failed += 1,
         }
     }
 
-    // Right-aligned chips, ordered like `RowState::group_priority` (awaiting leftmost).
-    // Glyphs match per-row markers; the label keeps each chip readable when colour
-    // is the only other cue.
+    // Chip order matches `RowState::group_priority` (awaiting leftmost).
     let frames = crate::glyphs::dot_spinner_frames();
-    let spinner = frames[(state.spinner_tick / SPINNER_DIVISOR) as usize % frames.len()];
+    let spinner = frames
+        .get((state.spinner_tick / SPINNER_DIVISOR) as usize % frames.len())
+        .copied()
+        .unwrap_or("");
     let chip_specs = [
         (
             "awaiting",
@@ -117,21 +115,20 @@ pub(super) fn render_header(
             ]),
         );
     }
-    // Chips render right-aligned within the header so they share a right edge with the actions row below
-    // Capture the per-chip rects so the left label's width budget stops short of the leftmost chip instead of painting over it
     let chip_rects = status.render(buf, area);
+    // Mark the spinner from the painted chip, not the working count (a collapsed section can have workers and no chip).
+    if chip_rects.contains_key("working") {
+        state.painted_animations.mark(Animation::Spinner);
+    }
 
-    // Paint the current location (git branch and cwd, with worktree label) on the left, mirroring the
-    // welcome top bar and the agent status bar.
+    // 3-cell gutter so the location label never paints under the leftmost chip.
     let full_label_budget = chip_rects
         .values()
         .map(|r| r.x)
         .min()
         .map(|min_x| min_x.saturating_sub(3).saturating_sub(area.x))
         .unwrap_or(area.width) as usize;
-    // Reserve the upgrade CTA (a lead space, the `[label]`, and the pinned-only `cta.caption`) so the location label truncates first
-    // The shared painter then clamps to the space left, so it can't overpaint chips
-    // The caption shows only for pinned CTAs
+    // Reserve the CTA first so the path truncates instead of the button.
     let upgrade_caption = upgrade_cta.and_then(|cta| cta.pinned.then_some(cta.caption).flatten());
     let upgrade_reserve = upgrade_cta.map_or(0usize, |cta| {
         1 + crate::views::announcements::upgrade_cta_reserve(cta.label, upgrade_caption) as usize
@@ -153,9 +150,7 @@ pub(super) fn render_header(
     }
     location_spans.push(Span::styled(cwd_display, bg.fg(theme.text_secondary)));
     let mut location = truncate_line(Line::from(location_spans), label_budget);
-    // Underline on hover so the label reads as a click target (opens the location picker)
-    // Underline only visible text: the whitespace separator between the branch and path parts stays bare
-    // Hover is mouse-driven on the prior frame
+    // `HitArea::set` keeps last-frame `hovered`; underline text only, not the branch/path space.
     if state.location_hit.hovered {
         location.spans = underline_location_on_hover(std::mem::take(&mut location.spans));
     }
@@ -183,8 +178,7 @@ pub(super) fn render_header(
         0
     };
 
-    // Record the painted label (path plus hint) as a click target so the mouse handler can open the location picker
-    // Width is clamped to the label budget so the hit area never extends under the chips
+    // Clamp the hit to the label budget so it never extends under the chips.
     let label_w = location_w + hint_w;
     let hit_w = label_w.min(label_budget as u16);
     if hit_w > 0 {
@@ -196,9 +190,6 @@ pub(super) fn render_header(
         }));
     }
 
-    // Upgrade CTA painted right after the location label (free-tier upsell), clamped to the space left before the chips
-    // The paint is a lead space then the shared clamping button painter
-    // A pointer click opens it with the `Dashboard` CTA surface; Ctrl+O with `Keyboard`
     if let Some(HeaderUpgradeCta { label, .. }) = upgrade_cta {
         let avail = full_label_budget.saturating_sub(label_w as usize);
         if avail > 1 {
@@ -219,20 +210,10 @@ pub(super) fn render_header(
     }
 }
 
-/// Opacity that blends `gray_dim` toward the background for key hints: on GrokNight this lands on the palette's `FG_GUTTER` (`#414141`),
-/// one step fainter than `gray_dim`, which is the colour the design uses for shortcut keys.
-const KEY_HINT_BLEND: f32 = 0.66;
-
-/// Style for the key part of a `label Key` hint: a shade fainter than `gray_dim` so the label reads first.
-/// Falls back to the polarity-safe dim style on palettes that can't blend (named ANSI colours, the bandless terminal theme's `Reset` slots).
 fn key_hint_style(theme: &Theme) -> Style {
-    crate::render::color::blend_color(theme.bg_base, theme.gray_dim, KEY_HINT_BLEND)
-        .map_or(theme.dim(), |c| Style::default().fg(c))
-        .bg(theme.bg_base)
+    theme.faint().bg(theme.bg_base)
 }
 
-/// `{label} {hint}` from two pre-styled spans: the label, then the hint (a chord or a slash command, normally in [`key_hint_style`]).
-/// A `None` hint paints only the label. Static labels and hints are borrowed, so a frame allocates only for chord displays.
 fn hint_line(label: Span<'static>, hint: Option<Span<'static>>) -> Line<'static> {
     let mut spans = vec![label];
     if let Some(hint) = hint {
@@ -242,7 +223,6 @@ fn hint_line(label: Span<'static>, hint: Option<Span<'static>>) -> Line<'static>
     Line::from(spans)
 }
 
-/// The dashboard chord bound to `id` as a key-hint span, or `None` when the action has no binding.
 fn chord_hint(
     theme: &Theme,
     registry: &crate::actions::ActionRegistry,
@@ -253,8 +233,6 @@ fn chord_hint(
         .map(|key| Span::styled(key.display(), key_hint_style(theme)))
 }
 
-/// Apply the header location label's hover underline: underline only the visible text.
-/// Whitespace-only spans (the separator between the branch and path parts) stay bare.
 fn underline_location_on_hover(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     spans
         .into_iter()
@@ -268,9 +246,7 @@ fn underline_location_on_hover(spans: Vec<Span<'static>>) -> Vec<Span<'static>> 
         .collect()
 }
 
-/// Render the primary actions row below the header:
-/// ```text
-///   + New Agent                           Open Previous /resume │ Worktree Ctrl+w
+/// Paint the primary actions row into `area` and write the three action hit rects.
 pub(super) fn render_actions_row(
     buf: &mut Buffer,
     area: Rect,
@@ -287,9 +263,6 @@ pub(super) fn render_actions_row(
     let key_style = key_hint_style(theme);
     buf.set_style(area, bg);
 
-    // Focused: light green `accent_success` (the affirmative "create a new session" colour), so the focus is obvious
-    // Hovered (mouse over, not focused): brighter `text_primary` foreground so the button stands out under the cursor
-    // Only the text colour changes on hover (no background fill)
     let button_fg = |focused: bool, hovered: bool, resting: Color| {
         if focused {
             theme.accent_success
@@ -300,7 +273,6 @@ pub(super) fn render_actions_row(
         }
     };
 
-    // When worktree mode is on and the cwd is a git repo (so it can actually take effect), the next session goes in a fresh git worktree
     let locale = state.ui_locale().clone();
     let worktree_armed = state.worktree_armed();
     let new_agent_label = if worktree_armed {

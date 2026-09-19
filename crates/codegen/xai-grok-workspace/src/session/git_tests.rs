@@ -992,10 +992,34 @@ fn test_parse_porcelain_v2_ordinary() {
     );
     assert_eq!(staged.len(), 1);
     assert_eq!(unstaged.len(), 0);
-    assert_eq!(staged[0].path, "src/lib.rs");
-    assert!(matches!(staged[0].change_type, ChangeType::Edit));
-    assert_eq!(staged[0].additions, 10);
-    assert_eq!(staged[0].deletions, 2);
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .path,
+        "src/lib.rs"
+    );
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Edit
+    ));
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .additions,
+        10
+    );
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .deletions,
+        2
+    );
 }
 
 #[test]
@@ -1011,8 +1035,20 @@ fn test_parse_porcelain_v2_both_staged_and_unstaged() {
     );
     assert_eq!(staged.len(), 1);
     assert_eq!(unstaged.len(), 1);
-    assert_eq!(staged[0].path, "src/lib.rs");
-    assert_eq!(unstaged[0].path, "src/lib.rs");
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .path,
+        "src/lib.rs"
+    );
+    assert_eq!(
+        unstaged
+            .first()
+            .unwrap_or_else(|| panic!("expected unstaged item"))
+            .path,
+        "src/lib.rs"
+    );
 }
 
 #[test]
@@ -1028,7 +1064,13 @@ fn test_parse_porcelain_v2_added() {
     );
     assert_eq!(staged.len(), 1);
     assert_eq!(unstaged.len(), 0);
-    assert!(matches!(staged[0].change_type, ChangeType::Create));
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Create
+    ));
 }
 
 #[test]
@@ -1043,7 +1085,13 @@ fn test_parse_porcelain_v2_deleted() {
         &HashMap::new(),
     );
     assert_eq!(staged.len(), 1);
-    assert!(matches!(staged[0].change_type, ChangeType::Delete));
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Delete
+    ));
 }
 
 #[test]
@@ -1059,8 +1107,20 @@ fn test_parse_porcelain_v2_untracked() {
     );
     assert_eq!(staged.len(), 0);
     assert_eq!(unstaged.len(), 1);
-    assert_eq!(unstaged[0].path, "untracked.txt");
-    assert!(matches!(unstaged[0].change_type, ChangeType::Untracked));
+    assert_eq!(
+        unstaged
+            .first()
+            .unwrap_or_else(|| panic!("expected unstaged item"))
+            .path,
+        "untracked.txt"
+    );
+    assert!(matches!(
+        unstaged
+            .first()
+            .unwrap_or_else(|| panic!("expected unstaged item"))
+            .change_type,
+        ChangeType::Untracked
+    ));
 }
 
 #[test]
@@ -1090,9 +1150,28 @@ fn test_parse_porcelain_v2_rename() {
         &HashMap::new(),
     );
     assert_eq!(staged.len(), 1);
-    assert_eq!(staged[0].path, "new_name.rs");
-    assert_eq!(staged[0].old_path.as_deref(), Some("old_name.rs"));
-    assert!(matches!(staged[0].change_type, ChangeType::Rename));
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .path,
+        "new_name.rs"
+    );
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .old_path
+            .as_deref(),
+        Some("old_name.rs")
+    );
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Rename
+    ));
 }
 
 /// Split index makes libgit2's status fail, so `status()` must fall back to the CLI.
@@ -1169,7 +1248,13 @@ async fn test_status_via_cli_on_real_repo() {
         .filter(|f| f.path == "hello.txt")
         .collect();
     assert_eq!(untracked.len(), 1);
-    assert!(matches!(untracked[0].change_type, ChangeType::Untracked));
+    assert!(matches!(
+        untracked
+            .first()
+            .unwrap_or_else(|| panic!("expected untracked item"))
+            .change_type,
+        ChangeType::Untracked
+    ));
 }
 
 #[test]

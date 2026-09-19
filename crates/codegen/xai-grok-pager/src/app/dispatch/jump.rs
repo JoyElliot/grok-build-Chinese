@@ -37,7 +37,9 @@ pub(super) fn dispatch_jump_show_picker(app: &mut AppView) -> Vec<Effect> {
         .unwrap_or(entries.len() - 1)
         .min(entries.len() - 1);
 
-    let preview_id = entries[selected].prompt_entry_id;
+    let Some(preview_id) = entries.get(selected).map(|e| e.prompt_entry_id) else {
+        return vec![];
+    };
     agent.jump_state = Some(JumpState {
         entries,
         selected,

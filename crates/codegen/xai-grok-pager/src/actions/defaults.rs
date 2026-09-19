@@ -514,7 +514,10 @@ pub(super) fn default_actions(
             description: "Cycle mode (Normal / Plan / Always-approve)",
             // All Shift+Tab encodings; see `input::key::shift_tab_keys()`
             default_key: crate::input::key::shift_tab_keys()[0],
-            alt_keys: crate::input::key::shift_tab_keys()[1..].to_vec(),
+            alt_keys: crate::input::key::shift_tab_keys()
+                .get(1..)
+                .map(<[_]>::to_vec)
+                .unwrap_or_else(Vec::new),
             category: Category::GettingStarted,
             context: When::PromptFocused,
             hint_priority: None,
@@ -973,7 +976,10 @@ pub(super) fn default_actions(
             // All Shift+Tab encodings; see `input::key::shift_tab_keys()`
             // Registry `matches` is exact-modifier, so the SHIFT-bearing forms must be alts
             default_key: crate::input::key::shift_tab_keys()[0],
-            alt_keys: crate::input::key::shift_tab_keys()[1..].to_vec(),
+            alt_keys: crate::input::key::shift_tab_keys()
+                .get(1..)
+                .map(<[_]>::to_vec)
+                .unwrap_or_else(Vec::new),
             category: Category::Dashboard,
             context: When::DashboardFocused,
             hint_priority: None,

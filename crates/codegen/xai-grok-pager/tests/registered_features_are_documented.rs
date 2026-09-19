@@ -1,23 +1,28 @@
-//! `FEATURES` is the source of truth and the operator tables are hand-maintained mirrors with no compile-time check of their own.
-//! This test is that check.
+//! `FEATURES` is the source of truth and the public operator table is a hand-maintained mirror.
+//! Check the documentation shipped in the standalone repository, not monorepo-only internal docs.
 
 use xai_grok_shell::agent::config::FEATURES;
 
-const ENTERPRISE: &str = include_str!("../docs/internal/25-enterprise.md");
-const ENV_VARS: &str = include_str!("../docs/internal/22-environment-variables.md");
+const CONFIG_REFERENCE: &str = include_str!("../docs/user-guide/26-config-reference.md");
 
 #[test]
 fn every_registered_feature_reaches_the_operator() {
     for spec in FEATURES {
+        let prefix = format!("| `{}` |", spec.path);
+        let row = CONFIG_REFERENCE
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("{} has no row in 26-config-reference.md", spec.path));
         assert!(
-            ENTERPRISE.contains(&format!("`{}`", spec.key)),
-            "{} has no row in the 25-enterprise.md pinning table",
-            spec.key,
+            row.contains("| `pin` |"),
+            "{} is missing its requirements pin in 26-config-reference.md",
+            spec.path,
         );
         assert!(
-            ENV_VARS.contains(&format!("`{}`", spec.env)),
-            "{} is undocumented in 22-environment-variables.md",
+            row.contains(&format!("`{}`", spec.env)),
+            "{} is undocumented in the {} row of 26-config-reference.md",
             spec.env,
+            spec.path,
         );
     }
 }

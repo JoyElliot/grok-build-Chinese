@@ -356,9 +356,7 @@ impl SessionActor {
                             target_index,
                             "Cross-compaction replay failed — rewind aborted"
                         );
-                        // Do NOT fall back to truncation: the post-compaction conversation has wrong user-message counts
-                        // Raw replay without a checkpoint produces an oversized conversation that will exceed the context window
-                        // Return a clear error so the user can rewind to a different (post-compaction) prompt instead
+                        // No fallback to truncation: post-compaction conversations have wrong user-message counts
                         return Ok(RewindResponse {
                             success: false,
                             target_prompt_index: target_index,
@@ -367,12 +365,7 @@ impl SessionActor {
                             clean_files: vec![],
                             conflicts: vec![],
                             prompt_text: None,
-                            error: Some(format!(
-                                "Cannot rewind to prompt #{} — compaction checkpoint data is \
-                                 unavailable ({e}). Try rewinding to a prompt after the \
-                                 compaction point instead.",
-                                target_index,
-                            )),
+                            error: Some(format!("Cannot rewind to prompt #{target_index}: {e}")),
                         });
                     }
                 }

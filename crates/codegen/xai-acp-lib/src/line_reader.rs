@@ -93,7 +93,13 @@ impl AsyncRead for LineBufferedRead {
         if this.pos < this.buf.len() {
             let avail = this.buf.len() - this.pos;
             let n = avail.min(buf.len());
-            buf[..n].copy_from_slice(&this.buf[this.pos..this.pos + n]);
+            let Some(dst) = buf.get_mut(..n) else {
+                return Poll::Ready(Ok(0));
+            };
+            let Some(src) = this.buf.get(this.pos..this.pos + n) else {
+                return Poll::Ready(Ok(0));
+            };
+            dst.copy_from_slice(src);
             this.pos += n;
             if this.pos >= this.buf.len() {
                 this.buf.clear();
@@ -106,7 +112,13 @@ impl AsyncRead for LineBufferedRead {
         match this.rx.poll_next_unpin(cx) {
             Poll::Ready(Some(Ok(line))) => {
                 let n = line.len().min(buf.len());
-                buf[..n].copy_from_slice(&line[..n]);
+                let Some(dst) = buf.get_mut(..n) else {
+                    return Poll::Ready(Ok(0));
+                };
+                let Some(src) = line.get(..n) else {
+                    return Poll::Ready(Ok(0));
+                };
+                dst.copy_from_slice(src);
                 if n < line.len() {
                     // Stash the remainder for subsequent poll_read calls.
                     this.buf = line;
@@ -136,7 +148,9 @@ async fn read_line_capped(
             }
             match available.iter().position(|&b| b == b'\n') {
                 Some(pos) => {
-                    buf.extend_from_slice(&available[..=pos]);
+                    if let Some(src) = available.get(..=pos) {
+                        buf.extend_from_slice(src);
+                    }
                     (pos + 1, true)
                 }
                 None => {
@@ -247,15 +261,15 @@ mod tests {
 
             // First read: "abc"
             let n = reader.read(&mut small_buf).await.unwrap();
-            assert_eq!(&small_buf[..n], b"abc");
+            assert_eq!(small_buf.get(..n), Some(b"abc".as_slice()));
 
             // Second read: "def"
             let n = reader.read(&mut small_buf).await.unwrap();
-            assert_eq!(&small_buf[..n], b"def");
+            assert_eq!(small_buf.get(..n), Some(b"def".as_slice()));
 
             // Third read: "\n"
             let n = reader.read(&mut small_buf).await.unwrap();
-            assert_eq!(&small_buf[..n], b"\n");
+            assert_eq!(small_buf.get(..n), Some(b"\n".as_slice()));
 
             // EOF
             let n = reader.read(&mut small_buf).await.unwrap();

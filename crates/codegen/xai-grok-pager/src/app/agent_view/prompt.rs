@@ -1180,6 +1180,47 @@ mod slash_menu_enter_tests {
 }
 
 #[cfg(test)]
+mod delivered_super_enter_tests {
+    use crate::app::app_view::InputOutcome;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn agent_with_draft() -> super::AgentView {
+        let mut agent = super::test_fixtures::make_agent();
+        agent.prompt.set_text("hello");
+        agent.prompt.set_cursor(agent.prompt.text().len());
+        agent
+    }
+
+    /// Delivered SUPER+Enter misses SendPrompt (bare Enter) and is_mod_enter;
+    /// the composer inserts a newline instead of sending.
+    #[test]
+    fn delivered_super_enter_inserts_newline_and_does_not_send() {
+        let mut agent = agent_with_draft();
+        let outcome =
+            agent.handle_prompt_key_for_test(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "SUPER+Enter must not send, got {outcome:?}"
+        );
+        assert_eq!(agent.prompt.text(), "hello\n");
+    }
+
+    /// Multiline swap is Shift/Alt only. SUPER+Enter must stay a newline, not send.
+    #[test]
+    fn delivered_super_enter_stays_newline_in_multiline_mode() {
+        let mut agent = agent_with_draft();
+        agent.multiline_mode = true;
+        let outcome =
+            agent.handle_prompt_key_for_test(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "multiline SUPER+Enter must not send, got {outcome:?}"
+        );
+        assert_eq!(agent.prompt.text(), "hello\n");
+    }
+}
+
+#[cfg(test)]
 mod prompt_page_scroll_tests {
     use super::*;
     use crate::app::agent_view::AgentPane;

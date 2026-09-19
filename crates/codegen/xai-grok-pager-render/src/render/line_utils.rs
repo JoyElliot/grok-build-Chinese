@@ -167,7 +167,10 @@ pub fn fit_line_to_width<'a>(line: Line<'a>, width: usize) -> Line<'a> {
 
 /// Take the first `n` display columns from a string.
 fn take_width(s: &str, n: usize) -> String {
-    s[..byte_offset_at_width(s, n)].to_string()
+    let Some(prefix) = s.get(..byte_offset_at_width(s, n)) else {
+        return String::new();
+    };
+    prefix.to_owned()
 }
 
 /// Fit `(type, description, activity, meta)` in `avail`. Drop description first, then meta, then truncate activity, then type.
@@ -248,8 +251,11 @@ mod tests {
         let line = Line::from(vec![Span::raw("Hello "), Span::raw("world")]);
         let result = truncate_line(line, 20);
         assert_eq!(result.spans.len(), 2);
-        assert_eq!(result.spans[0].content.as_ref(), "Hello ");
-        assert_eq!(result.spans[1].content.as_ref(), "world");
+        let [a, b] = result.spans.as_slice() else {
+            panic!("expected two spans: {:?}", result.spans);
+        };
+        assert_eq!(a.content.as_ref(), "Hello ");
+        assert_eq!(b.content.as_ref(), "world");
     }
 
     #[test]
@@ -370,9 +376,11 @@ mod tests {
         let line = Line::from(vec![Span::styled("hi", bold)]);
         let out = fit_line_to_width(line, 5);
         assert_eq!(line_text(&out).width(), 5);
+        let Some(span) = out.spans.first() else {
+            panic!("expected a span: {:?}", out.spans);
+        };
         assert!(
-            out.spans[0]
-                .style
+            span.style
                 .add_modifier
                 .contains(ratatui::style::Modifier::BOLD)
         );

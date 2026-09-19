@@ -22,8 +22,14 @@ pub(crate) fn prompt_blank_for_voice(text: &str) -> bool {
 /// `at` must be a UTF-8 char boundary. The insertion, the submit merge, and the ghost preview all
 /// route through this so their spacing cannot drift.
 pub(crate) fn space_voice_fragment(text: &str, at: usize, fragment: &str) -> String {
-    let needs_leading = at > 0 && !text[..at].ends_with(char::is_whitespace);
-    let needs_trailing = at < text.len() && !text[at..].starts_with(char::is_whitespace);
+    let needs_leading = at > 0
+        && text
+            .get(..at)
+            .is_some_and(|prefix| !prefix.ends_with(char::is_whitespace));
+    let needs_trailing = at < text.len()
+        && text
+            .get(at..)
+            .is_some_and(|suffix| !suffix.starts_with(char::is_whitespace));
     let mut out = String::with_capacity(fragment.len() + 2);
     if needs_leading {
         out.push(' ');
@@ -62,12 +68,18 @@ pub(crate) fn merge_voice_fragment(
         None => (existing.len(), existing.len()),
     };
     // Spacing is decided against the buffer as it looks once the selected span is gone.
-    let base = format!("{}{}", &existing[..start], &existing[end..]);
+    let Some(prefix) = existing.get(..start) else {
+        return fragment.to_string();
+    };
+    let Some(suffix) = existing.get(end..) else {
+        return fragment.to_string();
+    };
+    let base = format!("{prefix}{suffix}");
     let insertion = space_voice_fragment(&base, start, fragment);
     let mut merged = String::with_capacity(base.len() + insertion.len());
-    merged.push_str(&existing[..start]);
+    merged.push_str(prefix);
     merged.push_str(&insertion);
-    merged.push_str(&existing[end..]);
+    merged.push_str(suffix);
     merged
 }
 
@@ -117,10 +129,10 @@ fn insert_voice_fragment_into_widget(prompt: &mut PromptWidget, fragment: &str) 
     // that decide spacing are the characters left AFTER the selection is gone — not the highlighted
     // ones. Compute the spacing against that post-delete buffer at the selection's start.
     let (base, at) = match prompt.selection_range() {
-        Some(sel) => (
-            format!("{}{}", &existing[..sel.start], &existing[sel.end..]),
-            sel.start,
-        ),
+        Some(sel) => match (existing.get(..sel.start), existing.get(sel.end..)) {
+            (Some(prefix), Some(suffix)) => (format!("{prefix}{suffix}"), sel.start),
+            _ => (existing.to_owned(), prompt.cursor()),
+        },
         None => (existing.to_owned(), prompt.cursor()),
     };
     let insertion = space_voice_fragment(&base, at, fragment);

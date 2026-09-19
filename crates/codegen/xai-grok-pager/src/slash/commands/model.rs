@@ -110,10 +110,12 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
     candidates.sort_by_key(|(_, name)| std::cmp::Reverse(name.len()));
 
     for (id, name) in candidates {
-        if args_query.len() > name.len()
-            && args_query.is_char_boundary(name.len())
-            && args_query[..name.len()].eq_ignore_ascii_case(name)
-            && args_query[name.len()..].starts_with(char::is_whitespace)
+        if args_query
+            .get(..name.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+            && args_query
+                .get(name.len()..)
+                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
         {
             return Some(id.clone());
         }
@@ -359,15 +361,18 @@ mod tests {
         // Items come out ordered xhigh to low (strongest first) per EFFORT_LEVELS
         let items = cmd.suggest_args(&ctx, "Reasoning X ").unwrap();
         assert_eq!(items.len(), 4);
-        assert_eq!(items[0].insert_text, "Reasoning X xhigh");
-        assert_eq!(items[1].insert_text, "Reasoning X high");
-        assert_eq!(items[2].insert_text, "Reasoning X medium");
-        assert_eq!(items[3].insert_text, "Reasoning X low");
+        let [a, b, c, d] = items.as_slice() else {
+            panic!("expected 4 items: {items:?}");
+        };
+        assert_eq!(a.insert_text, "Reasoning X xhigh");
+        assert_eq!(b.insert_text, "Reasoning X high");
+        assert_eq!(c.insert_text, "Reasoning X medium");
+        assert_eq!(d.insert_text, "Reasoning X low");
         // Display is just the level so the user sees a clean column.
-        assert_eq!(items[0].display, "xhigh");
+        assert_eq!(a.display, "xhigh");
         // match_text carries the sort-key prefix that forces the matcher's alphabetical tiebreak to render rows in EFFORT_LEVELS order
-        assert!(items[0].match_text.starts_with("a "));
-        assert!(items[3].match_text.starts_with("d "));
+        assert!(a.match_text.starts_with("a "));
+        assert!(d.match_text.starts_with("d "));
     }
 
     #[test]
@@ -416,7 +421,10 @@ mod tests {
         // No trailing space: the user is still typing the model name
         let items = cmd.suggest_args(&ctx, "Reason").unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert_text, "Reasoning X ");
+        assert_eq!(
+            items.first().map(|item| item.insert_text.as_str()),
+            Some("Reasoning X ")
+        );
     }
 
     #[test]

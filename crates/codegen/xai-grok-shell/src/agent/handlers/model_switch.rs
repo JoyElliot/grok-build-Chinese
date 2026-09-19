@@ -6,7 +6,7 @@ use crate::agent::mvp_agent::{
     MvpAgent, agent_name_after_model_switch, harnesses_are_compatible, resolve_required_agent_type,
 };
 use crate::sampling::EffortTarget;
-use crate::session::SessionCommand;
+use crate::session::{SessionCommand, SessionModelSwitch};
 use agent_client_protocol::{self as acp};
 use tokio::sync::oneshot;
 use xai_grok_sampling_types::ReasoningEffort;
@@ -165,6 +165,21 @@ pub(crate) async fn apply(
         EffortTarget::ModelSwitch,
     );
     let applied_effort = model_sampling.reasoning_effort;
+    let (new_threshold, system_prompt_label) = {
+        let cfg = agent.cfg.borrow();
+        (
+            crate::util::config::resolve_auto_compact_threshold_percent(
+                &cfg,
+                model_sampling.model.as_str(),
+                Some(model.info()),
+            ),
+            crate::util::config::resolve_system_prompt_label(
+                &cfg,
+                model_id.0.as_ref(),
+                Some(model.info()),
+            ),
+        )
+    };
     let gate_closed = !handle
         .gateway_enabled
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -183,6 +198,7 @@ pub(crate) async fn apply(
             .cmd_tx
             .send(SessionCommand::RebuildAgentForDefinition {
                 definition: def,
+                system_prompt_label: system_prompt_label.clone(),
                 responds_to: rebuild_tx,
             });
         let rebuild_result = rebuild_rx
@@ -215,24 +231,17 @@ pub(crate) async fn apply(
         false
     };
     let model_unchanged = previous_model_id == model_id.0;
-    let new_threshold = {
-        let cfg = agent.cfg.borrow();
-        let models = agent.models_manager.models();
-        let model = config::find_model_by_id(&models, model_sampling.model.as_str());
-        crate::util::config::resolve_auto_compact_threshold_percent(
-            &cfg,
-            model_sampling.model.as_str(),
-            model.map(|e| &e.info),
-        )
-    };
     let (tx, rx) = oneshot::channel();
     let _ = handle.cmd_tx.send(SessionCommand::SetSessionModel {
-        sampling_config: model_sampling,
-        use_concise,
-        is_family_switch,
-        apply_prompt_override,
-        skip_prompt_rewrite: did_rebuild || model_unchanged,
-        auto_compact_threshold_percent: new_threshold,
+        switch: SessionModelSwitch {
+            sampling_config: model_sampling,
+            use_concise,
+            is_family_switch,
+            apply_prompt_override,
+            skip_prompt_rewrite: did_rebuild || model_unchanged,
+            auto_compact_threshold_percent: new_threshold,
+            system_prompt_label,
+        },
         responds_to: tx,
     });
     let updated_model = rx

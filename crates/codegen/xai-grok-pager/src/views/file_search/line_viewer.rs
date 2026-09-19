@@ -845,7 +845,9 @@ impl LineViewerState {
 
         if start_idx < self.lines.len() {
             // Select the start line.
-            let start_id = self.lines[start_idx].stable_id();
+            let Some(start_id) = self.lines.get(start_idx).map(|line| line.stable_id()) else {
+                return;
+            };
             self.list_state.select_by_id(start_id);
 
             // Enter visual mode and extend to end line.
@@ -853,8 +855,9 @@ impl LineViewerState {
                 self.list_state.enter_visual_mode(&self.lines);
                 // Move selection to the end of the range.
                 let end_line_idx = (end_idx - 1).min(self.lines.len() - 1);
-                let end_id = self.lines[end_line_idx].stable_id();
-                self.list_state.select_by_id(end_id);
+                if let Some(end_id) = self.lines.get(end_line_idx).map(|line| line.stable_id()) {
+                    self.list_state.select_by_id(end_id);
+                }
             }
 
             // Store the range for scroll centering on first render.
@@ -1076,20 +1079,33 @@ impl LineViewerState {
             src.commented = commented_lines.contains(&ln);
             items.push(PlanViewerItem::Source(Box::new(src)));
 
-            while mermaid_i < self.mermaid_after.len() && self.mermaid_after[mermaid_i].0 == src_idx
+            while mermaid_i < self.mermaid_after.len()
+                && self
+                    .mermaid_after
+                    .get(mermaid_i)
+                    .is_some_and(|m| m.0 == src_idx)
             {
+                let Some(diagram) = self.mermaid_after.get(mermaid_i).map(|m| m.1.clone()) else {
+                    break;
+                };
                 items.push(PlanViewerItem::MermaidAffordance(
                     MermaidAffordanceLine::new(
                         MERMAID_AFFORDANCE_ID_BASE + mermaid_i as u64,
-                        self.mermaid_after[mermaid_i].1.clone(),
+                        diagram,
                         max_digits,
                     ),
                 ));
                 mermaid_i += 1;
             }
 
-            while comment_idx < sorted.len() && sorted[comment_idx].line_range.end == ln + 1 {
-                let c = sorted[comment_idx];
+            while comment_idx < sorted.len()
+                && sorted
+                    .get(comment_idx)
+                    .is_some_and(|c| c.line_range.end == ln + 1)
+            {
+                let Some(c) = sorted.get(comment_idx).copied() else {
+                    break;
+                };
                 let item_id = comment_id_base + c.id;
                 items.push(PlanViewerItem::Comment(CommentLine::new(
                     c.id,
@@ -1102,7 +1118,7 @@ impl LineViewerState {
             }
         }
 
-        for c in &sorted[comment_idx..] {
+        for c in sorted.get(comment_idx..).unwrap_or(&[]) {
             let item_id = comment_id_base + c.id;
             items.push(PlanViewerItem::Comment(CommentLine::new(
                 c.id,
@@ -1969,7 +1985,9 @@ mod tests {
         let area = *buf.area();
         let mut row = String::new();
         for x in area.left()..area.right() {
-            row.push_str(buf[(x, y)].symbol());
+            if let Some(cell) = buf.cell((x, y)) {
+                row.push_str(cell.symbol());
+            }
         }
         row
     }
@@ -2003,7 +2021,9 @@ mod tests {
     #[test]
     fn markdown_source_blank_line_renders_as_numbered_empty_row() {
         let built = build_markdown_lines("# Plan\n\n- First", Some(80));
-        let blank = &built.source_lines[1];
+        let Some(blank) = built.source_lines.get(1) else {
+            panic!("expected a blank source line");
+        };
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
 
         blank.render(Rect::new(0, 0, 20, 1), &mut buf, false, true);
@@ -2021,8 +2041,11 @@ mod tests {
         cache::set_render_mermaid(RenderMermaid::On);
         let built = build_markdown_lines(MD, Some(80));
         assert_eq!(built.mermaid_after.len(), 1);
-        assert!(built.mermaid_after[0].1.contains("A --> B"));
-        assert!(built.mermaid_after[0].0 < built.source_lines.len());
+        let Some(first) = built.mermaid_after.first() else {
+            panic!("expected a mermaid affordance: {:?}", built.mermaid_after);
+        };
+        assert!(first.1.contains("A --> B"));
+        assert!(first.0 < built.source_lines.len());
 
         let mut viewer =
             LineViewerState::open_markdown_content("plan.md", MD.to_owned(), None).unwrap();
@@ -2037,8 +2060,11 @@ mod tests {
         );
         let placements = viewer.diagram_affordance_placements(Rect::new(0, 0, 100, 40));
         assert_eq!(placements.len(), 1);
-        assert_eq!(placements[0].screen_rect.height, 1);
-        assert!(placements[0].screen_rect.width > 0);
+        let Some(placement) = placements.first() else {
+            panic!("expected a placement: {placements:?}");
+        };
+        assert_eq!(placement.screen_rect.height, 1);
+        assert!(placement.screen_rect.width > 0);
 
         cache::set_render_mermaid(RenderMermaid::Off);
         assert!(build_markdown_lines(MD, Some(80)).mermaid_after.is_empty());
@@ -2080,7 +2106,10 @@ mod tests {
 
         assert_eq!(viewer.selected_line_range(), Some(4..5));
         assert_eq!(viewer.line_range_suffix(), Some(":4".to_owned()));
-        assert_eq!(source_line(&viewer.lines[3]).plain_text, "");
+        let Some(line) = viewer.lines.get(3) else {
+            panic!("expected line 4");
+        };
+        assert_eq!(source_line(line).plain_text, "");
     }
 
     #[test]
@@ -2100,7 +2129,10 @@ mod tests {
             .iter()
             .map(|item| {
                 let s = source_line(item);
-                (s.line_number, line_text(&s.rendered_lines[0]))
+                (
+                    s.line_number,
+                    s.rendered_lines.first().map(line_text).unwrap_or_default(),
+                )
             })
             .collect();
         assert_eq!(

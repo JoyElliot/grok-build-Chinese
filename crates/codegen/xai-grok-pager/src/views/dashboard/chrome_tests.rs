@@ -2,6 +2,11 @@ use super::*;
 use crate::views::dashboard::state::{ActionsFocus, DashboardRowId, DashboardState};
 use crate::views::dashboard::test_support::{buf_to_text, header_test_row};
 
+fn buf_cell(buf: &Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
+    buf.cell((x, y))
+        .unwrap_or_else(|| panic!("missing cell ({x},{y})"))
+}
+
 /// Paint the header row on its own, the way `render_dashboard` does (per-frame hit-area reset included), with no promo CTA.
 fn render_header_only(
     buf: &mut Buffer,
@@ -51,10 +56,10 @@ fn actions_new_agent_button_focused_is_green() {
         .rect
         .expect("button must render");
     assert_eq!(
-        buf[(rect.x, rect.y)].fg,
+        buf_cell(&buf, rect.x, rect.y).fg,
         theme.accent_success,
         "focused + New Agent must paint green (accent_success), got {:?}",
-        buf[(rect.x, rect.y)].fg,
+        buf_cell(&buf, rect.x, rect.y).fg,
     );
 
     // Unfocused (a row holds the cursor instead).
@@ -69,10 +74,10 @@ fn actions_new_agent_button_focused_is_green() {
         .rect
         .expect("button must render");
     assert_eq!(
-        buf2[(rect2.x, rect2.y)].fg,
+        buf_cell(&buf2, rect2.x, rect2.y).fg,
         theme.text_secondary,
         "unfocused + New Agent must paint text_secondary, got {:?}",
-        buf2[(rect2.x, rect2.y)].fg,
+        buf_cell(&buf2, rect2.x, rect2.y).fg,
     );
 }
 
@@ -104,7 +109,7 @@ fn actions_new_agent_button_hover_brightens_text() {
     // Re-render with hover active: text_primary fg, background unchanged (still bg_base, no fill on hover)
     let mut buf2 = Buffer::empty(area);
     render_actions_only(&mut buf2, area, &theme, &mut state, false);
-    let cell = &buf2[(rect.x, rect.y)];
+    let cell = buf_cell(&buf2, rect.x, rect.y);
     assert_eq!(
         cell.fg, theme.text_primary,
         "hovered + New Agent must use text_primary fg, got {:?}",
@@ -123,7 +128,7 @@ fn actions_new_agent_button_hover_brightens_text() {
     );
     let mut buf3 = Buffer::empty(area);
     render_actions_only(&mut buf3, area, &theme, &mut state, false);
-    let cell3 = &buf3[(rect.x, rect.y)];
+    let cell3 = buf_cell(&buf3, rect.x, rect.y);
     assert_eq!(
         cell3.bg, theme.bg_base,
         "non-hovered + New Agent must paint on bg_base, got {:?}",
@@ -155,7 +160,7 @@ fn header_location_renders_from_staged_cwd() {
     render_header_only(&mut buf, area, &theme, &rows, &mut state);
 
     let top_row: String = (0..area.width)
-        .map(|x| buf[(x, 0)].symbol().to_string())
+        .map(|x| buf_cell(&buf, x, 0).symbol().to_string())
         .collect();
     assert!(
         top_row.contains("/grok-staged-cwd-marker"),
@@ -185,7 +190,7 @@ fn header_paints_cwd_then_choose_hint_with_design_colours() {
         .find(&expected)
         .unwrap_or_else(|| panic!("header must read `{expected}`, got: {text:?}"));
 
-    let cell = |offset: usize| &buf[((start + offset) as u16, 0)];
+    let cell = |offset: usize| buf_cell(&buf, (start + offset) as u16, 0);
     assert_eq!(
         cell(0).fg,
         theme.text_secondary,
@@ -198,8 +203,7 @@ fn header_paints_cwd_then_choose_hint_with_design_colours() {
         "`Choose` takes the dim row-secondary colour"
     );
     let key_at = "/grok-choose-hint-marker [Choose ".len();
-    // The key sits strictly between the background and `gray_dim`: fainter than `Choose`, still visible. Derived from the same theme
-    // slots the renderer blends, so a palette edit moves the expectation with it
+    // `key_hint_style` is `Theme::faint` on `bg_base`; a palette edit moves this with it.
     let key_fg = cell(key_at).fg;
     assert_eq!(
         key_fg,
@@ -228,7 +232,7 @@ fn header_paints_cwd_then_choose_hint_with_design_colours() {
     );
 }
 
-/// On the bandless terminal theme nothing can be blended, so the key falls back to the polarity-safe DIM attribute with no hard colour.
+/// Terminal theme: `Theme::faint` is DIM with no hard colour.
 #[test]
 fn header_key_hint_falls_back_to_dim_on_terminal_theme() {
     let theme = Theme::terminal();
@@ -239,7 +243,7 @@ fn header_key_hint_falls_back_to_dim_on_terminal_theme() {
     render_header_only(&mut buf, area, &theme, &[], &mut state);
     let text = buf_to_text(&buf);
     let key_at = text.find("[Choose ").expect("hint painted") + "[Choose ".len();
-    let key = &buf[(key_at as u16, 0)];
+    let key = buf_cell(&buf, key_at as u16, 0);
     assert_eq!(
         key.fg,
         Color::Reset,
@@ -405,7 +409,7 @@ fn actions_row_keeps_worktree_and_drops_open_previous_with_divider() {
     );
     let new_agent = state.new_agent_button_hit.rect.expect("button painted");
     assert_eq!(
-        buf[(new_agent.x, new_agent.y)].fg,
+        buf_cell(&buf, new_agent.x, new_agent.y).fg,
         theme.accent_success,
         "the fallback must show in the same frame: + New Agent paints focused",
     );
@@ -495,11 +499,16 @@ fn render_header_paints_label_and_state_chips() {
         content.contains(&basename),
         "header must show the current location (`{basename}`), got: {content:?}",
     );
-    let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+    let row: String = (0..area.width)
+        .map(|x| buf_cell(&buf, x, 0).symbol())
+        .collect();
     let chips = format!(
         "{} 2 awaiting │ {} 1 working │ {} 1 idle",
         crate::glyphs::diamond_filled(),
-        crate::glyphs::dot_spinner_frames()[0],
+        crate::glyphs::dot_spinner_frames()
+            .first()
+            .copied()
+            .unwrap_or(""),
         crate::glyphs::diamond_hollow(),
     );
     assert!(
@@ -514,8 +523,16 @@ fn render_header_paints_label_and_state_chips() {
         );
     }
     let chips_x = area.width - UnicodeWidthStr::width(chips.as_str()) as u16;
-    assert_eq!(buf[(chips_x, 0)].fg, theme.warning, "awaiting glyph");
-    assert_eq!(buf[(chips_x + 2, 0)].fg, theme.gray, "awaiting count");
+    assert_eq!(
+        buf_cell(&buf, chips_x, 0).fg,
+        theme.warning,
+        "awaiting glyph"
+    );
+    assert_eq!(
+        buf_cell(&buf, chips_x + 2, 0).fg,
+        theme.gray,
+        "awaiting count"
+    );
 }
 
 /// Every state in the chip table renders when present, in priority order, with its own glyph colour and the shared gray count label.
@@ -533,13 +550,18 @@ fn render_header_paints_every_state_chip_in_its_colour() {
         header_test_row(5, RowState::NeedsInput, "a"),
     ];
     render_header_only(&mut buf, area, &theme, &rows, &mut state);
-    let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+    let row: String = (0..area.width)
+        .map(|x| buf_cell(&buf, x, 0).symbol())
+        .collect();
     let filled = crate::glyphs::diamond_filled();
     let expected = [
         ("1 awaiting", filled, theme.warning),
         (
             "1 working",
-            crate::glyphs::dot_spinner_frames()[0],
+            crate::glyphs::dot_spinner_frames()
+                .first()
+                .copied()
+                .unwrap_or(""),
             theme.accent_running,
         ),
         ("1 idle", crate::glyphs::diamond_hollow(), theme.gray_dim),
@@ -549,13 +571,18 @@ fn render_header_paints_every_state_chip_in_its_colour() {
     let mut search_from = 0;
     for (label, glyph, color) in expected {
         let chip = format!("{glyph} {label}");
-        let at = row[search_from..]
-            .find(&chip)
+        let at = row
+            .get(search_from..)
+            .and_then(|rest| rest.find(&chip))
             .map(|i| i + search_from)
             .unwrap_or_else(|| panic!("`{chip}` must follow the previous chip, got: {row:?}"));
-        let col = UnicodeWidthStr::width(&row[..at]) as u16;
-        assert_eq!(buf[(col, 0)].fg, color, "`{label}` glyph colour");
-        assert_eq!(buf[(col + 2, 0)].fg, theme.gray, "`{label}` count colour");
+        let col = UnicodeWidthStr::width(row.get(..at).unwrap_or("")) as u16;
+        assert_eq!(buf_cell(&buf, col, 0).fg, color, "`{label}` glyph colour");
+        assert_eq!(
+            buf_cell(&buf, col + 2, 0).fg,
+            theme.gray,
+            "`{label}` count colour"
+        );
         search_from = at + chip.len();
     }
 }
@@ -712,11 +739,15 @@ fn render_header_shows_location_label() {
 #[test]
 fn render_header_location_label_never_overlaps_chips() {
     let theme = Theme::current();
-    // Narrow enough that a long path overflows the label budget once three chips are reserved
+    // Narrow enough that a long path overflows the label budget once three chips are reserved.
+    // Last two components stay full after always-on shortening, so they must be long enough
+    // to still overflow — middle-component letters alone would fit the 60-col row.
     let area = Rect::new(0, 0, 60, 1);
     let mut buf = Buffer::empty(area);
     let mut state = DashboardState::new();
-    state.cwd = std::path::PathBuf::from("/grok-overlap/a/very/long/checkout/path/that/overflows");
+    state.cwd = std::path::PathBuf::from(
+        "/grok-overlap/a/very/long/checkout/path/that/overflows-enough-after-shortening",
+    );
     let rows = vec![
         header_test_row(1, RowState::NeedsInput, "a"),
         header_test_row(2, RowState::Working, "b"),
@@ -736,9 +767,13 @@ fn render_header_location_label_never_overlaps_chips() {
         "the hint goes before the path is cut"
     );
     // The ellipsis ends the label; exactly three blank cells separate it from the first chip's glyph
-    let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+    let row: String = (0..area.width)
+        .map(|x| buf_cell(&buf, x, 0).symbol())
+        .collect();
     let ellipsis_at = row.find('…').expect("truncated label ends in an ellipsis");
-    let after = &row[ellipsis_at + '…'.len_utf8()..];
+    let Some(after) = row.get(ellipsis_at + '…'.len_utf8()..) else {
+        panic!("ellipsis not on a char boundary: {row:?}");
+    };
     assert!(
         after.starts_with(&format!("   {}", crate::glyphs::diamond_filled())),
         "expected a 3-cell gutter then the awaiting glyph after the ellipsis, got: {after:?}",

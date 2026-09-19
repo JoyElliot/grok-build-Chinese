@@ -7,12 +7,12 @@
 
 use std::path::Path;
 
-use crate::permission::manager::reasons;
 use crate::permission::policy::{CompiledPolicy, GateDecision, combine_decisions};
+use crate::permission::reasons;
 use crate::permission::types::{AccessKind, Decision};
 
 /// One request's managed-policy evaluation, computed before any fast path.
-pub(crate) struct GatePreflight {
+pub struct GatePreflight {
     direct: Option<Decision>,
     bash_command: Option<GateDecision>,
     shell_file: Option<GateDecision>,
@@ -25,7 +25,7 @@ pub(crate) struct GatePreflight {
 
 impl GatePreflight {
     /// `cwd` is the requesting session's execution cwd (not necessarily the manager's): path rules and shell-file operands anchor to it.
-    pub(crate) fn evaluate(
+    pub fn evaluate(
         policy: Option<&CompiledPolicy>,
         access: &AccessKind,
         cwd: &Path,
@@ -60,7 +60,7 @@ impl GatePreflight {
     }
 
     /// Combined managed decision (deny > ask > allow).
-    pub(crate) fn policy_decision(&self) -> Option<Decision> {
+    pub fn policy_decision(&self) -> Option<Decision> {
         let bash_command = self.bash_command.clone().map(GateDecision::into_decision);
         let shell_file = self.shell_file.clone().map(GateDecision::into_decision);
         combine_decisions(
@@ -74,7 +74,7 @@ impl GatePreflight {
     }
 
     /// Bash-gate Ask, shell-file Ask, or native symlink fail-closed; blocks YOLO.
-    pub(crate) fn shell_forced_prompt(&self) -> bool {
+    pub fn shell_forced_prompt(&self) -> bool {
         self.bash_command.as_ref().is_some_and(GateDecision::is_ask)
             || self.shell_file_forced_prompt()
             || self.native_symlink_fail_closed

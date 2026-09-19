@@ -130,6 +130,42 @@ fn oversized_remember_note_is_rejected_with_typed_error() {
 }
 
 #[test]
+fn v2_listing_enforces_directory_entry_and_file_caps() {
+    let temp = TempDir::new().unwrap();
+    let storage = make_v2_storage(&temp);
+    let topics = storage.global_dir().join("topics");
+    std::fs::create_dir_all(&topics).unwrap();
+    for index in 0..5 {
+        std::fs::write(topics.join(format!("topic-{index}.md")), "# Topic").unwrap();
+    }
+    let list = |max_entries, max_files| {
+        super::list_memory_files_with_caps(
+            storage.global_dir(),
+            storage.workspace_dir(),
+            max_entries,
+            max_files,
+        )
+    };
+
+    assert_eq!(list(5, 100).unwrap().len(), 5);
+    assert_eq!(
+        list(4, 100).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData,
+        "walking past the entry cap must fail closed"
+    );
+    assert_eq!(list(100, 3).unwrap().len(), 3);
+    assert_eq!(
+        list(
+            crate::v2::MAX_DIRECTORY_ENTRIES,
+            crate::v2::MAX_DISCOVERED_FILES
+        )
+        .unwrap(),
+        storage.list_memory_files().unwrap(),
+        "the public listing must use the manifest walker's caps"
+    );
+}
+
+#[test]
 fn legacy_remember_notes_keep_their_existing_uncapped_behavior() {
     let temp = TempDir::new().unwrap();
     let global = temp.path().join("memory");
@@ -143,6 +179,54 @@ fn legacy_remember_notes_keep_their_existing_uncapped_behavior() {
             .unwrap()
             .len()
             > large_note.len()
+    );
+}
+
+#[test]
+fn v2_listing_omits_hidden_and_tombstoned_observations() {
+    let temp = TempDir::new().unwrap();
+    let storage = make_v2_storage(&temp);
+    storage.ensure_initialized().unwrap();
+    crate::V2CaptureStore::open(storage.global_dir(), crate::V2MemoryScope::Global).unwrap();
+
+    let inbox = storage.global_dir().join("observations/_inbox");
+    let hidden = inbox.join("hidden.md");
+    let tombstoned = inbox.join("tombstoned.md");
+    let visible = inbox.join("visible.md");
+    for path in [&hidden, &tombstoned, &visible] {
+        std::fs::write(path, "# Observation").unwrap();
+    }
+    let state_path = storage.global_dir().join("memory_state.sqlite");
+    let connection = xai_sqlite_journal::JournalMode::for_db_path(&state_path)
+        .open(&state_path)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO memory_v2_hidden_observations(relative_path)
+             VALUES ('observations/_inbox/hidden.md')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO memory_v2_tombstones(
+                tombstone_id, target_kind, relative_path, provenance_hash, created_at, reason
+             ) VALUES ('forget-test', 'observation', 'observations/_inbox/tombstoned.md',
+                       ?1, 1, 'privacy')",
+            [blake3::hash(b"# Observation").to_hex().to_string()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let listed = storage.list_memory_files().unwrap();
+    assert!(listed.contains(&visible));
+    assert!(
+        !listed.contains(&hidden),
+        "hidden observation was browsable"
+    );
+    assert!(
+        !listed.contains(&tombstoned),
+        "tombstoned observation was browsable"
     );
 }
 

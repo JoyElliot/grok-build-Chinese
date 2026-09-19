@@ -446,7 +446,10 @@ fn build_flat_lines(
                 None
             };
             if let Some(ov) = overlay {
-                for line in &mut flat[start..] {
+                let Some(tail) = flat.get_mut(start..) else {
+                    continue;
+                };
+                for line in tail {
                     line.style = line.style.patch(ov);
                 }
             }
@@ -514,7 +517,9 @@ pub fn render_dropdown(
                 .saturating_sub(1),
         );
         let y = area.y + vis_row as u16;
-        let line = &flat_lines[line_idx];
+        let Some(line) = flat_lines.get(line_idx) else {
+            break;
+        };
         // Skip rows that fall outside the buffer (resize race).
         if y < buf.area.y || y >= buf.area.bottom() || area.x >= buf.area.right() {
             continue;
@@ -899,9 +904,12 @@ mod tests {
         let normal = Style::default().fg(theme.text_primary);
         let matched = Style::default().fg(theme.fuzzy_accent);
         let spans = build_highlighted_spans("ssh-wrap", &[0, 1, 2], normal, matched);
-        assert_eq!(spans[0].content.as_ref(), "ssh");
-        assert_eq!(spans[0].style.fg, Some(theme.fuzzy_accent));
-        assert_eq!(spans[1].style.fg, Some(theme.text_primary));
+        let [ssh, rest, ..] = spans.as_slice() else {
+            panic!("expected two spans: {spans:?}");
+        };
+        assert_eq!(ssh.content.as_ref(), "ssh");
+        assert_eq!(ssh.style.fg, Some(theme.fuzzy_accent));
+        assert_eq!(rest.style.fg, Some(theme.text_primary));
     }
 
     #[test]
@@ -948,8 +956,12 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_dropdown(&mut buf, area, &snap, None, &theme);
 
-        let line0: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        let line1: String = (0..80).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        let line0: String = (0..80)
+            .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol().to_string()))
+            .collect();
+        let line1: String = (0..80)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
         assert!(line0.contains("Log in or re-authenticate"));
         assert!(line1.contains("Acme account login"));
         assert!(!line0.contains(" · built-in"));
@@ -1500,7 +1512,12 @@ mod tests {
         );
         assert!(!rendered.has_scrollbar, "content fits; no scrollbar");
         // Rows are monotone and grouped: item 1 starts after item 0's lines.
-        assert!(rendered.row_items.windows(2).all(|w| w[0] <= w[1]));
+        assert!(
+            rendered
+                .row_items
+                .windows(2)
+                .all(|w| matches!(w, [a, b] if a <= b))
+        );
     }
 
     /// Scrollbar and row map when content exceeds the capped height.
@@ -1528,7 +1545,11 @@ mod tests {
         let rendered = render_dropdown(&mut buf, area, &snap, None, &theme);
         assert!(rendered.has_scrollbar, "overflowing lines need a scrollbar");
         assert_eq!(rendered.row_items.len(), rows as usize);
-        assert_eq!(rendered.row_items[0], 0, "scroll starts at the top");
+        assert_eq!(
+            rendered.row_items.first().copied(),
+            Some(0),
+            "scroll starts at the top"
+        );
     }
 
     /// A tagged row renders "[tag]" (system-accent) between the command name and the description; untagged rows and arg rows render no bracket.
@@ -1666,7 +1687,9 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_dropdown(&mut buf, area, &snap, None, &theme);
 
-        let line0: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let line0: String = (0..80)
+            .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol().to_string()))
+            .collect();
         let ellipsized = "/principles-redesign-from-first-princip\u{2026}";
         assert!(
             line0.contains(ellipsized),

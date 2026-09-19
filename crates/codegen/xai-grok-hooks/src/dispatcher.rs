@@ -1158,7 +1158,10 @@ mod tests {
         .await;
         assert_eq!(result.decision, HookDecision::Allow);
         let rewrite = result.updated_input.expect("updatedInput carried");
-        assert_eq!(rewrite.input["command"], "two");
+        assert_eq!(
+            rewrite.input.get("command").and_then(|v| v.as_str()),
+            Some("two")
+        );
         assert_eq!(rewrite.hook_name, "second");
     }
 
@@ -1239,7 +1242,10 @@ mod tests {
         let rewrite = result
             .updated_input
             .expect("the earlier rewrite must survive a later failure");
-        assert_eq!(rewrite.input["command"], "one");
+        assert_eq!(
+            rewrite.input.get("command").and_then(|v| v.as_str()),
+            Some("one")
+        );
         assert_eq!(rewrite.hook_name, "rewriter");
     }
 
@@ -1315,7 +1321,10 @@ mod tests {
         .await;
         assert!(matches!(result.decision, HookDecision::Ask { .. }));
         let rewrite = result.updated_input.expect("ask carries updatedInput");
-        assert_eq!(rewrite.input["command"], "safe");
+        assert_eq!(
+            rewrite.input.get("command").and_then(|v| v.as_str()),
+            Some("safe")
+        );
     }
 
     #[tokio::test]
@@ -1457,11 +1466,14 @@ mod tests {
         .await;
         assert_eq!(result.decision, HookDecision::Allow);
         assert!(matches!(
-            &result.results[0],
+            result.results.first().unwrap_or_else(|| panic!("expected results item 0")),
             HookRunResult::Success { system_message: Some(msg), .. } if msg == "heads up"
         ));
         assert!(matches!(
-            &result.results[1],
+            result
+                .results
+                .get(1)
+                .unwrap_or_else(|| panic!("expected results item 1")),
             HookRunResult::Success {
                 system_message: None,
                 ..
@@ -1509,7 +1521,7 @@ mod tests {
             ref other => panic!("expected Block, got {other:?}"),
         }
         assert!(
-            matches!(result.results[0], HookRunResult::Blocked { .. }),
+            matches!(result.results.first(), Some(HookRunResult::Blocked { .. })),
             "a block must record HookRunResult::Blocked for telemetry"
         );
     }
@@ -1542,7 +1554,10 @@ mod tests {
         let registry = registry_from_specs(vec![spec]);
         let result = dispatch_prompt_gate(&registry, &prompt_submit_envelope(), &run_ctx()).await;
         assert_eq!(result.decision, PromptDecision::Allow);
-        assert!(matches!(result.results[0], HookRunResult::Failed { .. }));
+        assert!(matches!(
+            result.results.first(),
+            Some(HookRunResult::Failed { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1551,7 +1566,10 @@ mod tests {
         let registry = registry_from_specs(vec![spec]);
         let result = dispatch_prompt_gate(&registry, &prompt_submit_envelope(), &run_ctx()).await;
         assert_eq!(result.decision, PromptDecision::Allow);
-        assert!(matches!(result.results[0], HookRunResult::Success { .. }));
+        assert!(matches!(
+            result.results.first(),
+            Some(HookRunResult::Success { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1661,7 +1679,7 @@ mod tests {
         );
         assert_eq!(result.results.len(), 1);
         assert!(
-            matches!(&result.results[0], HookRunResult::Failed { hook_name, .. } if hook_name == "crasher"),
+            matches!(result.results.first(), Some(HookRunResult::Failed { hook_name, .. }) if hook_name == "crasher"),
             "the failure must still appear in run_results for UI scrollback, got {:?}",
             result.results
         );
@@ -1691,10 +1709,10 @@ mod tests {
         }
         assert_eq!(result.results.len(), 2);
         assert!(
-            matches!(&result.results[1], HookRunResult::Blocked { detail, .. }
+            matches!(result.results.get(1), Some(HookRunResult::Blocked { detail, .. })
                 if detail == "denied: nope"),
             "a deny is the hook's decision, not a failure: {:?}",
-            result.results[1]
+            result.results.get(1)
         );
     }
 
@@ -1830,7 +1848,10 @@ mod tests {
             dispatch_stop(&registry, HookEventName::Stop, &stop_envelope(), &run_ctx()).await;
         assert!(result.wants_continuation());
         assert_eq!(result.blocks.len(), 1);
-        assert_eq!(result.blocks[0].reason, "fix the build");
+        assert_eq!(
+            result.blocks.first().map(|b| b.reason.as_str()),
+            Some("fix the build")
+        );
         assert_eq!(result.additional_context, ["note"]);
     }
 
@@ -1866,9 +1887,9 @@ mod tests {
             "timeout must not block the stop"
         );
         assert!(
-            matches!(&result.results[0], HookRunResult::Failed { .. }),
+            matches!(result.results.first(), Some(HookRunResult::Failed { .. })),
             "the timeout is recorded as a failure, got {:?}",
-            result.results[0]
+            result.results.first()
         );
     }
 
@@ -1958,7 +1979,10 @@ mod tests {
         )
         .await;
         assert_eq!(result.blocks.len(), 1, "only the matching spec runs");
-        assert_eq!(result.blocks[0].reason, "from explorer");
+        assert_eq!(
+            result.blocks.first().map(|b| b.reason.as_str()),
+            Some("from explorer")
+        );
     }
 
     #[tokio::test]
@@ -1977,8 +2001,18 @@ mod tests {
         )
         .await;
         assert_eq!(results.len(), 2);
-        assert!(matches!(results[0], HookRunResult::Failed { .. }));
-        assert!(matches!(results[1], HookRunResult::Success { .. }));
+        assert!(matches!(
+            results
+                .first()
+                .unwrap_or_else(|| panic!("expected results item 0: {results:?}")),
+            HookRunResult::Failed { .. }
+        ));
+        assert!(matches!(
+            results
+                .get(1)
+                .unwrap_or_else(|| panic!("expected results item 1: {results:?}")),
+            HookRunResult::Success { .. }
+        ));
     }
 
     #[test]
@@ -2124,7 +2158,14 @@ mod tests {
             .builtin_replacement
             .as_ref()
             .expect("the later same-kind write wins the built-in slot");
-        assert_eq!(selected.replacement.value["command"], "second");
+        assert_eq!(
+            selected
+                .replacement
+                .value
+                .get("command")
+                .and_then(|v| v.as_str()),
+            Some("second")
+        );
         assert_eq!(selected.run_index, 1);
         assert!(result.mcp_replacement.is_none());
     }
@@ -2205,7 +2246,12 @@ mod tests {
             !eligible_or_record_skip(&user, None, &mut results, &disabled),
             "a user hook with the same disabled-hooks treatment must be filtered"
         );
-        assert!(matches!(results[0], HookRunResult::Skipped { .. }));
+        assert!(matches!(
+            results
+                .first()
+                .unwrap_or_else(|| panic!("expected results item 0: {results:?}")),
+            HookRunResult::Skipped { .. }
+        ));
 
         assert!(
             !crate::trust::hook_disabled_for_display_with(&managed, &disabled),

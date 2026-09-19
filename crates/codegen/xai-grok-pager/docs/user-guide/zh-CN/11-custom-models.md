@@ -102,6 +102,7 @@ description = "模型描述"                   # 可选描述
 api_key = "sk-..."                        # 此提供商的 API 密钥（可选）
 env_key = "XAI_API_KEY"                   # 保存 API 密钥的环境变量（可选；字符串或数组）
 api_backend = "chat_completions"          # "chat_completions"、"responses" 或 "messages"
+reasoning_summary = "concise"             # 仅 Responses API：none / auto / concise / detailed
 temperature = 0.7                          # 采样温度
 top_p = 0.95                               # 核采样参数
 max_completion_tokens = 8192               # 每次响应的最大 token 数
@@ -264,6 +265,27 @@ base_url = "https://api.openai.com/v1"
 name = "GPT-4o (Responses)"
 api_backend = "responses"
 env_key = "OPENAI_API_KEY"
+```
+
+### Responses API 推理摘要与 AWS Bedrock（Mantle）
+
+Responses API 默认请求 `concise` 推理摘要，界面中的推理文本来自该摘要。将 `reasoning_summary` 设为 `detailed` 或 `auto` 可以请求更完整的摘要；设为 `none` 则省略该字段，适配拒绝此参数的网关。
+
+Bedrock 的 OpenAI 兼容网关拒绝 `reasoning.summary`，因此使用 `reasoning_summary = "none"`。认证采用 Bedrock API 密钥作为 Bearer Token；下面通过具名认证提供商生成短期密钥：
+
+```toml
+[auth_provider.bedrock]
+command = "aws-bedrock-token"   # 将 Bedrock API 密钥打印到标准输出
+token_ttl_secs = 3600
+
+[model."bedrock-grok-4.6"]
+model = "xai.grok-4.6"
+base_url = "https://bedrock-mantle.us-west-2.api.aws/openai/v1"
+name = "Grok 4.6 (Bedrock)"
+api_backend = "responses"
+reasoning_summary = "none"
+auth_provider = "bedrock"
+context_window = 500000
 ```
 
 <a id="ollama-local-models"></a>

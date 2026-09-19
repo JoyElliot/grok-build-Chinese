@@ -1,5 +1,7 @@
 # Hooks
 
+[简体中文](zh-CN/10-hooks.md)
+
 Hooks let you run a script or send an HTTP request at key moments in a Grok session. Use them to automate tasks, enforce safety checks, log activity, send notifications, and integrate your own tools.
 
 ---

@@ -56,8 +56,7 @@
                 .subagent_sessions
                 .insert(child_sid.into(), make_subagent_info(child_sid));
             parent
-                .subagent_views
-                .insert(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+                .insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
         }
 
         let affected = handle(
@@ -289,4 +288,3 @@
             "B only",
         );
     }
-

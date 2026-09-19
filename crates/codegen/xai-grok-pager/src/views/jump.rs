@@ -133,7 +133,9 @@ pub fn render_jump_overlay_with_locale(
             .unwrap_or("Jump to which turn?"),
         focused,
         |i, ctx| {
-            let entry = &state.entries[i];
+            let Some(entry) = state.entries.get(i) else {
+                return Line::from("");
+            };
             let ordinal = format!("{:>ord_width$} ", entry.turn_idx + 1);
             let ord_style = Style::default().fg(theme.gray).bg(ctx.row_bg);
             let preview: String = if entry.preview.is_empty() {

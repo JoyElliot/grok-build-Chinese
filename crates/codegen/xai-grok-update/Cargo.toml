@@ -5,7 +5,7 @@ version = "0.1.220-alpha.4"
 edition.workspace = true
 
 [features]
-community-build = ["dep:sha2", "dep:tar", "dep:zip"]
+community-build = ["dep:tar"]
 
 [dependencies]
 dunce = { workspace = true }
@@ -18,7 +18,6 @@ xai-grok-extra-ca = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true, optional = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde"] }
 tar = { workspace = true, optional = true }
@@ -32,8 +31,12 @@ xai-grok-telemetry = { workspace = true }
 xai-grok-tools = { workspace = true }
 xai-grok-version = { workspace = true }
 xai-grok-product = { path = "../xai-grok-product" }
-zip = { version = "3", default-features = false, features = ["deflate-flate2"], optional = true }
 zstd = { workspace = true }
+sha2 = { workspace = true }
+xai-tty-utils = { workspace = true }
+# MinGit archive extraction. Not `workspace = true`: the workspace pin has
+# default features on (aes/bzip2/lzma/zstd); MinGit entries are only deflated.
+zip = { version = "3", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 libc = { workspace = true }

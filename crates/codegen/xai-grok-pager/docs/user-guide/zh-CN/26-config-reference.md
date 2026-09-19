@@ -98,10 +98,13 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | --- | --- | --- | --- | --- |
 | `cli.auto_update` | `boolean` | `pin` | `user` | 启动时检查 CLI 更新；`GROK_DISABLE_AUTOUPDATER` 可禁用。 |
 | `cli.channel` | `stable / alpha` | `pin` | `user` | 首选发布通道。 |
+| `cli.grove` | `boolean` 或 `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `all` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | 专用开关未设置时，同时启用 grok clone 和会话 / -w 的 Grove 工作树。也对应 `GROK_GROVE`。false / copy / off 只关闭统一启用，不强制关闭两者；工作树仍以 `[cli] grove_worktree`、`GROK_WORKTREE_TYPE` 为准，克隆仍以 `GROK_CLONE` 为准。远程 grove_worktree = false 只禁用工作树。 |
+| `cli.grove_worktree` | `boolean` 或 `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | 会话 / -w 使用 Grove 或复制工作树，默认复制；区别于创建方式 cli.worktree_type。也对应 `GROK_WORKTREE_TYPE`。依次按请求 → 环境变量 → 本地 → 统一启用（GROK_GROVE / [cli] grove）→ 远程启用决定，最后应用远程 grove_worktree = false 的禁用（remote_kill）。缺少远程设置不是禁用，本地、环境、请求和统一启用仍生效。不会启用 grok clone。 |
 | `cli.installer` | `string` | `—` | `user` | 最近安装此 CLI 的安装器，用于选择更新路径。 |
 | `cli.maximum_version` | `string` | `pin` | `user` | 不触发硬阻止时可运行的最高 CLI 版本。也对应 `GROK_MAXIMUM_VERSION`。 |
 | `cli.minimum_version` | `string` | `pin` | `user` | 不触发硬阻止时可运行的最低 CLI 版本。也对应 `GROK_MINIMUM_VERSION`。 |
 | `cli.npm_registry` | `string` | `yes` | `user` | 自动更新器使用的 npm registry。 |
+| `cli.nfs_worktree` | 同 `cli.grove_worktree` | `yes` | `user` | 读取 `cli.grove_worktree` 时接受的别名。 |
 | `cli.required_maximum_version` | `string` | `pin` | `user` | 强制最高 CLI 版本。也对应 `GROK_REQUIRED_MAXIMUM_VERSION`。 |
 | `cli.required_minimum_version` | `string` | `pin` | `user` | 强制最低 CLI 版本。也对应 `GROK_REQUIRED_MINIMUM_VERSION`。 |
 | `cli.session_picker_grouped` | `boolean` | `yes` | `user` | 在会话选择器和 CLI 列表中按仓库分组。 |
@@ -224,6 +227,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `features.subagent_worktree_snapshot` | `boolean` | `pin` | `user` | 启用或禁用 `subagent_worktree_snapshot`；默认 false。也对应 `GROK_SUBAGENT_WORKTREE_SNAPSHOT`。 |
 | `features.support_permission` | `boolean` | `yes` | `user` | 允许智能体为工具执行请求权限。 |
 | `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | 产品遥测模式；企业默认关闭。 |
+| `features.terminal_theme` | `boolean` | `pin` | `user` | 在分阶段发布期间显示采用终端原生颜色的 terminal 主题，默认 false。也对应 `GROK_TERMINAL_THEME`。 |
 | `features.title_refresh` | `boolean` | `pin` | `user` | 会话早期自动刷新标题；在 requirements 中固定可压过 `GROK_TITLE_REFRESH`。 |
 | `features.turn_summary` | `boolean` | `pin` | `user` | 启用或禁用 `turn_summary`；默认 true。也对应 `GROK_TURN_SUMMARY`。 |
 | `features.two_pass_compaction` | `boolean` | `pin` | `user` | 启用或禁用 `two_pass_compaction`；默认 true。也对应 `GROK_TWO_PASS_COMPACTION`。 |
@@ -278,8 +282,8 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
-| `harness.block_for_upload` | `boolean` | `yes` | `user` | 工作区快照上传完成前阻止轮次结束。 |
 | `harness.disable_workspace_teleport` | `boolean` | `pin` | `user` | 每轮工作区快照的关闭开关。 |
+| `harness.wait_for_uploads` | `boolean` | `yes` | `user` | 返回提示响应前等待轮次结束的跟踪上传，默认关闭。一次性无界面执行仍会在退出时排空待处理上传，使用强制最小预算（约 150 秒，即解析窗口和一次上传尝试）；更大的 upload_flush_timeout_secs 会延长该预算。 |
 
 ### `hints`
 
@@ -309,6 +313,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
 | `marketplace.sources` | `array of tables` | `yes` | `user` | `[[marketplace.sources]]` 插件市场仓库。 |
+| `marketplace.require_sha` | `boolean` | `yes` | `user` | 只允许收紧：远程插件安装和更新必须固定完整提交 SHA。也对应 `GROK_MARKETPLACE_REQUIRE_SHA`。该键和环境变量均不能把门控重新关闭。 |
 
 ### `mcp`
 
@@ -343,7 +348,16 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
-| `memory.enabled` | `boolean` | `pin` | `user` | 跨会话记忆总开关。也对应 `GROK_MEMORY`。 |
+| `memory.enabled` | `boolean` | `pin` | `user` | 旧版记忆开关，也对应 `GROK_MEMORY`；启用 v2 门控后由 v2 优先处理。 |
+| `memory_v2.enabled` | `boolean` | `pin` | `user` | 记忆 v2 主开关，默认 false。true 时 v2 优先于旧版 memory.enabled；false 或未设置时按常规方式解析旧版启用状态。 |
+| `memory_v2.rollout` | `"off"`, `"record_only"`, `"shadow"`, `"active"` | — | `user` | 新 v2 会话的高级分阶段发布控制；启用 v2 后默认为 active。多数用户应保持未设置。 |
+| `memory_v2.capture_status_enabled` | `boolean` | — | `user` | 用于调试，在界面显示记忆 v2 采集生命周期；成功采集可展开生成内容和已提交观察文件链接。遥测和调试日志始终记录。默认 false。 |
+| `memory_v2.capture_enabled` | `boolean` | — | `user` | 启用记忆 v2 的提取与观察记录采集，默认 true。 |
+| `memory_v2.automatic_dream_enabled` | `boolean` | — | `user` | 启用事件驱动的记忆 v2 Dream，默认 true。 |
+| `memory_v2.manual_dream_enabled` | `boolean` | — | `user` | 启用显式请求的记忆 v2 Dream，默认 true。 |
+| `memory_v2.file_writes_enabled` | `boolean` | — | `user` | 允许所有记忆 v2 文件修改，默认 true；false 会在创建基础目录前拒绝执行。 |
+| `memory_v2.archived_retention_days` | `number` | — | `user` | 记忆 v2 已归档观察文件的保留天数，默认 30。 |
+| `memory_v2.job_retention_days` | `number` | — | `user` | 记忆 v2 已终止采集任务元数据的保留天数，默认 14。 |
 
 ### `model`
 
@@ -371,12 +385,16 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `model.<id>.model` | `string` | `yes` | `user` | 发送给 API 的模型 ID。 |
 | `model.<id>.model_family` | `string` | `yes` | `user` | 用于压缩和能力分组的模型家族 ID。 |
 | `model.<id>.model_provider` | `string` | `yes` | `user` | 该模型使用的命名 `[model_providers.<name>]` 提供方 ID。 |
+| `model.<id>.mtls_cert_dir` | `string` | `yes` | `user` | 模型端点的 mTLS 身份目录，包含 client.crt/client.key 或 tls.crt/tls.key。同一模型必须只设置一个 HTTPS base_url 且不能设置 api_base_url，否则拒绝配置；请求不会跟随重定向。 |
 | `model.<id>.name` | `string` | `yes` | `user` | 模型选择器中显示的标签。 |
 | `model.<id>.query_params` | `map<string,string>` | `yes` | `user` | 该模型请求的额外查询参数。 |
+| `model.<id>.rate_limit_retry_threshold` | `number` | `yes` | `user` | 受速率限制请求的总尝试次数上限，不超过解析后的 max_retries。设置后关闭独立的子智能体 429 等待循环。 |
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | 已弃用的单模型推理强度；优先使用 `reasoning_efforts`。 |
 | `model.<id>.reasoning_efforts` | `array of tables` | `yes` | `user` | 该模型允许的推理强度取值。 |
+| `model.<id>.reasoning_summary` | `none / auto / concise / detailed` | `yes` | `user` | 此模型 Responses API 的 reasoning.summary，默认 concise。none 省略字段，用于拒绝该参数的端点（例如 AWS Bedrock Mantle）。 |
 | `model.<id>.show_model_fingerprint` | `boolean` | `yes` | `user` | 提供方返回模型 fingerprint 时在 UI 中显示。 |
 | `model.<id>.stream_tool_calls` | `boolean` | `yes` | `user` | 该模型工具调用流式请求的形状。 |
+| `model.<id>.subagent_rate_limit_max_attempts` | `number` | `yes` | `user` | 未设置 rate_limit_retry_threshold 时，子智能体 429 等待循环的最大尝试次数；默认 8，最大 32，设为 0 禁用。 |
 | `model.<id>.supported_in_api` | `boolean` | `yes` | `user` | 此目录条目是否作为公共 API 模型提供。 |
 | `model.<id>.supports_backend_search` | `boolean` | `yes` | `user` | 端点是否支持 Grok 托管的服务端搜索工具。 |
 | `model.<id>.supports_reasoning_effort` | `boolean` | `yes` | `user` | 已弃用；优先使用 `reasoning_efforts`。 |
@@ -407,8 +425,10 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `models.max_completion_tokens` | `number` | `yes` | `user` | 模型未设置时使用的全局最大补全 token 默认值。 |
 | `models.max_retries` | `number` | `yes` | `user` | 模型未设置时使用的全局推理重试默认值。 |
 | `models.prompt_suggestion` | `string` | `yes` | `user` | 下一提示幽灵文本所用模型；未设置时依次回退到远程值和当前会话模型。 |
+| `models.rate_limit_retry_threshold` | `number` | `yes` | `user` | 模型未单独设置时，受速率限制请求的总尝试次数上限，不超过解析后的 max_retries。设置后会关闭独立的子智能体 429 等待循环。 |
 | `models.session_summary` | `string` | `yes` | `user` | 生成会话标题和摘要的模型。 |
 | `models.stream_tool_calls` | `boolean` | `yes` | `user` | 全局工具调用流式请求形状；某些 BYOK 端点需要 false。 |
+| `models.subagent_rate_limit_max_attempts` | `number` | `yes` | `user` | 未设置 rate_limit_retry_threshold 时，子智能体 429 等待循环的全局默认尝试次数；默认 8，最大 32，设为 0 禁用等待循环。 |
 | `models.temperature` | `number` | `yes` | `user` | 模型未设置时使用的全局采样 temperature。 |
 | `models.top_p` | `number` | `yes` | `user` | 模型未设置时使用的全局 `top_p`。 |
 | `models.web_search` | `string` | `pin` | `user` | 客户端 `web_search` 工具使用的模型。也对应 `GROK_WEB_SEARCH_MODEL`。 |
@@ -423,8 +443,8 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
-| `paths.extra_rule_dirs` | `string[]` | `yes` | `user` | 额外规则目录（每个目录含 `*.md`）。 |
-| `paths.extra_skill_dirs` | `string[]` | `yes` | `user` | 额外技能目录（每个目录含 `<skill>/SKILL.md`）。 |
+| `paths.extra_rule_dirs` | `string[]` | `yes` | `user` | 额外规则目录（绝对路径或 ~/…，每个目录直接包含 *.md），在主目录规则之后加载。 |
+| `paths.extra_skill_dirs` | `string[]` | `yes` | `user` | 记录 /import-claude 的技能目录；技能注入忽略该项，请使用 [skills] paths。 |
 
 ### `permission`
 
@@ -490,7 +510,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
-| `storage` | `table` | `yes` | `user` | 本地会话存储清理策略。 |
+| `storage.cleanup_ttl_days` | `integer` | `yes` | `user` | 会话空闲达到该天数后删除其目录；活跃会话中的旧媒体和终端日志也按此期限清理。默认 30。 |
 
 ### `subagents`
 

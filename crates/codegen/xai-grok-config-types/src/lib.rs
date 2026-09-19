@@ -5,6 +5,7 @@
     unreachable_code,
     dead_code
 )]
+#![deny(clippy::indexing_slicing)]
 mod flags;
 pub use flags::*;
 mod registry;
@@ -311,9 +312,13 @@ pub struct RemoteSettings {
     /// When `Some(true)`, enable LOC attribution tracking for this session.
     #[serde(default)]
     pub loc_tracking: Option<bool>,
-    /// Remote toggle for the experimental memory system.
+    /// Legacy remote memory toggle, used only when memory v2 is not enabled.
     #[serde(default)]
     pub memory_enabled: Option<bool>,
+    /// Dedicated memory-v2 settings object. This is isolated from the legacy
+    /// memory fields and populated from `grok_build_memory_v2_*` features.
+    #[serde(default)]
+    pub memory_v2: Option<memory::MemoryV2Settings>,
     #[serde(default)]
     pub memory_search_max_results: Option<u32>,
     #[serde(default)]
@@ -555,6 +560,9 @@ pub struct RemoteSettings {
     pub telemetry_mode: Option<String>,
     #[serde(default)]
     pub trace_upload_enabled: Option<bool>,
+    /// Request body encodings the server accepts on the chat routes. Empty or absent means plain JSON only.
+    #[serde(default)]
+    pub accept_request_encodings: Vec<RemoteRequestEncoding>,
     /// Enable user-facing feedback (heuristic popups, `/feedback` command).
     /// Session analytics (signal sync, turn deltas) are gated separately by `telemetry_enabled`.
     #[serde(default)]
@@ -899,6 +907,15 @@ pub struct RemoteSettings {
     /// Stats poll interval in seconds when set.
     #[serde(default)]
     pub jemalloc_heap_profile_poll_interval_secs: Option<u64>,
+}
+/// A request body encoding advertised in [`RemoteSettings::accept_request_encodings`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteRequestEncoding {
+    Zstd,
+    /// Forward-compat: an encoding this build does not know.
+    #[serde(other)]
+    Unknown,
 }
 impl RemoteSettings {
     /// Denylist check for an optional imagine tool.
@@ -1519,6 +1536,28 @@ mod tests {
         assert_eq!(settings.memory_initial_injection_min_score, Some(0.66));
     }
     #[test]
+    fn remote_settings_memory_v2_round_trips_and_defaults_absent() {
+        for expected in [true, false] {
+            let settings: RemoteSettings = serde_json::from_value(serde_json::json!({
+                "memory_v2": {
+                    "enabled": expected,
+                    "capture_status_enabled": expected,
+                },
+            }))
+            .unwrap();
+            let memory_v2 = settings.memory_v2.as_ref().unwrap();
+            assert_eq!(memory_v2.enabled, Some(expected));
+            assert_eq!(memory_v2.capture_status_enabled, Some(expected));
+            let round_trip: RemoteSettings =
+                serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+            let memory_v2 = round_trip.memory_v2.as_ref().unwrap();
+            assert_eq!(memory_v2.enabled, Some(expected));
+            assert_eq!(memory_v2.capture_status_enabled, Some(expected));
+        }
+        let absent: RemoteSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.memory_v2, None);
+    }
+    #[test]
     fn remote_settings_initial_injection_deserialize_absent() {
         let json = r#"{"memory_enabled": true}"#;
         let settings: RemoteSettings = serde_json::from_str(json).unwrap();
@@ -1565,6 +1604,17 @@ mod tests {
         let out = serde_json::to_value(&dr).unwrap();
         assert_eq!(out.get("future_knob"), Some(&serde_json::json!(42)));
         assert_eq!(out.get("probe_enabled"), Some(&serde_json::json!(true)));
+    }
+    #[test]
+    fn remote_settings_accept_request_encodings_unknown_tolerated_and_default_empty() {
+        let s: RemoteSettings =
+            serde_json::from_str(r#"{"accept_request_encodings": ["zstd", "br"]}"#).unwrap();
+        assert_eq!(
+            vec![RemoteRequestEncoding::Zstd, RemoteRequestEncoding::Unknown],
+            s.accept_request_encodings
+        );
+        let absent: RemoteSettings = serde_json::from_str("{}").unwrap();
+        assert!(absent.accept_request_encodings.is_empty());
     }
     type JemallocFields<'a> = (Option<bool>, Option<&'a [u64]>, Option<u64>);
     fn jemalloc_fields(s: &RemoteSettings) -> JemallocFields<'_> {

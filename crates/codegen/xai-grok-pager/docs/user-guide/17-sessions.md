@@ -1,5 +1,7 @@
 # Session Management
 
+[简体中文](zh-CN/17-sessions.md)
+
 Grok saves every conversation to disk automatically. Whether you work in the TUI, in headless mode, or over agent stdio, Grok records the exchange as a session. You can resume, rewind, or compact it. This document describes how to manage sessions.
 
 ---
@@ -28,6 +30,9 @@ Grok stores each session in its own directory, grouped by working directory. It 
   summary.json            # metadata: summary/title, timestamps, model ID, message counts
   updates.jsonl           # ACP session update stream (conversation + tool calls)
   chat_history.jsonl      # raw chat messages sent to the model
+  system_prompt.txt       # the rendered system prompt, as sent to the model
+  prompt_context.json     # the inputs the system prompt was rendered from
+  tool_definitions.json   # function tools sent on the latest model call (no MCP server__tool entries)
   plan.json               # TODO/task list state
   rewind_points.jsonl     # rewind points for /rewind undo
   signals.json            # session signals (token usage, tool/turn counters)
@@ -36,7 +41,7 @@ Grok stores each session in its own directory, grouped by working directory. It 
   subagents/              # per-subagent metadata (meta.json); the child sessions live in the normal sessions tree
 ```
 
-`summary.json` is the index entry. It records the session summary and generated title, the model ID, the creation and update timestamps, the message counts, and a parent session reference for forked or restored sessions. It also records the latest last-turn summary and session recap so listing surfaces can show them. `updates.jsonl` is the authoritative conversation log that drives `/resume` and session restore. Per-turn token and cost totals are available through `grok usage`.
+`summary.json` is the index entry. It records the session summary and generated title, the model ID, the creation and update timestamps, the message counts, and a parent session reference for forked or restored sessions. It also records the latest last-turn summary and session recap so listing surfaces can show them. `updates.jsonl` is the authoritative conversation log that drives `/resume` and session restore. `tool_definitions.json` omits MCP `server__tool` entries because the model reaches those through `search_tool` and `use_tool`, which are listed. Per-turn token and cost totals are available through `grok usage`.
 
 ### Session titles
 

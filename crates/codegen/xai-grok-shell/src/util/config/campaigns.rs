@@ -449,8 +449,18 @@ mod tests {
             );
             let active = resolve_active_campaigns_from_layers(&layers, &base, &[], &HashSet::new());
             assert_eq!(active.len(), 1, "override must apply despite kill switch");
-            assert_eq!(active[0].id, "c");
-            assert_eq!(active[0].patch["models"]["default"].as_str(), Some("m"));
+            let Some(first) = active.first() else {
+                panic!("expected one campaign: {active:?}");
+            };
+            assert_eq!(first.id, "c");
+            assert_eq!(
+                first
+                    .patch
+                    .get("models")
+                    .and_then(|m| m.get("default"))
+                    .and_then(|v| v.as_str()),
+                Some("m")
+            );
         }
 
         // Same disabled base, override now unset: the kill switch suppresses all
@@ -716,10 +726,21 @@ mod tests {
         })
         .expect("entry with id + patch survives");
         assert_eq!(
-            entry.patch["models"]["default"].as_str(),
+            entry
+                .patch
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(|v| v.as_str()),
             Some("remote-model")
         );
-        assert_eq!(entry.patch["features"]["web_fetch"].as_bool(), Some(true));
+        assert_eq!(
+            entry
+                .patch
+                .get("features")
+                .and_then(|f| f.get("web_fetch"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         let no_id = CampaignOverride {
             id: None,

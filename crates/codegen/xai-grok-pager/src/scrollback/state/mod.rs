@@ -1879,8 +1879,13 @@ pub(super) mod test_util {
                 .as_ref()
                 .expect("cache must be valid");
             let range = self.state.visible_entry_range();
-            let base_y = cache.virtual_y[range.start];
-            let entry_y = cache.virtual_y[idx] - base_y;
+            let Some(&base_y) = cache.virtual_y.get(range.start) else {
+                panic!("virtual_y missing range start {}", range.start);
+            };
+            let Some(&entry_y_abs) = cache.virtual_y.get(idx) else {
+                panic!("virtual_y missing entry {idx}");
+            };
+            let entry_y = entry_y_abs - base_y;
             assert_eq!(
                 entry_y, self.state.scroll_offset,
                 "{msg}: entry {idx} at vy={entry_y} should be at scroll_offset={}",
@@ -3391,7 +3396,14 @@ mod tests {
         assert!(state.prepare_layout(W1, H));
         assert_eq!(state.last_width, W1);
         assert_eq!(state.layout_cache.as_ref().unwrap().width, W1);
-        let peek_height = state.layout_cache.as_ref().unwrap().entries[1].height;
+        let Some(peek_height) = state
+            .layout_cache
+            .as_ref()
+            .and_then(|c| c.entries.get(1))
+            .map(|e| e.height)
+        else {
+            panic!("expected cached entry 1");
+        };
 
         state.restore_viewport_snapshot(snap);
         assert_eq!(state.last_width, W0);
@@ -3404,7 +3416,8 @@ mod tests {
         let cache = state.layout_cache.as_ref().unwrap();
         assert_eq!(cache.width, W0);
         assert_ne!(
-            cache.entries[1].height, peek_height,
+            cache.entries.get(1).map(|e| e.height),
+            Some(peek_height),
             "heights must be recomputed for W0, not left at W1 wrap"
         );
     }

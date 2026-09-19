@@ -48,13 +48,15 @@
         clippy::unimplemented
     )
 )]
+#![deny(clippy::indexing_slicing)]
 
 use std::collections::HashMap;
 use std::io;
 
 mod bundled_git;
 pub use bundled_git::{
-    BundledGit, PathBase, bundled_git, prepend_bundled_git_path, prepend_child_path,
+    BundledGit, PathBase, bundled_git, bundled_git_at, prepend_bundled_git_path,
+    prepend_child_path, version_key,
 };
 
 mod child_wait;
@@ -268,7 +270,13 @@ fn eof_pipe_fd() -> Option<std::os::fd::OwnedFd> {
     }
 
     // SAFETY: the pipe call reported success, so both descriptors are open and unowned.
-    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let [read_fd, write_fd] = fds;
+    let (read, write) = unsafe {
+        (
+            OwnedFd::from_raw_fd(read_fd),
+            OwnedFd::from_raw_fd(write_fd),
+        )
+    };
 
     // Non-Linux has no atomic form: close the window as fast as possible and
     // accept it, as the sibling helper does.
@@ -1371,8 +1379,8 @@ mod tests {
             Some(OsStr::new("--no-optional-locks"))
         );
         assert_eq!(
-            &read_args[..read_args.len().saturating_sub(1)],
-            lock_args.as_slice()
+            read_args.split_last().map(|(_, rest)| rest),
+            Some(lock_args.as_slice())
         );
 
         let lock_envs: HashMap<_, _> = locking.get_envs().collect();
@@ -1507,10 +1515,10 @@ mod tests {
                 "intermediate exited without reporting a grandchild; stdout seen: {seen:?}"
             );
             if let Some(idx) = line.find("grandchild:") {
-                let digits: String = line[idx + "grandchild:".len()..]
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect();
+                let Some(after) = line.get(idx + "grandchild:".len()..) else {
+                    panic!("grandchild: prefix not on a char boundary in {line:?}");
+                };
+                let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
                 break digits.parse::<i32>().unwrap_or_else(|e| {
                     panic!("parse grandchild pid from {line:?}: {e}");
                 });

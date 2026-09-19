@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::output::{MCPOutput, ToolOutput};
 use crate::types::tool::{ToolKind, ToolNamespace};
+use crate::util::mcp_structured_content::render_structured_content;
 use crate::util::mcp_truncate::{McpTruncateContext, truncate_tool_output};
 
 /// Wire name of the MCP dispatch tool. UIs special-case it: while its
@@ -83,32 +84,49 @@ fn gateway_result_is_error(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Known content blocks become text; when every block is unknown, keep the pretty-printed
+/// envelope. Otherwise append `structuredContent` with the same dedupe rule as the local client.
 fn gateway_result_to_text(result: serde_json::Value) -> String {
-    if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
-        let parts: Vec<String> = content
-            .iter()
-            .filter_map(|item| {
-                if item.get("type").and_then(|v| v.as_str()) == Some("text") {
-                    item.get("text").and_then(|v| v.as_str()).map(str::to_owned)
-                } else if item.get("type").and_then(|v| v.as_str()) == Some("image") {
-                    let mime = item
-                        .get("mimeType")
-                        .or_else(|| item.get("mime_type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("image/png");
-                    item.get("data")
-                        .and_then(|v| v.as_str())
-                        .map(|data| format!("data:{mime};base64,{data}"))
-                } else if item.get("type").and_then(|v| v.as_str()) == Some("resource") {
-                    serde_json::to_string(item).ok()
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !parts.is_empty() {
-            return parts.join("\n");
-        }
+    let content = result
+        .get("content")
+        .and_then(|v| v.as_array())
+        .map_or(&[][..], Vec::as_slice);
+    let mut parts: Vec<String> = content
+        .iter()
+        .filter_map(|item| {
+            if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                item.get("text").and_then(|v| v.as_str()).map(str::to_owned)
+            } else if item.get("type").and_then(|v| v.as_str()) == Some("image") {
+                let mime = item
+                    .get("mimeType")
+                    .or_else(|| item.get("mime_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("image/png");
+                item.get("data")
+                    .and_then(|v| v.as_str())
+                    .map(|data| format!("data:{mime};base64,{data}"))
+            } else if item.get("type").and_then(|v| v.as_str()) == Some("resource") {
+                serde_json::to_string(item).ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Unknown-only content: return the envelope so nothing is lost (includes structuredContent).
+    if parts.is_empty() && !content.is_empty() {
+        return match result {
+            serde_json::Value::String(s) => s,
+            other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+        };
+    }
+    parts.extend(render_structured_content(
+        result
+            .get("structuredContent")
+            .or_else(|| result.get("structured_content")),
+        parts.iter().map(String::as_str),
+    ));
+    if !parts.is_empty() {
+        return parts.join("\n");
     }
 
     match result {
@@ -697,7 +715,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(captured.lock().unwrap().clone().unwrap()["query"], "prod");
+        assert_eq!(
+            captured.lock().unwrap().clone().unwrap().get("query"),
+            Some(&serde_json::json!("prod"))
+        );
         if let ToolOutput::MCP(mcp) = result {
             let identity = mcp
                 .managed_gateway_tool()
@@ -801,6 +822,54 @@ mod tests {
         assert!(result.to_prompt_format().contains("\"ok\": true"));
     }
 
+    #[test]
+    fn gateway_structured_content_is_appended_when_content_is_only_a_summary() {
+        let folders = serde_json::json!({"folders": [{"id": "p1", "name": "Alpha"}]});
+        for key in ["structuredContent", "structured_content"] {
+            let text = gateway_result_to_text(serde_json::json!({
+                "content": [{"type": "text", "text": "7 product folders, 2 custom folders"}],
+                key: folders,
+            }));
+            assert_eq!(
+                text,
+                format!("7 product folders, 2 custom folders\n{folders}")
+            );
+        }
+    }
+
+    /// Missing `content` reads as empty, like rmcp, so the payload alone is the text.
+    #[test]
+    fn gateway_structured_content_with_empty_or_missing_content_is_the_whole_text() {
+        let folders = serde_json::json!({"folders": [{"id": "p1", "name": "Alpha"}]});
+        for result in [
+            serde_json::json!({"content": [], "structuredContent": folders}),
+            serde_json::json!({"structuredContent": folders, "isError": false}),
+        ] {
+            assert_eq!(gateway_result_to_text(result), folders.to_string());
+        }
+    }
+
+    #[test]
+    fn gateway_inlined_structured_content_is_not_duplicated() {
+        let folders = serde_json::json!({"folders": [{"id": "p1", "name": "Alpha"}]});
+        let text = gateway_result_to_text(serde_json::json!({
+            "content": [{"type": "text", "text": folders.to_string()}],
+            "structuredContent": folders,
+        }));
+        assert_eq!(text, folders.to_string());
+    }
+
+    /// Unknown-only `content` (`resource_link`, `audio`) must not collapse to the payload alone.
+    #[test]
+    fn gateway_unknown_content_blocks_keep_the_envelope_with_structured_content() {
+        let text = gateway_result_to_text(serde_json::json!({
+            "content": [{"type": "resource_link", "uri": "file:///a"}],
+            "structuredContent": {"count": 1},
+        }));
+        assert!(text.contains("file:///a"), "{text}");
+        assert!(text.contains("\"count\": 1"), "{text}");
+    }
+
     #[tokio::test]
     async fn gateway_null_arguments_default_to_object() {
         let captured: SharedArgs = Arc::new(std::sync::Mutex::new(None));
@@ -847,8 +916,8 @@ mod tests {
             captured.is_object(),
             "string-encoded input should be parsed to object"
         );
-        assert_eq!(captured["assignee"], "me");
-        assert_eq!(captured["limit"], 10);
+        assert_eq!(captured.get("assignee"), Some(&serde_json::json!("me")));
+        assert_eq!(captured.get("limit"), Some(&serde_json::json!(10)));
     }
 
     #[tokio::test]
@@ -915,7 +984,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(gateway_captured.lock().unwrap().clone().unwrap()["q"], "x");
+        assert_eq!(
+            gateway_captured.lock().unwrap().clone().unwrap().get("q"),
+            Some(&serde_json::json!("x"))
+        );
         assert!(matches!(result, ToolOutput::MCP(_)));
     }
 
@@ -1096,7 +1168,8 @@ mod tests {
                 assert!(
                     text.contains("[MCP output truncated:"),
                     "truncated output must contain truncation annotation, got: {}",
-                    &text[text.len().saturating_sub(200)..],
+                    text.get(text.len().saturating_sub(200)..)
+                        .unwrap_or(text.as_str()),
                 );
                 let expected = format!("showing first {}", format_bytes(limit as u64));
                 assert!(
@@ -1224,13 +1297,17 @@ mod tests {
     fn schema_allows_arbitrary_properties_for_tool_input() {
         let schema = schemars::schema_for!(UseToolInput);
         let schema_json = serde_json::to_value(&schema).unwrap();
-        let tool_input_schema = &schema_json["properties"]["tool_input"];
+        let Some(tool_input_schema) = schema_json.pointer("/properties/tool_input") else {
+            panic!("schema missing tool_input: {schema_json}");
+        };
         assert_eq!(
-            tool_input_schema["type"], "object",
+            tool_input_schema.get("type"),
+            Some(&serde_json::json!("object")),
             "tool_input schema should have type: object, got: {tool_input_schema}"
         );
         assert_eq!(
-            tool_input_schema["additionalProperties"], true,
+            tool_input_schema.get("additionalProperties"),
+            Some(&serde_json::json!(true)),
             "tool_input schema must allow arbitrary keys for MCP inputs, got: {tool_input_schema}"
         );
     }
@@ -1469,11 +1546,13 @@ mod tests {
             .map(|e| e.unwrap().path())
             .collect();
         assert_eq!(files.len(), 1, "exactly one dump file");
+        let Some(dump) = files.first() else {
+            panic!("exactly one dump file");
+        };
         assert_eq!(
-            files[0].extension().and_then(|e| e.to_str()),
+            dump.extension().and_then(|e| e.to_str()),
             Some("json"),
-            "JSON payload must be saved as .json, got {:?}",
-            files[0]
+            "JSON payload must be saved as .json, got {dump:?}"
         );
 
         // annotation: .json path + steer to query the file via the shell tool. (Which query tools
@@ -1490,17 +1569,20 @@ mod tests {
                 assert!(
                     text.contains("to query the saved file"),
                     "JSON dump must steer to query the file: {}",
-                    &text[text.len().saturating_sub(300)..]
+                    text.get(text.len().saturating_sub(300)..)
+                        .unwrap_or(text.as_str())
                 );
                 assert!(
                     text.contains("`bash`"),
                     "steer references the resolved shell tool (fallback bash): {}",
-                    &text[text.len().saturating_sub(300)..]
+                    text.get(text.len().saturating_sub(300)..)
+                        .unwrap_or(text.as_str())
                 );
                 assert!(
                     !text.contains("if available"),
                     "presence is detected, so no 'if available' hedge: {}",
-                    &text[text.len().saturating_sub(300)..]
+                    text.get(text.len().saturating_sub(300)..)
+                        .unwrap_or(text.as_str())
                 );
             } else {
                 panic!("expected OkayOutput");

@@ -497,6 +497,24 @@ mod tests {
     use super::*;
     use crate::scrollback::types::{BlockContext, DisplayMode};
 
+    fn first_line(
+        output: &crate::scrollback::types::BlockOutput,
+    ) -> &crate::scrollback::types::BlockLine {
+        output
+            .lines
+            .first()
+            .unwrap_or_else(|| panic!("expected a line, got {:?}", output.lines))
+    }
+
+    fn span_text(line: &crate::scrollback::types::BlockLine, i: usize) -> &str {
+        line.content
+            .spans
+            .get(i)
+            .unwrap_or_else(|| panic!("expected span {i}, got {:?}", line.content.spans))
+            .content
+            .as_ref()
+    }
+
     fn make_ctx() -> BlockContext {
         BlockContext {
             width: 80,
@@ -515,7 +533,7 @@ mod tests {
     fn skill_md_renders_as_skill_label() {
         let block = ReadToolCallBlock::new("/home/user/.grok/skills/deploy/SKILL.md");
         let output = block.output(&make_ctx());
-        let text: String = output.lines[0]
+        let text: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -528,7 +546,7 @@ mod tests {
     fn regular_file_renders_as_read() {
         let block = ReadToolCallBlock::new("src/main.rs");
         let output = block.output(&make_ctx());
-        let text: String = output.lines[0]
+        let text: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -546,7 +564,7 @@ mod tests {
         let block = ReadToolCallBlock::new("/Users/me/project/src/main.rs")
             .with_line_range(LineRange::new(1, 10));
         let output = block.output(&make_ctx());
-        let text: String = output.lines[0]
+        let text: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -564,7 +582,7 @@ mod tests {
         ctx.mode = DisplayMode::Expanded;
         ctx.cwd = Some(cwd.clone());
         let output = block.output(&ctx);
-        let header: String = output.lines[0]
+        let header: String = first_line(&output)
             .content
             .spans
             .iter()
@@ -612,7 +630,7 @@ mod tests {
         let block = ReadToolCallBlock::new("/Users/me/project/src/main.rs")
             .with_line_range(LineRange::new(1, 10));
         let output = block.output(&make_ctx());
-        let header = &output.lines[0];
+        let header = first_line(&output);
 
         assert!(
             matches!(&header.selectable, Selectable::Spans(r) if *r == (1..2)),
@@ -625,7 +643,7 @@ mod tests {
             "main.rs",
             "copy/highlight should match the painted path span, not 'Read …'"
         );
-        assert_eq!(header.content.spans[0].content.as_ref(), "Read ");
+        assert_eq!(span_text(header, 0), "Read ");
         assert!(header.selection_text.is_none());
     }
 
@@ -637,7 +655,8 @@ mod tests {
         let mut ctx = make_ctx();
         ctx.mode = DisplayMode::Expanded;
         ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
-        let header = &block.output(&ctx).lines[0];
+        let output = block.output(&ctx);
+        let header = first_line(&output);
         assert_eq!(derive_selection_text(header), "src/main.rs");
     }
 
@@ -649,10 +668,8 @@ mod tests {
         ctx.cwd = Some(std::path::PathBuf::from("/Users/me/project"));
 
         let collapsed = block.output(&ctx);
-        let target = collapsed.lines[0]
-            .link_target
-            .as_ref()
-            .expect("link target");
+        let collapsed_header = first_line(&collapsed);
+        let target = collapsed_header.link_target.as_ref().expect("link target");
         assert_eq!(
             target,
             &crate::render::osc8::LinkTarget::File(
@@ -667,18 +684,13 @@ mod tests {
                 .as_ref(),
             "file:///Users/me/project/src/main.rs"
         );
-        assert_eq!(
-            collapsed.lines[0].content.spans[1].content.as_ref(),
-            "main.rs"
-        );
+        assert_eq!(span_text(collapsed_header, 1), "main.rs");
 
         ctx.mode = DisplayMode::Expanded;
         let expanded = block.output(&ctx);
-        assert_eq!(
-            expanded.lines[0].content.spans[1].content.as_ref(),
-            "src/main.rs"
-        );
-        assert_eq!(expanded.lines[0].link_target.as_ref(), Some(target));
+        let expanded_header = first_line(&expanded);
+        assert_eq!(span_text(expanded_header, 1), "src/main.rs");
+        assert_eq!(expanded_header.link_target.as_ref(), Some(target));
     }
 
     #[test]
@@ -687,11 +699,11 @@ mod tests {
 
         let block = ReadToolCallBlock::new("/home/user/.grok/skills/deploy/SKILL.md");
         let output = block.output(&make_ctx());
-        let header = &output.lines[0];
+        let header = first_line(&output);
 
         assert!(matches!(&header.selectable, Selectable::Spans(r) if *r == (1..2)));
         assert_eq!(derive_selection_text(header), "deploy");
-        assert_eq!(header.content.spans[0].content.as_ref(), "Skill ");
+        assert_eq!(span_text(header, 0), "Skill ");
     }
 
     #[test]

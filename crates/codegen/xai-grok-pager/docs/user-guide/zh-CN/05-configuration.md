@@ -139,8 +139,8 @@ default_selected_permission = "allow_once"
 
 | 值 | 行为 |
 |-------|----------|
-| `false`（默认） | 回滚区会抑制裸字母和 `Shift+letter` 按键（`j`/`k`、`h`/`l`、`g`/`G`、`y`/`Y`、`o`/`O`、`r`、`x`、`e`/`E`、`H`/`L`，以及 `i`）：按下其中任意键会聚焦提示并输入该字符。方向键、`Tab`、`Space`、`PageUp`/`PageDown` 以及所有 `Ctrl+letter` 快捷键仍可导航。`Esc` **不是**回滚键——它会取消正在运行的回合；空闲时遵循清除 / 回退策略（见[键盘快捷键](03-keyboard-shortcuts.md#escape)）。 |
-| `true` | 所有 Vim 风格回滚绑定均启用，完全按照[键盘快捷键](03-keyboard-shortcuts.md)所列。回合进行中，`Esc` 在此模式下会被吞掉（用 `Ctrl+C` 取消）；精简模式无论如何都保留 Esc 取消行为。 |
+| `false`（默认） | 回滚区会抑制裸字母和 `Shift+letter` 按键（`j`/`k`、`h`/`l`、`g`/`G`、`y`/`Y`、`o`/`O`、`r`、`x`、`e`/`E`、`H`/`L`，以及 `i`）：按下其中任意键会聚焦提示并输入该字符。方向键、`Tab`、`Space`、`PageUp`/`PageDown` 以及所有 `Ctrl+letter` 快捷键仍可导航。`Esc` **不是**回滚键——运行中的回合会提示使用 `Ctrl+C` 取消，`Esc` 本身不会取消；空闲时遵循清除 / 回退策略（见[键盘快捷键](03-keyboard-shortcuts.md#escape)）。 |
+| `true` | 所有 Vim 风格回滚绑定均启用，完全按照[键盘快捷键](03-keyboard-shortcuts.md)所列。回合进行中，所有模式（包括精简模式）的 `Esc` 均不会取消，而会提示使用 `Ctrl+C`；Vim 设置只控制回滚导航。 |
 
 可在运行时使用 `/vim-mode` 切换，或从 `/settings` → **Vim 回滚导航**切换。Grok 会立即将更改写入 `[ui] vim_mode`，并应用于该进程中所有未来的 pager 会话，包括新智能体和子智能体。不存在按会话覆盖——下次启动时 `config.toml` 才是事实来源。`vim_mode` 与 `simple_mode` 相互独立。
 
@@ -288,11 +288,11 @@ MCP 服务器也可以在 `.grok/config.toml` 中按项目设置。项目级配�
 <a id="memory"></a>
 ### 记忆
 
-跨会话持久化知识（需要 `--experimental-memory` 或 `GROK_MEMORY=1`）。
+跨会话持久化知识。使用 `[memory] enabled = true` 或 `GROK_MEMORY=1` 启用；有效 TOML 中显式的 `enabled = false` 会覆盖远程启用设置。配置禁用的会话仍可打开 `/memory` 并按 `t` 临时启用；`--no-memory` 或 `GROK_MEMORY=0` 则对整个进程强制禁用。更新后首次打开工作区时，旧版笔记会自动迁移到主题，原文件保持不变。
 
 ```toml
 [memory]
-enabled = false                       # 启用记忆
+enabled = true                        # 启用记忆
 
 [memory.session]
 save_on_end = true                    # 会话结束时写入元数据摘要
@@ -876,3 +876,7 @@ disable_plugins = false               # 完全隐藏钩子/插件 UI
 3. **插件**——基于文件的 `.lsp.json`，然后是内联 `lspServers`，按插件加载顺序
 
 项目和用户条目会替换同名的低优先级条目。插件条目只会添加本地文件尚未定义的名称，因此本地 `lsp.json` 始终优先于插件。只有在插件受信任后才会加载插件 LSP 服务器（见[插件](09-plugins.md)）。
+
+## 保存配置与符号链接
+
+通过设置界面保存用户配置时，如果 `~/.grok/config.toml` 本身是符号链接，会原子更新链接目标并保留链接；若链接目标尚不存在，则创建该目标。项目配置文件的末端符号链接出于安全考虑会被替换为普通文件。无法解析的用户配置不会被覆盖。

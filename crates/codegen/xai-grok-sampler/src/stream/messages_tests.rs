@@ -3,6 +3,13 @@
 
 use super::*;
 use futures_util::stream;
+
+fn nth<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected item {i}, got {} items", xs.len());
+    };
+    x
+}
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
     ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
@@ -104,8 +111,11 @@ async fn empty_stream_yields_started_then_completed() {
     let raw = stream::iter(Vec::<Result<MessageStreamEvent, SamplingError>>::new()).boxed();
     let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
     assert_eq!(events.len(), 2);
-    assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-    assert!(matches!(events[1], SamplingEvent::Completed { .. }));
+    assert!(matches!(
+        nth(&events, 0),
+        SamplingEvent::StreamStarted { .. }
+    ));
+    assert!(matches!(nth(&events, 1), SamplingEvent::Completed { .. }));
 }
 
 #[tokio::test]
@@ -203,7 +213,10 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
                 .reasoning_items()
                 .next()
                 .expect("reasoning sibling preserved");
-            let rs::SummaryPart::SummaryText(t) = &r.summary[0];
+            let Some(part) = r.summary.first() else {
+                panic!("expected a summary part");
+            };
+            let rs::SummaryPart::SummaryText(t) = part;
             assert_eq!(t.text, "let me think...");
             assert_eq!(r.encrypted_content.as_deref(), Some("abc123"));
         }
@@ -319,20 +332,20 @@ async fn tool_use_block_assembles_into_tool_call() {
         })
         .collect();
     assert_eq!(deltas.len(), 3);
-    assert_eq!(deltas[0].0, 0);
-    assert_eq!(deltas[0].1.as_deref(), Some("call_xyz"));
-    assert_eq!(deltas[0].2.as_deref(), Some("do_thing"));
-    assert_eq!(deltas[0].3, None);
-    assert_eq!(deltas[1].3.as_deref(), Some("{\"x\":"));
-    assert_eq!(deltas[2].3.as_deref(), Some("1}"));
+    assert_eq!(nth(&deltas, 0).0, 0);
+    assert_eq!(nth(&deltas, 0).1.as_deref(), Some("call_xyz"));
+    assert_eq!(nth(&deltas, 0).2.as_deref(), Some("do_thing"));
+    assert_eq!(nth(&deltas, 0).3, None);
+    assert_eq!(nth(&deltas, 1).3.as_deref(), Some("{\"x\":"));
+    assert_eq!(nth(&deltas, 2).3.as_deref(), Some("1}"));
 
     match evs.last().unwrap() {
         SamplingEvent::Completed { response, .. } => {
             let calls = response.tool_calls();
             assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].id.as_ref(), "call_xyz");
-            assert_eq!(calls[0].name, "do_thing");
-            assert_eq!(calls[0].arguments.as_ref(), "{\"x\":1}");
+            assert_eq!(nth(calls, 0).id.as_ref(), "call_xyz");
+            assert_eq!(nth(calls, 0).name, "do_thing");
+            assert_eq!(nth(calls, 0).arguments.as_ref(), "{\"x\":1}");
             assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
         }
         other => panic!("expected Completed, got {other:?}"),
@@ -514,7 +527,10 @@ async fn max_tokens_tool_use_without_arg_deltas_collects_empty_arguments() {
         SamplingEvent::Completed { response, .. } => {
             assert_eq!(response.stop_reason, Some(StopReason::Length));
             assert_eq!(response.tool_calls().len(), 1);
-            assert_eq!(response.tool_calls()[0].arguments.as_ref(), "");
+            let Some(call) = response.tool_calls().first() else {
+                panic!("expected a tool call");
+            };
+            assert_eq!(call.arguments.as_ref(), "");
         }
         other => panic!("expected Completed(Length), got {other:?}"),
     }
@@ -669,8 +685,8 @@ async fn model_metadata_yielded_after_stream_started() {
     ))
     .await;
 
-    assert!(matches!(evs[0], SamplingEvent::StreamStarted { .. }));
-    assert!(matches!(evs[1], SamplingEvent::ModelMetadata { .. }));
+    assert!(matches!(nth(&evs, 0), SamplingEvent::StreamStarted { .. }));
+    assert!(matches!(nth(&evs, 1), SamplingEvent::ModelMetadata { .. }));
 }
 
 #[test]

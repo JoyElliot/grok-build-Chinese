@@ -48,11 +48,11 @@ fn compaction_summary_input_projects_agent_message_once_and_keeps_source_raw() {
     let final_boundary = CompactionHistoryInput::from(prepared).prepare(0);
 
     assert_eq!(
-        final_boundary.items[0].text_content(),
-        format!(
+        final_boundary.items.first().map(|i| i.text_content()),
+        Some(format!(
             "{}\n{raw}",
             xai_chat_state::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
-        )
+        ))
     );
     assert_eq!(serde_json::to_vec(&source).unwrap(), source_serialized);
 }
@@ -68,7 +68,7 @@ fn prepared_image_only_agent_history_cannot_be_projected_again() {
     let prepared =
         build_compaction_chat_history(vec![ConversationItem::User(image_only)], None, true, 0);
     let final_boundary = CompactionHistoryInput::from(prepared).prepare(0);
-    let ConversationItem::User(user) = &final_boundary.items[0] else {
+    let Some(ConversationItem::User(user)) = final_boundary.items.first() else {
         panic!("prepared agent message must stay a user item");
     };
     assert!(matches!(
@@ -91,7 +91,7 @@ fn no_image_history_preserves_non_agent_message_prefix_before_prompt() {
 
     assert_eq!(request.image_budget.inline_images, 0);
     assert_eq!(
-        serde_json::to_value(&request.items[..source.len()]).unwrap(),
+        serde_json::to_value(request.items.get(..source.len()).unwrap_or(&[])).unwrap(),
         source_serialized
     );
 }

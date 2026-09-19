@@ -29,9 +29,12 @@ use crate::register_resource;
 
 pub use super::active_message::{
     ActiveAgentMessage, ActiveAgentMessageDelivery, ActiveAgentMessageOperation,
-    ActiveAgentMessageOutcome, ActiveAgentMessageRequest, ActiveAgentMessageSource,
-    ActiveMessageTarget, AgentAddress, MAX_ACTIVE_AGENT_MESSAGE_BYTES,
-    SubagentActiveMessageRequest,
+    ActiveAgentMessageOutcome, ActiveAgentMessageQuotaKind, ActiveAgentMessageRequest,
+    ActiveAgentMessageSource, ActiveMessageRoute, ActiveMessageSenderContext, ActiveMessageTarget,
+    AgentAddress, MAX_ACTIVE_AGENT_MESSAGE_BYTES, SubagentActiveMessageRequest,
+};
+pub use super::agent_message_sender::{
+    AgentMessageHolder, AgentMessageSender, AgentMessageSenderResource,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -253,6 +256,9 @@ pub trait SubagentCapabilityModeExt {
 
     /// Return the set of `ToolKind`s allowed under this capability mode.
     fn allowed_tool_kinds(self) -> &'static [crate::types::tool::ToolKind];
+
+    /// Whether a tool of `kind` survives [`Self::filter_tool_config`] (`All` filters nothing).
+    fn allows_tool_kind(self, kind: crate::types::tool::ToolKind) -> bool;
 }
 
 /// Prune background-task lifecycle tools (`get_task_output` / `kill_task`) when
@@ -303,6 +309,10 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
         prune_orphaned_background_task_tools(config);
     }
 
+    fn allows_tool_kind(self, kind: crate::types::tool::ToolKind) -> bool {
+        self == Self::All || self.allowed_tool_kinds().contains(&kind)
+    }
+
     /// Return the set of `ToolKind`s allowed under this capability mode.
     fn allowed_tool_kinds(self) -> &'static [crate::types::tool::ToolKind] {
         use crate::types::tool::ToolKind;
@@ -349,6 +359,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::BackgroundTaskAction,
                 ToolKind::KillTaskAction,
                 ToolKind::Task,
+                ToolKind::ActiveAgentMessage,
                 ToolKind::EnterPlan,
                 ToolKind::ExitPlan,
                 ToolKind::AskUser,
@@ -369,6 +380,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::BackgroundTaskAction,
                 ToolKind::KillTaskAction,
                 ToolKind::Task,
+                ToolKind::ActiveAgentMessage,
                 ToolKind::EnterPlan,
                 ToolKind::ExitPlan,
                 ToolKind::AskUser,
@@ -1513,12 +1525,14 @@ mod tests {
         req.respond_to.send(summaries).unwrap();
 
         let result = response_rx.try_recv().unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].subagent_id(), "sub-1");
-        assert_eq!(result[0].snapshot.duration_ms, 1500);
-        assert_eq!(result[0].tool_calls, 7);
+        let [first] = result.as_slice() else {
+            panic!("expected exactly one result, got {}", result.len());
+        };
+        assert_eq!(first.subagent_id(), "sub-1");
+        assert_eq!(first.snapshot.duration_ms, 1500);
+        assert_eq!(first.tool_calls, 7);
         assert!(matches!(
-            result[0].snapshot.status,
+            first.snapshot.status,
             super::SubagentSnapshotStatus::Completed { turns: 3, .. }
         ));
     }
@@ -1564,10 +1578,12 @@ mod tests {
         req.respond_to.send(snapshots).unwrap();
 
         let result = response_rx.try_recv().unwrap();
-        assert_eq!(result.len(), 2);
-        assert!(result[0].is_some());
-        assert!(result[0].as_ref().unwrap().status.is_terminal());
-        assert!(result[1].is_none());
+        let [first, second] = result.as_slice() else {
+            panic!("expected two items: {result:?}");
+        };
+        assert!(first.is_some());
+        assert!(first.as_ref().is_some_and(|s| s.status.is_terminal()));
+        assert!(second.is_none());
     }
 
     #[test]

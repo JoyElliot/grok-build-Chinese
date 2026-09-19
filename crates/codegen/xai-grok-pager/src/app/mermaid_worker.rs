@@ -1111,12 +1111,12 @@ mod tests {
         assert_eq!(pending.len(), 2, "two distinct cache keys");
         // The repeated key coalesced to its latest job (newest out_path wins).
         assert_eq!(
-            pending[&key("same")].out_path,
-            PathBuf::from("/tmp/new.png")
+            pending.get(&key("same")).map(|j| &j.out_path),
+            Some(&PathBuf::from("/tmp/new.png"))
         );
         assert_eq!(
-            pending[&key("other")].out_path,
-            PathBuf::from("/tmp/other.png")
+            pending.get(&key("other")).map(|j| &j.out_path),
+            Some(&PathBuf::from("/tmp/other.png"))
         );
     }
 
@@ -1145,7 +1145,7 @@ mod tests {
             vec![MermaidClickAction::Open, MermaidClickAction::CopyPath]
         );
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].key, k2);
+        assert_eq!(pending.first().map(|p| &p.key), Some(&k2));
         // A key with nothing pending takes nothing and leaves the list intact.
         assert!(take_pending_for(&mut pending, &key("absent")).is_empty());
         assert_eq!(pending.len(), 1);

@@ -394,9 +394,11 @@ impl ImportClaudeModalState {
                 parent_index: None,
             }),
             Row::TypeHeader { section_key, .. } => {
-                let parent = rows[..self.focus]
-                    .iter()
-                    .rposition(|r| matches!(r, Row::ScopeHeader { .. }));
+                let parent = rows.get(..self.focus).and_then(|prefix| {
+                    prefix
+                        .iter()
+                        .rposition(|r| matches!(r, Row::ScopeHeader { .. }))
+                });
                 Some(FoldInfo {
                     collapsible: true,
                     expanded: !self.collapsed.contains(section_key.as_str()),
@@ -406,9 +408,11 @@ impl ImportClaudeModalState {
                 })
             }
             Row::Item { .. } => {
-                let parent = rows[..self.focus]
-                    .iter()
-                    .rposition(|r| matches!(r, Row::ScopeHeader { .. } | Row::TypeHeader { .. }));
+                let parent = rows.get(..self.focus).and_then(|prefix| {
+                    prefix.iter().rposition(|r| {
+                        matches!(r, Row::ScopeHeader { .. } | Row::TypeHeader { .. })
+                    })
+                });
                 Some(FoldInfo {
                     collapsible: false,
                     expanded: false,
@@ -750,7 +754,7 @@ fn build_rows(
             scope_collapsed,
         );
         // Backfill scope flat_indices.
-        if let Row::ScopeHeader { flat_indices, .. } = &mut rows[scope_header_pos] {
+        if let Some(Row::ScopeHeader { flat_indices, .. }) = rows.get_mut(scope_header_pos) {
             *flat_indices = (scope_start..flat_index).collect();
         }
         rows.push(Row::Blank);
@@ -778,7 +782,7 @@ fn build_rows(
             collapsed,
             scope_collapsed,
         );
-        if let Row::ScopeHeader { flat_indices, .. } = &mut rows[scope_header_pos] {
+        if let Some(Row::ScopeHeader { flat_indices, .. }) = rows.get_mut(scope_header_pos) {
             *flat_indices = (scope_start..flat_index).collect();
         }
     }
@@ -815,7 +819,7 @@ fn push_grouped_items(
         if Some(kind) != current_kind {
             // Close out previous group's flat_indices.
             if let Some(pos) = header_pos
-                && let Row::TypeHeader { flat_indices, .. } = &mut rows[pos]
+                && let Some(Row::TypeHeader { flat_indices, .. }) = rows.get_mut(pos)
             {
                 *flat_indices = std::mem::take(&mut group_indices);
             }
@@ -849,7 +853,7 @@ fn push_grouped_items(
 
     // Close out final group.
     if let Some(pos) = header_pos
-        && let Row::TypeHeader { flat_indices, .. } = &mut rows[pos]
+        && let Some(Row::TypeHeader { flat_indices, .. }) = rows.get_mut(pos)
     {
         *flat_indices = group_indices;
     }
@@ -949,9 +953,11 @@ fn render_row_dispatch_with_locale<'a>(
             item_index,
             flat_index,
         } => {
-            let item = match scope {
-                Scope::Global => &plan.global_items[*item_index],
-                Scope::Project => &plan.project_items[*item_index],
+            let Some(item) = (match scope {
+                Scope::Global => plan.global_items.get(*item_index),
+                Scope::Project => plan.project_items.get(*item_index),
+            }) else {
+                return Line::from("");
             };
             let is_selected = selected.get(*flat_index).copied().unwrap_or(false);
             render_item_line_with_locale(item, is_selected, focused, theme, locale)
@@ -1200,7 +1206,9 @@ mod tests {
         let n_key = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
         m.handle_key(&n_key);
         // Select only the first global item.
-        m.selected[0] = true;
+        if let Some(slot) = m.selected.get_mut(0) {
+            *slot = true;
+        }
         let filtered = m.filtered_plan();
         assert_eq!(filtered.global_items.len(), 1);
         assert_eq!(filtered.project_items.len(), 0);
@@ -1253,9 +1261,11 @@ mod tests {
         };
         let mut m = ImportClaudeModalState::new(plan, PathBuf::from("/tmp"));
         // Deselect every MCP server. They are at original indices 0, 2, 4.
-        m.selected[0] = false;
-        m.selected[2] = false;
-        m.selected[4] = false;
+        for idx in [0, 2, 4] {
+            if let Some(slot) = m.selected.get_mut(idx) {
+                *slot = false;
+            }
+        }
         let filtered = m.filtered_plan();
         // Exactly the Permission (idx 1) and EnvVar (idx 3) remain; none of alpha/beta/gamma
         assert_eq!(filtered.global_items.len(), 2);
@@ -1320,15 +1330,18 @@ mod tests {
         let click_y = m.content_area.unwrap().y + item_row_index as u16;
         let click_x = m.content_area.unwrap().x + 5; // anywhere in the row
         // Capture initial selection state for that item.
-        let flat_idx = match &rows[item_row_index] {
-            Row::Item { flat_index, .. } => *flat_index,
-            _ => unreachable!(),
+        let Some(Row::Item { flat_index, .. }) = rows.get(item_row_index) else {
+            panic!("expected item row");
         };
-        let before = m.selected[flat_idx];
+        let flat_idx = *flat_index;
+        let Some(&before) = m.selected.get(flat_idx) else {
+            panic!("flat idx out of range");
+        };
         let outcome = m.handle_mouse(MouseEventKind::Down(MouseButton::Left), click_x, click_y);
         assert_eq!(outcome, ImportClaudeModalOutcome::Changed);
         assert_eq!(
-            m.selected[flat_idx], !before,
+            m.selected.get(flat_idx).copied(),
+            Some(!before),
             "click on item row should toggle its selection"
         );
     }
@@ -1352,10 +1365,10 @@ mod tests {
         assert!(m.selected.iter().all(|&s| s));
         m.handle_mouse(MouseEventKind::Down(MouseButton::Left), click_x, click_y);
         // Global scope items (indices 0, 1) are now deselected
-        assert!(!m.selected[0]);
-        assert!(!m.selected[1]);
+        assert_eq!(m.selected.first().copied(), Some(false));
+        assert_eq!(m.selected.get(1).copied(), Some(false));
         // Project item (index 2) untouched.
-        assert!(m.selected[2]);
+        assert_eq!(m.selected.get(2).copied(), Some(true));
     }
 
     #[test]
@@ -1369,13 +1382,17 @@ mod tests {
         let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
         m.handle_key(&space);
         // Global has 2 items (indices 0, 1). Project has 1 (index 2).
-        assert!(!m.selected[0]);
-        assert!(!m.selected[1]);
-        assert!(m.selected[2], "project should be unaffected");
+        assert_eq!(m.selected.first().copied(), Some(false));
+        assert_eq!(m.selected.get(1).copied(), Some(false));
+        assert_eq!(
+            m.selected.get(2).copied(),
+            Some(true),
+            "project should be unaffected"
+        );
         // Space again: re-selects all in Global.
         m.handle_key(&space);
-        assert!(m.selected[0]);
-        assert!(m.selected[1]);
+        assert_eq!(m.selected.first().copied(), Some(true));
+        assert_eq!(m.selected.get(1).copied(), Some(true));
     }
 
     #[test]
@@ -1384,10 +1401,10 @@ mod tests {
         // Focus on the first ScopeHeader (Global).
         m.focus = 0;
         let rows = build_rows(&m.plan, &m.cwd, &m.collapsed);
-        let key = match &rows[0] {
-            Row::ScopeHeader { section_key, .. } => section_key.clone(),
-            _ => panic!("first row should be ScopeHeader"),
+        let Some(Row::ScopeHeader { section_key, .. }) = rows.first() else {
+            panic!("first row should be ScopeHeader");
         };
+        let key = section_key.clone();
         assert!(m.collapsed.is_empty(), "nothing collapsed initially");
 
         let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
@@ -1404,10 +1421,10 @@ mod tests {
         let mut m = ImportClaudeModalState::new(sample_plan(), PathBuf::from("/tmp"));
         m.focus = 0;
         let rows = build_rows(&m.plan, &m.cwd, &m.collapsed);
-        let key = match &rows[0] {
-            Row::ScopeHeader { section_key, .. } => section_key.clone(),
-            _ => panic!("first row should be ScopeHeader"),
+        let Some(Row::ScopeHeader { section_key, .. }) = rows.first() else {
+            panic!("first row should be ScopeHeader");
         };
+        let key = section_key.clone();
         // Collapse it first.
         m.collapsed.insert(key.clone());
         assert!(m.collapsed.contains(&key));
@@ -1439,8 +1456,8 @@ mod tests {
         // Focus jumped to the nearest header above the item
         assert!(m.focus < item_idx);
         assert!(matches!(
-            rows[m.focus],
-            Row::ScopeHeader { .. } | Row::TypeHeader { .. }
+            rows.get(m.focus),
+            Some(Row::ScopeHeader { .. } | Row::TypeHeader { .. })
         ));
     }
 
@@ -1474,7 +1491,10 @@ mod tests {
             "focus should be within new row bounds"
         );
         // The focused row is still the TypeHeader (it survives)
-        assert!(matches!(new_rows[m.focus], Row::TypeHeader { .. }));
+        assert!(matches!(
+            new_rows.get(m.focus),
+            Some(Row::TypeHeader { .. })
+        ));
     }
 
     #[test]
@@ -1485,16 +1505,19 @@ mod tests {
         let full_count = full_rows.len();
 
         // Find the first ScopeHeader's key
-        let key = match &full_rows[0] {
-            Row::ScopeHeader { section_key, .. } => section_key.clone(),
-            _ => panic!("first row should be ScopeHeader"),
+        let Some(Row::ScopeHeader { section_key, .. }) = full_rows.first() else {
+            panic!("first row should be ScopeHeader");
         };
+        let key = section_key.clone();
         collapsed.insert(key);
         let collapsed_rows = build_rows(&plan, &PathBuf::from("/tmp"), &collapsed);
         assert!(
             collapsed_rows.len() < full_count,
             "collapsed should have fewer rows"
         );
-        assert!(matches!(collapsed_rows[0], Row::ScopeHeader { .. }));
+        assert!(matches!(
+            collapsed_rows.first(),
+            Some(Row::ScopeHeader { .. })
+        ));
     }
 }

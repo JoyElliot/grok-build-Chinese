@@ -2927,9 +2927,16 @@ mod extensions_action_target_tests {
         };
 
         let mut agent = tab_bar_focused_agent();
-        let hooks_tab = agent.extensions_modal.as_ref().unwrap().window.tab_rects
-            [tab_index(ExtensionsTab::Hooks)]
-        .expect("Hooks tab rect");
+        let hooks_tab = agent
+            .extensions_modal
+            .as_ref()
+            .unwrap()
+            .window
+            .tab_rects
+            .get(tab_index(ExtensionsTab::Hooks))
+            .copied()
+            .flatten()
+            .expect("Hooks tab rect");
         agent.handle_extensions_modal_mouse(&left_down(hooks_tab.x, hooks_tab.y));
         render_modal(&mut agent);
         assert_list_focused(&agent, ExtensionsTab::Hooks, "tab label click");
@@ -2947,8 +2954,13 @@ mod extensions_action_target_tests {
             .expect("footer `Tab tabs` hint");
         agent.handle_extensions_modal_mouse(&left_down(tab_hint.x, tab_hint.y));
         render_modal(&mut agent);
-        let next =
-            ExtensionsTab::ALL[(tab_index(ExtensionsTab::Plugins) + 1) % ExtensionsTab::ALL.len()];
+        let tabs = ExtensionsTab::ALL;
+        let next = match tabs.len() {
+            0 => panic!("ExtensionsTab::ALL is empty"),
+            n => *tabs
+                .get((tab_index(ExtensionsTab::Plugins) + 1) % n)
+                .unwrap_or_else(|| panic!("next extensions tab")),
+        };
         assert_list_focused(&agent, next, "footer Tab hint click");
     }
 
@@ -3876,7 +3888,10 @@ mod connectors_url_click_tests {
             .iter()
             .position(|&e| e == entry_idx)
             .unwrap();
-        (hit.item_rects[pos].x + 2, band)
+        let Some(rect) = hit.item_rects.get(pos) else {
+            panic!("missing item rect at {pos}");
+        };
+        (rect.x + 2, band)
     }
 
     #[test]
@@ -3911,7 +3926,9 @@ mod connectors_url_click_tests {
                 .iter()
                 .position(|&e| e == entry_idx)
                 .unwrap();
-            let rect = hit.item_rects[pos];
+            let Some(rect) = hit.item_rects.get(pos).copied() else {
+                panic!("missing item rect at {pos}");
+            };
             (rect.x + 2, rect.y) // first row of the item rect is the fold-toggle label
         };
         let outcome = agent.handle_extensions_modal_mouse(&left_down(col, label_row));

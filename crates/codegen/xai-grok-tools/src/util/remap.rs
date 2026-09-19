@@ -55,7 +55,12 @@ pub fn remap_schema_properties(
             let new_key = param_map.get(&key).cloned().unwrap_or(key);
             new_props.insert(new_key, value);
         }
-        schema["properties"] = serde_json::Value::Object(new_props);
+        if let Some(obj) = schema.as_object_mut() {
+            obj.insert(
+                "properties".to_owned(),
+                serde_json::Value::Object(new_props),
+            );
+        }
     }
 
     // Remap entries in "required" array
@@ -71,7 +76,9 @@ pub fn remap_schema_properties(
                 item
             })
             .collect();
-        schema["required"] = serde_json::Value::Array(new_items);
+        if let Some(obj) = schema.as_object_mut() {
+            obj.insert("required".to_owned(), serde_json::Value::Array(new_items));
+        }
     }
 
     schema
@@ -89,8 +96,14 @@ mod tests {
             ("replace_with".to_string(), "new_string".to_string()),
         ]);
         let result = remap_json_keys(raw, &reverse);
-        assert_eq!(result["old_string"], "old");
-        assert_eq!(result["new_string"], "new");
+        assert_eq!(
+            result.get("old_string").and_then(|v| v.as_str()),
+            Some("old")
+        );
+        assert_eq!(
+            result.get("new_string").and_then(|v| v.as_str()),
+            Some("new")
+        );
     }
 
     #[test]
@@ -98,8 +111,11 @@ mod tests {
         let raw = serde_json::json!({"file_path": "test.rs", "unknown": true});
         let reverse = HashMap::from([("find".to_string(), "old_string".to_string())]);
         let result = remap_json_keys(raw, &reverse);
-        assert_eq!(result["file_path"], "test.rs");
-        assert_eq!(result["unknown"], true);
+        assert_eq!(
+            result.get("file_path").and_then(|v| v.as_str()),
+            Some("test.rs")
+        );
+        assert_eq!(result.get("unknown").and_then(|v| v.as_bool()), Some(true));
     }
 
     #[test]
@@ -147,16 +163,33 @@ mod tests {
         ]);
         let result = remap_schema_properties(&schema, &param_map);
         // Properties remapped
-        assert!(result["properties"]["find"].is_object());
-        assert!(result["properties"]["replace_with"].is_object());
-        assert!(result["properties"]["file_path"].is_object());
-        assert!(result["properties"].get("old_string").is_none());
+        assert!(
+            result
+                .pointer("/properties/find")
+                .is_some_and(|v| v.is_object())
+        );
+        assert!(
+            result
+                .pointer("/properties/replace_with")
+                .is_some_and(|v| v.is_object())
+        );
+        assert!(
+            result
+                .pointer("/properties/file_path")
+                .is_some_and(|v| v.is_object())
+        );
+        assert!(
+            result
+                .get("properties")
+                .is_none_or(|p| p.get("old_string").is_none())
+        );
         // Required array remapped
-        let required: Vec<String> = result["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
+        let required: Vec<String> = result
+            .get("required")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
             .collect();
         assert!(required.contains(&"find".to_string()));
         assert!(required.contains(&"replace_with".to_string()));

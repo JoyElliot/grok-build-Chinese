@@ -271,11 +271,11 @@ fn wrong_kind_replacement_is_rejected_and_downgrades_its_run() {
     let delivery = plan_post_tool_use_delivery(result, &original, TAG, &mut results);
     assert!(delivery.model_output.is_none());
     assert!(
-        matches!(results[3], HookRunResult::Failed { .. }),
+        matches!(results.get(3), Some(HookRunResult::Failed { .. })),
         "the wrong-kind run is downgraded to Failed"
     );
     assert!(
-        matches!(results[0], HookRunResult::Success { .. }),
+        matches!(results.first(), Some(HookRunResult::Success { .. })),
         "sibling runs are untouched"
     );
 }

@@ -1533,15 +1533,48 @@ fn parse_hex_color(hex: &str) -> Result<Color, String> {
     let hex = hex.trim_start_matches('#');
     let (r, g, b) = match hex.len() {
         3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).map_err(|e| e.to_string())? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).map_err(|e| e.to_string())? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).map_err(|e| e.to_string())? * 17;
+            let r = u8::from_str_radix(
+                hex.get(..1)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?
+                * 17;
+            let g = u8::from_str_radix(
+                hex.get(1..2)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?
+                * 17;
+            let b = u8::from_str_radix(
+                hex.get(2..3)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?
+                * 17;
             (r, g, b)
         }
         6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).map_err(|e| e.to_string())?;
-            let g = u8::from_str_radix(&hex[2..4], 16).map_err(|e| e.to_string())?;
-            let b = u8::from_str_radix(&hex[4..6], 16).map_err(|e| e.to_string())?;
+            let r = u8::from_str_radix(
+                hex.get(..2)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?;
+            let g = u8::from_str_radix(
+                hex.get(2..4)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?;
+            let b = u8::from_str_radix(
+                hex.get(4..6)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?;
             (r, g, b)
         }
         _ => return Err(format!("invalid hex color: #{hex}")),
@@ -1771,40 +1804,20 @@ pub fn persist_respect_manual_folds(enabled: bool) -> std::io::Result<()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let path = crate::util::pager_toml_path();
-    let content = match std::fs::read_to_string(&path) {
+    // Bind read + publish to one follow destination (path + inode).
+    let dest = xai_grok_config::fs_atomic::bind_follow_destination(&path)?;
+    let content = match std::fs::read_to_string(dest.as_path()) {
         Ok(c) => c,
         Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
+    let dest = xai_grok_config::fs_atomic::require_same_bound_destination(&path, &dest)?;
     let updated = upsert_respect_manual_folds(&content, enabled)
         .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
-    if let Some(dir) = path.parent() {
+    if let Some(dir) = dest.as_path().parent() {
         std::fs::create_dir_all(dir)?;
     }
-
-    #[cfg(unix)]
-    let prior_mode: Option<u32> = std::fs::metadata(&path).ok().map(|m| {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode()
-    });
-
-    let suffix = {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        format!("toml.tmp.{}.{}", std::process::id(), nanos)
-    };
-    let tmp = path.with_extension(suffix);
-    std::fs::write(&tmp, updated)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Some(mode) = prior_mode {
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
-        }
-    }
-    std::fs::rename(&tmp, &path)
+    xai_grok_config::fs_atomic::write_atomically_bound(&dest, &updated, None)
 }
 
 fn upsert_respect_manual_folds(content: &str, enabled: bool) -> Result<String, String> {

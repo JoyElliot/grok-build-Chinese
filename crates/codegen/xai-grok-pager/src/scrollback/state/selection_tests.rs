@@ -3,6 +3,12 @@ use super::*;
 use pretty_assertions::assert_eq;
 use ratatui::style::Color;
 
+fn at<T: Copy>(xs: &[T], i: usize) -> T {
+    xs.get(i)
+        .copied()
+        .unwrap_or_else(|| panic!("index {i} out of bounds, len={}", xs.len()))
+}
+
 // -----------------------------------------------------------------------
 // Group gap tests
 // -----------------------------------------------------------------------
@@ -185,13 +191,13 @@ fn test_gap_virtual_y_dense() {
     let layouts = state.get_cached_entry_layouts().unwrap();
 
     // Entry 0: y=0
-    assert_eq!(virtual_y[0], 0);
+    assert_eq!(at(virtual_y, 0), 0);
     // Entry 1: y=height[0] + gap[0] = height[0] + 0
-    assert_eq!(virtual_y[1], layouts[0].height as usize);
+    assert_eq!(at(virtual_y, 1), at(layouts, 0).height as usize);
     // Entry 2: y=height[0] + height[1] + 0 + 0
     assert_eq!(
-        virtual_y[2],
-        layouts[0].height as usize + layouts[1].height as usize
+        at(virtual_y, 2),
+        at(layouts, 0).height as usize + at(layouts, 1).height as usize
     );
 }
 
@@ -371,8 +377,8 @@ fn collapsed_turn_marker_breaks_dense_run_walks() {
     );
 
     let marker_idx = state.index_of_id(marker).unwrap();
-    let before_idx = state.index_of_id(before[0]).unwrap();
-    let after_idx = state.index_of_id(after[0]).unwrap();
+    let before_idx = state.index_of_id(at(&before, 0)).unwrap();
+    let after_idx = state.index_of_id(at(&after, 0)).unwrap();
     assert_eq!(
         state.group_range_of(marker_idx, true),
         marker_idx..marker_idx + 1
@@ -678,7 +684,7 @@ fn test_anchor_gap_delta_mid_group() {
     h.push_tool("c");
 
     let gaps_before = get_gap_after(&mut h.state);
-    assert_eq!(gaps_before[1], 0, "a→b gap should be 0");
+    assert_eq!(at(&gaps_before, 1), 0, "a→b gap should be 0");
 
     if let Some((id, entry)) = h.state.entries.get_index_mut(2) {
         entry.set_display_mode(DisplayMode::Expanded);
@@ -688,7 +694,11 @@ fn test_anchor_gap_delta_mid_group() {
     h.frame();
 
     let gaps_after = get_gap_after(&mut h.state);
-    assert_eq!(gaps_after[1], 1, "a→b gap should be 1 after b expanded");
+    assert_eq!(
+        at(&gaps_after, 1),
+        1,
+        "a→b gap should be 1 after b expanded"
+    );
 }
 
 #[test]
@@ -699,7 +709,7 @@ fn test_anchor_no_gap_delta_first_in_group() {
     h.push_tool("b");
 
     let gaps_before = get_gap_after(&mut h.state);
-    assert_eq!(gaps_before[0], 1, "prompt→a gap should be 1");
+    assert_eq!(at(&gaps_before, 0), 1, "prompt→a gap should be 1");
 
     if let Some((id, entry)) = h.state.entries.get_index_mut(1) {
         entry.set_display_mode(DisplayMode::Expanded);
@@ -709,7 +719,7 @@ fn test_anchor_no_gap_delta_first_in_group() {
     h.frame();
 
     let gaps_after = get_gap_after(&mut h.state);
-    assert_eq!(gaps_after[0], 1, "prompt→a gap still 1 after expand");
+    assert_eq!(at(&gaps_after, 0), 1, "prompt→a gap still 1 after expand");
 }
 
 // ── Group truncation tests ──
@@ -996,7 +1006,7 @@ fn verb_group_leading_thought_anchors_run_and_expands() {
         .with_appearance_ref(&state.appearance)
         .desired_height(state.entry_area_width(80));
     assert_eq!(
-        cache.entries[1].height,
+        at(&cache.entries, 1).height,
         tool_height.saturating_add(1),
         "re-anchored expanded header reserves its synthetic row"
     );
@@ -1026,7 +1036,7 @@ fn verb_group_interior_thought_claims_into_fold() {
 #[test]
 fn verb_group_trailing_thought_claims_and_keeps_boundary_gap() {
     let gap = |state: &ScrollbackState, idx: usize| {
-        state.layout_cache.as_ref().unwrap().entries[idx].gap_after
+        at(&state.layout_cache.as_ref().unwrap().entries, idx).gap_after
     };
     let mut state = verb_state();
     crate::appearance::cache::set_show_thinking_blocks(true);
@@ -1094,7 +1104,7 @@ fn verb_group_opened_thought_stays_transparent_inside_fold() {
     assert!(verb_header_at(&state, 0), "run still folds");
     assert!(cached_height_at(&state, 1) > 0, "opened thought renders");
     assert_eq!(cached_height_at(&state, 2), 0, "run continues across it");
-    let gap = state.layout_cache.as_ref().unwrap().entries[1].gap_after;
+    let gap = at(&state.layout_cache.as_ref().unwrap().entries, 1).gap_after;
     assert_eq!(gap, 0, "in-run transparent keeps no trailing blank");
     crate::appearance::cache::set_show_thinking_blocks(false);
 }
@@ -1151,7 +1161,7 @@ fn verb_group_refolds_on_pending_input_transitions() {
 
     // A permission prompt lands on an already-hidden member: the flag flip alone must re-run the folds so the prompt row shows
     // The run splits into singleton folds around it
-    assert!(state.set_pending_user_input(ids[1], true));
+    assert!(state.set_pending_user_input(at(&ids, 1), true));
     state.prepare_layout(80, 40);
     assert_eq!(
         header_count_at(&mut state, 0),
@@ -1164,7 +1174,7 @@ fn verb_group_refolds_on_pending_input_transitions() {
     );
 
     // Resolving the prompt refolds the run.
-    assert!(state.set_pending_user_input(ids[1], false));
+    assert!(state.set_pending_user_input(at(&ids, 1), false));
     state.prepare_layout(80, 40);
     assert!(verb_header_at(&state, 0));
     assert_eq!(cached_height_at(&state, 1), 0, "resolved row refolds");
@@ -1174,7 +1184,7 @@ fn verb_group_refolds_on_pending_input_transitions() {
 fn verb_group_refolds_when_clear_all_resolves_pending_input() {
     let mut state = verb_state();
     let ids = push_reads(&mut state, 3);
-    assert!(state.set_pending_user_input(ids[1], true));
+    assert!(state.set_pending_user_input(at(&ids, 1), true));
     state.prepare_layout(80, 40);
     assert!(cached_height_at(&state, 1) > 0);
 
@@ -1219,7 +1229,7 @@ fn verb_group_folds_incremental_push_with_truncation_disabled() {
 #[test]
 fn verb_group_boundary_gap_follows_pairwise_rule() {
     let gap = |state: &ScrollbackState, idx: usize| {
-        state.layout_cache.as_ref().unwrap().entries[idx].gap_after
+        at(&state.layout_cache.as_ref().unwrap().entries, idx).gap_after
     };
 
     // Controls with folding off: the pairwise rule's verdict at the boundary between the run and its neighbor, for both neighbor kinds
@@ -1301,9 +1311,9 @@ fn verb_group_expand_and_collapse_round_trip() {
     state.set_selected(Some(0));
     assert!(state.toggle_group_expansion());
     state.prepare_layout(80, 40);
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
     assert!(verb_header_at(&state, 0));
-    let info = state.layout_cache.as_ref().unwrap().entries[0];
+    let info = at(&state.layout_cache.as_ref().unwrap().entries, 0);
     assert!(info.group_collapse_header);
     assert_eq!(
         cached_height_at(&state, 0),
@@ -1320,7 +1330,7 @@ fn verb_group_expand_and_collapse_round_trip() {
     state.set_selected(Some(1));
     assert!(state.collapse_group_if_expanded());
     state.prepare_layout(80, 40);
-    assert!(!state.expanded_groups.contains(&ids[0]));
+    assert!(!state.expanded_groups.contains(&at(&ids, 0)));
     assert_eq!(cached_height_at(&state, 1), 0);
 }
 
@@ -1341,8 +1351,8 @@ fn verb_group_singleton_expand_and_collapse_round_trip() {
     // Expand: the slot stacks the header line above the member's own row.
     assert!(state.toggle_group_expansion());
     state.prepare_layout(80, 40);
-    assert!(state.expanded_groups.contains(&ids[0]));
-    let info = state.layout_cache.as_ref().unwrap().entries[0];
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
+    let info = at(&state.layout_cache.as_ref().unwrap().entries, 0);
     assert!(info.verb_group_header && info.group_collapse_header);
     assert_eq!(cached_height_at(&state, 0), 2, "header line + member row");
     // The expanded slot acts as member 0, exactly like a multi-member run.
@@ -1352,7 +1362,7 @@ fn verb_group_singleton_expand_and_collapse_round_trip() {
     // Left from the header collapses back to the folded header row.
     assert!(state.collapse_group_if_expanded());
     state.prepare_layout(80, 40);
-    assert!(!state.expanded_groups.contains(&ids[0]));
+    assert!(!state.expanded_groups.contains(&at(&ids, 0)));
     assert!(verb_header_at(&state, 0));
     assert_eq!(cached_height_at(&state, 0), 1);
 }
@@ -1375,7 +1385,7 @@ fn verb_group_left_collapses_from_selected_header() {
 
     assert!(state.collapse_group_if_expanded());
     state.prepare_layout(80, 40);
-    assert!(!state.expanded_groups.contains(&ids[0]));
+    assert!(!state.expanded_groups.contains(&at(&ids, 0)));
     assert_eq!(cached_height_at(&state, 1), 0, "run refolds from header");
     assert_eq!(
         state.selected(),
@@ -1482,7 +1492,7 @@ fn expanded_verb_slot_routes_to_member_zero() {
     state.prepare_layout(80, 40);
     assert!(verb_header_at(&state, 0));
     assert_eq!(cached_height_at(&state, 0), 2);
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
 
     // Left from the slot still collapses the group (member path).
     assert!(state.collapse_group_if_expanded());
@@ -1527,7 +1537,7 @@ fn verb_group_expanded_slot_member_toggle_round_trips() {
     assert!(!state.toggle_group_expansion());
     state.toggle_fold_selected();
     state.prepare_layout(80, 40);
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
     assert_eq!(cached_height_at(&state, 0), 2, "expanded slot re-forms");
     assert!(cached_height_at(&state, 1) > 0);
     assert!(cached_height_at(&state, 2) > 0);
@@ -1543,7 +1553,7 @@ fn verb_group_expanded_slot_member_toggle_round_trips() {
     // Closing it restores the member row within the same group.
     state.toggle_fold_selected();
     state.prepare_layout(80, 40);
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
     assert_eq!(cached_height_at(&state, 1), 1);
 }
 
@@ -1618,7 +1628,7 @@ fn verb_group_search_reveal_unhides_member() {
 
     state.reveal_entry_line(1, 0);
     state.prepare_layout(80, 40);
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
     assert!(
         cached_height_at(&state, 1) > 0,
         "reveal must un-hide the verb-grouped member"
@@ -1689,7 +1699,7 @@ fn verb_group_subagent_mid_run_member_folds_and_round_trips() {
     state.set_selected(Some(1));
     assert!(state.collapse_group_if_expanded());
     state.prepare_layout(80, 40);
-    assert!(!state.expanded_groups.contains(&ids[0]));
+    assert!(!state.expanded_groups.contains(&at(&ids, 0)));
     assert_eq!(cached_height_at(&state, 1), 0);
 }
 
@@ -1713,7 +1723,7 @@ fn expand_all_thinking_untruncates_dense_run_across_adjacent_verb_fold() {
     state.prepare_layout(80, 40);
 
     assert!(
-        state.expanded_groups.contains(&other_ids[0]),
+        state.expanded_groups.contains(&at(&other_ids, 0)),
         "expand-all must key the dense run on its truncation header"
     );
     assert!(
@@ -1724,7 +1734,7 @@ fn expand_all_thinking_untruncates_dense_run_across_adjacent_verb_fold() {
         cached_height_at(&state, 3) > 0,
         "dense members surface behind the collapse header"
     );
-    let info = state.layout_cache.as_ref().unwrap().entries[1];
+    let info = at(&state.layout_cache.as_ref().unwrap().entries, 1);
     assert!(info.verb_group_header && !info.group_collapse_header);
     assert_eq!(cached_height_at(&state, 1), 1, "read fold stays collapsed");
 }
@@ -1773,10 +1783,10 @@ fn toggle_group_expansion_and_collapse_round_trip() {
         );
     }
     assert!(
-        state.layout_cache.as_ref().unwrap().entries[0].group_collapse_header,
+        at(&state.layout_cache.as_ref().unwrap().entries, 0).group_collapse_header,
         "first entry should be a collapse header"
     );
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
 
     // Collapse via toggle on the collapse header (Enter/e key).
     state.selected = Some(0);
@@ -1785,7 +1795,7 @@ fn toggle_group_expansion_and_collapse_round_trip() {
     state.prepare_layout(80, 40);
 
     assert_eq!(header_count_at(&mut state, 0), 2);
-    assert!(!state.expanded_groups.contains(&ids[0]));
+    assert!(!state.expanded_groups.contains(&at(&ids, 0)));
 
     // Also test collapse from inside the group (entry 3):
     state.selected = Some(0);
@@ -1797,7 +1807,7 @@ fn toggle_group_expansion_and_collapse_round_trip() {
     state.prepare_layout(80, 40);
 
     assert_eq!(header_count_at(&mut state, 0), 2);
-    assert!(!state.expanded_groups.contains(&ids[0]));
+    assert!(!state.expanded_groups.contains(&at(&ids, 0)));
 }
 
 #[test]
@@ -1863,7 +1873,7 @@ fn collapse_header_is_independent_selectable_entry() {
 
     // Entry 0 is the standalone collapse header (height=1, own index)
     assert_eq!(cached_height_at(&state, 0), 1);
-    assert!(state.layout_cache.as_ref().unwrap().entries[0].group_collapse_header);
+    assert!(at(&state.layout_cache.as_ref().unwrap().entries, 0).group_collapse_header);
 
     // Entry 0 is a group header: Enter/e collapses the group
     state.selected = Some(0);
@@ -2028,11 +2038,11 @@ fn remove_entry_cleans_expanded_groups() {
     state.prepare_layout(80, 40);
     state.selected = Some(0);
     state.toggle_group_expansion();
-    assert!(state.expanded_groups.contains(&ids[0]));
+    assert!(state.expanded_groups.contains(&at(&ids, 0)));
 
-    state.remove_entry(ids[0]);
+    state.remove_entry(at(&ids, 0));
     assert!(
-        !state.expanded_groups.contains(&ids[0]),
+        !state.expanded_groups.contains(&at(&ids, 0)),
         "removed entry should be cleaned from expanded_groups"
     );
 }
@@ -2067,7 +2077,7 @@ fn expanded_group_shows_all_entries_including_first() {
         "collapse header count = visible entries below (group_len - 1)"
     );
     assert!(
-        state.layout_cache.as_ref().unwrap().entries[0].group_collapse_header,
+        at(&state.layout_cache.as_ref().unwrap().entries, 0).group_collapse_header,
         "first entry should be collapse header"
     );
     for i in 1..count {
@@ -2178,7 +2188,7 @@ fn reapply_thinking_fold_policy_preserves_expanded_tool_groups() {
         "tool group should toggle on its header"
     );
     assert!(
-        state.expanded_groups.contains(&ids[0]),
+        state.expanded_groups.contains(&at(&ids, 0)),
         "precondition: group is expanded"
     );
 
@@ -2190,7 +2200,7 @@ fn reapply_thinking_fold_policy_preserves_expanded_tool_groups() {
         "minimal's Expanded stamp still refolds"
     );
     assert!(
-        state.expanded_groups.contains(&ids[0]),
+        state.expanded_groups.contains(&at(&ids, 0)),
         "user-expanded tool groups must survive the thinking refold"
     );
 

@@ -358,7 +358,9 @@ fn quote_problematic_values(frontmatter: &str) -> String {
             let Some(colon) = line.find(':') else {
                 return line.to_string();
             };
-            let key = &line[..colon];
+            let Some(key) = line.get(..colon) else {
+                return line.to_string();
+            };
             if key.is_empty()
                 || !key
                     .bytes()
@@ -366,7 +368,9 @@ fn quote_problematic_values(frontmatter: &str) -> String {
             {
                 return line.to_string();
             }
-            let after = &line[colon + 1..];
+            let Some(after) = line.get(colon + 1..) else {
+                return line.to_string();
+            };
             let value = after.trim_start();
             // Require whitespace after the colon and a non-empty value.
             if value.is_empty() || value.len() == after.len() {
@@ -421,9 +425,9 @@ fn recover_scalar_fields(yaml: &str) -> std::collections::HashMap<String, serde_
         // following indented lines we skip, so treat it as empty and let the body
         // fallback supply the description.
         let block_marker = matches!(value.as_bytes().first(), Some(b'|' | b'>'))
-            && value[1..]
-                .bytes()
-                .all(|b| matches!(b, b'+' | b'-' | b'0'..=b'9'));
+            && value
+                .get(1..)
+                .is_some_and(|rest| rest.bytes().all(|b| matches!(b, b'+' | b'-' | b'0'..=b'9')));
         if value.is_empty() || block_marker {
             continue;
         }
@@ -455,7 +459,7 @@ pub fn parse_skill_frontmatter(
     let closing_idx = after_first
         .find("\n---")
         .ok_or(SkillParseError::NoFrontmatter)?;
-    let yaml_content = after_first[..closing_idx].trim();
+    let yaml_content = after_first.get(..closing_idx).unwrap_or("").trim();
 
     // Untyped map coerced per-field so one mistyped field never drops its siblings; the quoting
     // retry recovers value-colon syntax errors; the final line-based recovery salvages top-level
@@ -743,7 +747,7 @@ pub fn parse_skill_files(skill_files: Vec<(PathBuf, SkillScope)>) -> Vec<SkillIn
                     let body = extract_skill_body(&full);
                     let peek = if body.len() > MAX_BODY_PEEK_BYTES {
                         let end = crate::util::floor_char_boundary(&body, MAX_BODY_PEEK_BYTES);
-                        &body[..end]
+                        body.get(..end).unwrap_or(body.as_str())
                     } else {
                         &body
                     };
@@ -1262,7 +1266,7 @@ model: test-model
         let skills = parse_skill_files(vec![(skill_dir.join("SKILL.md"), SkillScope::Local)]);
         assert_eq!(skills.len(), 1);
         assert_eq!(
-            skills[0].when_to_use.as_deref(),
+            skills.first().and_then(|s| s.when_to_use.as_deref()),
             Some("User says deploy or ship it")
         );
     }
@@ -1280,7 +1284,7 @@ model: test-model
 
         let skills = parse_skill_files(vec![(skill_dir.join("SKILL.md"), SkillScope::Repo)]);
         assert_eq!(skills.len(), 1);
-        assert!(skills[0].when_to_use.is_none());
+        assert!(skills.first().is_some_and(|s| s.when_to_use.is_none()));
     }
 
     #[test]
@@ -1327,7 +1331,10 @@ model: test-model
 
         let skills = parse_skill_files(vec![(skill_dir.join("SKILL.md"), SkillScope::User)]);
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "narrate-crash-video");
+        assert_eq!(
+            skills.first().map(|s| s.name.as_str()),
+            Some("narrate-crash-video")
+        );
     }
 
     // ── skills-cursor removal ──────────────────────────────
@@ -1436,7 +1443,7 @@ model: test-model
             (grok_shell.join("SKILL.md"), SkillScope::User),
         ]);
         assert_eq!(skills.len(), 1, "cursor builtin must be dropped");
-        assert!(skills[0].path.contains("/.grok/"));
+        assert!(skills.first().is_some_and(|s| s.path.contains("/.grok/")));
     }
 
     #[test]

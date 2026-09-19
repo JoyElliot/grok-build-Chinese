@@ -11,6 +11,8 @@
 //! Each layer applies its own [`[[version_overrides]]`](version_overrides) before merge.
 //! Requirements layers (#4 through #6) may opt into fail-closed startup; see [`validate_requirements`].
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod campaigns;
 mod config_layers;
 pub mod config_override;

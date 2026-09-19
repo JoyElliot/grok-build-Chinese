@@ -49,6 +49,8 @@
 //! That codegen step is **not** implemented yet; it will land alongside the `xai-grok-workspace-grpc` crate.
 //! The Rust types defined here are the source of truth.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod binding;
 pub mod chunks;
 pub mod error;

@@ -265,16 +265,16 @@ smallvec = "1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27", features = ["derive"] }
 supports-color = "3.0"
-syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 tar = "0.4"
 tempfile = "3"
 terminput = "0.3"
 termwiz = { version = "0.23", default-features = false }
 textwrap = "0.16"
 thiserror = "2"
-tikv-jemalloc-ctl = "0.6"
-tikv-jemalloc-sys = "0.6"
-tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-ctl = "0.7"
+tikv-jemalloc-sys = "0.7"
+tikv-jemallocator = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 time = "0.3"
 tiny-skia = "0.12"
 tokio = { version = "1", features = ["full"] }
@@ -294,7 +294,7 @@ tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "smallvec", "tracing-log", "std", "ansi"] }
 ts-rs = "12.0"
 tui-scrollbar = "0.2"
-two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-onig"] }
 unicode-bidi = "0.3"
 unicode-bidi-mirroring = "0.4"
 unicode-normalization = "0.1"

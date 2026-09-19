@@ -115,7 +115,7 @@ impl AgentView {
         if is_video_playing {
             let vid_id = self.get_or_alloc_media_id(path);
             let video = self.inline_video.as_ref()?;
-            let frame_data = &video.frames[video.current_frame];
+            let frame_data = video.frames.get(video.current_frame)?;
             let (w, h) = decode_image_dimensions(frame_data)
                 .unwrap_or((placement.info.width, placement.info.height));
             let transmit = crate::terminal::image::transmit_inline_image(frame_data, vid_id)?;

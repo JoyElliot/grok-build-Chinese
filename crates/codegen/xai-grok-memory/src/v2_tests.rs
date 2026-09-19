@@ -97,11 +97,21 @@ fn manifest_is_deterministic_and_includes_topics_before_observations() {
     )
     .unwrap();
     std::fs::write(scope.join("topics/alpha.md"), "# Alpha\n\nFirst topic.").unwrap();
-    std::fs::write(
-        scope.join("observations/_inbox/new.md"),
-        "# New fact\n\nPending evidence.",
-    )
-    .unwrap();
+    // A manual note whose name sorts after every capture name, but which is
+    // older than the capture note: recency must come from modification time.
+    let remember = scope.join("observations/_inbox/remember-zzz.md");
+    std::fs::write(&remember, "# Old manual note\n\nPending evidence.").unwrap();
+    let capture = scope.join("observations/_inbox/01a0-session__t000002-000002__n000.md");
+    std::fs::write(&capture, "# Newer capture\n\nLater evidence.").unwrap();
+    let base = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    std::fs::File::open(&remember)
+        .unwrap()
+        .set_modified(base)
+        .unwrap();
+    std::fs::File::open(&capture)
+        .unwrap()
+        .set_modified(base + std::time::Duration::from_secs(60))
+        .unwrap();
     std::fs::write(scope.join("topics/ignored.txt"), "# Not memory").unwrap();
     std::fs::create_dir_all(scope.join("topics/nested")).unwrap();
     std::fs::write(scope.join("topics/nested/ignored.md"), "# Nested").unwrap();
@@ -113,13 +123,36 @@ fn manifest_is_deterministic_and_includes_topics_before_observations() {
             .unwrap();
 
     assert_eq!(first, second);
-    assert_eq!(first.discovered_entries, 3);
-    assert_eq!(first.included_entries, 3);
-    let alpha = first.content.find("topics/alpha.md").unwrap();
-    let zeta = first.content.find("topics/zeta.md").unwrap();
-    let observation = first.content.find("observations/_inbox/new.md").unwrap();
-    assert!(alpha < zeta && zeta < observation);
-    assert!(first.content.contains("Stable project detail."));
+    assert_eq!(first.discovered_entries, 4);
+    assert_eq!(first.included_entries, 4);
+    let alpha = first.content.find("(`topics/alpha.md`)").unwrap();
+    let zeta = first.content.find("(`topics/zeta.md`)").unwrap();
+    let newer = first
+        .content
+        .find("(`observations/_inbox/01a0-session__t000002-000002__n000.md`)")
+        .unwrap();
+    let older = first
+        .content
+        .find("(`observations/_inbox/remember-zzz.md`)")
+        .unwrap();
+    assert!(alpha < zeta && zeta < newer && newer < older);
+    assert!(first.content.contains("**Zeta** — Stable project detail."));
+    assert!(
+        first
+            .content
+            .contains("**Old manual note** (`observations/_inbox/remember-zzz.md`)")
+    );
+    assert!(!first.content.contains("Pending evidence."));
+    assert!(
+        !first
+            .content
+            .contains(&scope.join("topics").display().to_string())
+    );
+    assert!(
+        first
+            .content
+            .contains(&format!("> Paths are relative to `{}`.", scope.display()))
+    );
     assert!(!first.content.contains("ignored"));
 }
 
@@ -182,8 +215,8 @@ fn oversized_entry_does_not_starve_later_manifest_entries() {
         temp.path(),
         V2MemoryScope::Workspace,
         V2ManifestBudget {
-            // Room for the header plus one absolute-path entry, but not the
-            // 2 KB oversized title.
+            // Room for the header plus one small entry, but not the 2 KB
+            // oversized title.
             max_bytes: 400,
             max_entries: 2,
             max_description_bytes: 32,
@@ -191,11 +224,7 @@ fn oversized_entry_does_not_starve_later_manifest_entries() {
     )
     .unwrap();
 
-    assert!(
-        manifest
-            .content
-            .contains(&topics.join("01-small.md").display().to_string())
-    );
+    assert!(manifest.content.contains("(`topics/01-small.md`)"));
     assert!(!manifest.content.contains("topics/00-oversized.md"));
     assert_eq!(manifest.included_entries, 1);
     assert!(manifest.is_truncated);
@@ -216,6 +245,72 @@ fn zero_budget_produces_empty_bounded_manifest() {
     .unwrap();
     assert!(manifest.content.is_empty());
     assert_eq!(manifest.discovered_entries, 0);
+}
+
+#[test]
+fn exclusion_ledger_normalizes_windows_separators() {
+    let temp = TempDir::new().unwrap();
+    let scope = temp.path().join("scope");
+    ensure_scope_initialized(temp.path(), &scope, V2MemoryScope::Workspace).unwrap();
+    let _capture = crate::V2CaptureStore::open(&scope, V2MemoryScope::Workspace).unwrap();
+    std::fs::write(scope.join("topics/forgotten.md"), "# Forgotten").unwrap();
+    std::fs::write(
+        scope.join("observations/_inbox/hidden.md"),
+        "# Hidden observation",
+    )
+    .unwrap();
+    let state_path = scope.join("memory_state.sqlite");
+    let connection = JournalMode::for_db_path(&state_path)
+        .open(&state_path)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO memory_v2_tombstones(
+                tombstone_id, target_kind, relative_path, provenance_hash, created_at, reason
+             ) VALUES ('windows-path', 'topic', ?1, ?2, 1, 'privacy')",
+            params!["topics\\forgotten.md", "0".repeat(64)],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO memory_v2_hidden_observations(relative_path) VALUES (?1)",
+            params!["observations\\_inbox\\hidden.md"],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(is_durably_excluded(&scope, Path::new("topics/forgotten.md")).unwrap());
+    assert!(is_durably_excluded(&scope, Path::new("observations/_inbox/hidden.md")).unwrap());
+    let manifest = render_scope_manifest(
+        &scope,
+        V2MemoryScope::Workspace,
+        V2ManifestBudget::default(),
+    )
+    .unwrap();
+    assert!(!manifest.content.contains("forgotten.md"));
+    assert!(!manifest.content.contains("hidden.md"));
+}
+
+#[test]
+fn manifest_accepts_maintenance_schema_without_capture_tables() {
+    let temp = TempDir::new().unwrap();
+    let scope = temp.path().join("scope");
+    ensure_scope_initialized(temp.path(), &scope, V2MemoryScope::Workspace).unwrap();
+    let state_path = scope.join("memory_state.sqlite");
+    let connection = JournalMode::for_db_path(&state_path)
+        .open(&state_path)
+        .unwrap();
+    crate::v2_maintenance::migrate_v2_hardening(&connection).unwrap();
+    drop(connection);
+    std::fs::write(scope.join("topics/healthy.md"), "# Healthy").unwrap();
+
+    let manifest = render_scope_manifest(
+        &scope,
+        V2MemoryScope::Workspace,
+        V2ManifestBudget::default(),
+    )
+    .unwrap();
+    assert!(manifest.content.contains("topics/healthy.md"));
 }
 
 #[cfg(unix)]
@@ -341,6 +436,78 @@ fn initialization_rejects_symlinked_scope_and_database_without_touching_targets(
         } if source.kind() == std::io::ErrorKind::PermissionDenied
     ));
     assert_eq!(std::fs::read_to_string(outside_db).unwrap(), "sentinel");
+}
+
+#[test]
+fn initialization_refuses_network_filesystems_before_creating_state() {
+    let temp = TempDir::new().unwrap();
+    let scope = temp.path().join("scope");
+    let error = ensure_scope_initialized_with_journal_mode(
+        temp.path(),
+        &scope,
+        V2MemoryScope::Workspace,
+        Some(JournalMode::Truncate),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        V2StorageError::UnsupportedNetworkFilesystem { ref path } if path == &scope
+    ));
+    let state_files = std::fs::read_dir(&scope)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("memory_state") || name == "MEMORY.md")
+        .collect::<Vec<_>>();
+    assert!(state_files.is_empty(), "{state_files:?}");
+}
+
+#[test]
+fn exclusion_ledger_checks_stat_the_effective_database_path() {
+    let temp = TempDir::new().unwrap();
+    let scope = temp.path().join("scope");
+    ensure_scope_initialized(temp.path(), &scope, V2MemoryScope::Workspace).unwrap();
+    let _capture = crate::V2CaptureStore::open(&scope, V2MemoryScope::Workspace).unwrap();
+    let bare = scope.join("memory_state.sqlite");
+    let connection = JournalMode::for_db_path(&bare).open(&bare).unwrap();
+    connection
+        .execute(
+            "INSERT INTO memory_v2_tombstones(
+                tombstone_id, target_kind, relative_path, provenance_hash, created_at, reason
+             ) VALUES ('per-host', 'topic', 'topics/forgotten.md', ?1, 1, 'privacy')",
+            params!["0".repeat(64)],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "journal_mode", "DELETE")
+        .unwrap();
+    drop(connection);
+
+    let per_host = JournalMode::Truncate.effective_db_path(&bare);
+    assert_ne!(per_host, bare);
+    std::fs::rename(&bare, &per_host).unwrap();
+    assert!(!bare.exists());
+
+    assert!(
+        is_durably_excluded_with_journal_mode(
+            &scope,
+            Path::new("topics/forgotten.md"),
+            Some(JournalMode::Truncate),
+        )
+        .unwrap()
+    );
+    assert!(
+        excluded_manifest_paths_with_journal_mode(&scope, Some(JournalMode::Truncate))
+            .unwrap()
+            .contains("topics/forgotten.md")
+    );
+    assert!(
+        !is_durably_excluded_with_journal_mode(
+            &scope,
+            Path::new("topics/forgotten.md"),
+            Some(JournalMode::Wal),
+        )
+        .unwrap()
+    );
 }
 
 #[test]

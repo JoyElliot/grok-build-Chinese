@@ -179,6 +179,70 @@ where
     }
 }
 
+fn front_back<T>(pair: &[T; 2], current: usize) -> (&T, &T) {
+    let [a, b] = pair;
+    if current == 0 { (a, b) } else { (b, a) }
+}
+
+fn front_back_mut<T>(pair: &mut [T; 2], current: usize) -> (&mut T, &mut T) {
+    let [a, b] = pair;
+    if current == 0 { (a, b) } else { (b, a) }
+}
+
+#[cfg(not(feature = "scrolling-regions"))]
+fn next_row_has_glyphs(rows: &[(String, bool, bool)], i: usize) -> bool {
+    rows.get(i + 1).is_some_and(|(ansi, _, _)| !ansi.is_empty())
+}
+
+/// Xenl is pending only after a full-width wrap; a short joiner is a hard `\r\n`.
+#[cfg(not(feature = "scrolling-regions"))]
+fn xenl_pending(rows: &[(String, bool, bool)], i: usize) -> bool {
+    rows.get(i)
+        .is_some_and(|(_, fills_width, wraps)| *wraps && *fills_width)
+        && next_row_has_glyphs(rows, i)
+}
+
+/// The chunk's last row wraps onto `next` in the full list (chunk-local xenl cannot see it).
+#[cfg(not(feature = "scrolling-regions"))]
+fn chunk_continues_xenl(
+    chunk: &[(String, bool, bool)],
+    next: Option<&(String, bool, bool)>,
+) -> bool {
+    chunk
+        .last()
+        .is_some_and(|(_, fills_width, wraps)| *wraps && *fills_width)
+        && next.is_some_and(|(ansi, _, _)| !ansi.is_empty())
+}
+
+/// Do not end a mid-chunk on a xenl-pending wrap when `max_n` can absorb the
+/// continuation. A wrap chain ≥ `max_n` still ends pending; [`write_semantic_rows`]
+/// consumes xenl at the chunk end so the next CUP cannot insert a hard break.
+/// Scroll-to-fill in [`Terminal::insert_before_rows_no_scrolling_regions`] must
+/// still keep that consume off the last screen line.
+#[cfg(not(feature = "scrolling-regions"))]
+fn mid_chunk_end(row_idx: usize, rows: &[(String, bool, bool)], max_n: usize) -> usize {
+    if max_n == 0 || row_idx >= rows.len() {
+        return row_idx;
+    }
+    let pending = |end: usize| end.checked_sub(1).is_some_and(|i| xenl_pending(rows, i));
+    let mut end = row_idx.saturating_add(max_n).min(rows.len());
+    while end > row_idx + 1 && end < rows.len() && pending(end) {
+        end -= 1;
+    }
+    if end < rows.len() && pending(end) && end - row_idx < max_n {
+        end += 1;
+        while end < rows.len() && end - row_idx < max_n && pending(end) {
+            end += 1;
+        }
+    }
+    // max_n cannot absorb the continuation. One fewer painted row; scroll math
+    // still has to reserve the consume line or fill pins it on last_screen.
+    if end < rows.len() && pending(end) && end > row_idx + 1 && end - row_idx >= max_n {
+        end -= 1;
+    }
+    end
+}
+
 impl<B> Terminal<B>
 where
     B: Backend,
@@ -238,7 +302,15 @@ where
 
     /// Gets the current buffer as a mutable reference.
     pub fn current_buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.buffers[self.current]
+        front_back_mut(&mut self.buffers, self.current).0
+    }
+
+    /// The buffer of the most recently completed frame, as [`Self::draw`] hands back in its `CompletedFrame`.
+    /// Test support for callers that drive [`Self::flush`] and [`Self::swap_buffers`] themselves and want to inspect
+    /// what was painted. Blank after [`Self::clear`] or [`Self::reset_back_buffer`] until the next swap.
+    #[cfg(feature = "test-support")]
+    pub fn completed_buffer(&self) -> &Buffer {
+        front_back(&self.buffers, self.current).1
     }
 
     /// Restore Ratatui's wide-cell invariant before diffing the frame.
@@ -274,8 +346,7 @@ where
     /// extra-large terminals (e.g. 420×160 = 67 200 cells) this causes the entire UI to be rendered into a tiny corner.
     pub fn flush(&mut self) -> io::Result<bool> {
         self.normalize_current_buffer_wide_cells();
-        let previous_buffer = &self.buffers[1 - self.current];
-        let current_buffer = &self.buffers[self.current];
+        let (current_buffer, previous_buffer) = front_back(&self.buffers, self.current);
         let updates = diff_large(previous_buffer, current_buffer);
         let has_changes = !updates.is_empty();
         if let Some((col, row, _)) = updates.last() {
@@ -293,10 +364,10 @@ where
         let width = area.width as usize;
         let len = width * (area.height as usize);
 
-        let ids = &mut self.link_ids[self.current];
+        let ids = front_back_mut(&mut self.link_ids, self.current).0;
         ids.clear();
         ids.resize(len, 0);
-        let table = &mut self.link_tables[self.current];
+        let table = front_back_mut(&mut self.link_tables, self.current).0;
         table.clear();
 
         let mut next = 0u32;
@@ -320,8 +391,8 @@ where
             let row = (span.row - area.y) as usize;
             for col in start..end {
                 let idx = row * width + (col - area.x) as usize;
-                if idx < ids.len() {
-                    ids[idx] = id;
+                if let Some(slot) = ids.get_mut(idx) {
+                    *slot = id;
                 }
             }
         }
@@ -335,37 +406,37 @@ where
         B: Write,
     {
         let cur = self.current;
-        let prev = 1 - cur;
 
         // Fast path: no hyperlinks in either the current or previous frame. The link layer can't affect the diff or emission, so
         // fall back to the plain cell diff + draw — byte-for-byte identical to `flush` with zero per-cell link resolution. This
         // keeps the overwhelmingly common link-free frame (streaming output, etc.) as cheap as before.
-        if self.link_tables[cur].is_empty() && self.link_tables[prev].is_empty() {
+        let no_links = {
+            let (cur_tables, prev_tables) = front_back(&self.link_tables, cur);
+            cur_tables.is_empty() && prev_tables.is_empty()
+        };
+        if no_links {
             return self.flush();
         }
 
         self.normalize_current_buffer_wide_cells();
 
+        let (cur_buf, prev_buf) = front_back(&self.buffers, cur);
+        let (cur_ids, prev_ids) = front_back(&self.link_ids, cur);
+        let (cur_tables, prev_tables) = front_back(&self.link_tables, cur);
         let updates = diff_large_with_links(
-            &self.buffers[prev],
-            &self.buffers[cur],
-            &self.link_ids[prev],
-            &self.link_ids[cur],
-            &self.link_tables[prev],
-            &self.link_tables[cur],
+            prev_buf,
+            cur_buf,
+            prev_ids,
+            cur_ids,
+            prev_tables,
+            cur_tables,
         );
         let has_changes = !updates.is_empty();
         if let Some((col, row, _)) = updates.last() {
             self.last_known_cursor_pos = Position { x: *col, y: *row };
         }
-        let area = self.buffers[cur].area;
-        emit_frame_with_links(
-            &mut self.backend,
-            &updates,
-            &self.link_ids[cur],
-            &self.link_tables[cur],
-            area,
-        )?;
+        let area = cur_buf.area;
+        emit_frame_with_links(&mut self.backend, &updates, cur_ids, cur_tables, area)?;
         Ok(has_changes)
     }
 
@@ -467,7 +538,7 @@ where
         self.backend.flush()?;
 
         let completed_frame = CompletedFrame {
-            buffer: &self.buffers[1 - self.current],
+            buffer: front_back(&self.buffers, self.current).1,
             area: self.last_known_area,
             count: self.frame_count,
         };
@@ -538,7 +609,7 @@ where
             }
         }
         // Reset the back buffer to make sure the next update will redraw everything.
-        self.buffers[1 - self.current].reset();
+        front_back_mut(&mut self.buffers, self.current).1.reset();
         self.reset_back_links();
         Ok(())
     }
@@ -546,22 +617,27 @@ where
     /// Reset the inactive (back) hyperlink layer in lockstep with the back cell
     /// buffer, so a stale link can never survive a buffer reset.
     fn reset_back_links(&mut self) {
-        for id in self.link_ids[1 - self.current].iter_mut() {
+        for id in front_back_mut(&mut self.link_ids, self.current)
+            .1
+            .iter_mut()
+        {
             *id = 0;
         }
-        self.link_tables[1 - self.current].clear();
+        front_back_mut(&mut self.link_tables, self.current)
+            .1
+            .clear();
     }
 
     /// Resets the back buffer without clearing the screen
     /// This is useful when you want to queue clear commands yourself
     pub fn reset_back_buffer(&mut self) {
-        self.buffers[1 - self.current].reset();
+        front_back_mut(&mut self.buffers, self.current).1.reset();
         self.reset_back_links();
     }
 
     /// Clears the inactive buffer and swaps it with the current buffer
     pub fn swap_buffers(&mut self) {
-        self.buffers[1 - self.current].reset();
+        front_back_mut(&mut self.buffers, self.current).1.reset();
         self.reset_back_links();
         self.current = 1 - self.current;
     }
@@ -583,6 +659,38 @@ where
             Viewport::Inline(_) => self.insert_before_scrolling_regions(height, draw_fn),
             #[cfg(not(feature = "scrolling-regions"))]
             Viewport::Inline(_) => self.insert_before_no_scrolling_regions(height, draw_fn),
+            _ => Ok(()),
+        }
+    }
+
+    /// Insert wrap-aware ANSI rows before the inline viewport.
+    ///
+    /// Mid-insert wrap rows omit `\r\n` so the terminal sets `WRAPLINE`.
+    /// A full-width hard break (fills, does not wrap) disables autowrap so xenl cannot join the next line.
+    pub fn insert_before_rows(&mut self, rows: &[(String, bool, bool)]) -> io::Result<()>
+    where
+        B: Write,
+    {
+        match self.viewport {
+            Viewport::Inline(_) => {
+                let height = u16::try_from(rows.len()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "insert_before_rows: row count exceeds u16",
+                    )
+                })?;
+                if height == 0 {
+                    return Ok(());
+                }
+                #[cfg(feature = "scrolling-regions")]
+                {
+                    // Pager builds without this feature; reserve space so the unused variant compiles.
+                    let _ = rows;
+                    self.insert_before(height, |_| {})
+                }
+                #[cfg(not(feature = "scrolling-regions"))]
+                self.insert_before_rows_no_scrolling_regions(rows, height)
+            }
             _ => Ok(()),
         }
     }
@@ -700,6 +808,117 @@ where
         Ok(())
     }
 
+    /// Same scroll math as [`Self::insert_before_no_scrolling_regions`], with one row of slack so a streaming chunk cannot autowrap off the last screen line. Xenl consume at a mid-chunk end needs a second slack row: fill math would otherwise pin the pending wrap on `last_screen`.
+    #[cfg(not(feature = "scrolling-regions"))]
+    fn insert_before_rows_no_scrolling_regions(
+        &mut self,
+        rows: &[(String, bool, bool)],
+        height: u16,
+    ) -> io::Result<()>
+    where
+        B: Write,
+    {
+        let mut drawn_height: i32 = self.viewport_area.top().into();
+        let mut remaining: i32 = i32::from(height);
+        let viewport_height: i32 = self.viewport_area.height.into();
+        let screen_height: i32 = self.last_known_area.height.into();
+        let max_chunk = if screen_height > 1 {
+            screen_height - 1
+        } else {
+            screen_height
+        };
+        let mut row_idx = 0usize;
+        let max_n = usize::try_from(max_chunk).unwrap_or(0);
+
+        while remaining + viewport_height > screen_height {
+            let end = mid_chunk_end(row_idx, rows, max_n);
+            let n = end.saturating_sub(row_idx);
+            if n == 0 {
+                break;
+            }
+            let to_draw = i32::try_from(n).unwrap_or(0);
+            let chunk = rows.get(row_idx..end).unwrap_or(&[]);
+            let more_xenl = chunk_continues_xenl(chunk, rows.get(end));
+            // Fill would pin the last painted row on last_screen. Xenl consume
+            // wrapping from there extra-scrolls and native-copy-joins the dummy.
+            let consume_slack = if more_xenl && screen_height > 1 { 1 } else { 0 };
+            let scroll_up = 0.max(drawn_height + to_draw + consume_slack - screen_height);
+            self.scroll_up(scroll_up as u16)?;
+            let y = (drawn_height - scroll_up) as u16;
+            self.write_semantic_rows(y, chunk, more_xenl)?;
+            row_idx = end;
+            drawn_height += to_draw - scroll_up;
+            remaining -= to_draw;
+        }
+
+        let scroll_up = 0.max(drawn_height + remaining + viewport_height - screen_height);
+        self.scroll_up(scroll_up as u16)?;
+        let y = (drawn_height - scroll_up) as u16;
+        let chunk = rows.get(row_idx..).unwrap_or(&[]);
+        self.write_semantic_rows(y, chunk, false)?;
+        drawn_height += remaining - scroll_up;
+
+        self.set_viewport_area(Rect {
+            y: drawn_height as u16,
+            ..self.viewport_area
+        });
+        self.clear()?;
+        Ok(())
+    }
+
+    /// CUP once at the chunk start. Xenl-continue only on a full-width wrap onto a nonempty next row;
+    /// a short joiner hard-breaks, and a full-width hard break is DECAWM-off after any xenl consume.
+    /// `more_xenl` is the wrap-pending state of this chunk's last row in the full row list.
+    #[cfg(not(feature = "scrolling-regions"))]
+    fn write_semantic_rows(
+        &mut self,
+        y_offset: u16,
+        rows: &[(String, bool, bool)],
+        more_xenl: bool,
+    ) -> io::Result<()>
+    where
+        B: Write,
+    {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let last_screen = self.last_known_area.height.saturating_sub(1);
+        self.set_cursor_position(Position::new(0, y_offset))?;
+        let mut consume_xenl = false;
+        for (i, (ansi, fills_width, _)) in rows.iter().enumerate() {
+            let y = y_offset.saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+            let continues = xenl_pending(rows, i) || (more_xenl && i + 1 == rows.len());
+            let disable_autowrap = *fills_width && !continues;
+            if consume_xenl {
+                // Dummy printable first: CSI ?7l drops wrap-pending on VTE/xterm without WRAPLINE.
+                self.backend.write_all(b" \r")?;
+            }
+            if disable_autowrap {
+                self.backend.write_all(b"\x1b[?7l")?;
+            }
+            self.backend.write_all(ansi.as_bytes())?;
+            if !continues {
+                // Short/empty rows do not overwrite the rest of a longer live line.
+                if !*fills_width {
+                    self.backend.write_all(b"\x1b[K")?;
+                }
+                if y < last_screen {
+                    self.backend.write_all(b"\r\n")?;
+                }
+            }
+            if disable_autowrap {
+                self.backend.write_all(b"\x1b[?7h")?;
+            }
+            consume_xenl = continues;
+        }
+        if consume_xenl {
+            // Latch WRAPLINE before the next chunk CUPs; a wrap chain ≥ screen_height-1
+            // cannot keep the continuation in this chunk.
+            self.backend.write_all(b" \r")?;
+        }
+        Backend::flush(&mut self.backend)
+    }
+
     /// If a terminal supports scrolling regions, it means that we can define a subset of rows of the screen, and then tell
     /// the terminal to scroll up or down just within that region. The rows outside of the region are not affected. This
     /// function utilizes this feature to avoid having to redraw the viewport.
@@ -739,7 +958,12 @@ where
 
             // Redraw the top line of the viewport.
             let width = self.viewport_area.width as usize;
-            let top_line = self.buffers[1 - self.current].content[0..width].to_vec();
+            let back = front_back(&self.buffers, self.current).1;
+            let top_line = back
+                .content
+                .get(..width)
+                .unwrap_or(back.content.as_slice())
+                .to_vec();
             self.draw_lines_over_cleared(0, 1, &top_line)?;
             return Ok(());
         }
@@ -787,9 +1011,10 @@ where
             let iter = to_draw
                 .iter()
                 .enumerate()
+                .filter(|(_, c)| !c.skip)
                 .map(|(i, c)| ((i % width) as u16, y_offset + (i / width) as u16, c));
             self.backend.draw(iter)?;
-            self.backend.flush()?;
+            Backend::flush(&mut self.backend)?;
         }
         Ok(remainder)
     }
@@ -896,7 +1121,7 @@ fn diff_large<'a>(prev: &Buffer, next: &'a Buffer) -> Vec<(u16, u16, &'a Cell)> 
             // Safe coordinate conversion: divide in usize, then narrow to u16.
             let x = area.x + (i % width) as u16;
             let y = area.y + (i / width) as u16;
-            updates.push((x, y, &next_buffer[i]));
+            updates.push((x, y, current));
         }
 
         to_skip = current.symbol().width().saturating_sub(1);
@@ -937,7 +1162,7 @@ fn diff_large_with_links<'a>(
         {
             let x = area.x + (i % width) as u16;
             let y = area.y + (i / width) as u16;
-            updates.push((x, y, &next_buffer[i]));
+            updates.push((x, y, current));
         }
 
         to_skip = current.symbol().width().saturating_sub(1);
@@ -969,28 +1194,33 @@ fn emit_frame_with_links<B: Backend + Write>(
         // Invariant: `i < updates.len()` (loop guard) and below `i < j <= updates.len()`, so `updates[i]` and the slice
         // `updates[i..j]` never panic. `resolve` indexes via `cur_ids.get(..)` (bounds-safe) and the coordinates come from
         // `diff_large_with_links` as `area.{x,y} +..`, so `(y - area.y)` / `(x - area.x)` cannot underflow.
-        let (x, y, _) = updates[i];
+        let Some(&(x, y, _)) = updates.get(i) else {
+            break;
+        };
         let link = resolve(x, y);
 
         // Extend the run while the resolved link is identical.
         let mut j = i + 1;
         while j < updates.len() {
-            let (nx, ny, _) = updates[j];
+            let Some(&(nx, ny, _)) = updates.get(j) else {
+                break;
+            };
             if resolve(nx, ny) != link {
                 break;
             }
             j += 1;
         }
 
+        let Some(run) = updates.get(i..j) else { break };
         if let Some(link) = link {
             write_osc8_open(backend, &link.url, link.id)?;
             // Always close the hyperlink, even if the cell draw errors, so a
             // dangling OSC 8 open can never be flushed to the terminal.
-            let drawn = backend.draw(updates[i..j].iter().copied());
+            let drawn = backend.draw(run.iter().copied());
             write_osc8_close(backend)?;
             drawn?;
         } else {
-            backend.draw(updates[i..j].iter().copied())?;
+            backend.draw(run.iter().copied())?;
         }
 
         i = j;
@@ -1080,8 +1310,9 @@ impl<B: Backend> Terminal<B> {
 
     /// HACK: this is made pub
     pub fn set_viewport_area(&mut self, area: Rect) {
-        self.buffers[self.current].resize(area);
-        self.buffers[1 - self.current].resize(area);
+        let [front, back] = &mut self.buffers;
+        front.resize(area);
+        back.resize(area);
         let len = (area.width as usize) * (area.height as usize);
         for layer in self.link_ids.iter_mut() {
             layer.clear();

@@ -381,8 +381,19 @@ pub async fn handle(
         "x.ai/session/rehydrate" => {
             let req = serde_json::from_str::<RehydrateSessionRequest>(args.params.get())?;
             let registry_client = agent.session_registry_client();
+            let (grove_worktree, grove_gate_source) =
+                crate::util::config::grove_worktree_gate(agent.remote_settings().as_ref());
 
-            to_response(rehydrate_session_in_worktree(&req, ops, registry_client.as_ref()).await)
+            to_response(
+                rehydrate_session_in_worktree(
+                    &req,
+                    ops,
+                    registry_client.as_ref(),
+                    grove_worktree,
+                    grove_gate_source,
+                )
+                .await,
+            )
         }
         // ── Worktree management methods ──────────────────────────────────
         "x.ai/git/worktree/list" => {
@@ -516,8 +527,7 @@ pub async fn handle(
 fn apply_grove_worktree_flag(agent: &dyn AgentRuntime, slot: &mut Option<bool>) -> &'static str {
     let root = crate::config::load_effective_config()
         .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()));
-    let remote = agent.remote_settings();
-    apply_grove_worktree_gate(slot, &root, remote.as_ref())
+    apply_grove_worktree_gate(slot, &root, agent.remote_settings().as_ref())
 }
 
 /// Always run the grove gate, even when `slot` is already `Some`; the kill switch applies last.
@@ -540,6 +550,7 @@ pub(crate) fn apply_grove_worktree_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn list_request_all_defaults() {
@@ -600,8 +611,63 @@ mod tests {
         apply_grove_worktree_gate(&mut slot, &root, None);
         assert_eq!(
             slot,
-            Some(false),
-            "ACP wrapper must fail closed when remote settings are unavailable"
+            Some(true),
+            "ACP wrapper must keep request Grove when remote settings are unavailable"
+        );
+    }
+
+    fn clear_grove_env() {
+        // SAFETY: callers are `#[serial]`; no concurrent env mutation.
+        unsafe {
+            std::env::remove_var(crate::util::config::ENV_WORKTREE_TYPE);
+            std::env::remove_var(crate::util::config::ENV_GROVE);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn inherit_grove_gate_attaches_opts_when_local_toml_is_on() {
+        clear_grove_env();
+        let root: toml::Value = toml::from_str("[cli]\ngrove_worktree = true").unwrap();
+        let mut slot = None;
+        let src = apply_grove_worktree_gate(&mut slot, &root, None);
+        assert_eq!(src, "local");
+        assert_eq!(slot, Some(true));
+        assert!(
+            crate::util::config::grove_worktree_opts_if_enabled(slot.unwrap_or(false))
+                .is_some_and(|opts| opts.enabled)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn inherit_grove_gate_skips_opts_when_default_off() {
+        clear_grove_env();
+        let root = toml::Value::Table(toml::map::Map::new());
+        let mut slot = None;
+        let src = apply_grove_worktree_gate(&mut slot, &root, None);
+        assert_eq!(src, "default");
+        assert_eq!(slot, Some(false));
+        assert!(
+            crate::util::config::grove_worktree_opts_if_enabled(slot.unwrap_or(false)).is_none()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn inherit_grove_gate_skips_opts_on_remote_kill() {
+        clear_grove_env();
+        let root: toml::Value = toml::from_str("[cli]\ngrove_worktree = true").unwrap();
+        let remote = crate::util::config::RemoteSettings {
+            grove_worktree: Some(false),
+            ..crate::util::config::RemoteSettings::default()
+        };
+        let mut slot = None;
+        let src = apply_grove_worktree_gate(&mut slot, &root, Some(&remote));
+        assert_eq!(src, "remote_kill");
+        assert_eq!(slot, Some(false));
+        assert!(
+            crate::util::config::grove_worktree_opts_if_enabled(slot.unwrap_or(false)).is_none()
         );
     }
 
@@ -694,10 +760,10 @@ mod tests {
             .get("result")
             .expect("envelope must carry a result field");
         assert!(!result.is_null(), "rebuild result must not be null");
-        assert_eq!(result["discovered"], 5);
-        assert_eq!(result["registered"], 3);
-        assert_eq!(result["already_tracked"], 2);
-        assert!(wire.get("error").is_none() || wire["error"].is_null());
+        assert_eq!(result.get("discovered"), Some(&serde_json::json!(5)));
+        assert_eq!(result.get("registered"), Some(&serde_json::json!(3)));
+        assert_eq!(result.get("already_tracked"), Some(&serde_json::json!(2)));
+        assert!(wire.get("error").is_none_or(|e| e.is_null()));
     }
 
     // === Tests for repo-wide session resolution ACP types ===

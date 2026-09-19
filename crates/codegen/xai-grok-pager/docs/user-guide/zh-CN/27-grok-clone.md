@@ -1,8 +1,8 @@
 # grok clone
 
-`grok-zh clone` 会将 Git 仓库提取到 Grove 内容存储中，并挂载一个投影工作树
-（macOS 使用 NFS，Linux 使用 FUSE）。使用前必须在 Grove 配置
-（`~/.config/grove/config.toml`）中启用 `[clone] enabled = true`。
+`grok-zh clone` 将 Git 仓库提取到 Grove 内容存储并挂载投影工作树（macOS 使用 NFS，Linux 使用 FUSE）。每次调用先读取当前进程的 `GROK_CLONE` / `GROVE_CLONE`，再检查统一启用设置 `GROK_GROVE` 或 Grok `~/.grok/config.toml` 的 `[cli] grove`，最后检查 Grove `~/.config/grove/config.toml` 的 `[clone] enabled`。
+
+克隆的专用开关不启用会话 / `-w` 的 Grove 工作树；后者使用 `GROK_WORKTREE_TYPE` 和 `[cli] grove_worktree`，也不会反过来启用克隆。未设置专用开关时，可使用 `GROK_GROVE=1` 或 `[cli] grove = true` 同时启用两者。专用开关优先：`GROK_WORKTREE_TYPE=copy` 保持会话使用复制工作树而克隆仍可启用；`GROK_CLONE=0` 关闭克隆而不关闭会话工作树。
 
 ```bash
 grok-zh clone <url> [dir] [--branch NAME] [--cone PATH]... [--full-history]

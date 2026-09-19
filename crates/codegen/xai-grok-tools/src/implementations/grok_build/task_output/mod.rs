@@ -375,10 +375,7 @@ impl TaskOutputTool {
             initial.results
         };
 
-        let completed_count = results
-            .iter()
-            .filter(|r| is_terminal_status(&r.status))
-            .count();
+        let completed_count = results.iter().filter(|r| r.is_terminal()).count();
         let total = results.len();
         let mode_str = if waits { "wait_all" } else { "poll" };
         let summary = format!("{completed_count}/{total} tasks completed ({mode_str})");
@@ -392,12 +389,6 @@ impl TaskOutputTool {
 }
 
 pub(crate) use xai_tool_types::MAX_MULTI_WAIT_IDS;
-
-/// Terminal task statuses as produced by `snapshot_to_result` /
-/// `format_subagent_snapshot`; multi-wait summaries count these as finished.
-pub(crate) fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled" | "timed_out")
-}
 
 pub(crate) fn not_found_result(task_id: &str) -> TaskOutputResult {
     TaskOutputResult {
@@ -927,8 +918,13 @@ impl xai_tool_runtime::Tool for TaskOutputTool {
         }
 
         if ids.len() == 1 {
+            let Some(id) = ids.first() else {
+                return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                    "Provide a non-empty task_ids list.".to_string(),
+                ));
+            };
             return self
-                .run_single_task(&ids[0], input.timeout_ms, &ctx, resources)
+                .run_single_task(id, input.timeout_ms, &ctx, resources)
                 .await;
         }
 
@@ -1911,8 +1907,10 @@ mod tests {
         );
         match result {
             TaskOutputOutput::MultiResult(m) => {
-                assert_eq!(m.results.len(), 1);
-                assert_eq!(m.results[0].status, "completed");
+                let [first] = m.results.as_slice() else {
+                    panic!("expected exactly one result, got {}", m.results.len());
+                };
+                assert_eq!(first.status, "completed");
             }
             other => panic!("Expected MultiResult, got {other:?}"),
         }
@@ -1942,7 +1940,10 @@ mod tests {
         );
         match result {
             TaskOutputOutput::MultiResult(m) => {
-                assert_eq!(m.results[0].status, "running");
+                let Some(first) = m.results.first() else {
+                    panic!("expected one result: {:?}", m.results);
+                };
+                assert_eq!(first.status, "running");
             }
             other => panic!("Expected MultiResult, got {other:?}"),
         }
@@ -2780,8 +2781,10 @@ mod tests {
         handle.await.unwrap();
         match result {
             TaskOutputOutput::MultiResult(m) => {
-                assert_eq!(m.results.len(), 1);
-                assert_eq!(m.results[0].status, "completed");
+                let [first] = m.results.as_slice() else {
+                    panic!("expected exactly one result, got {}", m.results.len());
+                };
+                assert_eq!(first.status, "completed");
             }
             other => panic!("Expected MultiResult, got {other:?}"),
         }

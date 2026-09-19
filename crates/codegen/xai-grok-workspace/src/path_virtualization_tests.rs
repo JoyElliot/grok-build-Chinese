@@ -350,8 +350,14 @@ fn typed_output_and_error_rewrite_model_facing_fields() {
         chat_completion_output: None,
     };
     let rewritten = v.rewrite_typed_output(output);
-    assert_eq!(rewritten.value["path"], "/workspace/a.txt");
-    match &rewritten.model_output[0] {
+    assert_eq!(
+        rewritten.value.get("path").and_then(|v| v.as_str()),
+        Some("/workspace/a.txt")
+    );
+    let Some(block) = rewritten.model_output.first() else {
+        panic!("expected model output: {:?}", rewritten.model_output);
+    };
+    match block {
         ContentBlock::Text { text } => assert_eq!(text, "read /workspace/a.txt"),
         other => panic!("expected text block, got {other:?}"),
     }
@@ -363,7 +369,11 @@ fn typed_output_and_error_rewrite_model_facing_fields() {
     .with_details(json!({"path": "/workspace/conv-abc/gone.txt"}));
     let err = v.rewrite_error(err);
     assert_eq!(err.detail, "missing /workspace/gone.txt");
-    assert_eq!(err.details.unwrap()["path"], "/workspace/gone.txt");
+    let details = err.details.unwrap();
+    assert_eq!(
+        details.get("path").and_then(|v| v.as_str()),
+        Some("/workspace/gone.txt")
+    );
 
     let cco = xai_tool_runtime::ToolChatCompletionResponse {
         result: Some(xai_tool_runtime::ToolChatCompletion {

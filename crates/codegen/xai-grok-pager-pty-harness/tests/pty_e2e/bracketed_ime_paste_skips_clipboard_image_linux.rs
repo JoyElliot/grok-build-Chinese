@@ -81,7 +81,7 @@ async fn bracketed_ime_paste_skips_clipboard_image_linux() {
             .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
             .expect("turn rendered (idle session)");
         harness
-            .inject_keys(b"\x1b[92;5u")
+            .inject_keys(CTRL_BACKSLASH)
             .expect("ctrl+\\ open dashboard");
         harness
             .wait_for_text("+ New Agent", Duration::from_secs(10))

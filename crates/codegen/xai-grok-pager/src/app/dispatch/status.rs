@@ -8,7 +8,7 @@ use super::settings::ui::refresh_open_settings_modals;
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
-use crate::app::app_view::{ActiveView, AppView};
+use crate::app::app_view::{ActiveView, AppView, PendingCodingDataWrite};
 use crate::notifications::{NotificationEvent, NotificationEventKind};
 use crate::scrollback::block::RenderBlock;
 
@@ -22,7 +22,7 @@ pub(super) fn dispatch_share_session(app: &mut AppView) -> Vec<Effect> {
     vec![]
 }
 
-/// Monotonic generation for usage-modal fetches, shared by the agent-hosted and dashboard-hosted modal.
+/// Monotonic generation for usage-modal fetches, shared by every surface that opens the modal.
 /// A reply from a previous open (modal closed and reopened) then can't overwrite newer results.
 /// `0` is reserved for background refreshes (minimal-mode paths, startup/login `FetchAppBilling`), which never settle a modal.
 static USAGE_FETCH_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -202,8 +202,7 @@ fn next_coding_data_write_seq(app: &mut AppView) -> u64 {
 }
 
 /// Is this reply from the newest write?
-/// Writes to this endpoint run concurrently and can land out of order, so an older reply must not touch state.
-/// Its `rollback_to_opted_in` predates the newer write, and applying it would silently undo whatever the user did since.
+/// Writes to this endpoint run concurrently and can land out of order, so an older reply must not set the mirror.
 fn is_current_coding_data_write(app: &AppView, seq: u64, agent_id: AgentId) -> bool {
     if seq == app.coding_data_write_seq {
         return true;
@@ -240,7 +239,6 @@ pub(super) fn set_coding_data_sharing(
     opted_in: bool,
     source: xai_grok_telemetry::events::CodingDataConsentSource,
 ) -> Vec<Effect> {
-    // ── Guard 1: Enterprise ZDR ──────────────────────────────────────
     if app.is_zdr {
         let message = app.locale.named_static_text(
             "privacy.zdr_locked",
@@ -249,7 +247,6 @@ pub(super) fn set_coding_data_sharing(
         app.show_toast(message);
         return vec![];
     }
-    // ── Guard 2: Non-admin team member ───────────────────────────────
     if app.team_name.is_some() {
         let is_admin = app
             .team_role
@@ -268,19 +265,23 @@ pub(super) fn set_coding_data_sharing(
     let prev = !app.coding_data_retention_opt_out;
     log_coding_data_consent_selected(source, opted_in, prev);
 
-    // Opt-out always acks now
-    // Unchanged opt-in acks only when idle: an inflight write still owns that ack
-    let mut effects = Vec::new();
-    if !opted_in || (prev == opted_in && !app.privacy_banner_opt_in_inflight) {
-        effects.extend(ack_privacy_banner(app));
+    // Coalesce on the pending write's own choice, not the mirror, which auth-meta refreshes rewrite mid-flight; a duplicate has nothing new to send
+    if app.coding_data_pending_opted_in() == Some(opted_in) {
+        return vec![];
     }
-    if prev == opted_in {
-        return effects;
+    // Only an idle opt-in may skip the write: a local "out" can be the unconfirmed fail-safe default, so an opt-out always writes
+    if opted_in && prev && app.coding_data_pending_write.is_none() {
+        return ack_privacy_banner(app);
     }
 
-    if opted_in {
-        app.privacy_banner_opt_in_inflight = true;
-    }
+    // A replaced write hands its rollback on; `prev` here would be the replaced write's unconfirmed optimistic value
+    let rollback_to_opted_in = app
+        .coding_data_pending_write
+        .map_or(prev, |w| w.rollback_to_opted_in);
+    app.coding_data_pending_write = Some(PendingCodingDataWrite {
+        opted_in,
+        rollback_to_opted_in,
+    });
 
     // Optimistic mutation
     // Success is silent; only the refusals above and the failure handler toast
@@ -295,13 +296,11 @@ pub(super) fn set_coding_data_sharing(
     );
 
     let seq = next_coding_data_write_seq(app);
-    effects.push(Effect::SetCodingDataSharing {
+    vec![Effect::SetCodingDataSharing {
         agent_id,
         opted_in,
-        rollback_to_opted_in: prev,
         seq,
-    });
-    effects
+    }]
 }
 
 /// Scrub an untrusted error string for toast display.
@@ -586,6 +585,10 @@ pub(super) fn handle_coding_data_sharing_updated(
     seq: u64,
 ) -> Vec<Effect> {
     if !is_current_coding_data_write(app, seq, agent_id) {
+        // The server accepted this older write, so the newer one falls back to it. Arrival order is not commit order: a delayed reply can overwrite a newer value here
+        if let Some(pending) = app.coding_data_pending_write.as_mut() {
+            pending.rollback_to_opted_in = opted_in;
+        }
         return vec![];
     }
     // Re-anchor mirror to server-confirmed value (defense-in-depth against server reshaping the boolean)
@@ -599,33 +602,30 @@ pub(super) fn handle_coding_data_sharing_updated(
         opted_in,
         "ACP update confirmed; mirror re-anchored",
     );
-    let mut effects = vec![];
-    // Defer opt-in ack until this write lands; a failed write must not dismiss.
-    if app.privacy_banner_opt_in_inflight {
-        app.privacy_banner_opt_in_inflight = false;
-        if opted_in {
-            effects.extend(ack_privacy_banner(app));
-        }
+    // Ack whichever way the server settled the value: the user answered and the server accepted
+    if app.coding_data_pending_write.take().is_some() {
+        return ack_privacy_banner(app);
     }
-    effects
+    vec![]
 }
 
 pub(super) fn handle_coding_data_sharing_failed(
     app: &mut AppView,
     agent_id: AgentId,
     error: String,
-    rollback_to_opted_in: bool,
     seq: u64,
 ) -> Vec<Effect> {
-    // A superseded failure must not revert
-    // `rollback_to_opted_in` predates the newer write, so applying it would undo a change the user made after this one was sent
-    // It must not toast either: nothing the user is looking at failed
+    // A superseded failure must neither revert nor toast: nothing the user is looking at failed
     if !is_current_coding_data_write(app, seq, agent_id) {
         return vec![];
     }
-    // Revert the optimistic mutation: inner set, then modal refresh, then toast
-    // `agent_id` discarded; privacy is global
-    set_coding_data_sharing_inner(app, rollback_to_opted_in);
+    let rollback_to_opted_in = app
+        .coding_data_pending_write
+        .take()
+        .map(|w| w.rollback_to_opted_in);
+    if let Some(rollback) = rollback_to_opted_in {
+        set_coding_data_sharing_inner(app, rollback);
+    }
     refresh_open_settings_modals(app);
     // Scrub long/unsafe error strings before toasting.
     let scrubbed = scrub_error_for_toast_with_locale(&error, app.locale.as_ref());
@@ -643,10 +643,8 @@ pub(super) fn handle_coding_data_sharing_failed(
         ?agent_id,
         rollback_to_opted_in,
         %error,
-        "ACP update failed; reverted optimistic mutation",
+        "ACP update failed",
     );
-    // Opt-in failure: no ack; clear inflight so the banner stays.
-    app.privacy_banner_opt_in_inflight = false;
     vec![]
 }
 
@@ -664,7 +662,7 @@ pub(in crate::app::dispatch) fn ack_privacy_banner(app: &mut AppView) -> Vec<Eff
 /// `[Opt in]`: opt in via the settings path.
 /// Ack only after ACP success, so a failed round trip leaves the banner up instead of recording a change that did not happen.
 pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_in(app: &mut AppView) -> Vec<Effect> {
-    if app.privacy_banner_opt_in_inflight || !app.privacy_banner_should_show() {
+    if app.coding_data_pending_write.is_some() || !app.privacy_banner_should_show() {
         return vec![];
     }
     set_coding_data_sharing(
@@ -674,9 +672,9 @@ pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_in(app: &mut AppView
     )
 }
 
-/// `[Opt out]`: ack now; waiting on ACP would re-ask a decline.
+/// `[Opt out]`: always writes (the local "out" may be the unconfirmed fail-safe default) and acks only after ACP success.
 pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_out(app: &mut AppView) -> Vec<Effect> {
-    if app.privacy_banner_opt_in_inflight || !app.privacy_banner_should_show() {
+    if app.coding_data_pending_write.is_some() || !app.privacy_banner_should_show() {
         return vec![];
     }
     set_coding_data_sharing(

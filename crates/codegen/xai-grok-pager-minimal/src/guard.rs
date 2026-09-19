@@ -18,6 +18,7 @@ fn minimal_never_uses_ris_rerender_or_emit_to_scrollback() {
         ("lib.rs", include_str!("lib.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("commit.rs", include_str!("commit.rs")),
+        ("feedback.rs", include_str!("feedback.rs")),
         ("full_view.rs", include_str!("full_view.rs")),
         ("live.rs", include_str!("live.rs")),
         ("overlay.rs", include_str!("overlay.rs")),

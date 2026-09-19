@@ -247,7 +247,12 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 foreground_deadline: None,
                 handle_only: request.run_in_background,
                 explicitly_killed: false,
+                disposition: Default::default(),
                 launched: false,
+                attempt_id: xai_message_delivery_core::AttemptId::mint(
+                    uuid::Uuid::new_v4().as_u128(),
+                ),
+                generation: super::ActiveChildGeneration::new(),
                 agent_address: None,
                 spawner_session_id: None,
                 wake_of: None,

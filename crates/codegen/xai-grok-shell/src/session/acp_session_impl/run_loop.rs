@@ -501,6 +501,7 @@ pub(super) async fn run_session(
         });
     }
     let startup_tasks = StartupTasks::spawn(&session, completion_tx.clone());
+    session.resume_v2_capture().await;
     let mut model_switch_rx = session.models_manager.subscribe_model_switch();
     let _ = *model_switch_rx.borrow_and_update();
     let idle_flush_sleep = match session.idle_flush_timeout {
@@ -662,6 +663,8 @@ pub(super) async fn run_session(
                         let end_timer = session_end::SessionEndTimer::new_shared();
                         turn_end_queue.flush().await;
                         fire_session_end_hooks(&session, "channel_closed", &end_timer, &mut deferred_start).await;
+                        session.memory.stop_capture_worker().await;
+                        session.memory.dream_workers.cancel_and_join().await;
                         // Stop the dream before the end-pipeline reindex so their index writes cannot race.
                         stop_dream(&mut dream_task).await;
                         session
@@ -833,16 +836,16 @@ pub(super) async fn run_session(
                             session.handle_session_mode(session_mode).await;
                             let _ = responds_to.send(());
                         }
-                        SessionCommand::SetSessionModel { sampling_config, use_concise, is_family_switch, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent, responds_to } => {
-                            let updated_model_id = session.handle_set_session_model(sampling_config, use_concise, is_family_switch, apply_prompt_override, skip_prompt_rewrite, auto_compact_threshold_percent).await;
+                        SessionCommand::SetSessionModel { switch, responds_to } => {
+                            let updated_model_id = session.handle_set_session_model(switch).await;
                             let _ = responds_to.send(updated_model_id);
                         }
                         SessionCommand::SetReasoningEffort { effort, responds_to } => {
                             let updated_model_id = session.handle_set_reasoning_effort(effort).await;
                             let _ = responds_to.send(updated_model_id);
                         }
-                        SessionCommand::RebuildAgentForDefinition { definition, responds_to } => {
-                            let outcome = session.handle_rebuild_agent_for_definition(definition).await;
+                        SessionCommand::RebuildAgentForDefinition { definition, system_prompt_label, responds_to } => {
+                            let outcome = session.handle_rebuild_agent_for_definition(definition, system_prompt_label).await;
                             let _ = responds_to.send(outcome);
                         }
                         SessionCommand::OverrideModelName { model_name, extra_headers, context_window } => {
@@ -884,10 +887,13 @@ pub(super) async fn run_session(
                             }
                         }
                         SessionCommand::GetCurrentModel { responds_to } => {
-                            let model = session.chat_state_handle.get_sampling_config().await
-                                .map(|c| c.model)
+                            let current = session.chat_state_handle.get_sampling_config().await
+                                .map(|c| crate::session::CurrentModel {
+                                    id: c.model,
+                                    reasoning_effort: c.reasoning_effort,
+                                })
                                 .unwrap_or_default();
-                            let _ = responds_to.send(model);
+                            let _ = responds_to.send(current);
                         }
                         SessionCommand::GetCurrentPromptMode { responds_to } => {
                             let mode = *session.current_prompt_mode.lock();
@@ -1225,15 +1231,33 @@ pub(super) async fn run_session(
                         SessionCommand::FlushMemory { respond_to } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
-                                if s.memory.is_enabled() {
-                                    let did_flush = s.run_memory_flush("user_requested", None).await;
-                                    let _ = respond_to.send(Ok(did_flush));
-                                } else {
-                                    let _ = respond_to.send(Err(
-                                        acp::Error::invalid_request()
-                                            .data("memory is not enabled for this session".to_string())
-                                    ));
-                                }
+                                let _ = respond_to.send(s.memory_flush_command().await);
+                            });
+                        }
+                        SessionCommand::MemoryDream { respond_to } => {
+                            let s = session.clone();
+                            tokio::task::spawn_local(async move {
+                                let _ = respond_to.send(s.memory_dream_command().await);
+                            });
+                        }
+                        SessionCommand::MemoryList { respond_to } => {
+                            let _ = respond_to.send(session.memory_listing());
+                        }
+                        SessionCommand::MemoryToggle { enabled, respond_to } => {
+                            // Awaited inline so concurrent toggles cannot interleave mid-transition.
+                            let response = session.memory_toggle_and_list(enabled).await;
+                            let _ = respond_to.send(response);
+                        }
+                        SessionCommand::MemoryForget {
+                            path,
+                            expected_content_hash,
+                            respond_to,
+                        } => {
+                            let s = session.clone();
+                            tokio::task::spawn_local(async move {
+                                let response =
+                                    s.memory_forget(&path, &expected_content_hash).await;
+                                let _ = respond_to.send(response);
                             });
                         }
                         SessionCommand::SetYoloMode { enabled } => {
@@ -1670,7 +1694,7 @@ pub(super) async fn run_session(
                                         schema,
                                         meta,
                                     );
-                                    if let Some(reg) = mcp_tool.into_registration() {
+                                    if let Ok(reg) = mcp_tool.into_registration() {
                                         mcp_state
                                             .disabled_tool_registrations
                                             .insert(qualified.clone(), reg);
@@ -1740,16 +1764,8 @@ pub(super) async fn run_session(
                             let _ = respond_to.send(session.client_hooks.borrow().clone());
                         }
                         SessionCommand::SnapshotToolDefinitions { respond_to } => {
-                            // Verbatim mirrors inherit the parent schema for radix-cache reuse
-                            // Root-only ActiveAgentMessage tools are stripped, the same strip a rebuilt child gets
                             let defs = session.prepare_tool_definitions_inner().await;
                             let specs = session.turn_base_tool_specs(&defs);
-                            let bridge = session.agent.borrow().tool_bridge().clone();
-                            let specs = child_tool_projection::child_safe_tool_specs(
-                                specs,
-                                child_tool_projection::ChildToolProjection::VerbatimMirror,
-                                |name| bridge.tool_kind(name),
-                            );
                             let _ = respond_to.send(specs);
                         }
                         SessionCommand::SetClientHooks { hooks } => {
@@ -1936,21 +1952,13 @@ pub(super) async fn run_session(
                             tokio::task::spawn_local(async move {
                                 use prod_mc_cli_chat_proxy_types::feedback_types::FeedbackToolOutcome;
 
-                                // When the client provided a turn_number, look up THAT turn's user/assistant text
-                                // A turn_number means per-turn feedback on a specific assistant message in the chat history
-                                let turn_idx =
-                                    turn_number.and_then(|n| usize::try_from(n).ok());
-                                let (last_user_message, last_assistant_message) = match turn_idx {
-                                    Some(n) => {
-                                        let conv = s.chat_state_handle.get_conversation().await;
-                                        turn_texts_for_feedback(&conv, n)
-                                    }
-                                    None => {
-                                        tokio::join!(
-                                            s.chat_state_handle.get_last_user_query_text(),
-                                            s.chat_state_handle.get_last_assistant_text(),
-                                        )
-                                    }
+                                let conv = s.chat_state_handle.get_conversation().await;
+                                let turn_idx = turn_number
+                                    .and_then(|n| usize::try_from(n).ok())
+                                    .or_else(|| slash_feedback_last_turn(&conv));
+                                let lookup = match turn_idx {
+                                    Some(n) => turn_texts_for_feedback(&conv, n),
+                                    None => FeedbackTurnLookup::default(),
                                 };
 
                                 let sh = s.signals_handle();
@@ -1961,8 +1969,8 @@ pub(super) async fn run_session(
                                 let signals = signals.unwrap_or_default();
 
                                 let ctx = FeedbackContext {
-                                    last_user_message,
-                                    last_assistant_message,
+                                    last_user_message: lookup.user_text,
+                                    last_assistant_message: lookup.assistant_text,
                                     tool_outcomes: tool_outcomes
                                         .into_iter()
                                         .map(|o| FeedbackToolOutcome {
@@ -1976,6 +1984,9 @@ pub(super) async fn run_session(
                                     context_tokens_used: signals.context_tokens_used,
                                     context_window_tokens: signals.context_window_tokens,
                                     session_cwd: s.tool_context.cwd.as_path().to_string_lossy().to_string(),
+                                    reasoning_effort: lookup.reasoning_effort,
+                                    model_id: lookup.model_id,
+                                    model_fingerprint: lookup.model_fingerprint,
                                 };
                                 let _ = responds_to.send(ctx);
                             });
@@ -1984,10 +1995,14 @@ pub(super) async fn run_session(
                             let agent_type = session.active_agent_type.lock().clone();
                             let _ = responds_to.send(agent_type);
                         }
-                        SessionCommand::SideQuestion { question, respond_to } => {
+                        SessionCommand::SideQuestion {
+                            question,
+                            images,
+                            respond_to,
+                        } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
-                                let result = s.handle_side_question(&question).await;
+                                let result = s.handle_side_question(&question, images).await;
                                 let _ = respond_to.send(result);
                             });
                         }
@@ -2235,6 +2250,8 @@ pub(super) async fn run_session(
                             // Hooks fire BEFORE memory auto-save
                             turn_end_queue.flush().await;
                             fire_session_end_hooks(&session, "shutdown", &end_timer, &mut deferred_start).await;
+                            session.memory.stop_capture_worker().await;
+                            session.memory.dream_workers.cancel_and_join().await;
                             // Stop the dream before the end-pipeline reindex so their index writes cannot race.
                             stop_dream(&mut dream_task).await;
                             session
@@ -2274,6 +2291,8 @@ pub(super) async fn run_session(
                         // No session-end hooks here, but the flush still precedes `shutdown_workflows`, which makes a queued report's entry durable
                         let end_timer = session_end::SessionEndTimer::new_shared();
                         turn_end_queue.flush().await;
+                        session.memory.stop_capture_worker().await;
+                        session.memory.dream_workers.cancel_and_join().await;
                         // Stop the dream so it does not outlive the session holding the mutex.
                         stop_dream(&mut dream_task).await;
                         shutdown_workflows(&session, &end_timer).await;
@@ -2299,6 +2318,28 @@ pub(super) async fn run_session(
                             ..
                         })
                     );
+                    // Capture only a genuine root query that completed its tool loop with
+                    // EndTurn. Synthetic wakes and built-ins also produce PromptTurnOk, but
+                    // neither is durable conversation evidence for memory extraction.
+                    let v2_capture_eligible = super::memory_capture::is_successful_query_loop(
+                        &result,
+                    ) && {
+                        let state = session.state.lock().await;
+                        state.pending_inputs.front().is_some_and(|input| {
+                            input.prompt_id == prompt_id
+                                && input.queue_meta.is_some()
+                                && !input.input_origin.is_synthetic()
+                                && crate::session::slash_authority::parse_slash_prefix(
+                                    &input.prompt_blocks,
+                                )
+                                .is_none()
+                        })
+                    };
+                    let v2_capture_source_prompt_index = if v2_capture_eligible {
+                        Some(*session.tool_context.prompt_index.lock().await)
+                    } else {
+                        None
+                    };
                     let completed_prompt_id = prompt_id.clone();
                     if !session
                         .handle_completion(prompt_id, epoch, &task_identity, result, elapsed_ms)
@@ -2309,6 +2350,11 @@ pub(super) async fn run_session(
                             let _ = processed.send(());
                         }
                         continue;
+                    }
+                    if let Some(source_prompt_index) = v2_capture_source_prompt_index {
+                        session
+                            .enqueue_v2_completed_turn(source_prompt_index)
+                            .await;
                     }
                     #[cfg(test)]
                     if let Some(processed) = processed {
@@ -2370,37 +2416,132 @@ pub(super) async fn run_session(
         }
     }
 }
-/// Extract the user query text and assistant response text for the `turn_number`-th turn (0-based) of a conversation snapshot.
-/// Used by the `GetFeedbackContext` handler when a client supplies a `turn_number` (per-turn thumbs button on a specific assistant message).
+pub(super) fn slash_feedback_last_turn(
+    conversation: &[xai_grok_sampling_types::ConversationItem],
+) -> Option<usize> {
+    use xai_grok_sampling_types::ConversationItem;
+    if let Some(n) = conversation.iter().rev().find_map(|item| match item {
+        ConversationItem::User(u) => u.prompt_index,
+        _ => None,
+    }) {
+        return Some(n);
+    }
+    let mut seen_unmarked_preamble = false;
+    let mut n = 0usize;
+    for item in conversation {
+        let ConversationItem::User(u) = item else {
+            continue;
+        };
+        if u.synthetic_reason.is_human() && !seen_unmarked_preamble {
+            seen_unmarked_preamble = true;
+            continue;
+        }
+        if !u.synthetic_reason.starts_prompt_turn() {
+            continue;
+        }
+        n += 1;
+    }
+    n.checked_sub(1)
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct FeedbackTurnLookup {
+    pub user_text: Option<String>,
+    pub assistant_text: Option<String>,
+    pub reasoning_effort: Option<crate::sampling::ReasoningEffort>,
+    pub model_id: Option<String>,
+    pub model_fingerprint: Option<String>,
+}
 pub(super) fn turn_texts_for_feedback(
     conversation: &[xai_grok_sampling_types::ConversationItem],
     turn_number: usize,
-) -> (Option<String>, Option<String>) {
+) -> FeedbackTurnLookup {
     use xai_grok_sampling_types::ConversationItem;
-    let Some(start) = conversation
+    let user_prompt_index = |item: &ConversationItem| match item {
+        ConversationItem::User(u) => u.prompt_index,
+        _ => None,
+    };
+    let is_unmarked_prompt_user = |item: &ConversationItem| match item {
+        ConversationItem::User(u) => {
+            u.prompt_index.is_none() && u.synthetic_reason.starts_prompt_turn()
+        }
+        _ => false,
+    };
+    let (start, exact) = if let Some(i) = conversation
+        .iter()
+        .position(|item| user_prompt_index(item) == Some(turn_number))
+    {
+        (i, true)
+    } else {
+        let mut seen_unmarked_preamble = false;
+        let mut n = 0usize;
+        let mut i = None;
+        for (idx, item) in conversation.iter().enumerate() {
+            let ConversationItem::User(u) = item else {
+                continue;
+            };
+            if u.prompt_index.is_some() {
+                break;
+            }
+            if u.synthetic_reason.is_human() && !seen_unmarked_preamble {
+                seen_unmarked_preamble = true;
+                continue;
+            }
+            if !u.synthetic_reason.starts_prompt_turn() {
+                continue;
+            }
+            if n == turn_number {
+                i = Some(idx);
+                break;
+            }
+            n += 1;
+        }
+        let Some(i) = i else {
+            return FeedbackTurnLookup::default();
+        };
+        (i, false)
+    };
+    let end = conversation
         .iter()
         .enumerate()
-        .filter(|(_, item)| matches!(item, ConversationItem::User(_)))
-        .nth(turn_number)
-        .map(|(i, _)| i)
-    else {
-        return (None, None);
+        .skip(start + 1)
+        .find_map(|(i, item)| {
+            (user_prompt_index(item).is_some() || (!exact && is_unmarked_prompt_user(item)))
+                .then_some(i)
+        })
+        .unwrap_or(conversation.len());
+    let Some(raw) = conversation.get(start).map(|item| item.text_content()) else {
+        return FeedbackTurnLookup::default();
     };
-    let raw = conversation[start].text_content();
     let extracted = xai_chat_state::compaction_utils::extract_user_query(&raw);
     let user_text = (!extracted.is_empty()).then_some(extracted);
-    let assistant_text = conversation
+    let window = conversation.get(start + 1..end).unwrap_or(&[]);
+    let assistant_text = window.iter().find_map(|item| {
+        let ConversationItem::Assistant(a) = item else {
+            return None;
+        };
+        (!a.content.trim().is_empty()).then(|| a.content.as_ref().to_owned())
+    });
+    let reasoning_effort = window.iter().find_map(|item| {
+        let ConversationItem::Assistant(a) = item else {
+            return None;
+        };
+        a.reasoning_effort
+    });
+    let (model_id, model_fingerprint) = window
         .iter()
-        .skip(start + 1)
-        .take_while(|item| !matches!(item, ConversationItem::User(_)))
         .find_map(|item| {
-            if let ConversationItem::Assistant(a) = item
-                && !a.content.trim().is_empty()
-            {
-                Some(a.content.as_ref().to_owned())
-            } else {
-                None
-            }
-        });
-    (user_text, assistant_text)
+            let ConversationItem::Assistant(a) = item else {
+                return None;
+            };
+            let id = a.model_id.clone()?;
+            Some((Some(id), a.model_fingerprint.clone()))
+        })
+        .unwrap_or((None, None));
+    FeedbackTurnLookup {
+        user_text,
+        assistant_text,
+        reasoning_effort,
+        model_id,
+        model_fingerprint,
+    }
 }

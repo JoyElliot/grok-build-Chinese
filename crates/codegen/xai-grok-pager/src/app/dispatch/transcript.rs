@@ -129,7 +129,9 @@ pub(super) fn dispatch_copy_assistant_message(
             return;
         }
 
-        let text = &agent_messages[n - 1];
+        let Some(text) = n.checked_sub(1).and_then(|i| agent_messages.get(i)) else {
+            return;
+        };
         if text.is_empty() {
             let message = locale.named_text(
                 "transcript.copy.assistant_empty",
@@ -573,7 +575,7 @@ fn config_agents_slash_name(tab: Option<crate::views::agents_modal::AgentsTab>) 
 }
 
 /// Toast shown when a modal that needs a session is opened off the agent view.
-fn toast_session_only_slash(app: &mut AppView, name: &str) {
+pub(super) fn toast_session_only_slash(app: &mut AppView, name: &str) {
     let msg = app
         .locale
         .named_text(
@@ -892,7 +894,11 @@ pub(super) fn handle_marketplace_updates_available(
         let summary = if names.len() <= 2 {
             names.join(", ")
         } else {
-            format!("{} and {} more", names[..2].join(", "), names.len() - 2)
+            format!(
+                "{} and {} more",
+                names.iter().take(2).cloned().collect::<Vec<_>>().join(", "),
+                names.len() - 2
+            )
         };
         agent
             .scrollback

@@ -3,11 +3,10 @@
 use super::paste::paste_key_tests;
 #[cfg(test)]
 use super::test_fixtures;
-use super::viewer::IdleEnterQuote;
 use super::{
-    AgentPane, AgentView, BlockingCard, CtaPhase, EscStep, InputMode, KeyOwner,
-    MULTI_CLICK_TIMEOUT_MS, PromptInputMode, active_contexts_for_pane, format_key_for_log,
-    is_link_modifier_for_key, is_mouse_reporting_toggle_chord, resolve_action,
+    AgentPane, AgentView, BlockingCard, ComposerRoute, CtaPhase, EscStep, InputMode, KeyOwner,
+    MULTI_CLICK_TIMEOUT_MS, PromptInputMode, ViewSurface, active_contexts_for_pane,
+    format_key_for_log, is_link_modifier_for_key, is_mouse_reporting_toggle_chord, resolve_action,
 };
 use crate::actions::{ActionId, ActionRegistry, When};
 use crate::app::actions::Action;
@@ -361,7 +360,7 @@ impl AgentView {
         self.clear_btw_drag_state();
         Handled(Box::new(InputOutcome::Changed))
     }
-    fn handle_input_inner(
+    pub(super) fn handle_input_inner(
         &mut self,
         ev: &Event,
         registry: &ActionRegistry,
@@ -394,68 +393,8 @@ impl AgentView {
                 _ => self.clear_stuck_scrollback_drag(),
             }
         }
-        if let Some(ref child_sid) = self.active_subagent.clone() {
-            if let Event::Key(key) = ev
-                && key.kind != KeyEventKind::Release
-                && key!('q', CONTROL).matches(key)
-            {
-                return InputOutcome::Unchanged;
-            }
-            if let Event::Mouse(mouse) = ev
-                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-                && self
-                    .hit_subagent_frame_close
-                    .contains(mouse.column, mouse.row)
-            {
-                self.close_subagent_fullscreen();
-                return InputOutcome::Changed;
-            }
-            if let Event::Mouse(mouse) = ev
-                && matches!(mouse.kind, MouseEventKind::Moved)
-                && self
-                    .hit_subagent_frame_close
-                    .update_hover(mouse.column, mouse.row)
-            {
-                return InputOutcome::Changed;
-            }
-            let child_in_scrollback = self
-                .subagent_views
-                .get(child_sid)
-                .is_some_and(|c| c.is_bare_scrollback());
-            if child_in_scrollback
-                && let Event::Key(key) = ev
-                && key.kind != KeyEventKind::Release
-                && (key!('q').matches(key) || key.code == KeyCode::Esc)
-            {
-                self.close_subagent_fullscreen();
-                return InputOutcome::Changed;
-            }
-            let child_quote = match ev {
-                Event::Key(key) if key.kind != KeyEventKind::Release => self
-                    .subagent_views
-                    .get_mut(child_sid)
-                    .map(|child| child.try_take_idle_enter_quote(key)),
-                _ => None,
-            };
-            match child_quote {
-                Some(IdleEnterQuote::Quoted(quoted)) => {
-                    self.close_subagent_fullscreen();
-                    self.insert_quoted_reply(&quoted);
-                    return InputOutcome::Changed;
-                }
-                Some(IdleEnterQuote::ConsumedEmpty) => {
-                    return InputOutcome::Changed;
-                }
-                Some(IdleEnterQuote::NotHandled) | None => {}
-            }
-            if let Some(child_view) = self.subagent_views.get_mut(child_sid) {
-                child_view.mark_as_subagent_view();
-                let outcome = child_view.handle_input_inner(ev, registry, prompt_paging, locale);
-                let mut child_effects = std::mem::take(&mut child_view.pending_effects);
-                self.pending_effects.append(&mut child_effects);
-                return outcome;
-            }
-            return InputOutcome::Unchanged;
+        if let Some(outcome) = self.intercept_takeover_input(ev, registry, prompt_paging) {
+            return outcome;
         }
         if self.dismiss_jump_picker_if_suppressed()
             && let Event::Key(key) = ev
@@ -581,6 +520,19 @@ impl AgentView {
                 return InputOutcome::Changed;
             }
         }
+        if self.active_modal.is_some() {
+            return match ev {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if registry.lookup(key, When::Always) == Some(ActionId::Quit) {
+                        return InputOutcome::Unchanged;
+                    }
+                    self.handle_modal_key_with_registry(key, registry)
+                }
+                Event::Mouse(mouse) => self.handle_modal_mouse_with_registry(mouse, registry),
+                Event::Paste(text) => self.handle_modal_paste(text, registry),
+                _ => InputOutcome::Changed,
+            };
+        }
         if self.btw_state.is_some()
             && let Event::Key(key) = ev
             && key.kind != KeyEventKind::Release
@@ -644,19 +596,6 @@ impl AgentView {
                 }
                 _ => {}
             }
-        }
-        if self.active_modal.is_some() {
-            return match ev {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if registry.lookup(key, When::Always) == Some(ActionId::Quit) {
-                        return InputOutcome::Unchanged;
-                    }
-                    self.handle_modal_key_with_registry(key, registry)
-                }
-                Event::Mouse(mouse) => self.handle_modal_mouse_with_registry(mouse, registry),
-                Event::Paste(text) => self.handle_modal_paste(text, registry),
-                _ => InputOutcome::Changed,
-            };
         }
         if self.line_viewer.is_some() && self.focused_card() != Some(BlockingCard::Permission) {
             if let Event::Mouse(mouse) = ev
@@ -1142,15 +1081,18 @@ impl AgentView {
             && key.kind != KeyEventKind::Release
             && registry.matches_id(ActionId::ToggleTasks, key)
         {
-            if self.active_pane == AgentPane::Dock {
-                self.set_active_pane(AgentPane::Scrollback, false);
-                return InputOutcome::Changed;
-            }
-            if self.dock_shown {
-                self.set_active_pane(AgentPane::Dock, false);
-                return InputOutcome::Changed;
-            }
             if self.dock_on {
+                if self.dock_hidden {
+                    self.dock_hidden = false;
+                    return InputOutcome::Changed;
+                }
+                if self.dock_shown {
+                    self.dock_hidden = true;
+                    if self.active_pane == AgentPane::Dock {
+                        self.set_active_pane(AgentPane::Scrollback, false);
+                    }
+                    return InputOutcome::Changed;
+                }
                 return InputOutcome::Unchanged;
             }
             self.tasks.overlay.toggle();
@@ -1164,6 +1106,7 @@ impl AgentView {
         }
         if let Event::Key(key) = ev
             && key.kind != KeyEventKind::Release
+            && self.surface() == ViewSurface::Root
             && registry.matches_id(ActionId::OpenSessions, key)
         {
             return self.open_session_picker();
@@ -1184,6 +1127,7 @@ impl AgentView {
         }
         if let Event::Key(key) = ev
             && key.kind != KeyEventKind::Release
+            && self.surface() == ViewSurface::Root
             && registry.lookup(key, When::AgentScreen) == Some(ActionId::OpenExtensions)
         {
             crate::actions::log_shortcut_used(
@@ -1209,6 +1153,7 @@ impl AgentView {
         }
         if let Event::Key(key) = ev
             && key.kind != KeyEventKind::Release
+            && self.surface() == ViewSurface::Root
             && self.active_pane != AgentPane::Prompt
             && (key!('p', CONTROL).matches(key)
                 || key.code == KeyCode::Char('?')
@@ -1313,6 +1258,9 @@ impl AgentView {
         action_id: ActionId,
         registry: &ActionRegistry,
     ) -> InputOutcome {
+        if self.surface().hides_chord(action_id) {
+            return InputOutcome::Changed;
+        }
         match action_id {
             ActionId::CancelTurn => {
                 if self.stoppable_activity_running() {
@@ -1340,7 +1288,7 @@ impl AgentView {
                 }
             }
             ActionId::SendToBackground => {
-                if !self.is_subagent_view
+                if self.surface() == ViewSurface::Root
                     && self
                         .session
                         .tracker
@@ -1432,7 +1380,12 @@ impl AgentView {
         InputOutcome::Action(Action::FetchSessionList)
     }
     /// Returns `true` if the switch happened immediately, `false` if blocked.
+    /// The one chokepoint for focusing the composer: with no route for its text (a child view) the prompt
+    /// pane is refused from every entry (Tab, type-to-focus, queue Down, mouse, history accept), even forced.
     pub(crate) fn set_active_pane(&mut self, target: AgentPane, force: bool) -> bool {
+        if target == AgentPane::Prompt && self.composer_route() == ComposerRoute::Hidden {
+            return false;
+        }
         if target != AgentPane::Scrollback {
             self.scrollback_search = None;
         }
@@ -1496,16 +1449,13 @@ impl AgentView {
 #[cfg(test)]
 mod background_and_tasks_shortcut_tests {
     use super::super::AgentPane;
-    use super::super::test_fixtures::{add_running_bg_task, add_running_execute, make_agent};
+    use super::super::test_fixtures::{add_running_bg_task, add_running_execute, ctrl, make_agent};
     use crate::actions::ActionRegistry;
     use crate::app::actions::Action;
     use crate::app::app_view::InputOutcome;
     use crate::views::history_search::HistoryEntry;
     use crate::views::list_pane::InputBarMode;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    fn ctrl(c: char) -> Event {
-        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
-    }
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     fn assert_demotes(outcome: InputOutcome) {
         assert!(matches!(
             outcome,
@@ -1663,66 +1613,6 @@ mod background_and_tasks_shortcut_tests {
         }
     }
     #[test]
-    fn fullscreen_child_ctrl_b_never_demotes_child_or_parent() {
-        let registry = ActionRegistry::defaults();
-        let child_sid = "child-sid".to_string();
-        let mut parent = make_agent();
-        add_running_execute(&mut parent);
-        assert!(
-            parent
-                .session
-                .tracker
-                .running_execute_tool_call_id()
-                .is_some()
-        );
-        let mut child = make_agent();
-        add_running_execute(&mut child);
-        assert!(
-            child
-                .session
-                .tracker
-                .running_execute_tool_call_id()
-                .is_some()
-        );
-        child.set_active_pane(AgentPane::Scrollback, true);
-        parent
-            .subagent_views
-            .insert(child_sid.clone(), Box::new(child));
-        assert!(!parent.subagent_views[&child_sid].is_subagent_view);
-        parent.open_subagent_fullscreen(child_sid.clone());
-        assert!(parent.subagent_views[&child_sid].is_subagent_view);
-        let outcome = parent.handle_input(&ctrl('b'), &registry);
-        assert!(matches!(outcome, InputOutcome::Changed));
-        assert!(!matches!(
-            outcome,
-            InputOutcome::Action(Action::DemoteToBackground)
-        ));
-        assert_eq!(parent.active_subagent.as_deref(), Some(child_sid.as_str()));
-        assert!(
-            parent
-                .session
-                .tracker
-                .running_execute_tool_call_id()
-                .is_some()
-        );
-        assert!(
-            parent.subagent_views[&child_sid]
-                .session
-                .tracker
-                .running_execute_tool_call_id()
-                .is_some()
-        );
-        let child = &parent.subagent_views[&child_sid];
-        assert!(child.is_subagent_view);
-        assert!(
-            !child
-                .current_shortcut_hints(&registry)
-                .iter()
-                .any(|hint| hint.label == "send to bg")
-        );
-        assert!(child.hit_bg_button.rect.is_none());
-    }
-    #[test]
     fn ctrl_g_toggles_tasks_and_never_demotes() {
         let registry = ActionRegistry::defaults();
         let mut agent = make_agent();
@@ -1827,6 +1717,20 @@ mod btw_focus_tests {
             ),
             "{surface} Esc must restore the complete minimal /btw lifecycle"
         );
+    }
+    fn session_info_modal() -> crate::views::modal::ActiveModal {
+        crate::views::modal::ActiveModal::UsageInfo {
+            state: Box::new(crate::views::usage_modal::UsageInfoModalState::new(
+                crate::views::usage_modal::UsageInfoTab::SessionInfo,
+                crate::views::usage_modal::UsageInfoContext {
+                    session_id: Some("s".into()),
+                    usage_visible: true,
+                    chat_kind: false,
+                    billing_redirect_url: None,
+                    subscription_tier: None,
+                },
+            )),
+        }
     }
     #[test]
     fn focused_panel_scrolls_with_arrows() {
@@ -2060,6 +1964,14 @@ mod btw_focus_tests {
         goal.handle_minimal_input(&key(KeyCode::Esc), &reg);
         assert!(!goal.show_goal_detail, "goal detail handled Esc");
         assert_minimal_btw_active(&goal, "goal detail");
+        let mut session_info = minimal_btw_agent();
+        session_info.active_modal = Some(session_info_modal());
+        session_info.handle_minimal_input(&key(KeyCode::Esc), &reg);
+        assert!(
+            session_info.active_modal.is_none(),
+            "session-info handled Esc"
+        );
+        assert_minimal_btw_active(&session_info, "session-info");
     }
     #[test]
     fn minimal_btw_surface_owner_covers_shared_modal_cascade() {
@@ -2091,6 +2003,46 @@ mod btw_focus_tests {
         agent.handle_input(&key(KeyCode::Esc), &reg);
         assert!(agent.btw_state.is_none());
         assert!(!agent.permission_queue.is_empty());
+    }
+    #[test]
+    fn fullscreen_session_info_owns_esc_over_btw() {
+        let mut agent = prompt_focused_agent();
+        let reg = ActionRegistry::defaults();
+        agent.btw_state = Some(BtwOverlayState::done("q".into(), long_btw_answer()));
+        agent.active_modal = Some(session_info_modal());
+        agent.handle_input(&key(KeyCode::Esc), &reg);
+        assert!(
+            agent.active_modal.is_none(),
+            "first Esc closes the painted /session-info modal"
+        );
+        assert!(
+            agent.btw_state.is_some(),
+            "the /btw panel survives under the modal"
+        );
+        agent.handle_input(&key(KeyCode::Esc), &reg);
+        assert!(
+            agent.btw_state.is_none(),
+            "a second Esc dismisses the /btw panel"
+        );
+    }
+    #[test]
+    fn fullscreen_session_info_owns_arrows_over_btw_scroll() {
+        let mut agent = prompt_focused_agent();
+        let reg = ActionRegistry::defaults();
+        agent.btw_state = Some(BtwOverlayState::done("q".into(), long_btw_answer()));
+        agent.btw_focused = true;
+        agent.active_modal = Some(session_info_modal());
+        agent.handle_input(&key(KeyCode::Down), &reg);
+        assert_eq!(
+            done_scroll_offset(&agent),
+            0,
+            "arrows must not scroll /btw while the modal is painted on top"
+        );
+        assert!(
+            agent.active_modal.is_some(),
+            "Down must leave the painted modal open"
+        );
+        assert!(agent.btw_state.is_some());
     }
     #[test]
     fn minimal_does_not_scroll_unpainted_btw_geometry() {
@@ -2679,9 +2631,7 @@ mod subagent_forward_tests {
         let mut parent = make_agent();
         let mut child = make_agent();
         child.pending_effects.push(Effect::ResetMouseReporting);
-        parent
-            .subagent_views
-            .insert("child-sid".to_string(), Box::new(child));
+        parent.insert_test_child("child-sid".to_string(), Box::new(child));
         parent.active_subagent = Some("child-sid".to_string());
         let ev = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Moved,

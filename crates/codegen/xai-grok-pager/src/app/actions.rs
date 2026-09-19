@@ -31,6 +31,7 @@ pub enum SwitchModelError {
 /// Produced by [`super::input`] from key/mouse events.
 /// Consumed by [`super::dispatch::dispatch`] to mutate state and return effects.
 #[derive(Debug)]
+#[cfg_attr(test, derive(strum::AsRefStr))]
 #[allow(clippy::large_enum_variant)]
 pub enum Action {
     /// Quit the application.
@@ -135,6 +136,10 @@ pub enum Action {
     },
     /// Send the current prompt text to the agent.
     SendPrompt(String),
+    /// Post-turn plan revise: send notes without consuming the pre-review draft.
+    /// [`Self::SendPrompt`] would wipe that draft and drain its images into the
+    /// revision turn.
+    RevisePlan(String),
     /// Submit a clicked follow-up suggestion chip as a LITERAL model prompt.
     /// The suggestion text is server/model-controlled, so it must bypass slash-command and exit-alias resolution.
     /// A `/always-approve` or `/quit` chip must never execute as a command.
@@ -150,6 +155,12 @@ pub enum Action {
         /// Pasted images riding along with the interjection.
         /// Empty for producers that carry plain text (plan-review comments, etc.).
         images: Vec<crate::prompt_images::PastedImage>,
+    },
+    /// Approve a finished CreatePlan turn. Starts a new Agent turn via `ExecutePlanAction`.
+    ExecutePlan {
+        plan_file_content: String,
+        /// File URI of the keep. Omitted on the wire when empty.
+        plan_file_uri: Option<String>,
     },
     /// Cancel-and-send: cancel the running turn (background tasks and queued rows survive shell-side) and run this text as the next prompt turn.
     /// The send-now chord, empty-composer Enter on a queued local row, and the deferred-paste re-issue produce this.
@@ -569,7 +580,7 @@ pub enum Action {
     },
     /// Privacy banner `[Opt in]` (ack only after ACP success).
     PrivacyBannerOptIn,
-    /// Privacy banner `[Opt out]` (ack now, then record the decline).
+    /// Privacy banner `[Opt out]` (always writes the decline; ack only after ACP success).
     PrivacyBannerOptOut,
     /// Open the command palette (`/help`).
     /// The keybinding path (Ctrl+P) opens it directly in `handle_agent_action`; this lets a slash command reach the same modal through dispatch.
@@ -667,7 +678,7 @@ pub enum Action {
     /// Set plan mode on/off. Per-session, ACP-mediated (not persisted to config.toml).
     /// `/plan <desc>` uses `EnterPlanMode` instead because it also starts a turn.
     SetPlanMode(PlanModeKind),
-    /// Open the centered feedback modal (full TUI only; minimal mode refuses visibly).
+    /// Open the feedback modal (every screen mode).
     /// The payload's images were drained at slash-execution time; the modal composer adopts them as chips.
     OpenFeedbackModal(crate::views::feedback_modal::OpenFeedbackModal),
     /// Submit the open feedback modal's report.
@@ -694,7 +705,11 @@ pub enum Action {
     /// Save the currently displayed remember note from the review modal.
     SaveRememberNoteFromModal,
     /// Send a /btw side question (bypasses queue, works while agent is busy).
-    SendBtw(String),
+    /// `images` are composer attachments drained at submit; empty keeps the text-only wire.
+    SendBtw {
+        question: String,
+        images: Vec<crate::prompt_images::PastedImage>,
+    },
     /// Request a session recap ("where was I" summary).
     /// `auto` is `true` for the automatic return-from-away recap, `false` for an explicit `/recap`.
     /// Bypasses the prompt queue (works while the agent is busy).
@@ -758,6 +773,19 @@ pub enum Action {
     DoctorFixCancelled(DoctorFixTarget),
     /// Persist the memory modal fullscreen preference to config.toml.
     PersistMemoryFullscreen(bool),
+    /// Turn memory on or off for the active session (`t` in the `/memory` modal).
+    MemoryToggle {
+        enabled: bool,
+    },
+    /// Copy text from the `/memory` modal; the outcome is shown in the modal's status line.
+    MemoryCopy {
+        text: String,
+    },
+    /// Delete one note from the `/memory` modal; the shell verifies the hash before removing.
+    MemoryForget {
+        path: String,
+        expected_content_hash: String,
+    },
     /// Open the Agent Dashboard view (`/dashboard`, `Ctrl+\`, `grok dashboard`).
     OpenDashboard,
     /// Close the dashboard, returning to the previous `ActiveView`.
@@ -811,13 +839,13 @@ pub enum Action {
     DashboardReorderUp,
     /// Reorder the selected row one slot down (Shift+↓).
     DashboardReorderDown,
-    /// Exit the dashboard's session-overlay (the bordered `[Prev] [Next] [✗]` chrome wrapped around an attached agent view).
+    /// Exit the dashboard's session-overlay (an attached agent view whose header row carries `‹ i/n ›` and `[Dashboard]`).
     /// Returns to the dashboard with the cursor on the previously attached row.
-    /// Bound to Esc, Ctrl+\\, and `[✗]` click inside the overlay.
+    /// Bound to Esc, Ctrl+\\, and `[Dashboard]` click inside the overlay.
     DashboardOverlayExit,
-    /// Cycle the dashboard's session-overlay to the previous top-level agent in the row list (`[Prev]` click or Ctrl+\[).
+    /// Cycle the dashboard's session-overlay to the previous top-level agent in the row list (`‹` click or Ctrl+\[).
     DashboardOverlayPrev,
-    /// Cycle the dashboard's session-overlay to the next top-level agent in the row list (`[Next]` click or Ctrl+\]).
+    /// Cycle the dashboard's session-overlay to the next top-level agent in the row list (`›` click or Ctrl+\]).
     DashboardOverlayNext,
     /// Confirmed stop from inside the dashboard's session-overlay: close the attached session and return to the dashboard.
     /// State machine documented at `dispatch_dashboard_overlay_stop`.
@@ -1255,12 +1283,22 @@ impl ClipboardPasteSource {
             }
         )
     }
-    pub fn text_to_insert_on_miss(&self) -> Option<&str> {
-        match self {
-            Self::ClipboardKey { text, .. } => text.as_deref(),
-            Self::BracketedDeferred { text } => Some(text),
-            Self::BracketedInserted { .. } => None,
+    /// Non-blank text to insert when the probe attached nothing; `None` for bracketed text the target already inserted.
+    pub fn text_to_insert_on_miss(&self, image: &ProbedAttachment) -> Option<&str> {
+        if !matches!(
+            image,
+            ProbedAttachment::NoRaster
+                | ProbedAttachment::ProbeDropped
+                | ProbedAttachment::ProbeFailed
+        ) {
+            return None;
         }
+        let text = match self {
+            Self::ClipboardKey { text, .. } => text.as_deref(),
+            Self::BracketedDeferred { text } => Some(text.as_str()),
+            Self::BracketedInserted { .. } => None,
+        };
+        text.filter(|text| !text.trim().is_empty())
     }
     pub fn synchronous_insertion(&self) -> Option<ClipboardTextInsertion> {
         match self {
@@ -1334,7 +1372,7 @@ pub enum ProbedAttachment {
     PersistFailed(String),
     /// The pasteboard probe completed normally without raster data.
     NoRaster,
-    /// The attachment result was intentionally discarded because its baseline went stale.
+    /// Discarded because the pasteboard changed under the paste or the bracketed payload did not match; the reason is telemetry's only.
     ProbeDropped,
     /// The attachment probe task failed or timed out.
     ProbeFailed,
@@ -1396,9 +1434,10 @@ pub enum Effect {
         model_id: Option<acp::ModelId>,
         /// Per-create permission mode for a fresh worktree session. Ignored when resuming an existing session.
         permission_mode_override: Option<PermissionModeKind>,
-        /// Client-chosen session ID (`--session-id` with `--worktree`) used as the worktree/session id and `meta.sessionId` on fresh create.
-        /// Ignored when `load_session_id` is set (resume path owns the id).
+        /// Explicit `--session-id`: names the worktree checkout and is the `meta.sessionId` on create.
         preferred_session_id: Option<String>,
+        /// Pager-minted `meta.sessionId` for a fresh worktree create without an explicit id, so its setup phases route; not the checkout name.
+        minted_session_id: Option<String>,
         /// One-shot `/chat` or sticky `--chat`: stamp `_meta` kind=chat on fresh create (resume uses `LoadSession.chat_kind` instead).
         chat_kind: bool,
     },
@@ -1511,6 +1550,15 @@ pub enum Effect {
         /// Stamped into the content block `_meta` (`skillTokenRanges`) when non-empty so replay restyles the echo like the composer did.
         /// Contract: the offsets index the block's `text` displayed verbatim, never combined with a `displayText` override.
         skill_token_ranges: Vec<std::ops::Range<usize>>,
+    },
+    /// `session/prompt` with `_meta.executePlan` after a post-turn plan approve
+    ExecutePlan {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        prompt_id: String,
+        plan_file_content: String,
+        /// File URI of the keep. Omitted on the wire when empty.
+        plan_file_uri: Option<String>,
     },
     /// Send a direct bash command to the agent (with typed PromptBlockMeta).
     SendBashCommand {
@@ -1758,6 +1806,34 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
     },
+    /// Fetch the `/memory` modal contents (x.ai/memory/list).
+    FetchMemoryList {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+    },
+    /// Turn memory on or off (x.ai/memory/toggle).
+    MemoryToggle {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        enabled: bool,
+    },
+    /// Delete one memory note from the `/memory` modal (x.ai/memory/forget).
+    MemoryForget {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        path: String,
+        expected_content_hash: String,
+    },
+    /// Run `/flush` (x.ai/memory/flush) as a tracked agent command.
+    MemoryFlush {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+    },
+    /// Run `/dream` (x.ai/memory/dream) as a tracked agent command.
+    MemoryDream {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+    },
     /// Execute a hooks management action via ACP.
     HooksAction {
         agent_id: AgentId,
@@ -1955,6 +2031,9 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
         question: String,
+        /// Composer images. Encoded off the TUI thread. Empty keeps the text-only wire.
+        images: Vec<crate::prompt_images::PastedImage>,
+        cwd: std::path::PathBuf,
         /// Correlates minimal responses; fullscreen leaves this unset.
         minimal_request_id: Option<uuid::Uuid>,
     },
@@ -2014,11 +2093,8 @@ pub enum Effect {
     SetCodingDataSharing {
         agent_id: AgentId,
         opted_in: bool,
-        /// Pre-toggle value to revert to on failure.
-        rollback_to_opted_in: bool,
         /// Write generation, echoed back on the `TaskResult`.
-        /// Writes to this endpoint are concurrent, so a result that isn't the newest must not touch state.
-        /// Its `rollback_to_opted_in` was captured against a world that has since moved on.
+        /// Writes to this endpoint are concurrent, so only the newest result sets the mirror; an older success only updates the pending write's rollback.
         seq: u64,
     },
     /// Rename the current session.
@@ -2149,8 +2225,7 @@ pub enum Effect {
     /// Keeps the paste handler from blocking the render thread on that I/O.
     ProbeClipboardAttachment {
         ctx: ClipboardPasteContext,
-        /// Pasteboard `changeCount` at enqueue time; the off-thread probe bails (no image) if it no longer matches.
-        /// A clipboard change or a second racing paste thus can't attach the wrong image.
+        /// Pasteboard `changeCount` at enqueue; the probe drops the attachment if it moved before or during the read. `None` leaves the read unguarded.
         change_count: Option<u64>,
     },
     /// Bounded disk read for an adopted feedback image. The original file remains until completion installs the bytes.
@@ -2303,11 +2378,14 @@ pub enum TaskResult {
         agent_id: AgentId,
         session_id: acp::SessionId,
         models: Option<acp::SessionModelState>,
+        modes: Option<acp::SessionModeState>,
     },
     /// Session creation failed.
     SessionFailed {
         agent_id: AgentId,
         error: String,
+        /// The create RPC hit its bounded timeout, rather than failing early for another reason.
+        timed_out: bool,
     },
     /// Worktree session was created successfully (worktree and ACP session).
     WorktreeSessionCreated {
@@ -2318,6 +2396,7 @@ pub enum TaskResult {
         /// Effective cwd inside the worktree (preserves subdirectory offset).
         session_cwd: std::path::PathBuf,
         models: Option<acp::SessionModelState>,
+        modes: Option<acp::SessionModeState>,
         strategy_summary: Option<String>,
     },
     /// Worktree created and session forked, but not yet loaded.
@@ -2339,12 +2418,17 @@ pub enum TaskResult {
     WorktreeSessionFailed {
         agent_id: AgentId,
         error: String,
+        /// The orphaned worktree still on disk, so the handler can re-append the `grok worktree rm` hint; `None` if none was created.
+        orphaned_worktree_root: Option<std::path::PathBuf>,
+        /// The create RPC hit its bounded timeout, rather than failing early for another reason.
+        timed_out: bool,
     },
     /// Session was loaded (resumed) successfully.
     SessionLoaded {
         agent_id: AgentId,
         session_id: acp::SessionId,
         models: Option<acp::SessionModelState>,
+        modes: Option<acp::SessionModeState>,
         code_restored: bool,
         restore_summary: Option<String>,
         restore_degree: Option<xai_grok_workspace::session::git::RestoreDegree>,
@@ -2525,6 +2609,11 @@ pub enum TaskResult {
     /// Cancel notification was sent (fire-and-forget).
     /// The real turn end comes via PromptResponse.
     CancelComplete,
+    /// `session/set_mode` failed. Clear optimistic `plan_mode_pending` and
+    /// `pending_post_turn_commit` so abandon/leave can retry; keep and review stay mounted.
+    SetSessionModeFailed {
+        session_id: acp::SessionId,
+    },
     /// The marker can stop advertising itself as unsent.
     ConsentRecorded {
         notice_id: String,
@@ -2640,6 +2729,32 @@ pub enum TaskResult {
         agent_id: AgentId,
         result: Result<xai_hooks_plugins_types::PluginsListResponse, String>,
     },
+    /// Memory listing fetched for the `/memory` modal.
+    MemoryListLoaded {
+        agent_id: AgentId,
+        result: Result<xai_grok_shell::extensions::memory::MemoryListing, String>,
+    },
+    /// Shell answered a memory on/off request.
+    MemoryToggleResult {
+        agent_id: AgentId,
+        result: Result<xai_grok_shell::extensions::memory::MemoryToggleResponse, String>,
+    },
+    /// Shell answered a `/memory` modal delete request.
+    MemoryForgetResult {
+        agent_id: AgentId,
+        path: String,
+        result: Result<xai_grok_shell::extensions::memory::MemoryForgetResponse, String>,
+    },
+    /// `/flush` finished.
+    MemoryFlushComplete {
+        agent_id: AgentId,
+        result: Result<xai_grok_shell::extensions::memory::MemoryFlushResponse, String>,
+    },
+    /// `/dream` finished.
+    MemoryDreamComplete {
+        agent_id: AgentId,
+        result: Result<xai_grok_shell::extensions::memory::MemoryDreamResponse, String>,
+    },
     /// Hooks action completed.
     HooksActionResult {
         agent_id: AgentId,
@@ -2751,7 +2866,6 @@ pub enum TaskResult {
     CodingDataSharingFailed {
         agent_id: AgentId,
         error: String,
-        rollback_to_opted_in: bool,
         seq: u64,
     },
     /// Session rename completed successfully.
@@ -2824,11 +2938,15 @@ pub enum TaskResult {
         /// Present only when the shell consumed explicit modal consent and minted a one-shot capability.
         trace_upload_token: Option<String>,
     },
-    /// Feedback submission failed. The shell already persisted the report locally, so only the error is surfaced.
+    /// Feedback submission failed. A draft send keeps its draft on disk; any other report is
+    /// re-saved as a text-only draft from `feedback_text` so the user can retry from `/feedback`.
     /// A modal-origin failure additionally drops its parked consent so a failed report never uploads a trace.
     FeedbackFailed {
         agent_id: AgentId,
         origin: FeedbackSendOrigin,
+        feedback_text: String,
+        /// Attachments the POST carried; they are not re-saved with the draft.
+        image_count: usize,
         error: String,
     },
     FeedbackDraftListComplete {
@@ -2904,6 +3022,8 @@ pub enum TaskResult {
         result: Result<String, String>,
         /// Correlates minimal responses; fullscreen leaves this unset.
         minimal_request_id: Option<uuid::Uuid>,
+        /// Set when attached images were left out of the side question.
+        image_notice: Option<String>,
     },
     /// `x.ai/recap` request acknowledged (fire-and-forget).
     /// The recap itself arrives separately as a `SessionRecap` notification; this only carries a transport error, if any, for logging.
@@ -2925,8 +3045,11 @@ pub enum TaskResult {
     InterjectFailed {
         agent_id: AgentId,
         error: String,
-        text: String,
-        blocks: Option<Vec<agent_client_protocol::ContentBlock>>,
+        remaining: Vec<(
+            String,
+            String,
+            Option<Vec<agent_client_protocol::ContentBlock>>,
+        )>,
     },
     /// Available commands refreshed from the shell.
     AvailableCommandsRefreshed {

@@ -16,10 +16,12 @@
 
 mod active_message;
 pub mod admission;
+mod agent_message_sender;
 pub mod backend;
 pub mod coordinator;
 mod coordinator_state;
 pub use coordinator_state::{cap_completion_output, completion_summary, terminal_snapshot};
+pub mod root_control;
 pub mod types;
 
 use self::backend::SubagentBackendResource;
@@ -68,7 +70,7 @@ fn normalize_user_ask(raw: &str) -> Option<String> {
         return None;
     }
     if let Some(start) = t.find("<user_query>") {
-        let after = &t[start + "<user_query>".len()..];
+        let after = t.get(start + "<user_query>".len()..)?;
         let body = after.split("</user_query>").next().unwrap_or(after).trim();
         if body.is_empty() {
             return None;
@@ -126,7 +128,7 @@ async fn recent_user_asks(resources: &SharedResources) -> Vec<String> {
     }
     const KEEP: usize = 12;
     if asks.len() > KEEP {
-        asks[asks.len() - KEEP..].to_vec()
+        asks.get(asks.len() - KEEP..).unwrap_or(&asks).to_vec()
     } else {
         asks
     }
@@ -261,7 +263,12 @@ impl crate::types::tool_metadata::ToolMetadata for TaskTool {
             });
             TOKEN
                 .replace_all(template, |caps: &regex::Captures| {
-                    let kind = &caps[1];
+                    let Some(kind) = caps.get(1).map(|m| m.as_str()) else {
+                        return match caps.get(0) {
+                            Some(m) => m.as_str().to_owned(),
+                            None => String::new(),
+                        };
+                    };
                     format!(
                         "${{% if tools.by_kind.{kind} %}}${{{{ tools.by_kind.{kind} }}}}\
                          ${{% else %}}{kind}${{% endif %}}"
@@ -1838,11 +1845,17 @@ mod tests {
     fn task_tool_input_schema_includes_model() {
         let schema = serde_json::to_value(schemars::schema_for!(TaskToolInput)).unwrap();
         assert_eq!(
-            schema["properties"]["model"]["description"],
-            "Optional model slug for this agent. If provided, it must resolve to one of the \
+            schema
+                .get("properties")
+                .and_then(|p| p.get("model"))
+                .and_then(|m| m.get("description"))
+                .and_then(|v| v.as_str()),
+            Some(
+                "Optional model slug for this agent. If provided, it must resolve to one of the \
              available model slugs. If omitted, the subagent uses the same model as the parent \
              agent. Do not pass if resume_from is set (prior model will be used). Only choose \
              an explicit model when the user directly requests it."
+            )
         );
     }
 
@@ -1850,7 +1863,10 @@ mod tests {
     fn task_tool_input_schema_omits_capability_mode() {
         let schema = serde_json::to_value(schemars::schema_for!(TaskToolInput)).unwrap();
         assert!(
-            schema["properties"].get("capability_mode").is_none(),
+            schema
+                .get("properties")
+                .and_then(|p| p.get("capability_mode"))
+                .is_none(),
             "capability_mode must not be advertised on the model-facing schema"
         );
     }
@@ -2120,6 +2136,19 @@ mod tests {
             ids.contains(&"mcp_custom_tool"),
             "tools without kind preserved"
         );
+    }
+
+    #[test]
+    fn only_read_only_children_are_ceilinged_out_of_agent_messaging() {
+        use crate::types::tool::ToolKind;
+        let allowed = [
+            SubagentCapabilityMode::ReadOnly,
+            SubagentCapabilityMode::ReadWrite,
+            SubagentCapabilityMode::Execute,
+            SubagentCapabilityMode::All,
+        ]
+        .map(|mode| mode.allows_tool_kind(ToolKind::ActiveAgentMessage));
+        assert_eq!([false, true, true, true], allowed);
     }
 
     // ── resume_from tests ────────────────────────────────────────────

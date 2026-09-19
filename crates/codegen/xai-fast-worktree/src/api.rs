@@ -71,7 +71,7 @@ pub trait BtrfsDelegate: Send + Sync {
 }
 
 /// How to treat the source working tree when creating the destination worktree.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WorkingTreeMode {
     /// Replicate the working tree exactly as-is (including local modifications and untracked files).
     #[default]
@@ -177,7 +177,6 @@ pub struct WorktreeReport {
     pub strategy_metadata: Option<serde_json::Value>,
     /// Arms that declined before the one that ran.
     pub skipped: Vec<crate::ArmSkip>,
-    /// Grove daemon capability class: `current`, `old`, or `unknown`.
     pub daemon_capability_class: Option<&'static str>,
 }
 

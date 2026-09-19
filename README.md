@@ -238,6 +238,7 @@ Releases 中通过这些门禁的平台资产。
 - 英文上游用户指南：[`crates/codegen/xai-grok-pager/docs/user-guide/README.md`](crates/codegen/xai-grok-pager/docs/user-guide/README.md)
 - 贡献说明：[`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)
 - 安全策略：[`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)
+- 1.0.35 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.35.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.35.zh-CN.md)
 - 1.0.24 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.24.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.24.zh-CN.md)
 - 1.0.16 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.16.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.16.zh-CN.md)
 - 1.0.13 简体中文更新说明：[`crates/codegen/xai-grok-shell/changelogs/1.0.13.zh-CN.md`](crates/codegen/xai-grok-shell/changelogs/1.0.13.zh-CN.md)

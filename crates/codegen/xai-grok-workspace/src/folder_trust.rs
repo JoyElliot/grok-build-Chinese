@@ -193,17 +193,17 @@ impl fmt::Display for GrantRefuse {
             Self::UnsafeRoot => write!(f, "folder trust is not recorded for this path"),
             Self::NoHome => write!(
                 f,
-                "error: folder trust was not saved (no home directory for the trust store). \
-                 Set GROK_HOME to an absolute directory, or unset it, then start Grok again."
+                "Couldn't save folder trust: no home directory for the trust store. \
+                 Set GROK_HOME to an absolute directory (or unset it), then start Grok again."
             ),
             Self::Unreadable => write!(
                 f,
-                "error: folder trust was not saved (trust store could not be read). \
+                "Couldn't save folder trust: the trust store could not be read. \
                  Fix or delete ~/.grok/trusted_folders.toml, then start Grok again and press y."
             ),
             Self::KeyMoved => write!(
                 f,
-                "error: folder trust was not saved (folder path changed). \
+                "Couldn't save folder trust: the folder path changed. \
                  Start Grok again from the folder you want to trust."
             ),
         }
@@ -241,12 +241,11 @@ impl fmt::Display for GrantOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Granted {
-                persist: PersistStatus::ProcessLocalOnly { error },
+                persist: PersistStatus::ProcessLocalOnly { .. },
                 ..
             } => write!(
                 f,
-                "error: folder trust was not saved ({error}). \
-                 Check that ~/.grok is writable and that trusted_folders.toml.lock is a file, \
+                "Couldn't save folder trust. Check that ~/.grok is writable, \
                  then run `grok --trust` in this folder."
             ),
             Self::Refused { reason } => write!(f, "{reason}"),
@@ -259,26 +258,38 @@ impl fmt::Display for GrantOutcome {
 
 impl std::error::Error for GrantOutcome {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantResolution {
+    Trusted,
+    SessionLocal,
+    Unrecorded,
+}
+
 impl GrantOutcome {
-    /// Startup-gate / hooks success: durable write, already-durable key, or
-    /// auto-trust (`InertBuild` / `UnsafeRoot`). Process-local grants do not
-    /// dismiss: the leader and the next process will not see them.
-    pub fn dismisses_gate(&self) -> bool {
+    #[must_use]
+    pub fn resolution(&self) -> GrantResolution {
         match self {
             Self::Granted {
                 persist: PersistStatus::Durable,
                 ..
             }
-            | Self::AlreadyDurable { .. } => true,
+            | Self::AlreadyDurable { .. } => GrantResolution::Trusted,
             Self::Granted {
                 persist: PersistStatus::ProcessLocalOnly { .. },
                 ..
-            } => false,
-            Self::Refused {
-                reason: GrantRefuse::InertBuild | GrantRefuse::UnsafeRoot,
-            } => true,
-            Self::Refused { .. } => false,
+            } => GrantResolution::SessionLocal,
+            Self::Refused { reason } => match reason {
+                GrantRefuse::InertBuild | GrantRefuse::UnsafeRoot => GrantResolution::Trusted,
+                GrantRefuse::NoHome | GrantRefuse::Unreadable | GrantRefuse::KeyMoved => {
+                    GrantResolution::Unrecorded
+                }
+            },
         }
+    }
+
+    #[must_use]
+    pub fn dismisses_gate(&self) -> bool {
+        matches!(self.resolution(), GrantResolution::Trusted)
     }
 }
 
@@ -435,6 +446,7 @@ fn apply_grant_to_store(store: &mut TrustStore, key: &Path) -> GrantOutcome {
             reason: GrantRefuse::Unreadable,
         },
         Err(crate::trust::TrustPersistError::Publish(error)) => {
+            tracing::debug!(error = %error, "folder trust granted for this process only; durable write denied");
             record_process_decision(&key, true);
             GrantOutcome::Granted {
                 key,
@@ -1392,55 +1404,46 @@ mod tests {
     }
 
     #[test]
-    fn dismisses_gate_only_for_durable_or_auto_trust() {
+    fn resolution_classifies_each_grant_outcome() {
         let key = PathBuf::from("/tmp/x");
-        assert!(
+        assert_eq!(
+            GrantResolution::Trusted,
             GrantOutcome::Granted {
                 key: key.clone(),
                 persist: PersistStatus::Durable,
             }
-            .dismisses_gate()
+            .resolution()
         );
-        assert!(GrantOutcome::AlreadyDurable { key: key.clone() }.dismisses_gate());
-        assert!(
-            GrantOutcome::Refused {
-                reason: GrantRefuse::InertBuild
-            }
-            .dismisses_gate()
+        assert_eq!(
+            GrantResolution::Trusted,
+            GrantOutcome::AlreadyDurable { key: key.clone() }.resolution()
         );
-        assert!(
-            GrantOutcome::Refused {
-                reason: GrantRefuse::UnsafeRoot
-            }
-            .dismisses_gate()
-        );
-        assert!(
-            !GrantOutcome::Refused {
-                reason: GrantRefuse::Unreadable
-            }
-            .dismisses_gate()
-        );
-        assert!(
-            !GrantOutcome::Refused {
-                reason: GrantRefuse::NoHome
-            }
-            .dismisses_gate()
-        );
-        assert!(
-            !GrantOutcome::Refused {
-                reason: GrantRefuse::KeyMoved
-            }
-            .dismisses_gate()
-        );
-        assert!(
-            !GrantOutcome::Granted {
+        assert_eq!(
+            GrantResolution::SessionLocal,
+            GrantOutcome::Granted {
                 key,
                 persist: PersistStatus::ProcessLocalOnly {
                     error: std::io::Error::other("denied"),
                 },
             }
-            .dismisses_gate()
+            .resolution()
         );
+        for reason in [GrantRefuse::InertBuild, GrantRefuse::UnsafeRoot] {
+            assert_eq!(
+                GrantResolution::Trusted,
+                GrantOutcome::Refused { reason }.resolution()
+            );
+        }
+        for reason in [
+            GrantRefuse::NoHome,
+            GrantRefuse::Unreadable,
+            GrantRefuse::KeyMoved,
+        ] {
+            assert_eq!(
+                GrantResolution::Unrecorded,
+                GrantOutcome::Refused { reason }.resolution()
+            );
+        }
     }
 
     #[test]

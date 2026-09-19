@@ -180,3 +180,9 @@ GNU screen 上的 Byobu 支持有限。`/doctor` 会报告 `terminal.byobu-scree
 ## 仍然卡住？
 
 运行 `/feedback` 进行报告。
+
+## Cmd+Enter 不作为约定的发送或换行快捷键
+
+Grok 只将 `Shift+Enter` 和 `Alt+Enter` 作为约定的换行键。很多终端把 Cmd+Enter 用于全屏，因此换行匹配器排除 SUPER，带 SUPER 的 Enter 也不匹配普通 Enter 发送绑定。当 Kitty 等终端实际传来 SUPER+Enter 时，按键会落到把 Enter 视为换行的文本区，因而仍插入换行。Apple Terminal 则有独立的本机 CoreGraphics 修饰键补救路径，按住 Cmd 时可把看似普通 Enter 的事件处理为换行。
+
+SSH 不传递 Cmd 修饰键，远程端收到的可能是普通 Enter，从而发送消息。草稿非空时底栏显示可用换行组合；SSH 优先显示 Alt+Enter。也可以输入 `\` 再按 Enter，或启用 `/ml`。不要依赖远程 Cmd+Enter 换行。

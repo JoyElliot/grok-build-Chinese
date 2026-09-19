@@ -119,7 +119,10 @@ where
                     on_exhausted(&e, retry_count);
                     return Err(e);
                 }
-                let delay = WRITE_RETRY_DELAYS[retry_count];
+                let Some(&delay) = WRITE_RETRY_DELAYS.get(retry_count) else {
+                    on_exhausted(&e, retry_count);
+                    return Err(e);
+                };
                 retry_count += 1;
                 on_retry(&e, retry_count, delay);
                 sleep_for(delay).await;

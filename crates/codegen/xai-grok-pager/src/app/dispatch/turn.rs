@@ -319,10 +319,14 @@ fn cancel_agent_turn(
     let composer_has_draft = !agent.prompt.text().is_empty() || !agent.prompt.images.is_empty();
     // Captured before `finish_turn` clears it; no id means the standard cancel
     let rewind_prompt_id = agent.session.current_prompt_id.clone();
-    let rewinding = agent.shared_queue.is_empty()
-        && cancel_rewind_enabled
+    let queue_held_behind_turn = !agent.session.pending_prompts.is_empty()
+        || agent
+            .shared_queue
+            .iter()
+            .any(|e| Some(e.id.as_str()) != rewind_prompt_id.as_deref());
+    let rewinding = cancel_rewind_enabled
         && agent.session.in_flight_prompt.is_some()
-        && agent.session.pending_prompts.is_empty()
+        && !queue_held_behind_turn
         && !in_flight_committed
         && !composer_has_draft
         && rewind_prompt_id.is_some();
@@ -337,12 +341,7 @@ fn cancel_agent_turn(
     agent.cancel_turn_view = None;
     agent.cancel_turn_buttons.clear();
     drain_permission_queue(agent);
-    if let Some(mut pav) = agent.plan_approval_view.take() {
-        pav.send_stale_cancel();
-        agent.plan_next_comment_id = pav.next_comment_id;
-        agent.prompt.restore(pav.stashed_prompt);
-        agent.line_viewer = None;
-    }
+    agent.dismiss_in_turn_plan_review();
 
     let Some(session_id) = agent.session.session_id.clone() else {
         return vec![];
@@ -422,6 +421,7 @@ pub(super) fn rewind_in_flight_prompt(
             agent.scrollback.remove_entry(id);
         }
     }
+    agent.shared_queue.retain(|e| e.id != rewind_prompt_id);
     // Full state reset: tracker cleanup, state back to Idle, timing fields and current_prompt_id cleared
     agent.session.finish_turn(&mut agent.scrollback);
     agent.prompt_ack = None;
@@ -440,10 +440,9 @@ pub(super) fn emit_cancel_turn(
     let rewind_if_no_output = rewind_prompt_id.is_some();
     let target_prompt_id = if agent.session.state.is_compact_running()
         || matches!(
-            agent.session.state,
-            crate::app::agent::AgentState::CommandCancelling {
-                command: crate::app::agent::AgentCommand::Compact,
-            }
+            &agent.session.state,
+            crate::app::agent::AgentState::CommandCancelling { command }
+                if command.is_compact()
         ) {
         agent.session.current_prompt_id.clone()
     } else {
@@ -654,6 +653,7 @@ pub(crate) fn reconcile_overdue_turn_ends(app: &mut AppView) -> Option<Vec<Effec
                 elapsed_ms,
                 agent_result: pending.agent_result.as_deref(),
                 send_now_cancel,
+                cancel_trigger: pending.cancel_trigger.as_deref(),
                 cancellation_category: pending.cancellation_category.as_deref(),
                 error_kind: pending.error_kind,
                 error_banner_present: !was_cancelling
@@ -662,6 +662,8 @@ pub(crate) fn reconcile_overdue_turn_ends(app: &mut AppView) -> Option<Vec<Effec
         );
         crate::app::turn_completion::push_turn_terminal_marker(agent, event);
         finish_turn_view(agent, TurnEnd::Completed);
+        // Lost PromptResponse: do not leave execute_plan_prompt_id blocking review.
+        agent.take_execute_plan_prompt(Some(pending.prompt_id.as_str()));
 
         // FIFO handoff (mirrors the PromptResponse arm): adopt the next server-authoritative running prompt now that the slot is free
         let adopted_page_flip = if let Some(p) = pending_adoption

@@ -396,10 +396,15 @@ fn parse_reads_reasoning_efforts_list() {
         ]
     });
     let result = parse_remote_model_value(&value, "https://default.url").unwrap();
-    assert_eq!(result.reasoning_efforts.len(), 2);
-    assert_eq!(result.reasoning_efforts[0].id, "deep");
-    assert_eq!(result.reasoning_efforts[0].value, ReasoningEffort::Xhigh);
-    assert_eq!(result.reasoning_efforts[1].value, ReasoningEffort::Low);
+    let [deep, low] = result.reasoning_efforts.as_slice() else {
+        panic!(
+            "expected two reasoning efforts: {:?}",
+            result.reasoning_efforts
+        );
+    };
+    assert_eq!(deep.id, "deep");
+    assert_eq!(deep.value, ReasoningEffort::Xhigh);
+    assert_eq!(low.value, ReasoningEffort::Low);
     for value in [
         serde_json::json!({
             "model": "m", "context_window": 256_000,
@@ -411,8 +416,13 @@ fn parse_reads_reasoning_efforts_list() {
         }),
     ] {
         let result = parse_remote_model_value(&value, "https://default.url").unwrap();
-        assert_eq!(result.reasoning_efforts.len(), 1);
-        assert_eq!(result.reasoning_efforts[0].value, ReasoningEffort::High);
+        let [effort] = result.reasoning_efforts.as_slice() else {
+            panic!(
+                "expected one reasoning effort: {:?}",
+                result.reasoning_efforts
+            );
+        };
+        assert_eq!(effort.value, ReasoningEffort::High);
     }
     let value = serde_json::json!({"model": "x", "context_window": 256_000});
     let result = parse_remote_model_value(&value, "https://default.url").unwrap();
@@ -709,8 +719,14 @@ fn get_object_returns_some_for_actual_object() {
     let obj = value.as_object().unwrap();
     let nested = get_object(obj, "nested").expect("nested key should resolve to object");
     assert!(nested.is_object());
-    assert_eq!(nested["a"], serde_json::json!(1));
-    assert_eq!(nested["b"], serde_json::json!("two"));
+    assert_eq!(
+        nested.pointer("/a").unwrap_or(&serde_json::Value::Null),
+        &serde_json::json!(1)
+    );
+    assert_eq!(
+        nested.pointer("/b").unwrap_or(&serde_json::Value::Null),
+        &serde_json::json!("two")
+    );
 }
 fn endpoints(
     proxy: &str,

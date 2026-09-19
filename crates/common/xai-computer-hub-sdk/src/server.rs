@@ -44,8 +44,9 @@ use xai_tool_types::ToolDescription;
 use crate::auth::{AuthCredential, AuthProvider};
 use crate::cancel::CancelRegistry;
 use crate::connection::{
-    ConnectCallback, ConnectionTuning, DisconnectCallback, HubConnection, ReconnectCallback,
-    ReconnectEvent, TerminalCloseCallback,
+    ConnectCallback, ConnectionTuning, DisconnectCallback, HandshakeRefusedCallback, HubConnection,
+    InitialConnectPolicy, ReconnectCallback, ReconnectEvent, TerminalCloseCallback,
+    build_request_frame,
 };
 use crate::connection_borrow::ConnectionBorrow;
 use crate::demux::InboundFrame;
@@ -222,6 +223,7 @@ pub struct ToolServerBuilder {
     on_reconnect_settled: Option<Arc<ReconnectSettledCallback>>,
     on_disconnect: Option<Arc<DisconnectCallback>>,
     on_terminal_close: Option<Arc<TerminalCloseCallback>>,
+    on_handshake_refused: Option<Arc<HandshakeRefusedCallback>>,
     on_connect: Option<Arc<ConnectCallback>>,
     metadata: Option<serde_json::Value>,
     server_id: Option<xai_tool_protocol::ServerId>,
@@ -236,7 +238,7 @@ pub struct ToolServerBuilder {
     ws_liveness_deadline: Option<std::time::Duration>,
     reconnect_backoff: Option<Arc<[std::time::Duration]>>,
     reconnect_after_terminal_close_codes: Vec<u16>,
-    initial_connect_attempt_timeout: Option<std::time::Duration>,
+    initial_connect: InitialConnectPolicy,
     session_handler_resolver: Option<SessionHandlerResolver>,
     on_session_unbound: Option<Arc<SessionUnboundCallback>>,
     binary_version: Option<String>,
@@ -349,13 +351,9 @@ impl ToolServerBuilder {
         self
     }
 
-    /// Per-attempt budget for the initial connect (WebSocket upgrade +
-    /// hello/hello_ack). Default (also used for a zero value): 10s. A peer
-    /// that accepts the socket but never answers would otherwise hang the
-    /// caller indefinitely; the SDK retries transient failures a bounded
-    /// number of times with jittered backoff before surfacing the error.
-    pub fn with_initial_connect_attempt_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.initial_connect_attempt_timeout = Some(timeout);
+    /// Configure transport hedging and budgets for the initial connection.
+    pub fn with_initial_connect(mut self, policy: InitialConnectPolicy) -> Self {
+        self.initial_connect = policy;
         self
     }
 
@@ -369,7 +367,7 @@ impl ToolServerBuilder {
             reconnect_backoff: self.reconnect_backoff.clone(),
             reconnect_attempt_reset_after: None,
             reconnect_after_terminal_close_codes: self.reconnect_after_terminal_close_codes.clone(),
-            initial_connect_attempt_timeout: self.initial_connect_attempt_timeout,
+            initial_connect: self.initial_connect,
         }
     }
 
@@ -463,6 +461,17 @@ impl ToolServerBuilder {
         F: Fn(u16) + Send + Sync + 'static,
     {
         self.on_terminal_close = Some(Arc::new(Box::new(cb) as TerminalCloseCallback));
+        self
+    }
+
+    /// Optional callback fired when a reconnect's upgrade is answered `401`/`403`, with the
+    /// status and the policy code a `403` body names; the connection stops afterwards. The
+    /// initial connect reports the same as [`ClientError::HandshakeAuthFailed`] instead.
+    pub fn on_handshake_refused<F>(mut self, cb: F) -> Self
+    where
+        F: Fn(u16, Option<crate::error::RefusalCode>) + Send + Sync + 'static,
+    {
+        self.on_handshake_refused = Some(Arc::new(Box::new(cb) as HandshakeRefusedCallback));
         self
     }
 
@@ -611,6 +620,7 @@ impl ToolServerBuilder {
             Some(combined_disconnect),
             self.on_connect,
             Some(combined_terminal_close),
+            self.on_handshake_refused,
             self.server_id,
             self.server_description,
             self.metadata,
@@ -1300,40 +1310,28 @@ impl ToolServer {
         event_rx
     }
 
-    /// Send a `tool.notify` frame to the server.
+    /// Send a `tool.notify` frame to the server, once per bound session.
     ///
     /// Mirrors [`ToolHarness::send_notification`] but over a
-    /// `tool_server` connection. The server allows `tool.notify` for both
-    /// `Harness` and `ToolServer` connection kinds.
+    /// `tool_server` connection. The server routes `tool.notify` by
+    /// `session_id` to that session's harness subscribers, so a server
+    /// serving several sessions sends one frame per session, and one
+    /// serving none sends nothing and returns `Ok`: a fan-out to nobody is
+    /// not an error.
     ///
-    /// The frame is fire-and-forget: this method returns `Ok` once the
+    /// The frames are fire-and-forget: this method returns `Ok` once every
     /// outbound message is queued, without waiting for a server ack.
     pub async fn send_notification(
         &self,
         notification: xai_tool_protocol::ToolNotificationFrame,
     ) -> Result<(), ClientError> {
-        let session = self
-            .inner()
-            .active_sessions
-            .lock()
-            .first()
-            .cloned()
-            .ok_or_else(|| {
-                ClientError::InvalidConfig(
-                    "send_notification requires at least one bound session".to_owned(),
-                )
-            })?;
         let connection = self.inner().borrow.connection();
-        let request_id = connection.try_alloc_request_id()?;
-        let req = xai_tool_protocol::JsonRpcRequest {
-            jsonrpc: JsonRpcVersion,
-            id: JsonRpcId::from_request_id(&request_id),
-            session_id: Some(session),
-            method: Method::ToolNotify.as_wire_str().to_owned(),
-            params: notification,
-        };
-        let text = serde_json::to_string(&req).map_err(ClientError::from)?;
-        connection.send_outbound(text).await
+        for session in self.active_sessions() {
+            let (_, text) =
+                build_request_frame(connection, &session, Method::ToolNotify, &notification)?;
+            connection.send_outbound(text).await?;
+        }
+        Ok(())
     }
 
     /// Send a `system.notify` frame scoped to an explicit session and await the

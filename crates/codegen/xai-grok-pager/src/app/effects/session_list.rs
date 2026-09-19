@@ -359,6 +359,7 @@ pub(super) fn session_picker_entry_to_roster(e: SessionPickerEntry) -> RosterEnt
         title: Some(e.summary).filter(|s| !s.trim().is_empty()),
         cwd: e.cwd,
         is_worktree: e.worktree_label.is_some(),
+        session_kind: None,
         model_id: e.model_id,
         yolo: false,
         activity: RosterActivity::Dormant,

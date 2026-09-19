@@ -40,6 +40,7 @@ impl AgentView {
             }
             if key.code == KeyCode::Tab
                 && self.dock_shown
+                && !self.dock_hidden
                 && self.set_active_pane(AgentPane::Dock, false)
             {
                 self.dock_cursor = 0;
@@ -72,17 +73,9 @@ impl AgentView {
         {
             return InputOutcome::Changed;
         }
-        if key!(Enter).matches(key)
-            && !self.scrollback.is_selected_group_header()
-            && let Some(idx) = self.scrollback.selected()
-            && let Some(entry) = self.scrollback.entry(idx)
-            && let crate::scrollback::block::RenderBlock::Subagent(ref sb) = entry.block
-        {
-            let child_sid = sb.child_session_id.clone();
-            if self.subagent_views.contains_key(&child_sid) {
-                self.open_subagent_fullscreen(child_sid);
-                return InputOutcome::Changed;
-            }
+        let action = registry.lookup_with_mode(key, When::ScrollbackFocused, self.vim_mode);
+        if action == Some(ActionId::OpenBlockViewer) && self.try_open_child_from_selected_row() {
+            return InputOutcome::Changed;
         }
         if self.vim_mode
             && key!('x').matches(key)
@@ -126,9 +119,7 @@ impl AgentView {
         if registry.lookup(key, When::ScrollbackFocused) == Some(ActionId::ToggleMouseCapture) {
             return InputOutcome::Action(Action::ToggleMouseCapture);
         }
-        if let Some(outcome) =
-            resolve_action(registry.lookup_with_mode(key, When::ScrollbackFocused, self.vim_mode))
-        {
+        if let Some(outcome) = resolve_action(action) {
             return outcome;
         }
         if !self.vim_mode
@@ -305,8 +296,39 @@ impl AgentView {
             InputOutcome::Unchanged
         }
     }
-    /// Running non-workflow subagents in dock display order:
-    /// `(child_session_id, subagent_id, row)`.
+    pub(crate) fn dock_workflow_rows(&self) -> Vec<(String, crate::views::dock::DockRow)> {
+        self.dock_workflow_rows_with_locale(None)
+    }
+    pub(crate) fn dock_workflow_rows_with_locale(
+        &self,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> Vec<(String, crate::views::dock::DockRow)> {
+        self.workflow_runs_newest_first()
+            .into_iter()
+            .filter(|run| !run.is_terminal())
+            .map(|run| {
+                let activity = run.activity_label_with_locale(locale);
+                (
+                    run.run_id.clone(),
+                    crate::views::dock::DockRow {
+                        kind: locale
+                            .map(|locale| {
+                                locale.named_static_text("dock.kind.workflow", "Workflow")
+                            })
+                            .unwrap_or("Workflow")
+                            .into(),
+                        description: run.name.clone(),
+                        activity: (!activity.is_empty()).then_some(activity),
+                        meta: crate::views::dock::fmt_elapsed(run.live_elapsed_ms() / 1000),
+                        killable: run.can_stop(),
+                        openable: true,
+                        spinning: run.is_active(),
+                    },
+                )
+            })
+            .collect()
+    }
+    /// Non-workflow subagents in dock display order: `(child_session_id, subagent_id, row)`.
     pub(crate) fn dock_subagent_rows(&self) -> Vec<(String, String, crate::views::dock::DockRow)> {
         self.dock_subagent_rows_with_locale(None)
     }
@@ -314,15 +336,18 @@ impl AgentView {
         &self,
         locale: Option<&crate::locale::LocaleContext>,
     ) -> Vec<(String, String, crate::views::dock::DockRow)> {
+        let show_done = self.tasks.show_done();
         let mut infos: Vec<&crate::app::subagent::SubagentInfo> = self
             .subagent_sessions
             .values()
-            .filter(|info| info.is_running() && info.attempt.workflow_run_id.is_none())
+            .filter(|info| info.attempt.workflow_run_id.is_none())
+            .filter(|info| show_done || info.is_running())
             .collect();
-        infos.sort_by_key(|info| info.attempt.started_at);
+        infos.sort_by_key(|info| (!info.is_running(), info.attempt.started_at));
         infos
             .into_iter()
             .map(|info| {
+                let running = info.is_running();
                 let (kind, description) =
                     crate::app::subagent::format_subagent_label_with_locale(info, locale);
                 let mut meta = String::new();
@@ -330,18 +355,24 @@ impl AgentView {
                     meta.push_str(model);
                     meta.push(' ');
                 }
-                meta.push_str(&crate::views::dock::fmt_elapsed(info.elapsed().as_secs()));
+                meta.push_str(&crate::views::dock::fmt_elapsed(
+                    info.display_elapsed().as_secs(),
+                ));
                 (
                     info.child_session_id.to_string(),
                     info.subagent_id.to_string(),
                     crate::views::dock::DockRow {
                         kind,
                         description,
-                        activity: info.attempt.activity_label.clone(),
+                        activity: if running {
+                            info.attempt.activity_label.clone()
+                        } else {
+                            info.attempt.status.as_deref().map(str::to_owned)
+                        },
                         meta,
-                        killable: !info.attempt.pending_kill,
+                        killable: running && !info.attempt.pending_kill,
                         openable: true,
-                        spinning: true,
+                        spinning: running,
                     },
                 )
             })
@@ -433,6 +464,7 @@ impl AgentView {
         let mut loops: Vec<&crate::app::agent::ScheduledTaskInfo> =
             self.session.scheduled_tasks.values().collect();
         loops.sort_by_key(|s| s.created_at);
+        let now = chrono::Utc::now();
         rows.extend(loops.into_iter().map(|s| {
             (
                 DockWatcherId::Loop(s.task_id.clone()),
@@ -443,7 +475,11 @@ impl AgentView {
                         .into(),
                     description: s.prompt.clone(),
                     activity: None,
-                    meta: s.human_schedule.clone(),
+                    meta: format!(
+                        "{}{}",
+                        s.human_schedule,
+                        crate::views::scheduled_next::next_suffix_with_locale(s, now, locale)
+                    ),
                     killable: true,
                     openable: s.last_subagent_id.as_deref().is_some_and(|sid| {
                         self.subagent_sessions.iter().any(|(child, info)| {
@@ -460,13 +496,16 @@ impl AgentView {
     /// The counts the dock lays out from, carrying the ceiling every consumer obeys.
     pub(crate) fn dock_counts(&self) -> crate::views::dock::DockCounts {
         crate::views::dock::DockCounts {
+            workflows: self.dock_workflow_rows().len(),
             subagents: self.dock_subagent_rows().len(),
             tasks: self.dock_task_rows().len(),
             watchers: self.dock_watcher_rows().len(),
             queued: self.visible_held_queue_len(),
+            workflows_expanded: self.dock_workflows_expanded,
             subagents_expanded: self.dock_subagents_expanded,
             tasks_expanded: self.dock_tasks_expanded,
             watchers_expanded: self.dock_watchers_expanded,
+            workflows_show_all: self.dock_workflows_show_all,
             subagents_show_all: self.dock_subagents_show_all,
             tasks_show_all: self.dock_tasks_show_all,
             watchers_show_all: self.dock_watchers_show_all,
@@ -488,8 +527,10 @@ impl AgentView {
         let ceiling = above_prompt
             .saturating_sub(crate::views::agent::SCROLLBACK_MIN_ROWS)
             .max(MAX_DOCK_ROWS);
-        let revealed =
-            self.dock_subagents_show_all || self.dock_tasks_show_all || self.dock_watchers_show_all;
+        let revealed = self.dock_workflows_show_all
+            || self.dock_subagents_show_all
+            || self.dock_tasks_show_all
+            || self.dock_watchers_show_all;
         if revealed {
             MaxRows::new(ceiling)
         } else {
@@ -532,8 +573,9 @@ impl AgentView {
             assigned => crate::views::dock::DockLayout::with_cap(&counts, assigned as usize),
         }
     }
-    fn is_dock_section_expanded(&self, section: crate::views::dock::Section) -> bool {
+    pub(crate) fn is_dock_section_expanded(&self, section: crate::views::dock::Section) -> bool {
         match section {
+            crate::views::dock::Section::Workflows => self.dock_workflows_expanded,
             crate::views::dock::Section::Subagents => self.dock_subagents_expanded,
             crate::views::dock::Section::Tasks => self.dock_tasks_expanded,
             crate::views::dock::Section::Watchers => self.dock_watchers_expanded,
@@ -546,6 +588,7 @@ impl AgentView {
         expanded: bool,
     ) -> InputOutcome {
         let slot = match section {
+            crate::views::dock::Section::Workflows => &mut self.dock_workflows_expanded,
             crate::views::dock::Section::Subagents => &mut self.dock_subagents_expanded,
             crate::views::dock::Section::Tasks => &mut self.dock_tasks_expanded,
             crate::views::dock::Section::Watchers => &mut self.dock_watchers_expanded,
@@ -557,6 +600,9 @@ impl AgentView {
         *slot = expanded;
         if !expanded {
             match section {
+                crate::views::dock::Section::Workflows => {
+                    self.dock_workflows_show_all = false;
+                }
                 crate::views::dock::Section::Subagents => {
                     self.dock_subagents_show_all = false;
                 }
@@ -573,6 +619,7 @@ impl AgentView {
     /// raise so the two do not share the lift and shrink each other.
     fn set_dock_section_show_all(&mut self, section: crate::views::dock::Section) {
         match section {
+            crate::views::dock::Section::Workflows => self.dock_workflows_show_all = true,
             crate::views::dock::Section::Subagents => self.dock_subagents_show_all = true,
             crate::views::dock::Section::Tasks => self.dock_tasks_show_all = true,
             crate::views::dock::Section::Watchers => self.dock_watchers_show_all = true,
@@ -583,6 +630,9 @@ impl AgentView {
     pub(super) fn clamp_dock_overflow(&mut self) {
         use crate::views::dock::{Section, is_show_all_needed};
         let counts = self.dock_counts();
+        if !is_show_all_needed(&counts, Section::Workflows) {
+            self.dock_workflows_show_all = false;
+        }
         if !is_show_all_needed(&counts, Section::Subagents) {
             self.dock_subagents_show_all = false;
         }
@@ -593,7 +643,12 @@ impl AgentView {
             self.dock_watchers_show_all = false;
         }
         let layout = self.dock_layout();
-        for section in [Section::Subagents, Section::Tasks, Section::Watchers] {
+        for section in [
+            Section::Workflows,
+            Section::Subagents,
+            Section::Tasks,
+            Section::Watchers,
+        ] {
             self.dock_offsets.set(section, layout.row_offset(section));
         }
         let n = self.dock_items().len();
@@ -610,25 +665,37 @@ impl AgentView {
         }
     }
     pub(crate) fn dock_enter_label(&self) -> Option<&'static str> {
+        use crate::views::dock::{DockItem, Section};
         match self.dock_items().get(self.dock_cursor) {
-            Some(crate::views::dock::DockItem::Header(sec)) => {
-                Some(if self.is_dock_section_expanded(*sec) {
-                    "collapse"
-                } else {
-                    "expand"
-                })
+            Some(DockItem::Header(sec)) => Some(if self.is_dock_section_expanded(*sec) {
+                "collapse"
+            } else {
+                "expand"
+            }),
+            Some(DockItem::RevealRemaining(_)) => Some("show all"),
+            Some(DockItem::Row(section, i)) => {
+                let openable = match section {
+                    Section::Workflows => self
+                        .dock_workflow_rows()
+                        .get(*i)
+                        .is_some_and(|(_, row)| row.openable),
+                    Section::Subagents => self
+                        .dock_subagent_rows()
+                        .get(*i)
+                        .is_some_and(|(_, _, row)| row.openable),
+                    Section::Tasks => self
+                        .dock_task_rows()
+                        .get(*i)
+                        .is_some_and(|(_, row)| row.openable),
+                    Section::Watchers => self
+                        .dock_watcher_rows()
+                        .get(*i)
+                        .is_some_and(|(_, row)| row.openable),
+                    Section::Queued => true,
+                };
+                openable.then_some("open")
             }
-            Some(crate::views::dock::DockItem::RevealRemaining(_)) => Some("show all"),
             _ => None,
-        }
-    }
-    pub(crate) fn dock_tab_label(&self) -> &'static str {
-        let items = self.dock_items();
-        match crate::views::dock::next_header_index(&items, self.dock_cursor)
-            .and_then(|idx| items.get(idx))
-        {
-            Some(crate::views::dock::DockItem::Header(sec)) => sec.tab_hint(),
-            _ => "prompt",
         }
     }
     pub(crate) fn dock_snapshot(&self) -> crate::views::dock::DockData {
@@ -640,6 +707,11 @@ impl AgentView {
         locale: Option<&crate::locale::LocaleContext>,
     ) -> crate::views::dock::DockData {
         crate::views::dock::DockData {
+            workflows: self
+                .dock_workflow_rows_with_locale(locale)
+                .into_iter()
+                .map(|(_, row)| row)
+                .collect(),
             subagents: self
                 .dock_subagent_rows_with_locale(locale)
                 .into_iter()
@@ -656,9 +728,11 @@ impl AgentView {
                 .map(|(_, row)| row)
                 .collect(),
             queued: self.visible_held_queue_len(),
+            workflows_expanded: self.dock_workflows_expanded,
             subagents_expanded: self.dock_subagents_expanded,
             tasks_expanded: self.dock_tasks_expanded,
             watchers_expanded: self.dock_watchers_expanded,
+            workflows_show_all: self.dock_workflows_show_all,
             subagents_show_all: self.dock_subagents_show_all,
             tasks_show_all: self.dock_tasks_show_all,
             watchers_show_all: self.dock_watchers_show_all,
@@ -737,6 +811,16 @@ impl AgentView {
     pub(crate) fn dock_stop_action(&self, item: crate::views::dock::DockItem) -> Option<Action> {
         use crate::views::dock::{DockItem, Section};
         match item {
+            DockItem::Row(Section::Workflows, i) => {
+                self.dock_workflow_rows().get(i).and_then(|(_, row)| {
+                    row.killable.then(|| {
+                        Action::SendSlashCommandPreservingDraft(format!(
+                            "/workflow stop {}",
+                            row.description
+                        ))
+                    })
+                })
+            }
             DockItem::Row(Section::Subagents, i) => self
                 .dock_subagent_rows()
                 .get(i)
@@ -772,8 +856,20 @@ impl AgentView {
                 let next = !self.is_dock_section_expanded(sec);
                 self.set_dock_section_expanded(sec, next)
             }
+            DockItem::Row(Section::Workflows, i) => {
+                if let Some((run_id, _)) = self.dock_workflow_rows().get(i) {
+                    let run_id = run_id.clone();
+                    self.open_workflow_detail_by_run_id(&run_id);
+                    InputOutcome::Changed
+                } else {
+                    InputOutcome::Unchanged
+                }
+            }
             DockItem::Row(Section::Subagents, i) => {
-                if let Some((child_sid, _, _)) = self.dock_subagent_rows().get(i) {
+                if let Some((child_sid, _, row)) = self.dock_subagent_rows().get(i) {
+                    if !row.openable || child_sid.is_empty() {
+                        return InputOutcome::Unchanged;
+                    }
                     let sid = child_sid.clone();
                     self.open_subagent_fullscreen(sid);
                     InputOutcome::Changed
@@ -845,7 +941,7 @@ impl AgentView {
     pub(super) fn handle_dock_key(&mut self, key: &KeyEvent) -> InputOutcome {
         use crate::views::dock::DockItem;
         use crossterm::event::KeyCode;
-        if !self.dock_shown {
+        if !self.dock_shown || self.dock_hidden {
             return InputOutcome::Unchanged;
         }
         let shift_tab = matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
@@ -868,44 +964,41 @@ impl AgentView {
                 self.dock_cursor = (self.dock_cursor + 1).min(items.len() - 1);
                 InputOutcome::Changed
             }
-            KeyCode::Right | KeyCode::Char('l') => match items[self.dock_cursor] {
-                DockItem::Header(sec) => self.set_dock_section_expanded(sec, true),
-                DockItem::Row(..) | DockItem::RevealRemaining(_) => InputOutcome::Unchanged,
-            },
-            KeyCode::Left | KeyCode::Char('h') => match items[self.dock_cursor] {
-                DockItem::Header(sec) => self.set_dock_section_expanded(sec, false),
-                DockItem::Row(..) | DockItem::RevealRemaining(_) => InputOutcome::Unchanged,
-            },
-            KeyCode::Tab if !shift_tab => {
-                match crate::views::dock::next_header_index(&items, self.dock_cursor) {
-                    Some(idx) => {
-                        self.dock_cursor = idx;
-                        InputOutcome::Changed
-                    }
-                    None => InputOutcome::Action(Action::FocusPrompt),
+            KeyCode::Right | KeyCode::Char('l') => match items.get(self.dock_cursor) {
+                Some(DockItem::Header(sec)) => self.set_dock_section_expanded(*sec, true),
+                Some(DockItem::Row(..) | DockItem::RevealRemaining(_)) | None => {
+                    InputOutcome::Unchanged
                 }
+            },
+            KeyCode::Left => match items.get(self.dock_cursor) {
+                Some(DockItem::Header(sec)) => self.set_dock_section_expanded(*sec, false),
+                Some(DockItem::Row(..) | DockItem::RevealRemaining(_)) | None => {
+                    InputOutcome::Unchanged
+                }
+            },
+            KeyCode::Char('h') => {
+                self.tasks.toggle_show_done();
+                if self.tasks.show_done() {
+                    self.dock_subagents_expanded = true;
+                }
+                self.clamp_dock_overflow();
+                InputOutcome::Changed
             }
+            KeyCode::Tab if !shift_tab => InputOutcome::Action(Action::FocusPrompt),
             KeyCode::BackTab | KeyCode::Tab => {
-                let prev_header = items
-                    .iter()
-                    .enumerate()
-                    .take(self.dock_cursor)
-                    .rev()
-                    .find_map(|(idx, item)| matches!(item, DockItem::Header(_)).then_some(idx));
-                match prev_header {
-                    Some(idx) => {
-                        self.dock_cursor = idx;
-                        InputOutcome::Changed
-                    }
-                    None => {
-                        self.set_active_pane(AgentPane::Scrollback, false);
-                        InputOutcome::Changed
-                    }
-                }
+                self.set_active_pane(AgentPane::Scrollback, false);
+                InputOutcome::Changed
             }
-            KeyCode::Enter | KeyCode::Char(' ') => self.activate_dock_item(items[self.dock_cursor]),
-            KeyCode::Char('x') => self
-                .dock_stop_action(items[self.dock_cursor])
+            KeyCode::Enter | KeyCode::Char(' ') => items
+                .get(self.dock_cursor)
+                .copied()
+                .map_or(InputOutcome::Unchanged, |item| {
+                    self.activate_dock_item(item)
+                }),
+            KeyCode::Char('x') => items
+                .get(self.dock_cursor)
+                .copied()
+                .and_then(|item| self.dock_stop_action(item))
                 .map_or(InputOutcome::Unchanged, InputOutcome::Action),
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.set_active_pane(AgentPane::Scrollback, false);

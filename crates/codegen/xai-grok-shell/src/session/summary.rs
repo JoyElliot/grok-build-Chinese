@@ -172,8 +172,9 @@ mod tests {
         let n = session_info_update_manual(acp::SessionId::new("s"), "a &amp; b");
         let v = serde_json::to_value(&n).unwrap();
         assert_eq!(
-            v["_meta"][crate::extensions::notification::TITLE_IS_MANUAL_META_KEY],
-            true
+            v.get("_meta")
+                .and_then(|m| m.get(crate::extensions::notification::TITLE_IS_MANUAL_META_KEY)),
+            Some(&serde_json::Value::Bool(true))
         );
         let title = v
             .pointer("/update/title")
@@ -187,8 +188,9 @@ mod tests {
         let n = session_info_update_unpinned(acp::SessionId::new("s"));
         let v = serde_json::to_value(&n).unwrap();
         assert_eq!(
-            v["_meta"][crate::extensions::notification::TITLE_IS_MANUAL_META_KEY],
-            false
+            v.get("_meta")
+                .and_then(|m| m.get(crate::extensions::notification::TITLE_IS_MANUAL_META_KEY)),
+            Some(&serde_json::Value::Bool(false))
         );
         let title = v
             .pointer("/update/title")

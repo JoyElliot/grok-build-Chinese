@@ -558,12 +558,13 @@ fn parse_dump(shell: ShellKind, raw: &str) -> Option<(PathBuf, String)> {
     }
 
     // Strip markers
-    let without_markers = &raw[start_line.len()..raw.len() - end_line.len()];
+    let end = raw.len().checked_sub(end_line.len())?;
+    let without_markers = raw.get(start_line.len()..end)?;
 
     // First line is $PWD
     let newline_pos = without_markers.find('\n')?;
-    let cwd = &without_markers[..newline_pos];
-    let rest = &without_markers[newline_pos..]; // includes the leading \n
+    let cwd = without_markers.get(..newline_pos)?;
+    let rest = without_markers.get(newline_pos..)?; // includes the leading \n
 
     Some((PathBuf::from(cwd), rest.to_string()))
 }
@@ -573,7 +574,7 @@ fn parse_dump(shell: ShellKind, raw: &str) -> Option<(PathBuf, String)> {
 fn parse_after_marker<'a>(output: &'a str, marker: &str) -> &'a str {
     let needle = format!("{marker}\n");
     match output.find(&needle) {
-        Some(idx) => &output[idx + needle.len()..],
+        Some(idx) => output.get(idx + needle.len()..).unwrap_or(""),
         None => output,
     }
 }
@@ -618,7 +619,8 @@ pub async fn read_dump_from_pipe(fd: OwnedFd) -> std::io::Result<String> {
                     // expected path when no bg subprocess was spawned).
                     break;
                 }
-                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                let Some(read) = chunk.get(..n) else { break };
+                buf.push_str(&String::from_utf8_lossy(read));
                 // Either marker suffices; we accept whichever shell the
                 // child happens to be (bash vs zsh).
                 if buf.contains(BASH_STATE_END_MARKER) || buf.contains(ZSH_STATE_END_MARKER) {
@@ -807,7 +809,10 @@ mod tests {
         assert!(
             state.snapshot.contains("grok_snap_") || state.snapshot.is_empty(),
             "snapshot should contain encoded blocks or be empty: {:?}",
-            &state.snapshot[..state.snapshot.len().min(200)]
+            state
+                .snapshot
+                .get(..state.snapshot.len().min(200))
+                .unwrap_or(state.snapshot.as_str())
         );
     }
 
@@ -869,7 +874,7 @@ mod tests {
         assert!(
             state.update_from_dump(&dump),
             "dump should have valid markers, got: {:?}",
-            &dump[..dump.len().min(500)]
+            dump.get(..dump.len().min(500)).unwrap_or(dump.as_str())
         );
         // The snapshot contains base64-encoded env vars, so the variable name
         // won't appear in plaintext. Verify the dump was valid and non-empty.

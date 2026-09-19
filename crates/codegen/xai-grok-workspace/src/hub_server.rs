@@ -650,6 +650,9 @@ impl WorkspaceRpcHandler {
             <GetFilesReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<GetFilesReq>(params, &self.workspace, bound_session).await
             }
+            <StoreSessionImageReq as WorkspaceRpc>::METHOD => {
+                dispatch_op::<StoreSessionImageReq>(params, &self.workspace, bound_session).await
+            }
             <FsListReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<FsListReq>(params, &self.workspace, None).await
             }

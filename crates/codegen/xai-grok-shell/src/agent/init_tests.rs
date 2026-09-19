@@ -24,8 +24,9 @@ fn startup_settings_deadline_selects_by_profile() {
     );
 }
 
+// Resets the process-global `STARTUP_STATE` (aborting its owner), so it must serialize with the settings_get tests that own it.
 #[test]
-#[serial_test::serial(remote_sig_disarm)]
+#[serial_test::serial(remote_sig_disarm, startup_settings)]
 fn post_gate_pass_spends_at_most_one_settings_budget() {
     crate::agent::remote_config::settings_get::reset_startup_settings_for_tests();
     let runs_before = PREFETCH_RUNS.with(std::cell::Cell::get);
@@ -65,8 +66,9 @@ fn post_gate_pass_spends_at_most_one_settings_budget() {
     );
 }
 
+// Resets the process-global `STARTUP_STATE` (aborting its owner), so it must serialize with the settings_get tests that own it.
 #[test]
-#[serial_test::serial(remote_sig_disarm)]
+#[serial_test::serial(remote_sig_disarm, startup_settings)]
 fn supplied_settings_skip_the_getter() {
     crate::agent::remote_config::settings_get::reset_startup_settings_for_tests();
     let runs_before = PREFETCH_RUNS.with(std::cell::Cell::get);

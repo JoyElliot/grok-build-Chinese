@@ -402,8 +402,11 @@ mod tests {
             restorable_turn_number: None,
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["lastTurnNumber"], 5);
-        assert_eq!(json["repoHeadAtEnd"], "abc123");
+        assert_eq!(json.get("lastTurnNumber").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(
+            json.get("repoHeadAtEnd").and_then(|v| v.as_str()),
+            Some("abc123")
+        );
         assert!(json.get("restorableTurnNumber").is_none());
         assert!(json.get("summary").is_none());
         assert!(json.get("firstPrompt").is_none());
@@ -419,7 +422,10 @@ mod tests {
             restorable_turn_number: Some(5),
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["restorableTurnNumber"], 5);
+        assert_eq!(
+            json.get("restorableTurnNumber").and_then(|v| v.as_u64()),
+            Some(5)
+        );
         assert!(json.get("lastTurnNumber").is_none());
         assert!(json.get("repoHeadAtEnd").is_none());
         assert!(json.get("summary").is_none());
@@ -436,7 +442,10 @@ mod tests {
             restorable_turn_number: None,
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["summary"], "My session summary");
+        assert_eq!(
+            json.get("summary").and_then(|v| v.as_str()),
+            Some("My session summary")
+        );
         assert!(json.get("lastTurnNumber").is_none());
         assert!(json.get("restorableTurnNumber").is_none());
         assert!(json.get("repoHeadAtEnd").is_none());
@@ -485,7 +494,10 @@ mod tests {
     fn register_request_serializes_device_id_as_camel_case() {
         let req = minimal_register_request(Some("machine-uuid-123".into()));
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["deviceId"], "machine-uuid-123");
+        assert_eq!(
+            json.get("deviceId").and_then(|v| v.as_str()),
+            Some("machine-uuid-123")
+        );
         assert!(json.get("device_id").is_none());
     }
 
@@ -493,7 +505,7 @@ mod tests {
     fn register_request_serializes_empty_device_id_as_present() {
         let req = minimal_register_request(Some(String::new()));
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["deviceId"], "");
+        assert_eq!(json.get("deviceId").and_then(|v| v.as_str()), Some(""));
     }
 
     #[test]

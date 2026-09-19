@@ -73,10 +73,6 @@ pub async fn run(args: TraceArgs, agent_config: &AgentConfig) -> Result<()> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Archive construction
-// ---------------------------------------------------------------------------
-
 pub fn build_session_tar(
     session_dir: &Path,
     session_id: &str,
@@ -263,10 +259,6 @@ fn add_directory_to_tar<W: std::io::Write>(
     Ok(count)
 }
 
-// ---------------------------------------------------------------------------
-// Upload method diagnostics
-// ---------------------------------------------------------------------------
-
 /// Show first and last `n` chars with `***` in between. Char-safe (no byte-boundary panics).
 /// Returns the full string if it's short enough that redacting would be pointless.
 fn redact_middle(s: &str, n: usize) -> String {
@@ -274,8 +266,15 @@ fn redact_middle(s: &str, n: usize) -> String {
     if chars.len() <= n * 2 + 3 {
         return s.to_owned();
     }
-    let prefix: String = chars[..n].iter().collect();
-    let suffix: String = chars[chars.len() - n..].iter().collect();
+    let Some(prefix_chars) = chars.get(..n) else {
+        return s.to_owned();
+    };
+    let suffix_start = chars.len().checked_sub(n);
+    let Some(suffix_chars) = suffix_start.and_then(|i| chars.get(i..)) else {
+        return s.to_owned();
+    };
+    let prefix: String = prefix_chars.iter().collect();
+    let suffix: String = suffix_chars.iter().collect();
     format!("{prefix}***{suffix}")
 }
 
@@ -337,10 +336,6 @@ impl std::fmt::Display for UploadMethodDisplay<'_> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Local export
-// ---------------------------------------------------------------------------
 
 pub(crate) fn find_session_dir(session_id: &str) -> Result<PathBuf> {
     xai_grok_shell::session::persistence::find_session_dir_by_id(session_id).with_context(|| {
@@ -416,10 +411,6 @@ async fn run_export(
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Upload with fallback
-// ---------------------------------------------------------------------------
 
 /// Prints upload URL to stdout on success; saves local bundle and returns Err on failure.
 async fn run_upload(
@@ -616,10 +607,6 @@ impl UploadAttempt<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Upload with retries
-// ---------------------------------------------------------------------------
-
 const UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn upload_with_retries(
@@ -649,10 +636,6 @@ async fn upload_with_retries(
     })
     .await
 }
-
-// ---------------------------------------------------------------------------
-// Upload method resolution
-// ---------------------------------------------------------------------------
 
 pub async fn resolve_upload_method(agent_config: &AgentConfig) -> Option<UploadMethod> {
     // On login failure, fall back to ambient creds rather than erroring.

@@ -48,3 +48,7 @@ mod mcp_menu_loads_servers_in_project_dir;
 mod mid_text_skill_token_echo_styled_pty;
 #[path = "pty_e2e/permission_prompt_hook_chimes_only_on_real_wait.rs"]
 mod permission_prompt_hook_chimes_only_on_real_wait;
+#[path = "pty_e2e/send_subagent_message_row.rs"]
+mod send_subagent_message_row;
+#[path = "pty_e2e/send_subagent_message_row_opens_child.rs"]
+mod send_subagent_message_row_opens_child;

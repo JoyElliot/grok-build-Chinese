@@ -1,5 +1,7 @@
 //! Grok tools library.
 
+#![deny(clippy::indexing_slicing)]
+
 pub use xai_grok_version::VERSION;
 
 /// Default maximum output size (in bytes) for tool results sent to the model.

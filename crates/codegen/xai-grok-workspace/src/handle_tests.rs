@@ -24,6 +24,17 @@ pub(crate) fn make_strict_handle() -> WorkspaceHandle {
 pub(crate) fn make_confining_handle() -> WorkspaceHandle {
     make_handle_inner(false, false, Default::default(), true)
 }
+/// [`make_handle`] with the tool-approval gate enforced, as a daemon host has it.
+pub(crate) fn make_enforced_handle() -> WorkspaceHandle {
+    make_handle_with_factory(
+        Arc::new(TestSessionContextFactory::new()),
+        false,
+        false,
+        Default::default(),
+        false,
+        crate::permission::ToolApprovalGate::Enforced,
+    )
+}
 /// [`make_handle`] with an explicit `workspace_rewind_all_outcomes` value.
 pub(crate) fn make_handle_with_rewind_all_outcomes(enabled: bool) -> WorkspaceHandle {
     make_handle_inner(enabled, false, Default::default(), false)
@@ -54,6 +65,7 @@ pub(crate) fn make_handle_without_tool_state() -> WorkspaceHandle {
         false,
         Default::default(),
         false,
+        crate::permission::ToolApprovalGate::Off,
     )
 }
 fn make_handle_inner(
@@ -68,6 +80,7 @@ fn make_handle_inner(
         require_explicit_toolset,
         status_config,
         confine_fs_to_workspace_root,
+        crate::permission::ToolApprovalGate::Off,
     )
 }
 fn make_handle_with_factory(
@@ -76,6 +89,7 @@ fn make_handle_with_factory(
     require_explicit_toolset: bool,
     status_config: crate::StatusConfig,
     confine_fs_to_workspace_root: bool,
+    tool_approval: crate::permission::ToolApprovalGate,
 ) -> WorkspaceHandle {
     let cwd = factory.temp.path().to_path_buf();
     let config = WorkspaceConfig {
@@ -99,6 +113,8 @@ fn make_handle_with_factory(
         require_explicit_toolset,
         confine_fs_to_workspace_root,
         bind_mcp: None,
+        tool_approval,
+        host_kind: Default::default(),
     };
     let handle = WorkspaceHandle::build(
         config,
@@ -1260,7 +1276,9 @@ fn make_persistent_shell_handle() -> WorkspaceHandle {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     WorkspaceHandle::build(
         config,
@@ -1620,8 +1638,11 @@ async fn client_ext_sink_receives_emitted_notification() {
     );
     let got = captured.lock();
     assert_eq!(got.len(), 1);
-    assert_eq!(got[0].0, "x.ai/search/fuzzy/status");
-    assert_eq!(got[0].1, serde_json::json!({"a": 1}));
+    let Some(first) = got.first() else {
+        panic!("expected one captured emit: {got:?}");
+    };
+    assert_eq!(first.0, "x.ai/search/fuzzy/status");
+    assert_eq!(first.1, serde_json::json!({"a": 1}));
 }
 /// End-to-end local streaming: open and change a fuzzy search over real files, then run the notification driver.
 /// A correctly-shaped `x.ai/search/fuzzy/status` must be delivered through the sink with the match.
@@ -1661,11 +1682,23 @@ async fn fuzzy_change_streams_status_through_sink() {
         "expected at least one fuzzy status notification"
     );
     let last = got.last().unwrap();
-    assert_eq!(last["sessionId"], "sess-1");
-    assert_eq!(last["searchId"], serde_json::json!(search_id));
-    let matches = last["matches"].as_array().expect("matches array");
+    assert_eq!(
+        last.get("sessionId").unwrap_or(&serde_json::Value::Null),
+        "sess-1"
+    );
+    assert_eq!(
+        last.get("searchId").unwrap_or(&serde_json::Value::Null),
+        &serde_json::json!(search_id)
+    );
+    let matches = last
+        .get("matches")
+        .unwrap_or(&serde_json::Value::Null)
+        .as_array()
+        .expect("matches array");
     assert!(
-        matches.iter().any(|m| m["path"]
+        matches.iter().any(|m| m
+            .get("path")
+            .unwrap_or(&serde_json::Value::Null)
             .as_str()
             .is_some_and(|p| p.contains("alpha_widget"))),
         "expected alpha_widget in matches, got: {last}"
@@ -1695,7 +1728,9 @@ pub(crate) fn make_handle_with_events() -> (WorkspaceHandle, tempfile::TempDir) 
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let home = tempfile::tempdir().unwrap();
     let handle = WorkspaceHandle::build(
@@ -1771,30 +1806,96 @@ async fn events_jsonl_captures_turn_tool_toggle_and_mcp_variants() {
     let by_type = |t: &str| {
         events
             .iter()
-            .find(|e| e["type"] == t)
+            .find(|e| e.get("type").unwrap_or(&serde_json::Value::Null) == t)
             .unwrap_or_else(|| panic!("{t} event missing from events.jsonl"))
     };
     let ts = by_type("turn_started");
-    assert_eq!(ts["session_id"], sid);
-    assert_eq!(ts["turn_number"], 7);
-    assert_eq!(ts["model_id"], "grok-4");
-    assert_eq!(ts["yolo_mode"], false);
-    assert_eq!(ts["conversation_message_count"], 5);
-    assert_eq!(ts["session_relationship"], "subagent");
-    assert_eq!(ts["schema_version"], "1.0");
-    assert_eq!(by_type("tool_started")["tool_name"], "read_file");
+    assert_eq!(
+        ts.get("session_id").unwrap_or(&serde_json::Value::Null),
+        sid
+    );
+    assert_eq!(ts.get("turn_number").unwrap_or(&serde_json::Value::Null), 7);
+    assert_eq!(
+        ts.get("model_id").unwrap_or(&serde_json::Value::Null),
+        "grok-4"
+    );
+    assert_eq!(
+        ts.get("yolo_mode").unwrap_or(&serde_json::Value::Null),
+        false
+    );
+    assert_eq!(
+        ts.get("conversation_message_count")
+            .unwrap_or(&serde_json::Value::Null),
+        5
+    );
+    assert_eq!(
+        ts.get("session_relationship")
+            .unwrap_or(&serde_json::Value::Null),
+        "subagent"
+    );
+    assert_eq!(
+        ts.get("schema_version").unwrap_or(&serde_json::Value::Null),
+        "1.0"
+    );
+    assert_eq!(
+        by_type("tool_started")
+            .get("tool_name")
+            .unwrap_or(&serde_json::Value::Null),
+        "read_file"
+    );
     let tc = by_type("tool_completed");
-    assert_eq!(tc["tool_name"], "read_file");
-    assert_eq!(tc["outcome"], "success");
-    assert_eq!(by_type("yolo_toggled")["enabled"], true);
+    assert_eq!(
+        tc.get("tool_name").unwrap_or(&serde_json::Value::Null),
+        "read_file"
+    );
+    assert_eq!(
+        tc.get("outcome").unwrap_or(&serde_json::Value::Null),
+        "success"
+    );
+    assert_eq!(
+        by_type("yolo_toggled")
+            .get("enabled")
+            .unwrap_or(&serde_json::Value::Null),
+        true
+    );
     let mcp_toggle = by_type("mcp_server_toggled");
-    assert_eq!(mcp_toggle["server_name"], "linear");
-    assert_eq!(mcp_toggle["enabled"], false);
+    assert_eq!(
+        mcp_toggle
+            .get("server_name")
+            .unwrap_or(&serde_json::Value::Null),
+        "linear"
+    );
+    assert_eq!(
+        mcp_toggle
+            .get("enabled")
+            .unwrap_or(&serde_json::Value::Null),
+        false
+    );
     let mcp_call = by_type("mcp_tool_call_started");
-    assert_eq!(mcp_call["server_name"], "linear");
-    assert_eq!(mcp_call["tool_name"], "list_issues");
-    assert_eq!(by_type("turn_ended")["outcome"], "completed");
-    let pos = |t: &str| events.iter().position(|e| e["type"] == t).unwrap();
+    assert_eq!(
+        mcp_call
+            .get("server_name")
+            .unwrap_or(&serde_json::Value::Null),
+        "linear"
+    );
+    assert_eq!(
+        mcp_call
+            .get("tool_name")
+            .unwrap_or(&serde_json::Value::Null),
+        "list_issues"
+    );
+    assert_eq!(
+        by_type("turn_ended")
+            .get("outcome")
+            .unwrap_or(&serde_json::Value::Null),
+        "completed"
+    );
+    let pos = |t: &str| {
+        events
+            .iter()
+            .position(|e| e.get("type").unwrap_or(&serde_json::Value::Null) == t)
+            .unwrap()
+    };
     assert!(
         pos("turn_started") < pos("tool_started"),
         "turn_started must precede tool_started"
@@ -1883,8 +1984,13 @@ async fn before_turn_yolo_transition_emits_yolo_toggled_event() {
         .trim()
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-        .filter(|e| e["type"] == "yolo_toggled")
-        .map(|e| e["enabled"].as_bool().unwrap())
+        .filter(|e| e.get("type").unwrap_or(&serde_json::Value::Null) == "yolo_toggled")
+        .map(|e| {
+            e.get("enabled")
+                .unwrap_or(&serde_json::Value::Null)
+                .as_bool()
+                .unwrap()
+        })
         .collect();
     assert_eq!(
         toggles,
@@ -1895,8 +2001,13 @@ async fn before_turn_yolo_transition_emits_yolo_toggled_event() {
         .trim()
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-        .filter(|e| e["type"] == "turn_started")
-        .map(|e| e["yolo_mode"].as_bool().unwrap())
+        .filter(|e| e.get("type").unwrap_or(&serde_json::Value::Null) == "turn_started")
+        .map(|e| {
+            e.get("yolo_mode")
+                .unwrap_or(&serde_json::Value::Null)
+                .as_bool()
+                .unwrap()
+        })
         .collect();
     assert_eq!(
         turn_yolo,
@@ -2210,7 +2321,7 @@ async fn tool_state_upload_is_noop_when_flag_off() {
     let handle = WorkspaceHandle::new_with_data_collection(
         WorkspaceHandle::test_config(cwd, factory),
         queue_home.path().to_path_buf(),
-        queue.clone(),
+        Some(queue.clone()),
         false,
         false,
         crate::upload::environment::WorkspaceIdentity::default(),
@@ -2248,7 +2359,7 @@ async fn tool_state_upload_is_noop_when_data_collection_disabled() {
     let handle = WorkspaceHandle::new_with_data_collection(
         WorkspaceHandle::test_config(cwd, factory),
         queue_home.path().to_path_buf(),
-        queue.clone(),
+        Some(queue.clone()),
         true,
         true,
         Default::default(),
@@ -2308,7 +2419,9 @@ fn make_queue_backed_handle_with(
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let home = tempfile::tempdir().expect("workspace home tempdir");
     let auth: xai_computer_hub_sdk::SharedAuthProvider = Arc::new(
@@ -2333,7 +2446,7 @@ fn make_queue_backed_handle_with(
     let handle = WorkspaceHandle::new_with_data_collection(
         config,
         home.path().to_path_buf(),
-        queue,
+        Some(queue),
         true,
         data_collection_disabled,
         identity,
@@ -2601,11 +2714,11 @@ async fn fork_session_all_child_drops_root_only_tools() {
         .map(|tool| tool.id.as_str())
         .collect();
     assert_eq!(ids, ["GrokBuild:read_file", "GrokBuild:grep"]);
+    let Some(tool1) = effective_config.tools.get(1) else {
+        panic!("expected second tool: {:?}", effective_config.tools);
+    };
     assert_eq!(
-        (
-            effective_config.tools[1].name_override.as_deref(),
-            effective_config.tools[1].kind,
-        ),
+        (tool1.name_override.as_deref(), tool1.kind),
         (Some("custom_kindless"), None)
     );
 }
@@ -2992,7 +3105,9 @@ async fn hook_registry_loads_from_settings_file() {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let handle = WorkspaceHandle::new(config).expect("ok");
     let registry = handle.hook_registry();
@@ -3028,7 +3143,9 @@ async fn hook_registry_loads_from_directory() {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let handle = WorkspaceHandle::new(config).expect("ok");
     let registry = handle.hook_registry();
@@ -3086,7 +3203,9 @@ async fn hook_load_errors_reported_for_bad_file() {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let handle = WorkspaceHandle::new(config).expect("construction must still succeed");
     assert!(
@@ -3128,7 +3247,9 @@ async fn hook_registry_global_and_project_sources_merge() {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let handle = WorkspaceHandle::new(config).expect("ok");
     let registry = handle.hook_registry();
@@ -3157,7 +3278,9 @@ async fn hook_registry_missing_source_is_non_fatal() {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let handle = WorkspaceHandle::new(config).expect("must not panic on missing source");
     assert!(handle.hook_registry().is_empty());
@@ -3190,7 +3313,9 @@ async fn hook_registry_empty_directory_yields_empty_registry() {
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let handle = WorkspaceHandle::new(config).expect("ok");
     assert!(handle.hook_registry().is_empty());
@@ -3240,7 +3365,10 @@ async fn on_hub_tools_changed_updates_snapshot() {
     handle.on_hub_tools_changed(vec![hub_tool]);
     let snapshot = handle.shared().hub_tools_snapshot();
     assert_eq!(snapshot.len(), 1);
-    assert_eq!(snapshot[0].id, "hub:remote_exec");
+    let Some(first) = snapshot.first() else {
+        panic!("expected hub tool snapshot: {snapshot:?}");
+    };
+    assert_eq!(first.id, "hub:remote_exec");
 }
 #[test]
 fn startup_stage_observe_records_independent_samples() {
@@ -3487,6 +3615,7 @@ fn workspace_shared_auth_provider_uses_workspace_config() {
         alpha_test_key: None,
         allow_insecure_ws: true,
         diag: None,
+        on_handshake_refused: None,
     };
     let config = WorkspaceConfig::new_for_proxy(
         temp.path().to_path_buf(),
@@ -3913,7 +4042,9 @@ async fn fork_session_inherits_viewer_ctx_from_parent() {
     );
 }
 /// Build the resolver exactly the way `connect_hub` does: session catalog handlers and the workspace RPC handler.
-fn bind_resolver_fixture(handle: &WorkspaceHandle) -> xai_computer_hub_sdk::SessionHandlerResolver {
+pub(crate) fn bind_resolver_fixture(
+    handle: &WorkspaceHandle,
+) -> xai_computer_hub_sdk::SessionHandlerResolver {
     let catalog_toolset = handle.session("main").expect("main session").toolset();
     let mut catalog = build_session_routed_handlers(&catalog_toolset, handle);
     let rpc_handler: Arc<dyn xai_computer_hub_sdk::ToolServerHandler> =
@@ -3922,7 +4053,9 @@ fn bind_resolver_fixture(handle: &WorkspaceHandle) -> xai_computer_hub_sdk::Sess
     catalog.push(rpc_handler);
     handle.session_bind_resolver(Arc::new(catalog), rpc_tool_id)
 }
-fn handler_names(resolved: &xai_computer_hub_sdk::ResolvedSessionHandlers) -> Vec<String> {
+pub(crate) fn handler_names(
+    resolved: &xai_computer_hub_sdk::ResolvedSessionHandlers,
+) -> Vec<String> {
     resolved
         .handlers
         .iter()
@@ -3954,15 +4087,26 @@ async fn bind_mcp_post(
     {
         state.session_ids.lock().push(session_id.to_owned());
     }
-    let id = request["id"].clone();
-    match request["method"].as_str() {
+    let id = request
+        .get("id")
+        .unwrap_or(&serde_json::Value::Null)
+        .clone();
+    match request
+        .get("method")
+        .unwrap_or(&serde_json::Value::Null)
+        .as_str()
+    {
         Some("initialize") => (
             [("mcp-session-id", "local-test-session")],
             axum::Json(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "protocolVersion": request["params"]["protocolVersion"].clone(),
+                    "protocolVersion": request
+                        .get("params")
+                        .and_then(|v| v.get("protocolVersion"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                     "capabilities": {},
                     "serverInfo": {"name": "local-test", "version": "1"}
                 }
@@ -4004,7 +4148,12 @@ async fn bind_mcp_post(
             .into_response()
         }
         Some("tools/call") => {
-            state.tool_calls.lock().push(request["params"].clone());
+            state.tool_calls.lock().push(
+                request
+                    .get("params")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .clone(),
+            );
             axum::Json(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -4109,8 +4258,16 @@ async fn bind_advertises_configured_mcp_per_session() {
     {
         let calls = state.tool_calls.lock();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["name"], "echo");
-        assert_eq!(calls[0]["arguments"]["message"], "round-trip");
+        let Some(call) = calls.first() else {
+            panic!("expected one tool call: {calls:?}");
+        };
+        assert_eq!(call.get("name").and_then(|v| v.as_str()), Some("echo"));
+        assert_eq!(
+            call.get("arguments")
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str()),
+            Some("round-trip")
+        );
     }
     let session_ids = state.session_ids.lock().clone();
     assert!(
@@ -4152,8 +4309,10 @@ async fn bind_advertises_configured_mcp_per_session() {
     let all_session_ids = state.session_ids.lock().clone();
     assert!(all_session_ids.len() > session_ids.len());
     assert!(
-        all_session_ids[session_ids.len()..]
-            .iter()
+        all_session_ids
+            .get(session_ids.len()..)
+            .into_iter()
+            .flatten()
             .all(|value| value == second_session_id),
         "each session must get its own MCP client headers: {all_session_ids:?}"
     );
@@ -4574,8 +4733,11 @@ async fn bind_mcp_cannot_shadow_native_tool() {
         1,
         "exactly one read_file must be advertised"
     );
+    let Some(handler) = read_file_handlers.first() else {
+        panic!("expected read_file handler");
+    };
     assert_eq!(
-        read_file_handlers[0].description().namespace,
+        handler.description().namespace,
         None,
         "and it must be the native one"
     );
@@ -4741,7 +4903,9 @@ async fn advertised_mcp_tools_are_capped_per_session() {
     converge_with(&handle, "capped", &hub, crate::mcp::McpReclaim::Always).await;
     let live = live_mcp_servers(&handle, "capped").await.unwrap();
     assert_eq!(live.len(), 1);
-    let (_, owned) = &live[0];
+    let Some((_, owned)) = live.first() else {
+        panic!("expected live mcp server: {live:?}");
+    };
     assert_eq!(
         owned.len(),
         crate::mcp::MAX_ADVERTISED_MCP_TOOLS,
@@ -4752,7 +4916,11 @@ async fn advertised_mcp_tools_are_capped_per_session() {
         crate::mcp::MAX_ADVERTISED_MCP_TOOLS,
         "the hub must see exactly the capped set"
     );
-    assert_eq!(owned[0], "tool_000", "truncation must be deterministic");
+    assert_eq!(
+        owned.first().map(String::as_str),
+        Some("tool_000"),
+        "truncation must be deterministic"
+    );
     server_task.abort();
 }
 /// A bind's enrol step must not queue on the session's `update_lock`: a convergence mid-discovery holds that lock for up to the discovery window, and a soft rebind or revive bind stuck behind it would blow the hub's bind ack.
@@ -5426,13 +5594,16 @@ async fn a_first_party_server_takes_over_an_id_a_running_third_party_sibling_reg
         1,
         "exactly one echo handler on the hub"
     );
+    let Some(echo_handler) = echo_handlers.first() else {
+        panic!("expected echo handler");
+    };
     assert_eq!(
-        echo_handlers[0].description().namespace.as_deref(),
+        echo_handler.description().namespace.as_deref(),
         Some("app"),
         "the hub must have swapped to the first-party handler"
     );
     drain_terminal_ok(
-        echo_handlers[0]
+        echo_handler
             .handle_call(
                 ToolCallContext::default(),
                 serde_json::json!({"message": "takeover"}),
@@ -7268,13 +7439,23 @@ async fn after_turn_decodes_cancellation_fields_into_events_jsonl() {
     let ended = text
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-        .find(|e| e["type"] == "turn_ended")
+        .find(|e| e.get("type").unwrap_or(&serde_json::Value::Null) == "turn_ended")
         .expect("turn_ended must be present");
-    assert_eq!(ended["outcome"], "cancelled");
-    assert_eq!(ended["cancellation_category"], "permission_rejected");
     assert_eq!(
-        ended["cancellation_context"],
-        serde_json::json!({ "recovery": false })
+        ended.get("outcome").unwrap_or(&serde_json::Value::Null),
+        "cancelled"
+    );
+    assert_eq!(
+        ended
+            .get("cancellation_category")
+            .unwrap_or(&serde_json::Value::Null),
+        "permission_rejected"
+    );
+    assert_eq!(
+        ended
+            .get("cancellation_context")
+            .unwrap_or(&serde_json::Value::Null),
+        &serde_json::json!({ "recovery": false })
     );
 }
 /// The default watchdog must undercut the requester's 10s hook timeout.
@@ -7425,16 +7606,24 @@ async fn workspace_tool_definitions_payload_matches_chat_completions_shape() {
     assert!(!arr.is_empty(), "baseline session must expose tools");
     for def in arr {
         assert_eq!(
-            def["type"], "function",
+            def.get("type").unwrap_or(&serde_json::Value::Null),
+            "function",
             "tool def must be type=function: {def}"
         );
-        let function = &def["function"];
+        let function = &def.get("function").unwrap_or(&serde_json::Value::Null);
         assert!(
-            function["name"].as_str().is_some_and(|n| !n.is_empty()),
+            function
+                .get("name")
+                .unwrap_or(&serde_json::Value::Null)
+                .as_str()
+                .is_some_and(|n| !n.is_empty()),
             "function.name must be a non-empty string: {def}"
         );
         assert!(
-            function["parameters"].is_object(),
+            function
+                .get("parameters")
+                .unwrap_or(&serde_json::Value::Null)
+                .is_object(),
             "function.parameters must be a JSON object: {def}"
         );
         let keys: std::collections::BTreeSet<&str> = function
@@ -7450,7 +7639,11 @@ async fn workspace_tool_definitions_payload_matches_chat_completions_shape() {
     }
     let names: std::collections::BTreeSet<&str> = arr
         .iter()
-        .filter_map(|d| d["function"]["name"].as_str())
+        .filter_map(|d| {
+            d.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())
+        })
         .collect();
     for expected in ["read_file", "search_replace", "grep", "list_dir"] {
         assert!(
@@ -7516,7 +7709,7 @@ async fn bundled_allowlist_filters_discovery() {
     let skills = crate::discovery::discover_skills(cwd.path(), &config, true).await;
     let names: Vec<&str> = skills
         .iter()
-        .filter_map(|s| s["name"].as_str())
+        .filter_map(|s| s.get("name").unwrap_or(&serde_json::Value::Null).as_str())
         .filter(|n| n.starts_with("allowlist-e2e-"))
         .collect();
     assert_eq!(
@@ -7564,7 +7757,9 @@ fn make_handle_with_queue_routing(
         project_lsp_trusted: true,
         require_explicit_toolset: false,
         confine_fs_to_workspace_root: false,
+        host_kind: Default::default(),
         bind_mcp: None,
+        tool_approval: crate::permission::ToolApprovalGate::Off,
     };
     let home = tempfile::tempdir().unwrap();
     let auth: Arc<dyn AuthProvider> = Arc::new(AuthCredential::bearer("test-token"));
@@ -7882,7 +8077,7 @@ async fn two_phase_drain_waits_for_producer_then_drains_queue() {
     let handle = WorkspaceHandle::new_with_data_collection(
         WorkspaceHandle::test_config(cwd, factory),
         queue_home.path().to_path_buf(),
-        queue.clone(),
+        Some(queue.clone()),
         true,
         false,
         crate::upload::environment::WorkspaceIdentity::default(),
@@ -7947,7 +8142,7 @@ async fn drain_wedged_producer_does_not_starve_queue_flush() {
     let handle = WorkspaceHandle::new_with_data_collection(
         WorkspaceHandle::test_config(cwd, factory),
         queue_home.path().to_path_buf(),
-        queue.clone(),
+        Some(queue.clone()),
         true,
         false,
         crate::upload::environment::WorkspaceIdentity::default(),

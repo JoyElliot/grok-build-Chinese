@@ -147,6 +147,8 @@ pub struct WorkspaceSession {
     pub(crate) viewer_ctx: Option<WorkspaceViewerContext>,
     /// Auto-approve (YOLO) state. Seeded from `session.bind` metadata, refreshed by each before-turn hook.
     pub(crate) yolo_mode: std::sync::atomic::AtomicBool,
+    /// The hub approval gate's per-session state (ceiling, folder grants).
+    pub(crate) approval: crate::permission::SessionApproval,
     /// Session-lifetime terminal backend (background-task registry and persistent shell). Its child processes die only via `kill_task`, [`Self::shutdown_terminal_backend`] (`drop_session`/evict), or process exit.
     /// Never adopt an externally owned backend into this field: drop/evict would SIGKILL a backend shared with the shell.
     terminal_backend: crate::config::SessionTerminalBackend,
@@ -300,6 +302,7 @@ impl WorkspaceSession {
             mcp_native_tool_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
             viewer_ctx,
             yolo_mode: std::sync::atomic::AtomicBool::new(false),
+            approval: crate::permission::SessionApproval::default(),
             system_notifications,
             system_notify_handle,
             #[allow(dead_code)]
@@ -568,6 +571,10 @@ pub struct WorkspaceShared {
     /// See [`crate::config::WorkspaceConfig::confine_fs_to_workspace_root`].
     /// Default `false`; enabled only for remote-sandbox workspace servers.
     pub(crate) confine_fs_to_workspace_root: bool,
+    /// See [`crate::config::WorkspaceConfig::tool_approval`].
+    pub(crate) tool_approval: crate::permission::ToolApprovalGate,
+    /// Which host runs this server (`WorkspaceConfig::host_kind`).
+    pub(crate) host_kind: crate::host_kind::WorkspaceHostKind,
     /// Workspace root directory. Independent of any session; stored here so it survives session creation/deletion.
     pub(crate) root_cwd: std::path::PathBuf,
     pub(crate) sessions: RwLock<HashMap<String, Arc<WorkspaceSession>>>,
@@ -674,6 +681,10 @@ impl WorkspaceShared {
     /// `None` in tests and local mode; see [`WorkspaceShared::upload_queue`].
     pub fn upload_queue(&self) -> Option<&std::sync::Arc<xai_file_utils::queue::UploadQueue>> {
         self.upload_queue.as_ref()
+    }
+    /// Whether hub tool calls pass the approval gate; see [`crate::permission::approval_gate_for`].
+    pub fn tool_approval(&self) -> crate::permission::ToolApprovalGate {
+        self.tool_approval
     }
     /// Return the per-session `events.jsonl` writer for `session_id`, opened and cached on first use under `workspace_home/sessions/{session_id}/`.
     /// When `events_enabled` is `false` this returns [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop).
@@ -1021,9 +1032,9 @@ mod tests {
             .join("events.jsonl");
         let text = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(v["type"], "yolo_toggled");
-        assert_eq!(v["enabled"], true);
-        assert!(v["ts"].as_str().is_some());
+        assert_eq!(v.get("type").and_then(|v| v.as_str()), Some("yolo_toggled"));
+        assert_eq!(v.get("enabled"), Some(&serde_json::json!(true)));
+        assert!(v.get("ts").and_then(|v| v.as_str()).is_some());
     }
     #[test]
     fn second_call_reuses_one_cache_entry() {
@@ -1078,9 +1089,18 @@ mod tests {
             2,
             "re-open after restart must append, preserving the earlier line"
         );
-        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["tool_name"], "before-restart");
-        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(second["tool_name"], "after-restart");
+        let [first_line, second_line] = lines.as_slice() else {
+            panic!("expected two event lines: {lines:?}");
+        };
+        let first: serde_json::Value = serde_json::from_str(first_line).unwrap();
+        assert_eq!(
+            first.get("tool_name").and_then(|v| v.as_str()),
+            Some("before-restart")
+        );
+        let second: serde_json::Value = serde_json::from_str(second_line).unwrap();
+        assert_eq!(
+            second.get("tool_name").and_then(|v| v.as_str()),
+            Some("after-restart")
+        );
     }
 }

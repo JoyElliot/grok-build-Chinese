@@ -63,9 +63,12 @@ data class BotRosterEntry(
     val agentId: String,
     val name: String,
     val status: String,
+    val viewerIsOwner: Boolean,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val lastTurnAt: Long? = null,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val avatarColor: String? = null,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val avatarShape: String? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val hiddenFromSidebar: Boolean? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val hasCustomImage: Boolean? = null,
 )
 
 /**
@@ -74,6 +77,7 @@ data class BotRosterEntry(
 @Serializable
 data class BotRosterResult(
     val agents: List<BotRosterEntry>,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val rememberedAtMs: Long? = null,
 )
 
 typealias BotStatusParams = BotEmptyParams
@@ -121,6 +125,17 @@ data class BotTranscriptOffboxParams(
 data class BotTranscriptOffboxResult(
     val entries: JsonElement,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val nextCursor: String? = null,
+)
+
+/**
+ * Fields the hub merges into every transcript entry it decodes from the
+ * durable store — `getAgentTranscriptTail` / window / thread reads and
+ * `transcript` events alike — next to the box's own fields. Entries the box
+ * answers directly carry none of them.
+ */
+@Serializable
+data class BotTranscriptEntryStamp(
+    val entryVersion: Long,
 )
 
 typealias BotUsageParams = BotEmptyParams
@@ -207,6 +222,8 @@ enum class BotRelayErrorCode {
     CursorAccountUnavailable,
     @SerialName("link_unsupported")
     LinkUnsupported,
+    @SerialName("legacy_privacy_unsupported")
+    LegacyPrivacyUnsupported,
     @SerialName("no_plan")
     NoPlan,
     @SerialName("usage_exhausted")
@@ -244,6 +261,8 @@ enum class BotRelaySignIn {
     Github,
     @SerialName("sso")
     Sso,
+    @SerialName("email_code")
+    EmailCode,
     @SerialName("other")
     Other,
 }
@@ -372,9 +391,11 @@ const val COMMAND_REJECTED_AGENT_ID_MISMATCH: String = "agent_id_mismatch"
 const val COMMAND_REJECTED_ARGS_TOO_LARGE: String = "args_too_large"
 /** `reason` on `command_rejected` when required command args are missing or empty. */
 const val COMMAND_REJECTED_ARGS_INVALID: String = "args_invalid"
+/** `reason` on `command_rejected` when the session's audience (owner vs. viewer) may not act on that agent. */
+const val COMMAND_REJECTED_AUDIENCE_UNSUPPORTED: String = "audience_unsupported"
 /** `reason` on `command_rejected` when Live mode cannot accept attachments. */
 const val COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE: String = "attachments_not_supported_in_live"
-/** `reason` on `command_rejected` when Live mode cannot interrupt or look up */
+/** `reason` on `command_rejected` when Live mode cannot interrupt or look up prompt acceptance. */
 const val COMMAND_REJECTED_NOT_SUPPORTED_IN_LIVE: String = "not_supported_in_live"
 /** `reason` on `command_rejected` when attachUpload cannot fetch the file because this connection has no usable credential. */
 const val COMMAND_REJECTED_ATTACHMENT_CREDENTIAL_UNAVAILABLE: String = "attachment_credential_unavailable"
@@ -390,8 +411,10 @@ const val COMMAND_REJECTED_ATTACHMENT_TOO_LARGE: String = "attachment_too_large"
 const val COMMAND_REJECTED_ATTACHMENT_NOT_READY: String = "attachment_not_ready"
 /** `reason` on `command_rejected` when the live box gateway refused a well-formed command with its own sentence. */
 const val COMMAND_REJECTED_BOX_REFUSED: String = "box_refused"
-/** `reason` on `command_rejected` when the box refused a well-formed */
+/** `reason` on `command_rejected` when the box refused a well-formed catalog method (capability skew, not a client catalog bug). */
 const val COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD: String = "gateway/unknown-method"
+/** `reason` on `command_rejected` when the target agent's harness owns this state and exposes no RPC for the operation. */
+const val COMMAND_REJECTED_TEMPORAL_UNSUPPORTED: String = "temporal_unsupported"
 
 fun isGatewayMethodUnsupported(error: BotRelayError): Boolean =
     error.code == "command_rejected" &&

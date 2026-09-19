@@ -5,6 +5,7 @@
     unreachable_code,
     dead_code
 )]
+#![deny(clippy::indexing_slicing)]
 #[cfg(all(feature = "jemalloc", unix))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -29,15 +30,15 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use tokio_util::sync::CancellationToken;
+use xai_grok_pager::agent_runtime::AgentRuntime;
 use xai_grok_pager::app::{
     AgentCmd, Command, EARLY_PREFETCH_WAIT, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand,
-    LeaderMode, LeaderTargetArgs, PagerArgs, resolve_leader_mode, resolve_use_leader,
-    warn_leader_disabled_by_sandbox,
+    LeaderMode, LeaderTargetArgs, PagerArgs, resolve_use_leader, warn_leader_disabled_by_sandbox,
 };
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
 use xai_grok_pager::locale::LocaleContext;
-use xai_grok_shell::agent::app::{run_headless, run_leader, run_stdio_agent};
+use xai_grok_shell::agent::app::{run_headless, run_leader};
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::leader::{
     ClientCapabilities, ClientMode, ControlCommand, LeaderCapabilities, LeaderDescriptor,
@@ -49,6 +50,7 @@ use xai_grok_shell::leader::{
 use xai_grok_telemetry::process_info::{
     Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
 };
+mod agent_command;
 fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<ProcessIdentity> {
     use xai_grok_telemetry::process_info::LeaderMode::Standalone;
     let (entrypoint, interactivity) = match command {
@@ -598,9 +600,11 @@ fn leader_info_json(
     info: Option<&xai_grok_shell::leader::ControlPayload>,
 ) -> Result<serde_json::Value> {
     let mut val = leader_descriptor_json(d);
-    val["clientId"] = serde_json::json!(reg.client_id);
-    if let Some(info) = info {
-        val["info"] = serde_json::to_value(info)?;
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("clientId".to_owned(), serde_json::json!(reg.client_id));
+        if let Some(info) = info {
+            obj.insert("info".to_owned(), serde_json::to_value(info)?);
+        }
     }
     Ok(val)
 }
@@ -612,6 +616,29 @@ fn ensure_control_caps(reg: &LeaderRegistration) -> Result<&LeaderCapabilities> 
 /// Env override for the `grok workspace` gate: any truthy value enables the command locally, a falsy one disables it.
 /// Either way it bypasses the remote settings flag.
 const WORKSPACE_COMMAND_ENV: &str = "GROK_WORKSPACE_COMMAND";
+/// One leader door's CLI identity, shared by `connect_leader_control` and `spawn_and_connect_leader`.
+struct LeaderDoorCli {
+    /// The command name as the user types it (`grok workspace`); `<name> start` is its start command.
+    name: &'static str,
+    /// IPC client type the leader records for connections from this command.
+    client_type: &'static str,
+    /// Why the door needs leader mode, for the "requires leader mode" refusal.
+    leader_mode_reason: &'static str,
+}
+impl LeaderDoorCli {
+    fn localized_reason(&self, locale: &xai_grok_pager::locale::LocaleContext) -> &'static str {
+        match self.leader_mode_reason {
+            "the workspace is shared via the leader" => locale
+                .named_static_text("cli.leader_door.workspace_reason", self.leader_mode_reason),
+            reason => reason,
+        }
+    }
+}
+const WORKSPACE_DOOR: LeaderDoorCli = LeaderDoorCli {
+    name: "grok-zh workspace",
+    client_type: "grok-workspace-cli",
+    leader_mode_reason: "the workspace is shared via the leader",
+};
 /// Resolution of the `grok workspace` gate.
 /// `Unknown` is kept separate from `Disabled` so we don't tell the user the flag is off when the settings were never read.
 /// Both fail closed, but `Unknown` earns an honest message.
@@ -769,10 +796,13 @@ fn ensure_workspace_caps(reg: &LeaderRegistration, locale: &LocaleContext) -> Re
     }
     Ok(())
 }
+/// Control connection for a leader door CLI: by PID when given, else the socket of the configured
+/// environment.
 #[tracing::instrument(level = "debug", skip_all)]
-async fn connect_workspace_control(
+async fn connect_leader_control(
     agent_config: &AgentConfig,
     target: &LeaderTargetArgs,
+    door: &LeaderDoorCli,
     locale: &LocaleContext,
 ) -> Result<LeaderClient> {
     if target.pid.is_some() {
@@ -783,59 +813,31 @@ async fn connect_workspace_control(
     let socket = socket_path_for_ws_url(ws_url);
     LeaderClient::connect(
         socket,
-        "grok-workspace-cli",
+        door.client_type,
         ClientMode::Stdio,
         ClientCapabilities::default(),
     )
     .await
     .map_err(|e| {
         anyhow::anyhow!(localized_cli_template(
-            locale,
-            "cli.workspace.leader_missing",
-            "no running leader for this environment ({error}). Start a grok-zh session, or run `grok-zh workspace start`.",
-            &[("{error}", &e.to_string())],
+            locale, "cli.leader_door.missing",
+            "no running leader for this environment ({error}). Start a grok-zh session, or run `{door} start`.",
+            &[("{error}", &e.to_string()), ("{door}", door.name)],
         ))
     })
 }
+/// The `start` handshake shared by the door CLIs: effective config, the leader-mode decision,
+/// cached credentials, `connect_or_spawn`, then a fresh control client on the leader socket.
 #[tracing::instrument(level = "debug", skip_all)]
-async fn workspace_control(
-    target: &LeaderTargetArgs,
-    json: bool,
-    command: ControlCommand,
+async fn spawn_and_connect_leader(
+    leader: bool,
+    no_leader: bool,
+    remote_settings: Option<&xai_grok_shell::util::config::RemoteSettings>,
+    door: &LeaderDoorCli,
     locale: &LocaleContext,
-) -> Result<()> {
-    let raw_config = xai_grok_shell::config::load_effective_config_disk_only().map_err(|e| {
-        anyhow::anyhow!(localized_cli_template(
-            locale,
-            "cli.workspace.config.load_failed",
-            "Failed to load config: {error}",
-            &[("{error}", &e.to_string())],
-        ))
-    })?;
-    let agent_config = AgentConfig::new_from_toml_cfg(&raw_config).map_err(|e| {
-        anyhow::anyhow!(localized_cli_template(
-            locale,
-            "cli.workspace.config.agent_failed",
-            "Failed to create agent config: {error}",
-            &[("{error}", &e.to_string())],
-        ))
-    })?;
-    let client = connect_workspace_control(&agent_config, target, locale).await?;
-    ensure_workspace_caps(client.registration(), locale)?;
-    let payload = client.send_control(command).await??;
-    render_workspace_payload(&payload, json, locale);
-    client.cancel();
-    Ok(())
-}
-#[tracing::instrument(level = "debug", skip_all)]
-async fn workspace_start(
-    args: WorkspaceStartArgs,
-    restart: bool,
-    remote_settings: Option<xai_grok_shell::util::config::RemoteSettings>,
-    locale: &LocaleContext,
-) -> Result<()> {
+) -> Result<LeaderClient> {
     use xai_grok_login::ensure_authenticated;
-    xai_grok_shell::util::config::set_remote_campaigns_from_settings(remote_settings.as_ref());
+    xai_grok_shell::util::config::set_remote_campaigns_from_settings(remote_settings);
     let raw_config = xai_grok_shell::config::load_effective_config().map_err(|e| {
         anyhow::anyhow!(localized_cli_template(
             locale,
@@ -853,19 +855,24 @@ async fn workspace_start(
         ))
     })?;
     let (use_leader, _) = resolve_use_leader(
-        args.leader,
-        args.no_leader,
+        leader,
+        no_leader,
         &raw_config,
-        remote_settings.as_ref(),
+        remote_settings,
         true,
         xai_grok_sandbox::requested_confinement_profile(),
     );
     if !use_leader {
         anyhow::bail!(
             "{}",
-            locale.named_text(
-                "cli.workspace.requires_leader",
-                "`grok-zh workspace` requires leader mode (the workspace is shared via the leader).\nEnable it with `[cli] use_leader = true` in ~/.grok/config.toml, or pass --leader."
+            localized_cli_template(
+                locale,
+                "cli.leader_door.requires_leader",
+                "`{door}` requires leader mode ({reason}).\nEnable it with `[cli] use_leader = true` in ~/.grok/config.toml, or pass --leader.",
+                &[
+                    ("{door}", door.name),
+                    ("{reason}", door.localized_reason(locale))
+                ],
             )
         );
     }
@@ -888,24 +895,49 @@ async fn workspace_start(
         client_version: Some(PAGER_CLIENT_VERSION.to_string()),
         ..Default::default()
     };
-    let conn = connect_or_spawn(
-        "grok-workspace-cli",
-        ClientMode::Stdio,
-        &env_urls,
-        capabilities,
-    )
-    .await
-    .map_err(|e| {
-        anyhow::anyhow!(localized_cli_template(
-            locale,
-            "cli.workspace.leader.start_connect_failed",
-            "failed to start or connect to leader: {error}",
-            &[("{error}", &e.to_string())],
-        ))
-    })?;
+    let conn = connect_or_spawn(door.client_type, ClientMode::Stdio, &env_urls, capabilities)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(localized_cli_template(
+                locale,
+                "cli.workspace.leader.start_connect_failed",
+                "failed to start or connect to leader: {error}",
+                &[("{error}", &e.to_string())],
+            ))
+        })?;
     drop(conn);
-    let target = LeaderTargetArgs::default();
-    let client = connect_workspace_control(&agent_config, &target, locale).await?;
+    connect_leader_control(&agent_config, &LeaderTargetArgs::default(), door, locale).await
+}
+#[tracing::instrument(level = "debug", skip_all)]
+async fn workspace_control(
+    target: &LeaderTargetArgs,
+    json: bool,
+    command: ControlCommand,
+    locale: &LocaleContext,
+) -> Result<()> {
+    let agent_config = load_disk_agent_config(locale)?;
+    let client = connect_leader_control(&agent_config, target, &WORKSPACE_DOOR, locale).await?;
+    ensure_workspace_caps(client.registration(), locale)?;
+    let payload = client.send_control(command).await??;
+    render_workspace_payload(&payload, json, locale);
+    client.cancel();
+    Ok(())
+}
+#[tracing::instrument(level = "debug", skip_all)]
+async fn workspace_start(
+    args: WorkspaceStartArgs,
+    restart: bool,
+    remote_settings: Option<xai_grok_shell::util::config::RemoteSettings>,
+    locale: &LocaleContext,
+) -> Result<()> {
+    let client = spawn_and_connect_leader(
+        args.leader,
+        args.no_leader,
+        remote_settings.as_ref(),
+        &WORKSPACE_DOOR,
+        locale,
+    )
+    .await?;
     ensure_workspace_caps(client.registration(), locale)?;
     if restart {
         let _ = client.send_control(ControlCommand::WorkspaceStop).await;
@@ -1327,10 +1359,11 @@ fn replay_load_json(sid: &str, cached: &CachedSession) -> Option<String> {
         "sessionId": sid,
         "cwd": cwd,
     });
-    if let Some(ref mcp_raw) = cached.mcp_servers_json
+    if let Some(mcp_raw) = &cached.mcp_servers_json
         && let Ok(mcp_val) = serde_json::from_str::<serde_json::Value>(mcp_raw)
+        && let Some(obj) = params.as_object_mut()
     {
-        params["mcpServers"] = mcp_val;
+        obj.insert("mcpServers".to_owned(), mcp_val);
     }
     Some(
         serde_json::json!({
@@ -1464,23 +1497,7 @@ async fn run_agent_command(
     disable_web_search: bool,
     update_config: &UpdateConfig,
 ) -> Result<()> {
-    let _signal_flush = tokio::spawn(async {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{SignalKind, signal};
-            use xai_grok_pager::app::signal_handler::next_signal_code;
-            let mut term = signal(SignalKind::terminate()).ok();
-            let mut hup = signal(SignalKind::hangup()).ok();
-            let code = next_signal_code(&mut term, &mut hup).await;
-            shutdown_and_flush_telemetry(code);
-        }
-        #[cfg(not(unix))]
-        {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                shutdown_and_flush_telemetry(130);
-            }
-        }
-    });
+    let signal_flush = agent_command::spawn_signal_flush();
     if matches!(
         agent_args.mode,
         Some(AgentCmd::Leader(_) | AgentCmd::Stdio | AgentCmd::Headless(_) | AgentCmd::Serve(_))
@@ -1603,23 +1620,13 @@ async fn run_agent_command(
         storage_mode: None,
     });
     let agent_memory_config = agent_config.memory_config.clone();
-    let leader_eligible = matches!(
-        &agent_args.mode,
-        None | Some(AgentCmd::Stdio) | Some(AgentCmd::Headless(_))
-    );
+    let runtime = AgentRuntime::from_args(&agent_args, &agent_config, &raw_config);
     let requested_confinement = xai_grok_sandbox::requested_confinement_profile();
     let LeaderMode {
         use_leader,
         policy_disable_reason,
         disabled_by_confinement,
-    } = resolve_leader_mode(
-        agent_args.leader,
-        agent_args.no_leader,
-        &raw_config,
-        remote_settings.as_ref(),
-        leader_eligible,
-        requested_confinement,
-    );
+    } = runtime.leader_mode();
     tracing::info!(
         use_leader,
         ?policy_disable_reason,
@@ -1853,7 +1860,9 @@ async fn run_agent_command(
         }
     }
     match agent_args.mode {
-        Some(AgentCmd::Stdio) => run_stdio_agent(&agent_config, None, agent_memory_config).await,
+        Some(AgentCmd::Stdio) => {
+            agent_command::run_stdio(&runtime, &agent_config, signal_flush).await
+        }
         Some(AgentCmd::Headless(a)) => {
             let mut agent_config = agent_config.clone();
             apply_headless_args_to_config(&a, &mut agent_config);
@@ -1930,12 +1939,16 @@ async fn run_agent_command(
                     }),
                 })
             };
+            let cursor_worker = None;
             run_leader(
                 &agent_config,
-                a.no_exit_on_disconnect,
-                a.relay_on_demand,
-                leader_auto_update,
-                agent_memory_config,
+                xai_grok_shell::agent::app::LeaderRunOptions {
+                    no_exit_on_disconnect: a.no_exit_on_disconnect,
+                    relay_on_demand: a.relay_on_demand,
+                    auto_update_check: leader_auto_update,
+                    memory_config: agent_memory_config,
+                    cursor_worker,
+                },
             )
             .await
         }
@@ -2682,8 +2695,22 @@ async fn async_main(
                 return xai_grok_pager::trace_cmd::run(trace_args, &agent_config).await;
             }
             Command::Memory(memory_args) => {
+                let grok_com_config = load_grok_com_config_for_settings();
+                let remote_settings = fetch_remote_settings(&grok_com_config).await;
+                xai_grok_shell::util::config::set_remote_campaigns_from_settings(
+                    remote_settings.as_ref(),
+                );
+                let config = xai_grok_shell::config::load_effective_config()?;
+                let mode = xai_grok_shell::config::MemoryConfig::resolve(
+                    args.experimental_memory,
+                    args.no_memory,
+                    &config,
+                    remote_settings.as_ref(),
+                )
+                .mode;
                 return xai_grok_pager::memory_cmd::run_with_locale(
                     memory_args,
+                    mode,
                     startup_locale.as_ref(),
                 );
             }
@@ -3599,7 +3626,9 @@ mod tests {
         let msg = r#"{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"s1","cwd":"/tmp","mcpServers":[]}}"#;
         cache_outgoing_acp_state(msg, &state);
         let s = state.lock().unwrap();
-        let (sid, cached) = &s.sessions[0];
+        let Some((sid, cached)) = s.sessions.first() else {
+            panic!("expected a cached session, got {}", s.sessions.len());
+        };
         assert_eq!(sid, "s1");
         assert_eq!(cached.load_request_json.as_deref(), Some(msg));
         assert_eq!(cached.cwd.as_deref(), Some("/tmp"));
@@ -3616,7 +3645,7 @@ mod tests {
         {
             let s = state.lock().unwrap();
             assert_eq!(s.sessions.len(), 1);
-            assert_eq!(s.sessions[0].0, "s1");
+            assert_eq!(s.sessions.first().map(|(id, _)| id.as_str()), Some("s1"));
             assert!(s.pending_new.is_some());
             assert_eq!(
                 s.pending_new.as_ref().unwrap().cwd.as_deref(),
@@ -3630,8 +3659,11 @@ mod tests {
         let s = state.lock().unwrap();
         assert!(s.pending_new.is_none());
         assert_eq!(s.sessions.len(), 2);
-        assert_eq!(s.sessions[1].0, "s2");
-        assert_eq!(s.sessions[1].1.cwd.as_deref(), Some("/home"));
+        assert_eq!(s.sessions.get(1).map(|(id, _)| id.as_str()), Some("s2"));
+        assert_eq!(
+            s.sessions.get(1).and_then(|(_, c)| c.cwd.as_deref()),
+            Some("/home")
+        );
         assert_eq!(s.last_session_id.as_deref(), Some("s2"));
     }
     #[test]
@@ -3675,7 +3707,9 @@ mod tests {
             &state,
         );
         let s = state.lock().unwrap();
-        let (sid, cached) = &s.sessions[0];
+        let Some((sid, cached)) = s.sessions.first() else {
+            panic!("expected a cached session, got {}", s.sessions.len());
+        };
         assert_eq!(sid, "s1");
         assert_eq!(
             cached.load_request_json, None,
@@ -3697,7 +3731,9 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.sessions.len(), 1, "one session, one replay entry");
         assert_eq!(
-            s.sessions[0].1.load_request_json.as_deref(),
+            s.sessions
+                .first()
+                .and_then(|(_, c)| c.load_request_json.as_deref()),
             Some(load),
             "the original load, with its _meta, must survive the resume"
         );
@@ -3753,14 +3789,25 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("fallback replay JSON must be valid");
         assert_eq!(
-            parsed["params"]["sessionId"].as_str().unwrap(),
+            parsed
+                .get("params")
+                .and_then(|p| p.get("sessionId"))
+                .and_then(|v| v.as_str())
+                .unwrap(),
             r#"session"with"quotes"#
         );
         assert_eq!(
-            parsed["params"]["cwd"].as_str().unwrap(),
+            parsed
+                .get("params")
+                .and_then(|p| p.get("cwd"))
+                .and_then(|v| v.as_str())
+                .unwrap(),
             r#"C:\Users\test path"#
         );
-        assert_eq!(parsed["id"].as_str(), Some(REPLAY_LOAD_REQUEST_ID));
+        assert_eq!(
+            parsed.get("id").and_then(|v| v.as_str()),
+            Some(REPLAY_LOAD_REQUEST_ID)
+        );
     }
     #[test]
     fn cache_incoming_session_id_from_response() {
@@ -3774,7 +3821,10 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.last_session_id.as_deref(), Some("abc123"));
         assert_eq!(s.sessions.len(), 1);
-        assert_eq!(s.sessions[0].0, "abc123");
+        assert_eq!(
+            s.sessions.first().map(|(id, _)| id.as_str()),
+            Some("abc123")
+        );
     }
     /// A multi-session client (IDE driving several sessions over one bridge)
     /// gets EVERY session replayed after a reconnect, in first-seen order.
@@ -3812,7 +3862,10 @@ mod tests {
             let load2 = leader_rx.recv().await.unwrap();
             assert!(load2.contains("sess-2"), "expected sess-2 second: {load2}");
             let load2_json: serde_json::Value = serde_json::from_str(&load2).unwrap();
-            assert_eq!(load2_json["id"].as_str(), Some(REPLAY_LOAD_REQUEST_ID));
+            assert_eq!(
+                load2_json.get("id").and_then(|v| v.as_str()),
+                Some(REPLAY_LOAD_REQUEST_ID)
+            );
             response_tx
                 .send(
                     serde_json::json!({
@@ -3981,10 +4034,13 @@ mod tests {
             4,
             "expected exactly the 4 notifications, got: {lines:?}"
         );
-        assert!(lines[0].contains("version_mismatch"));
-        assert!(lines[1].contains(r#""n":0"#));
-        assert!(lines[2].contains(r#""n":1"#));
-        assert!(lines[3].contains(r#""n":2"#));
+        let [l0, l1, l2, l3] = lines.as_slice() else {
+            panic!("expected 4 forwarded lines: {lines:?}");
+        };
+        assert!(l0.contains("version_mismatch"));
+        assert!(l1.contains(r#""n":0"#));
+        assert!(l2.contains(r#""n":1"#));
+        assert!(l3.contains(r#""n":2"#));
         assert!(!forwarded.contains(r#""id":7"#), "init response leaked");
         assert!(!forwarded.contains(r#""id":8"#), "load response leaked");
         responder.await.unwrap();
@@ -4052,7 +4108,7 @@ mod tests {
             let load = leader_rx.recv().await.unwrap();
             let load_json: serde_json::Value = serde_json::from_str(&load).unwrap();
             assert_eq!(
-                load_json["id"].as_str(),
+                load_json.get("id").and_then(|v| v.as_str()),
                 Some(REPLAY_LOAD_REQUEST_ID),
                 "fallback load must use the reserved string id"
             );

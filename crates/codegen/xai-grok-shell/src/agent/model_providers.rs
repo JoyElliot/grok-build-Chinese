@@ -920,7 +920,10 @@ mod tests {
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
         let resolved = resolve_model_list(&cfg, None);
-        let provider = resolved["m"]
+        let Some(model) = resolved.get("m") else {
+            panic!("expected model m: {resolved:?}");
+        };
+        let provider = model
             .auth_provider
             .as_ref()
             .expect("blank api_key must not fail-close a working gateway");

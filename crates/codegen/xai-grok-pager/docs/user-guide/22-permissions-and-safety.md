@@ -1,5 +1,7 @@
 # Permissions and safety
 
+[简体中文](zh-CN/22-permissions-and-safety.md)
+
 Control what Grok can access and do: permission modes, allow/ask/deny rules, hooks, and the optional OS-level sandbox.
 
 - **Modes** set how often Grok asks for approval (always-approve, auto, ask, and related).

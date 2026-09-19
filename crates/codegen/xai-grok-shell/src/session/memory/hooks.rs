@@ -166,13 +166,15 @@ pub(crate) fn generate_metadata_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::conversation::{AssistantItem, ContentPart, ToolResultItem, UserItem};
+    use crate::sampling::conversation::{
+        AssistantItem, ContentPart, SyntheticReason, ToolResultItem, UserItem,
+    };
     use tempfile::TempDir;
 
     fn make_user(text: &str) -> ConversationItem {
         ConversationItem::User(UserItem {
             content: vec![ContentPart::Text { text: text.into() }],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })
     }

@@ -235,25 +235,31 @@ fn insert_committed(
     } else {
         full_h
     };
-    // Propagated (not swallowed): the caller must NOT mark the entry committed
-    // when the terminal write failed — print-once means a marked-but-unprinted
-    // block can never be emitted again (bugbot).
-    let footer_template = locale
-        .named_text(
-            "minimal.commit.more_lines",
-            "… {hidden} more lines — /transcript to view",
-        )
-        .into_owned();
-    terminal.insert_before(commit_h, move |buf| {
-        paint_committed_with_footer(
-            buf,
-            renderer,
-            width,
-            full_h,
-            footer_style,
-            Some(&footer_template),
-        );
-    })?;
+    // Off-screen paint then wrap-aware emit: a dense `insert_before` grid turns pads and soft wraps into hard breaks.
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height: commit_h,
+    };
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    let footer_template = locale.named_text(
+        "minimal.commit.more_lines",
+        "… {hidden} more lines — /transcript to view",
+    );
+    paint_committed_with_footer(
+        &mut buf,
+        &renderer,
+        width,
+        full_h,
+        footer_style,
+        Some(footer_template.as_ref()),
+    );
+    let wraps = commit_wrap_flags(&renderer, buf.area.height, full_h);
+    let rows = super::full_view::buffer_to_semantic_rows(&buf, &wraps);
+    // Propagated (not swallowed): the caller must NOT mark the entry committed when the terminal write failed
+    // Print-once means a marked-but-unprinted block can never be emitted again
+    terminal.insert_before_rows(&rows)?;
     insert_gap(terminal);
     Ok(())
 }
@@ -276,7 +282,7 @@ pub(super) fn insert_gap(terminal: &mut PagerTerminal) {
 #[cfg(test)]
 fn paint_committed(
     buf: &mut ratatui::buffer::Buffer,
-    renderer: EntryRenderer<'_>,
+    renderer: &EntryRenderer<'_>,
     width: u16,
     full_h: u16,
     footer_style: Style,
@@ -286,7 +292,7 @@ fn paint_committed(
 
 fn paint_committed_with_footer(
     buf: &mut ratatui::buffer::Buffer,
-    renderer: EntryRenderer<'_>,
+    renderer: &EntryRenderer<'_>,
     width: u16,
     full_h: u16,
     footer_style: Style,
@@ -321,6 +327,22 @@ fn paint_committed_with_footer(
             });
         buf.set_span(buf.area.x, y, &Span::styled(text, style), width);
     }
+    super::full_view::trim_trailing_pads(buf);
+}
+
+/// Renderer joiners for the painted commit. A cap footer is not a wrap continuation.
+fn commit_wrap_flags(renderer: &EntryRenderer<'_>, height: u16, full_h: u16) -> Vec<bool> {
+    let mut wraps = renderer.row_soft_wraps(height);
+    if height > 0 && height < full_h {
+        let last = usize::from(height) - 1;
+        if let Some(flag) = wraps.get_mut(last) {
+            *flag = false;
+        }
+        if let Some(flag) = last.checked_sub(1).and_then(|i| wraps.get_mut(i)) {
+            *flag = false;
+        }
+    }
+    wraps
 }
 
 /// Commit the active agent's newly-finalized blocks into native scrollback. Minimal has no separate history pane,
@@ -336,10 +358,10 @@ pub fn commit_active(app: &mut AppView, terminal: &mut PagerTerminal) {
     let Some(agent) = app.agents.get_mut(&id) else {
         return;
     };
-    // Hold commits while a centered fullscreen app-modal (settings) is open
+    // Hold commits while a band-owning modal (settings, palette, feedback form) is open
     // It takes the whole live region, so an `insert_before` underneath it would scroll the popup
     // Deferred commits flush on the next frame after it closes
-    if super::overlay::app_modal_active(agent) {
+    if super::overlay::is_live_region_modal_active(agent) {
         return;
     }
     // The sizing pass and this commit pass must judge committability against the same marks. Syncing here would let a
@@ -419,20 +441,17 @@ pub fn expand_pending(app: &mut AppView, terminal: &mut PagerTerminal) {
     }
     let appearance = committed_appearance(&app.appearance);
     let locale = app.locale.clone();
-    // Guards: a missing active agent must leave the IDs queued, so confirm it
-    // exists before consuming the queue below (the queue take needs `&mut app`,
-    // which can't overlap the agent borrow — hence the check-then-reborrow).
-    // Likewise hold the whole queue while a centered app-modal owns the live
-    // region — an `insert_before` would scroll the popup and the user wouldn't
-    // see the re-print (same hold as `commit_active`; bugbot).
+    // Guards: a missing active agent must leave the IDs queued, so confirm it exists before consuming the queue below.
+    // The queue take needs `&mut app`, which can't overlap the agent borrow, hence the check-then-reborrow. An
+    // `insert_before` would scroll the popup or the feedback form and the user wouldn't see the re-print.
     match app.agents.get(&id) {
-        Some(agent) if !super::overlay::app_modal_active(agent) => {}
+        Some(agent) if !super::overlay::is_live_region_modal_active(agent) => {}
         _ => return,
     }
     let theme = Theme::current();
     let footer_style = theme.dim();
     // Consume the expand queue only after every guard above has passed
-    // A non-agent active view, a 0-width (probe) frame, or an open app-modal must leave the IDs queued for a later frame
+    // A non-agent active view, a 0-width (probe) frame, or an open band-owning modal must leave the IDs queued for a later frame
     let ids = minimal_api::take_minimal_pending_expand(app);
     let mut requeue: Vec<EntryId> = Vec::new();
     {

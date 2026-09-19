@@ -403,27 +403,25 @@ pub(super) fn handle_queue_changed(notif: &acp::ExtNotification, app: &mut AppVi
                         prompt_id = %pid,
                         "stashing running-prompt adoption (FIFO handoff race)",
                     );
-                    // A rebroadcast for the SAME running prompt (every queue edit or no-op rebroadcasts) must not clobber the stash
-                    // The first broadcast consumed the drained row from the mirror, so this pass re-derives `text: None`
-                    // The deferred shim would then render no user block (and the echo-skip set above already swallowed the shell's echo)
-                    if app
+                    // Same-prompt rebroadcast must not clobber the stash (`text` is already None).
+                    // Still fall through to local flush: promote may have just cleared the server front.
+                    let same_stashed_prompt = app
                         .pending_running_adoptions
                         .get(&aid)
-                        .is_some_and(|p| p.prompt_id == pid)
-                    {
-                        return true;
-                    }
+                        .is_some_and(|p| p.prompt_id == pid);
                     // A newer running prompt supersedes any earlier stash.
-                    if let Some(prev) = app.pending_running_adoptions.insert(
-                        aid,
-                        PendingRunningAdoption {
-                            prompt_id: pid.clone(),
-                            text: running_text,
-                            combined_texts: running_combined,
-                            kind: running_kind,
-                            turn_ended: false,
-                        },
-                    ) && let Some(agent) = app.agents.get_mut(&aid)
+                    if !same_stashed_prompt
+                        && let Some(prev) = app.pending_running_adoptions.insert(
+                            aid,
+                            PendingRunningAdoption {
+                                prompt_id: pid.clone(),
+                                text: running_text,
+                                combined_texts: running_combined,
+                                kind: running_kind,
+                                turn_ended: false,
+                            },
+                        )
+                        && let Some(agent) = app.agents.get_mut(&aid)
                     {
                         agent.discard_pending_adoption_updates(&prev.prompt_id);
                     }
@@ -431,6 +429,16 @@ pub(super) fn handle_queue_changed(notif: &acp::ExtNotification, app: &mut AppVi
             }
         }
         _ => {}
+    }
+    // Retry local flush after server-queue rows clear (wait-start can arrive before promote).
+    if let Some(aid) = agent_id
+        && app
+            .agents
+            .get(&aid)
+            .is_some_and(|agent| !agent.session.loading_replay)
+    {
+        let flush = crate::app::dispatch::flush_held_local_queue_into_wait(app, Some(aid));
+        app.pending_effects.extend(flush);
     }
     true
 }

@@ -10,6 +10,7 @@ use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
+use crate::cleanup_downloads::cleanup_old_downloads;
 use crate::version::{
     UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
     is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
@@ -1670,7 +1671,7 @@ pub(crate) fn detect_platform() -> Result<(&'static str, &'static str)> {
 /// Age past which a leftover `.tmp` download file or freshly-renamed versioned binary counts as abandoned (crashed or
 /// killed updater). The per-request budget is [`DOWNLOAD_REQUEST_TIMEOUT`] and the leader's check-and-download pass
 /// matches it. So a concurrent updater's in-flight or just-landed file is never deleted out from under it.
-const STALE_TMP_AGE: Duration = Duration::from_secs(60 * 60);
+pub(crate) const STALE_TMP_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// Total timeout for a CLI artifact download request (including body).
 /// Tighter budgets abort slow-link transfers mid-body and restart them from zero.
@@ -2143,7 +2144,7 @@ fn truncate_err(s: &str, max: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}...", &s[..end])
+    format!("{}...", s.get(..end).unwrap_or(""))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2254,6 +2255,9 @@ pub async fn install_internal_from_base(
 struct VerifiedDownload {
     version: String,
     binary_path: std::path::PathBuf,
+    /// Windows: the grove hook exes and MinGit archive fetched for this release (empty elsewhere).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    payload: windows_payload::Payload,
 }
 
 /// Base-dependent install phase: resolve the version (per base when no target is pinned), download the binary, and smoke-test it.
@@ -2308,9 +2312,16 @@ async fn download_verified_from_base(
         return Err(fail.into());
     }
 
+    // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
+    #[cfg(windows)]
+    let payload = windows_payload::download(gcs_base_url, &version, &platform, &download_dir).await;
+    #[cfg(not(windows))]
+    let payload = windows_payload::Payload::default();
+
     Ok(VerifiedDownload {
         version,
         binary_path,
+        payload,
     })
 }
 
@@ -2332,9 +2343,13 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
 
     remove_stale_pager(&bin_dir).await;
 
+    // Hook exes beside grok.exe and the bundled MinGit; grok is already live, so a failure here is only logged.
+    #[cfg(windows)]
+    windows_payload::activate(&download.payload, &bin_dir, &download.version).await;
+
     eprintln!();
 
-    // Clean up old versioned binaries (keeps the current and one previous)
+    // Current, N-1, and any leftover a live process is still executing.
     cleanup_old_downloads(&download_dir, "grok", &download.version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &download.version).await;
 
@@ -2523,13 +2538,26 @@ async fn swap_managed_entrypoint_links(
     secondary_target: Option<&std::path::Path>,
 ) -> Result<std::path::PathBuf> {
     let primary_link = bin_dir.join(primary_name);
-    let secondary_link = bin_dir.join(secondary_name);
-    let link_paths: [std::path::PathBuf; 2] = [primary_link.clone(), secondary_link];
+    let secondary_source = secondary_target
+        .map(|target| bin_dir.join(target))
+        .unwrap_or_else(|| binary_path.to_path_buf());
+    let pairs = [
+        (binary_path.to_path_buf(), primary_link.clone()),
+        (secondary_source, bin_dir.join(secondary_name)),
+    ];
+    replace_managed_bins(&pairs).await?;
+    Ok(primary_link)
+}
 
-    // Capture every link up-front so a second-link capture failure can't strand the first mid-swap
-    let mut captured: Vec<LinkRollback> = Vec::with_capacity(link_paths.len());
-    for path in &link_paths {
-        match LinkRollback::capture(path).await {
+/// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
+/// `windows_replace_exe` on Windows) as one unit: every `dest` is captured
+/// up-front, then replaced in order, and a failure restores the completed ones in
+/// reverse, including removing a `dest` that did not exist before.
+async fn replace_managed_bins(pairs: &[(std::path::PathBuf, std::path::PathBuf)]) -> Result<()> {
+    // Capture every dest up-front so a later capture failure can't strand an earlier one mid-swap
+    let mut captured: Vec<LinkRollback> = Vec::with_capacity(pairs.len());
+    for (_, dest) in pairs {
+        match LinkRollback::capture(dest).await {
             Ok(rb) => captured.push(rb),
             Err(e) => {
                 // Nothing swapped yet; drop any Windows .rollback.bak files.
@@ -2537,34 +2565,29 @@ async fn swap_managed_entrypoint_links(
                     prior.cleanup().await;
                 }
                 return Err(e)
-                    .with_context(|| format!("capturing rollback state for {}", path.display()));
+                    .with_context(|| format!("capturing rollback state for {}", dest.display()));
             }
         }
     }
 
     let mut completed: Vec<(&LinkRollback, Option<std::path::PathBuf>)> =
         Vec::with_capacity(captured.len());
-    for (i, (link_path, rollback)) in link_paths.iter().zip(captured.iter()).enumerate() {
-        let target = if i == 1 {
-            secondary_target.unwrap_or(binary_path)
-        } else {
-            binary_path
-        };
+    for (i, ((src, dest), rollback)) in pairs.iter().zip(captured.iter()).enumerate() {
         #[cfg(unix)]
         let swap_result = {
-            let rel_target = relative_symlink_target(target, link_path);
-            atomic_symlink_swap(&rel_target, link_path).await
+            let rel_target = relative_symlink_target(src, dest);
+            atomic_symlink_swap(&rel_target, dest).await
         };
         #[cfg(unix)]
-        let rollback_expected = Some(relative_symlink_target(target, link_path));
+        let rollback_expected = Some(relative_symlink_target(src, dest));
         #[cfg(windows)]
-        let swap_result = windows_replace_exe(target, link_path).await;
+        let swap_result = windows_replace_exe(src, dest).await;
         #[cfg(windows)]
         let rollback_expected = None;
         #[cfg(not(any(unix, windows)))]
         let swap_result: Result<()> = {
             // No managed bin layout on this target; no-op.
-            let _ = (target, link_path);
+            let _ = (src, dest);
             Ok(())
         };
         #[cfg(not(any(unix, windows)))]
@@ -2593,10 +2616,10 @@ async fn swap_managed_entrypoint_links(
                 // Failed swap had no active state to restore; drop its backup.
                 rollback.cleanup().await;
                 // Drop backups for never-attempted later captures (Windows orphans).
-                for later in &captured[i + 1..] {
+                for later in captured.get(i + 1..).unwrap_or(&[]) {
                     later.cleanup().await;
                 }
-                return Err(e);
+                return Err(e).with_context(|| format!("replacing {}", dest.display()));
             }
         }
     }
@@ -2604,10 +2627,10 @@ async fn swap_managed_entrypoint_links(
     for cap in &captured {
         cap.cleanup().await;
     }
-    Ok(primary_link)
+    Ok(())
 }
 
-/// Snapshot of a managed-bin link's prior state for rollback in [`swap_managed_bin_links`].
+/// Snapshot of a managed-bin link's prior state for rollback in [`replace_managed_bins`].
 /// `Absent` vs `Present` is discriminated up front via `symlink_metadata` so capture errors never get misread as "link was absent".
 enum LinkRollback {
     /// Link was absent before the swap; rollback removes the one we created.
@@ -2905,107 +2928,6 @@ async fn sweep_old_exe_backups(old: &std::path::Path) {
     }
 }
 
-/// A process may still be running the old binary without having loaded all its pages yet. Deleting it on macOS causes
-/// SIGKILL because the kernel can no longer verify the code signature. Files must match `{bin_prefix}-{digit}*` to be
-/// considered versioned binaries (this avoids `grok-*` matching `grok-pager-*` or `grok-latest`).
-async fn cleanup_old_downloads(dir: &std::path::Path, bin_prefix: &str, current_version: &str) {
-    let prefix = format!("{}-", bin_prefix);
-    let current_semver = match Version::parse(current_version) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                "cleanup_old_downloads: invalid current version '{}': {}",
-                current_version,
-                e
-            );
-            return;
-        }
-    };
-
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(rd) => rd,
-        Err(e) => {
-            tracing::warn!(
-                "cleanup_old_downloads: failed to read {}: {}",
-                dir.display(),
-                e
-            );
-            return;
-        }
-    };
-
-    let mut versioned: Vec<(Version, String)> = Vec::new();
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with(&prefix) {
-            continue;
-        }
-        // Temp/partial files: sweep only STALE ones (a fresh `.tmp` may be a concurrent updater's in-flight download)
-        if name.contains(".tmp") {
-            let stale = match entry.metadata().await.and_then(|m| m.modified()) {
-                Ok(modified) => std::time::SystemTime::now()
-                    .duration_since(modified)
-                    .map(|age| age > STALE_TMP_AGE)
-                    // Future mtime (clock skew): can't tell; leave it
-                    .unwrap_or(false),
-                // Unknown mtime: leave it; it is swept once readable and old
-                Err(_) => false,
-            };
-            if stale && let Err(e) = tokio::fs::remove_file(entry.path()).await {
-                tracing::warn!("failed to remove stale temp file {}: {}", name, e);
-            }
-            continue;
-        }
-        // Skip symlinks (e.g. grok-latest).
-        if let Ok(ft) = entry.file_type().await
-            && ft.is_symlink()
-        {
-            continue;
-        }
-        // The suffix after the prefix must start with a digit to be a versioned binary (avoids `grok-latest`, `grok-pager-*` when prefix is `grok`)
-        let suffix = &name[prefix.len()..];
-        if !suffix.starts_with(|c: char| c.is_ascii_digit()) {
-            continue;
-        }
-        // Extract the version portion via the shared parser
-        // It handles the internal `grok-0.1.150-macos-aarch64`, pre-release, and npm `grok-0.1.150` layouts
-        let Some(ver_str) = crate::version::version_from_versioned_binary_name(&name, bin_prefix)
-        else {
-            continue;
-        };
-        if let Ok(v) = Version::parse(&ver_str) {
-            // Skip the current version — never delete it.
-            if v == current_semver {
-                continue;
-            }
-            versioned.push((v, name));
-        }
-    }
-
-    versioned.sort_by(|a, b| b.0.cmp(&a.0));
-
-    // Keep the most recent old version (the newest sorts first) and delete the rest
-    for (_, name) in versioned.iter().skip(1) {
-        let path = dir.join(name);
-        // Same freshness guard as the `.tmp` sweep: a versioned binary written moments ago is likely a concurrent installer's just-renamed download
-        // Its symlink swap hasn't happened yet; deleting the binary would leave that swap pointing at nothing
-        // Old binaries from previous releases are days old
-        let fresh = tokio::fs::metadata(&path)
-            .await
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
-            .is_some_and(|age| age <= STALE_TMP_AGE);
-        if fresh {
-            continue;
-        }
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            tracing::warn!("failed to remove old binary {}: {}", name, e);
-        }
-    }
-}
-
 fn installer_manages_bin_entrypoints(installer: &str) -> bool {
     if matches!(installer, "internal" | "gh-release") {
         return true;
@@ -3198,8 +3120,11 @@ async fn agent_exe_differs(
         if n == 0 {
             return Ok(false);
         }
-        ra.read_exact(&mut ba[..n]).await?;
-        if bg[..n] != ba[..n] {
+        let Some(dst) = ba.get_mut(..n) else {
+            return Ok(true);
+        };
+        ra.read_exact(dst).await?;
+        if bg.get(..n) != ba.get(..n) {
             return Ok(true);
         }
     }
@@ -3319,7 +3244,7 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
 
     eprintln!();
 
-    // Clean up old versioned binaries (keeps the current and one previous)
+    // Current, N-1, and any leftover a live process is still executing.
     cleanup_old_downloads(&download_dir, "grok", &version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
 
@@ -3797,6 +3722,9 @@ async fn refresh_deployment_config() {
         }
     }
 }
+
+#[path = "windows_payload.rs"]
+mod windows_payload;
 
 #[cfg(test)]
 #[path = "auto_update_tests.rs"]

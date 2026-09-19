@@ -2,6 +2,13 @@ use super::*;
 use std::fs;
 use tempfile::TempDir;
 
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+
 #[test]
 fn collects_top_level_files_with_flat_names() {
     let dir = TempDir::new().unwrap();
@@ -13,10 +20,10 @@ fn collects_top_level_files_with_flat_names() {
 
     files.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(files.len(), 2);
-    assert_eq!(files[0].name, "chat_history.jsonl");
-    assert_eq!(files[0].data, b"line1\nline2");
-    assert_eq!(files[1].name, "summary.json");
-    assert_eq!(files[1].data, b"{}");
+    assert_eq!(at(&files, 0).name, "chat_history.jsonl");
+    assert_eq!(at(&files, 0).data, b"line1\nline2");
+    assert_eq!(at(&files, 1).name, "summary.json");
+    assert_eq!(at(&files, 1).data, b"{}");
 }
 
 #[test]
@@ -33,10 +40,10 @@ fn collects_subdirectory_files_with_relative_paths() {
 
     files.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(files.len(), 3);
-    assert_eq!(files[0].name, "prompts/prompt_0.txt");
-    assert_eq!(files[0].data, b"long prompt content");
-    assert_eq!(files[1].name, "prompts/prompt_1.txt");
-    assert_eq!(files[2].name, "summary.json");
+    assert_eq!(at(&files, 0).name, "prompts/prompt_0.txt");
+    assert_eq!(at(&files, 0).data, b"long prompt content");
+    assert_eq!(at(&files, 1).name, "prompts/prompt_1.txt");
+    assert_eq!(at(&files, 2).name, "summary.json");
 }
 
 #[test]
@@ -52,8 +59,8 @@ fn collects_nested_subdirectories() {
 
     files.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(files.len(), 2);
-    assert_eq!(files[0].name, "a/b/deep.txt");
-    assert_eq!(files[1].name, "top.txt");
+    assert_eq!(at(&files, 0).name, "a/b/deep.txt");
+    assert_eq!(at(&files, 1).name, "top.txt");
 }
 
 #[test]
@@ -79,8 +86,8 @@ fn skips_feedback_draft_artifacts_at_every_depth() {
     collect_session_files_recursive(dir.path(), dir.path(), &mut files);
 
     assert_eq!(files.len(), 1);
-    assert_eq!(files[0].name, "nested/trace.jsonl");
-    assert_eq!(files[0].data, b"trace");
+    assert_eq!(at(&files, 0).name, "nested/trace.jsonl");
+    assert_eq!(at(&files, 0).data, b"trace");
 }
 
 #[test]
@@ -118,7 +125,7 @@ fn skips_feedback_draft_hardlink_under_another_name() {
     collect_session_files_recursive(dir.path(), dir.path(), &mut files);
 
     assert_eq!(files.len(), 1);
-    assert_eq!(files[0].name, "trace.jsonl");
+    assert_eq!(at(&files, 0).name, "trace.jsonl");
 }
 
 #[test]
@@ -152,5 +159,5 @@ fn skips_empty_subdirectories() {
     collect_session_files_recursive(dir.path(), dir.path(), &mut files);
 
     assert_eq!(files.len(), 1);
-    assert_eq!(files[0].name, "file.txt");
+    assert_eq!(at(&files, 0).name, "file.txt");
 }

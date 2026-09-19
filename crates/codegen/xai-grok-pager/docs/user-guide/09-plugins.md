@@ -1,5 +1,7 @@
 # Plugins
 
+[简体中文](zh-CN/09-plugins.md)
+
 A plugin bundles skills, slash commands, agents, hooks, and MCP servers into one installable unit. You get plugins from a marketplace, install the ones you want, and Grok loads what they add. To build and share your own, see [Create your own marketplace](#create-your-own-marketplace).
 
 ---

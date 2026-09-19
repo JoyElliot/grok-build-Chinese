@@ -852,7 +852,10 @@ mod tests {
         let runtime = manager.take_pending().unwrap().0;
         assert!(runtime.iter().all(|skill| skill.name != "plugin"));
         assert!(manager.conditional.held().is_empty());
-        assert_eq!("other", manager.slash_skills()[0].name);
+        assert_eq!(
+            manager.slash_skills().first().map(|s| s.name.as_str()),
+            Some("other")
+        );
     }
 
     #[test]
@@ -1026,7 +1029,10 @@ mod tests {
             "baseline change should produce system-reminder"
         );
         assert_eq!(r.runtime_skills.len(), 1);
-        assert_eq!(r.runtime_skills[0].name, "startup");
+        assert_eq!(
+            r.runtime_skills.first().map(|s| s.name.as_str()),
+            Some("startup")
+        );
     }
 
     #[test]
@@ -1182,7 +1188,7 @@ mod tests {
         // Slash skills are read from the manager directly, not from effects.
         let slash = tracker.slash_skills();
         assert_eq!(slash.len(), 1);
-        assert_eq!(slash[0].name, "new");
+        assert_eq!(slash.first().map(|s| s.name.as_str()), Some("new"));
     }
 
     fn drained(skills: Vec<SkillInfo>) -> SkillManager {
@@ -1423,7 +1429,10 @@ mod tests {
         tracker.add_discovered(vec![make_skill("new", "/new/SKILL.md")]);
         assert!(tracker.take_pending_reconciliation().is_some());
         assert_eq!(tracker.discovered_skills().len(), 1);
-        assert_eq!(tracker.discovered_skills()[0].name, "new");
+        assert_eq!(
+            tracker.discovered_skills().first().map(|s| s.name.as_str()),
+            Some("new")
+        );
     }
 
     // ── Architecture invariant tests ──────────────────────────────
@@ -1473,7 +1482,10 @@ mod tests {
         let _ = mgr.take_pending_reconciliation();
 
         assert_eq!(mgr.slash_skills().len(), 1);
-        assert_eq!(mgr.slash_skills()[0].name, "startup");
+        assert_eq!(
+            mgr.slash_skills().first().map(|s| s.name.as_str()),
+            Some("startup")
+        );
 
         mgr.add_discovered(vec![make_skill("dyn", "/d/SKILL.md")]);
         let _ = mgr.take_pending_reconciliation();
@@ -1500,7 +1512,7 @@ mod tests {
 
         let slash = mgr.slash_skills();
         assert_eq!(slash.len(), 1);
-        assert_eq!(slash[0].name, "startup");
+        assert_eq!(slash.first().map(|s| s.name.as_str()), Some("startup"));
     }
 
     #[test]

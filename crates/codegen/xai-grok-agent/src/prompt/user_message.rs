@@ -125,11 +125,11 @@ pub fn normalize_git_status(status: &str) -> Option<String> {
     while !status.is_char_boundary(end) {
         end -= 1;
     }
-    let mut truncated = &status[..end];
+    let mut truncated = status.get(..end).unwrap_or(status);
     if let Some(nl) = truncated.rfind('\n')
         && nl > 0
     {
-        truncated = &truncated[..nl];
+        truncated = truncated.get(..nl).unwrap_or(truncated);
     }
     Some(format!("{truncated}\n\n... (git status truncated)"))
 }
@@ -359,6 +359,10 @@ impl UserMessageContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Test-only lookup: `["k"]` would panic on a missing key, so index through a pointer path.
+    fn jp<'a>(v: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+        v.pointer(path).unwrap_or(&serde_json::Value::Null)
+    }
     #[test]
     fn template_override_deserialize_strings() {
         let v: UserMessageTemplate = serde_json::from_str(r#""default""#).unwrap();

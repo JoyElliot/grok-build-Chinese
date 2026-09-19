@@ -3,7 +3,10 @@ use std::path::Path;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
 use xai_acp_lib::{AcpAgentTx, acp_send};
-use super::actions::{PermissionModePersist, SubagentKillOutcome, TaskResult};
+use xai_grok_telemetry::events::ClipboardProbeDropReason;
+use super::actions::{
+    PermissionModePersist, ProbedAttachment, SubagentKillOutcome, TaskResult,
+};
 use super::agent::AgentId;
 use crate::unified_log as ulog;
 use xai_grok_shell::sampling::error::{
@@ -24,52 +27,85 @@ const SESSION_RPC_SLACK: std::time::Duration = std::time::Duration::from_secs(50
 pub(super) fn session_rpc_timeout() -> std::time::Duration {
     SESSION_RPC_FLOOR.max(xai_grok_workspace::envrc::loader_budget() + SESSION_RPC_SLACK)
 }
-/// `acp_send` bounded by [`session_rpc_timeout`]; on expiry, an error naming `action` instead of an eternal spinner.
+/// Why a bounded session RPC failed; `TimedOut` is observed at the deadline, not inferred later.
+#[derive(Debug)]
+pub(crate) enum SessionRpcError {
+    TimedOut { action: String, timeout: std::time::Duration },
+    Rpc(acp::Error),
+}
+impl SessionRpcError {
+    pub(crate) fn localized_message(&self, locale: &crate::locale::LocaleContext) -> String {
+        match self {
+            Self::Rpc(error) => error.to_string(),
+            Self::TimedOut { action, timeout } => {
+                let action = match action.as_str() {
+                    "Session creation" => locale.named_text("session.rpc.action.create", "Session creation"),
+                    "Session loading" => locale.named_text("session.rpc.action.load", "Session loading"),
+                    "Worktree session resume" => locale.named_text("session.rpc.action.resume", "Worktree session resume"),
+                    other => std::borrow::Cow::Borrowed(other),
+                };
+                localized_named(locale, "session.rpc.timed_out",
+                    "{action} timed out after {seconds}s. It may still finish in the background; retrying right away can run into the same delay.",
+                    &[("action", action.as_ref()), ("seconds", &timeout.as_secs().to_string())])
+            }
+        }
+    }
+
+    pub(crate) fn timed_out(&self) -> bool {
+        matches!(self, Self::TimedOut { .. })
+    }
+}
+impl std::fmt::Display for SessionRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut { action, timeout } => {
+                write!(
+                f,
+                "{action} timed out after {}s. It may still finish in the background; \
+                 retrying right away can run into the same delay.",
+                timeout.as_secs()
+            )
+            }
+            Self::Rpc(e) => write!(f, "{e}"),
+        }
+    }
+}
+impl std::error::Error for SessionRpcError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rpc(e) => Some(e),
+            Self::TimedOut { .. } => None,
+        }
+    }
+}
+/// `acp_send` bounded by [`session_rpc_timeout`], returning a typed [`SessionRpcError`] on expiry.
 pub(crate) async fn acp_send_bounded<R, T>(
     request: T,
     tx: &tokio::sync::mpsc::UnboundedSender<R>,
     action: &str,
-    locale: &crate::locale::LocaleContext,
-) -> Result<T::Response, acp::Error>
+) -> Result<T::Response, SessionRpcError>
 where
     T: xai_acp_lib::AcpRequest,
     R: From<xai_acp_lib::AcpArgs<T>> + std::fmt::Debug,
 {
     let timeout = session_rpc_timeout();
     match tokio::time::timeout(timeout, acp_send(request, tx)).await {
-        Ok(result) => result,
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(e)) => Err(SessionRpcError::Rpc(e)),
         Err(_elapsed) => {
-            let localized_action = match action {
-                "Session creation" => Some(("session.rpc_action.create", "Session creation")),
-                "Worktree session resume" => Some((
-                    "session.rpc_action.worktree_resume",
-                    "Worktree session resume",
-                )),
-                "Worktree session creation" => Some((
-                    "session.rpc_action.worktree_create",
-                    "Worktree session creation",
-                )),
-                "Session loading" => Some(("session.rpc_action.load", "Session loading")),
-                _ => None,
-            };
-            let action = localized_action
-                .map(|(id, english)| locale.named_text(id, english).into_owned())
-                .unwrap_or_else(|| action.to_string());
-            let seconds = timeout.as_secs().to_string();
-            Err(
-                acp::Error::new(
-                    acp::ErrorCode::InternalError.into(),
-                    localized_named(
-                        locale,
-                        "error.session_rpc_timeout",
-                        "{action} timed out after {seconds}s. It may still finish in the \
-                         background; retrying right away can run into the same delay.",
-                        &[("action", &action), ("seconds", &seconds)],
-                    ),
-                ),
-            )
+            Err(SessionRpcError::TimedOut {
+                action: action.to_owned(),
+                timeout,
+            })
         }
     }
+}
+/// Timeout message naming the step a create stalled on.
+pub(crate) fn timed_out_while(step: &str) -> String {
+    format!(
+        "Couldn't start the session: it timed out while {step}. It may still finish in the \
+         background, so give it a moment before trying again."
+    )
 }
 /// Typed progress message for session restore.
 /// Keeps the progress channel from accepting arbitrary `TaskResult` variants.
@@ -113,6 +149,113 @@ pub(super) const CTA_INSTALLED_DISMISS_MS: u64 = 4000;
 /// Upper bound on the off-thread clipboard-attachment probe.
 /// A wedged osascript read must not pin `paste_probe_in_flight` and silently stash every later send.
 pub(super) const CLIPBOARD_PROBE_TIMEOUT_SECS: u64 = 10;
+const _: () = assert!(
+    CLIPBOARD_PROBE_TIMEOUT_SECS > crate::clipboard::OSASCRIPT_WAIT.as_secs()
+);
+pub(super) type ClipboardProbeStage = Result<
+    (ProbedAttachment, Option<String>),
+    crate::clipboard::ProbeDrop,
+>;
+/// The blocking half of one probe: guarded pasteboard read, decode, session persist. Never runs on the render thread.
+pub(super) fn probe_clipboard_attachment_blocking(
+    change_count: Option<u64>,
+    probe_text: Option<String>,
+    probe_bracketed: bool,
+    images_dir: Option<std::path::PathBuf>,
+) -> ClipboardProbeStage {
+    let (image, file_urls) = crate::clipboard::guarded_pasteboard_read(
+        change_count,
+        crate::clipboard::clipboard_change_count,
+        || {
+            if probe_bracketed
+                && crate::terminal::terminal_context()
+                    .brand
+                    .delivers_ime_as_bracketed_paste()
+            {
+                match crate::clipboard::bracketed_payload_came_from_clipboard_result(
+                    probe_text.as_deref().unwrap_or(""),
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Err(ClipboardProbeDropReason::BracketedPayloadMismatch);
+                    }
+                    Err(_) => return Err(ClipboardProbeDropReason::ReadFailed),
+                }
+            }
+            crate::clipboard::system_clipboard_probe_attachments(probe_text.as_deref())
+        },
+    )?;
+    let Some(data) = image else {
+        return Ok((ProbedAttachment::NoRaster, file_urls));
+    };
+    let mut pasted = crate::prompt_images::from_clipboard_data(&data);
+    pasted.prepare_preview_blocking();
+    if let Some(dir) = images_dir
+        && let Err(error) = crate::prompt_images::persist_to_session(&mut pasted, &dir)
+    {
+        tracing::warn!(error = %error, "pasted image could not be persisted into the session");
+        return Err(crate::clipboard::ProbeDrop {
+            reason: ClipboardProbeDropReason::PersistFailed,
+            image: Some(data),
+            message: Some(error.to_string()),
+        });
+    }
+    Ok((ProbedAttachment::Image(pasted), file_urls))
+}
+/// The stage on the blocking pool under one deadline; `spawn_blocking` cannot be cancelled, so an expired deadline only stops waiting.
+pub(super) async fn clipboard_probe_stage(
+    deadline: std::time::Duration,
+    work: impl FnOnce() -> ClipboardProbeStage + Send + 'static,
+) -> ClipboardProbeStage {
+    let dropped = |reason| crate::clipboard::ProbeDrop {
+        reason,
+        image: None,
+        message: None,
+    };
+    match tokio::time::timeout(deadline, tokio::task::spawn_blocking(work)).await {
+        Ok(Ok(stage)) => stage,
+        Ok(Err(join_error)) => {
+            tracing::warn!(error = %join_error, "clipboard attachment probe task failed");
+            Err(dropped(ClipboardProbeDropReason::Panicked))
+        }
+        Err(_elapsed) => {
+            tracing::warn!("clipboard attachment probe timed out");
+            Err(dropped(ClipboardProbeDropReason::Timeout))
+        }
+    }
+}
+/// One deadline over the whole stage so a stall anywhere still completes and cannot strand a send parked behind
+/// `paste_probe_in_flight`. Drop telemetry is emitted after the deadline check so a late stage never reports twice.
+pub(super) async fn bounded_clipboard_probe(
+    deadline: std::time::Duration,
+    work: impl FnOnce() -> ClipboardProbeStage + Send + 'static,
+) -> (ProbedAttachment, Option<String>) {
+    let started = std::time::Instant::now();
+    match clipboard_probe_stage(deadline, work).await {
+        Ok(outcome) => outcome,
+        Err(dropped) => {
+            crate::clipboard::log_clipboard_probe_dropped(
+                dropped.reason,
+                dropped.image.as_ref(),
+                started,
+            );
+            let attachment = match dropped.reason {
+                ClipboardProbeDropReason::ReadFailed
+                | ClipboardProbeDropReason::Timeout
+                | ClipboardProbeDropReason::Panicked => ProbedAttachment::ProbeFailed,
+                ClipboardProbeDropReason::PersistFailed => {
+                    ProbedAttachment::PersistFailed(dropped.message.unwrap_or_default())
+                }
+                ClipboardProbeDropReason::PasteboardChangedBeforeRead
+                | ClipboardProbeDropReason::PasteboardChangedAfterRead
+                | ClipboardProbeDropReason::BracketedPayloadMismatch => {
+                    ProbedAttachment::ProbeDropped
+                }
+            };
+            (attachment, None)
+        }
+    }
+}
 /// Picker search debounce ([`Effect::DebounceSessionSearch`]): long enough to coalesce a typing burst, short enough to feel live.
 pub(super) const SESSION_SEARCH_DEBOUNCE_MS: u64 = 250;
 /// Run the `x.ai/mcp/list` read after a CTA install and map it into a `TaskResult::PluginCtaMcpsLoaded`.
@@ -262,11 +405,34 @@ pub(crate) fn compact_error(err: &acp::Error) -> CompactError {
     };
     CompactError { cancelled, message }
 }
+/// Send an `x.ai/memory/{flush,dream}` request and decode its typed response.
+pub(super) async fn memory_command_request<T: serde::de::DeserializeOwned>(
+    method: &'static str,
+    session_id: &acp::SessionId,
+    tx: &AcpAgentTx,
+) -> Result<T, String> {
+    let body = xai_grok_shell::extensions::memory::MemoryFlushRequest {
+        session_id: session_id.0.to_string(),
+    };
+    let req = acp::ExtRequest::new(
+        method,
+        serde_json::value::to_raw_value(&body)
+            .expect("serialize memory command params")
+            .into(),
+    );
+    match acp_send(req, tx).await {
+        Ok(resp) => {
+            serde_json::from_str::<T>(resp.0.get())
+                .map_err(|_| "Couldn't read the shell's reply.".to_string())
+        }
+        Err(e) => Err(sanitize_user_error(&e.to_string())),
+    }
+}
 /// Format a Duration for user-visible restore progress messages.
 pub(super) fn format_restore_elapsed(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs >= 60 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
+        crate::views::dock::fmt_elapsed(secs)
     } else {
         format!("{}.{:01}s", secs, d.subsec_millis() / 100)
     }
@@ -386,6 +552,7 @@ pub(crate) struct SessionFlags {
     /// as `restoreCode` in the `resume_session` ACP payload for worktrees.
     pub restore_code: Option<bool>,
     pub agent_override: Option<serde_json::Value>,
+    pub defer_builtin_agent_profile: bool,
     /// Always-approve for this session (`_meta.yoloMode`).
     pub yolo_mode: bool,
     /// Auto (classifier) permission mode (`_meta.autoMode`). Mutually exclusive
@@ -416,7 +583,7 @@ impl SessionFlags {
     /// Returns `None` for the default `grok-build` profile (no `_meta` needed; it already includes TaskTool).
     /// Chat mode never injects a Build profile (remote owns agent behavior).
     pub(super) fn agent_profile(&self) -> Option<&'static str> {
-        if self.chat_mode {
+        if self.chat_mode || self.defer_builtin_agent_profile {
             return None;
         }
         match (self.plan_mode, self.subagents, self.ask_user) {
@@ -669,10 +836,14 @@ pub(super) fn extract_first_user_prompt(
                     })
             })
             .or_else(|| content.and_then(|c| c.as_str()).map(String::from))?;
-        if let Some(start) = text.find("<user_query>") {
-            let after = &text[start + "<user_query>".len()..];
+        if let Some(start) = text.find("<user_query>")
+            && let Some(after) = text.get(start + "<user_query>".len()..)
+        {
             let end = after.find("</user_query>").unwrap_or(after.len());
-            let query = after[..end].trim();
+            let Some(query) = after.get(..end) else {
+                continue;
+            };
+            let query = query.trim();
             if !query.is_empty() && !query.starts_with('<') {
                 return Some(query.to_string());
             }
@@ -684,7 +855,9 @@ pub(super) fn extract_first_user_prompt(
 /// Synthetic user messages (auto-continue, doom-loop) are excluded.
 pub(super) fn count_chat_history_stats(history_path: &Path) -> (usize, usize) {
     use std::io::BufRead;
-    use xai_grok_shell::sampling::{AssistantItem, ConversationItem, UserItem};
+    use xai_grok_shell::sampling::{
+        AssistantItem, ConversationItem, SyntheticReason, UserItem,
+    };
     let mut turn_count = 0usize;
     let mut tool_call_count = 0usize;
     let Ok(file) = std::fs::File::open(history_path) else {
@@ -692,9 +865,11 @@ pub(super) fn count_chat_history_stats(history_path: &Path) -> (usize, usize) {
     };
     for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
         match serde_json::from_str::<ConversationItem>(&line) {
-            Ok(ConversationItem::User(UserItem { synthetic_reason: None, .. })) => {
-                turn_count += 1;
-            }
+            Ok(
+                ConversationItem::User(
+                    UserItem { synthetic_reason: SyntheticReason::Human, .. },
+                ),
+            ) => turn_count += 1,
             Ok(ConversationItem::Assistant(AssistantItem { ref tool_calls, .. })) => {
                 tool_call_count += tool_calls.len();
             }
@@ -811,8 +986,8 @@ pub(super) async fn send_authenticate(
         "use_oauth": use_oauth,
         "request_seq": request_seq,
     });
-    if force_interactive {
-        meta["force_interactive"] = serde_json::json!(true);
+    if force_interactive && let Some(obj) = meta.as_object_mut() {
+        obj.insert("force_interactive".into(), serde_json::json!(true));
     }
     let req = acp::AuthenticateRequest::new(method_id).meta(meta.as_object().cloned());
     match acp_send(req, tx).await {

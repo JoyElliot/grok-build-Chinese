@@ -54,8 +54,8 @@ pub(in crate::app) use prompt::{
 };
 pub(crate) use prompt_ack::reconcile_overdue_prompt_acks;
 pub(super) use queue::{
-    apply_turn_start_shim, arm_send_now_and_paint, maybe_drain_queue_and_note_peek,
-    note_peek_page_flip, shim_renders_own_user_block,
+    apply_turn_start_shim, arm_send_now_and_paint, flush_held_local_queue_into_wait,
+    maybe_drain_queue_and_note_peek, note_peek_page_flip, shim_renders_own_user_block,
 };
 pub(in crate::app) use rewind::{find_user_prompt_entry_for_shell_index, shell_prompt_index_at};
 pub(crate) use router::dispatch;

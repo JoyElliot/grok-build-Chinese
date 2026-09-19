@@ -14,6 +14,7 @@ use super::commands::{
 use super::handle::SessionHandle;
 use super::notifications::NotificationSender;
 use crate::agent::update_chunk_merge::{BufferingSettings, ReplayBuffer};
+use crate::extensions::memory::{MemoryDreamDisposition, MemoryDreamResponse};
 use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
 use crate::extensions::notification::{
     HookAnnotationKind, RetryState, SessionNotification as XaiSessionNotification,
@@ -146,6 +147,8 @@ use tool_calls::BridgeToolSuccess;
 mod mcp;
 #[path = "acp_session_impl/mcp_init.rs"]
 mod mcp_init;
+#[path = "acp_session_impl/parent_interject.rs"]
+mod parent_interject;
 #[path = "acp_session_impl/parent_message.rs"]
 mod parent_message;
 use mcp_init::*;
@@ -164,9 +167,11 @@ use super::memory_state;
 use super::telemetry;
 #[path = "acp_session_impl/prompt_build.rs"]
 mod prompt_build;
-#[cfg(test)]
-pub(crate) use prompt_build::LARGE_PROMPT_THRESHOLD;
 use prompt_build::*;
+#[path = "acp_session_impl/prompt_offload.rs"]
+mod prompt_offload;
+#[cfg(test)]
+pub(crate) use prompt_offload::LARGE_PROMPT_THRESHOLD;
 #[path = "acp_session_impl/session_mode.rs"]
 mod session_mode;
 use session_mode::*;
@@ -206,6 +211,16 @@ mod memory_dream;
 use memory_dream::*;
 #[path = "acp_session_impl/goal_support.rs"]
 mod goal_support;
+#[path = "acp_session_impl/memory_capture.rs"]
+mod memory_capture;
+#[path = "acp_session_impl/memory_carryover.rs"]
+mod memory_carryover;
+#[path = "acp_session_impl/memory_control.rs"]
+mod memory_control;
+#[path = "acp_session_impl/memory_forget.rs"]
+mod memory_forget;
+#[path = "acp_session_impl/v2_memory_dream.rs"]
+mod v2_memory_dream;
 pub(crate) use goal_support::*;
 #[path = "acp_session_impl/hook_dispatch.rs"]
 mod hook_dispatch;
@@ -220,16 +235,12 @@ use turn_end_hooks::TurnEnd;
 #[path = "acp_session_impl/stop_gate.rs"]
 mod stop_gate;
 pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
-#[path = "acp_session_impl/background_tasks.rs"]
-mod background_tasks;
 #[path = "acp_session_impl/context_snapshot.rs"]
 mod context_snapshot;
 #[path = "acp_session_impl/recap.rs"]
 mod recap;
 #[path = "acp_session_impl/rewind.rs"]
 mod rewind;
-#[path = "acp_session_impl/run_loop.rs"]
-mod run_loop;
 #[path = "acp_session_impl/session_setup.rs"]
 mod session_setup;
 #[path = "acp_session_impl/side_call.rs"]
@@ -247,6 +258,11 @@ mod updates;
 #[cfg(test)]
 #[path = "acp_session_impl/updates_tests.rs"]
 mod updates_tests;
+pub use recap::SIDE_QUESTION_INSTRUCTION;
+#[path = "acp_session_impl/background_tasks.rs"]
+mod background_tasks;
+#[path = "acp_session_impl/run_loop.rs"]
+mod run_loop;
 use run_loop::*;
 #[path = "acp_session_impl/spawn.rs"]
 mod spawn;
@@ -318,6 +334,12 @@ pub(super) const GOAL_CONTINUATION_DIRECTIVE_TEMPLATE: &str =
     include_str!("templates/goal_continuation_directive.md");
 pub(super) const GOAL_CONTINUATION_DIRECTIVE_TEMPLATE_LEGACY: &str =
     include_str!("templates/goal_continuation_directive_legacy.md");
+/// Compact can run mid-turn (`run_compact_only` / CompactAndResubmit); those
+/// callers must not inherit TurnEnd drain, `rounds_since_verify++`, or budget stop.
+enum GoalContinuationPurpose {
+    TurnEnd,
+    Compaction,
+}
 /// Built continuation directive plus the optional premature-stop pattern that the caller emits when it actually continues.
 /// Produced by [`SessionActor::prepare_goal_continuation`].
 struct GoalContinuationPlan {
@@ -1243,9 +1265,13 @@ impl SessionActor {
         use xai_grok_tools::implementations::memory::{
             MEMORY_GET_TOOL_NAME, MEMORY_SEARCH_TOOL_NAME,
         };
-        let memory_read_registered = tool_names
-            .iter()
-            .any(|n| n == MEMORY_SEARCH_TOOL_NAME || n == MEMORY_GET_TOOL_NAME);
+        let can_read_memory = self
+            .memory
+            .mode()
+            .is_some_and(crate::config::MemoryMode::is_v2)
+            || tool_names
+                .iter()
+                .any(|n| n == MEMORY_SEARCH_TOOL_NAME || n == MEMORY_GET_TOOL_NAME);
         let goal = if self.goal_runs_on_workflow_engine() {
             self.goal_enabled
         } else {
@@ -1253,9 +1279,10 @@ impl SessionActor {
         };
         slash_commands::CommandAvailability {
             feedback: self.feedback_manager.is_enabled(),
-            memory: self.memory.is_enabled() && memory_read_registered,
-            memory_configured: self.memory.backend_params.is_some()
-                || self.memory.configured_storage.is_some(),
+            memory: self.memory.is_enabled() && can_read_memory,
+            memory_configured: !self.memory.process_disabled
+                && (self.memory.backend_params.is_some()
+                    || self.memory.configured_storage.is_some()),
             scheduler: tool_names.iter().any(|n| {
                 n == xai_grok_tools::implementations::grok_build::SCHEDULER_CREATE_TOOL_NAME
             }),
@@ -1452,6 +1479,9 @@ mod client_hooks_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/managed_hooks_tests.rs"]
 mod managed_hooks_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/model_switch_label_tests.rs"]
+mod model_switch_label_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/replace_system_prompt_tests.rs"]
 mod replace_system_prompt_tests;
@@ -1782,13 +1812,25 @@ mod tool_meta_stamp_tests {
                 }
                 let early = early.expect("early ToolCall emitted");
                 let t = tool_meta(early.as_ref()).expect("early ToolCall carries x.ai/tool");
-                assert_eq!(t["name"], "read_file");
-                assert_eq!(t["kind"], "read");
-                assert_eq!(t["namespace"], "grok_build");
+                assert_eq!(
+                    t.pointer("/name").unwrap_or(&serde_json::Value::Null),
+                    "read_file"
+                );
+                assert_eq!(
+                    t.pointer("/kind").unwrap_or(&serde_json::Value::Null),
+                    "read"
+                );
+                assert_eq!(
+                    t.pointer("/namespace").unwrap_or(&serde_json::Value::Null),
+                    "grok_build"
+                );
                 assert!(t.get("input").is_none(), "identity-only before parse");
                 let refined = refined.expect("refinement ToolCallUpdate emitted");
                 let t = tool_meta(refined.as_ref()).expect("refinement carries x.ai/tool");
-                assert_eq!(t["input"]["path"], "/tmp/stamp.txt");
+                assert_eq!(
+                    t.pointer("/input/path").unwrap_or(&serde_json::Value::Null),
+                    "/tmp/stamp.txt"
+                );
             })
             .await;
     }
@@ -1851,9 +1893,18 @@ mod tool_meta_stamp_tests {
                     .expect("permission request must have been issued");
                 let t = tool_meta(update.meta.as_ref())
                     .expect("permission-request ToolCallUpdate carries x.ai/tool");
-                assert_eq!(t["name"], "read_file");
-                assert_eq!(t["kind"], "read");
-                assert_eq!(t["input"]["path"], "/tmp/stamp.txt");
+                assert_eq!(
+                    t.pointer("/name").unwrap_or(&serde_json::Value::Null),
+                    "read_file"
+                );
+                assert_eq!(
+                    t.pointer("/kind").unwrap_or(&serde_json::Value::Null),
+                    "read"
+                );
+                assert_eq!(
+                    t.pointer("/input/path").unwrap_or(&serde_json::Value::Null),
+                    "/tmp/stamp.txt"
+                );
             })
             .await;
     }
@@ -1963,11 +2014,17 @@ mod prompt_context_persistence_tests;
 #[path = "acp_session_tests/turn/rate_limit_backoff_tests.rs"]
 mod rate_limit_backoff_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/turn/sampling_trace_tests.rs"]
+mod sampling_trace_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/session_thread_tests.rs"]
 mod session_thread_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/status_line_payload_tests.rs"]
 mod status_line_payload_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/tool_definitions_artifact_tests.rs"]
+mod tool_definitions_artifact_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/tool_layer_images_bridge_tests.rs"]
 mod tool_layer_images_bridge_tests;
@@ -2186,6 +2243,9 @@ mod managed_gateway_tool_tests {
         assert!(!names.contains("slack__search"));
     }
 }
+#[cfg(test)]
+#[path = "acp_session_tests/goal/goal_compaction_reseed_tests.rs"]
+mod goal_compaction_reseed_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/goal/goal_planner_e2e_tests.rs"]
 mod goal_planner_e2e_tests;

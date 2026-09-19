@@ -43,9 +43,12 @@ struct SignedSettingsCache {
 struct CachedSettings(crate::util::config::RemoteSettings);
 
 impl CachedSettings {
+    /// Fields only a live fetch may set: a disarm must not outlive the fetch that
+    /// sent it, and a proxy may have stopped decoding since the cache was written.
     fn into_settings(self) -> crate::util::config::RemoteSettings {
         let mut settings = self.0;
         settings.managed_config_signature_verification = None;
+        settings.accept_request_encodings.clear();
         settings
     }
 }
@@ -545,11 +548,16 @@ mod settings_cache_tests {
         );
     }
 
+    /// Fields that only a live fetch may set: a cache hit must re-arm signature
+    /// verification and must not arm request compression toward a proxy that
+    /// may have stopped decoding since the cache was written.
     #[test]
-    fn load_rearms_signature_verification_even_from_a_valid_cache() {
+    fn load_drops_live_only_fields_even_from_a_valid_cache() {
         let (dir, manager) = temp_manager(SETTINGS_CACHE_TTL);
         let mut cache = cache_file(Utc::now());
         cache.settings.managed_config_signature_verification = Some(false);
+        cache.settings.accept_request_encodings =
+            vec![xai_grok_config_types::RemoteRequestEncoding::Zstd];
         std::fs::write(
             dir.path().join(SETTINGS_CACHE_FILE),
             signed_cache_bytes(&cache),
@@ -557,6 +565,7 @@ mod settings_cache_tests {
         .unwrap();
         let loaded = manager.load_fresh("id", ORIGIN).unwrap().into_settings();
         assert_eq!(loaded.managed_config_signature_verification, None);
+        assert!(loaded.accept_request_encodings.is_empty());
     }
 
     #[test]

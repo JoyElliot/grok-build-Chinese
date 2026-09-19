@@ -16,6 +16,7 @@ use xai_grok_pager::minimal_api;
 use xai_grok_pager::render::Renderable;
 use xai_grok_pager::scrollback::state::ScrollbackState;
 use xai_grok_pager::scrollback::wrappers::EntryRenderer;
+use xai_grok_pager::terminal::TerminalContext;
 use xai_grok_pager::theme::Theme;
 use xai_grok_pager::views::prompt_widget::{PromptBg, PromptStyle};
 use xai_grok_pager::views::turn_status;
@@ -78,7 +79,7 @@ pub(super) fn prompt_style(
     }
 }
 /// Draw the pinned live region (tail + status + prompt) into the inline viewport.
-pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal) {
+pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &TerminalContext) {
     let locale = app.locale.clone();
     let force_todos = minimal_api::minimal_show_todos(app);
     let auth_hint = crate::auth::minimal_auth_hint(
@@ -122,7 +123,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal) {
     {
         clear_btw_geometry(agent);
     }
-    xai_grok_pager::render::draw::draw_frame(terminal, cursor, |frame, _link_spans| {
+    xai_grok_pager::render::draw::draw_frame(terminal, cursor, ctx, |frame, _link_spans| {
         let area = frame.area();
         if area.height == 0 || area.width < 4 {
             return (None, None);
@@ -145,6 +146,16 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal) {
         if super::overlay::app_modal_active(agent) {
             super::overlay::render_app_modal(frame.buffer_mut(), area, agent, compact, &locale);
             return (None, None);
+        }
+        if let Some(modal) = minimal_api::feedback_modal_mut(agent) {
+            return super::feedback::render(
+                frame.buffer_mut(),
+                area,
+                modal,
+                &theme,
+                compact,
+                Some(&locale),
+            );
         }
         if minimal_api::extensions_modal(agent).is_some() {
             let tick = (now_millis() / 100) as u64;
@@ -393,7 +404,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal) {
                 row_inset,
             );
             if let Some(hint) = &pending_hint {
-                render_exit_hint(frame.buffer_mut(), info_area, &theme, hint);
+                render_warning_hint(frame.buffer_mut(), info_area, &theme, hint);
             } else {
                 render_prompt_info(
                     frame.buffer_mut(),
@@ -558,7 +569,7 @@ fn render_minimal_status(
     if !turn_status::should_show(
         &agent.session.state,
         drain_blocked,
-        minimal_api::mcp_init_progress(agent),
+        minimal_api::session_starting_since(agent),
         watchers,
         parked,
     ) {
@@ -585,7 +596,7 @@ fn render_minimal_status(
             buttons: None,
             has_running_execute: false,
             total_tokens: agent.context_state.as_ref().map(|c| c.used),
-            mcp_init_progress: minimal_api::mcp_init_progress(agent),
+            session_starting_since: minimal_api::session_starting_since(agent),
             is_bash_turn: agent.bash_turn,
             is_pending_user_input,
             goal_verifying,
@@ -773,8 +784,8 @@ fn minimal_pending_hint(
             .unwrap_or_else(|| format!("press {shortcut} again to {label}")),
     )
 }
-/// Render the one-line double-press confirmation hint under the prompt, in the warning color so it stands out from the model/context info row.
-fn render_exit_hint(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &str) {
+/// One-row warning-color hint (double-press confirmation, too-small feedback band).
+pub(super) fn render_warning_hint(buf: &mut Buffer, area: Rect, theme: &Theme, hint: &str) {
     let style = Style::default().fg(theme.warning).bg(Color::Reset);
     buf.set_style(area, style);
     buf.set_span(

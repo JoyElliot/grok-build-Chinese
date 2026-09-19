@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use super::SessionActor;
 use super::support::create_test_actor;
 
 use crate::extensions::notification::{
@@ -92,13 +95,8 @@ fn write_compacted_session_fixture(session_dir: &std::path::Path, ckpt_id: &str)
     std::fs::write(session_dir.join("updates.jsonl"), content).unwrap();
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn rewind_pre_compaction_with_cancelled_turns_truncates_context_gb2961() {
-    let local = tokio::task::LocalSet::new();
-    local.run_until(run_rewind_scenario()).await;
-}
-
-async fn run_rewind_scenario() {
+/// Actor over the `ckpt5` fixture, live at prompt 7 with the compaction marker set.
+async fn actor_with_compacted_fixture(tag: &str) -> (SessionActor, PathBuf) {
     let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
     let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
@@ -107,7 +105,7 @@ async fn run_rewind_scenario() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    actor.session_info.id = acp::SessionId::new(format!("rw-e2e-{unique}"));
+    actor.session_info.id = acp::SessionId::new(format!("rw-{tag}-{unique}"));
 
     let session_dir = crate::session::persistence::session_dir(&actor.session_info);
     write_compacted_session_fixture(&session_dir, "ckpt5");
@@ -130,6 +128,18 @@ async fn run_rewind_scenario() {
     snap.last_compaction_prompt_index = Some(5);
     actor.chat_state_handle.restore_snapshot(snap);
 
+    (actor, session_dir)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_pre_compaction_with_cancelled_turns_truncates_context_gb2961() {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(run_rewind_scenario()).await;
+}
+
+async fn run_rewind_scenario() {
+    let (actor, session_dir) = actor_with_compacted_fixture("e2e").await;
+
     let resp = actor
         .handle_rewind(RewindRequest {
             target_prompt_index: 3,
@@ -141,7 +151,7 @@ async fn run_rewind_scenario() {
     assert!(resp.success, "rewind should succeed: {resp:?}");
 
     let conv = actor.chat_state_handle.get_conversation().await;
-    let texts: Vec<String> = conv.iter().map(|c| c.text_content()).collect();
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
 
     let _ = std::fs::remove_dir_all(&session_dir);
 
@@ -277,37 +287,7 @@ async fn rewind_before_compaction_clears_stale_compaction_marker() {
 
 async fn run_clears_marker_scenario() {
     use xai_grok_sampling_types::CompactionsRemaining;
-    let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
-
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    actor.session_info.id = acp::SessionId::new(format!("rw-marker-{unique}"));
-
-    let session_dir = crate::session::persistence::session_dir(&actor.session_info);
-    write_compacted_session_fixture(&session_dir, "ckptm");
-
-    let mut snap = actor
-        .chat_state_handle
-        .snapshot()
-        .await
-        .expect("snapshot available");
-    snap.conversation = vec![
-        ConversationItem::system("SYS"),
-        ConversationItem::user("UI1"),
-        ConversationItem::user("SUMMARY"),
-        ConversationItem::user("P5"),
-        ConversationItem::assistant("R5"),
-        ConversationItem::user("P6"),
-    ];
-    snap.prompt_index = 7;
-    snap.prompt_texts = (0..7).map(|i| format!("P{i}")).collect();
-    // The session believes it holds a compaction summary from prompt 5.
-    snap.last_compaction_prompt_index = Some(5);
-    actor.chat_state_handle.restore_snapshot(snap);
+    let (actor, session_dir) = actor_with_compacted_fixture("marker").await;
 
     // Rewind to prompt 3, before the compaction point (5), so the summary is dropped from the rebuilt conversation and the marker must be cleared
     let resp = actor
@@ -350,9 +330,85 @@ async fn run_clears_marker_scenario() {
     );
 }
 
-/// Forking a session must carry the `compaction_checkpoints/{uuid}.json` files along with the copied checkpoint records.
-/// Replay requires each referenced file, so without the copy every rewind in the forked session fails with "compaction checkpoint file missing".
-/// The test drives the production `fork_session` path, so it covers the real file-copy step.
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_before_missing_checkpoint_falls_back_to_current_user_info() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_before_missing_checkpoint_scenario())
+        .await;
+}
+
+async fn run_before_missing_checkpoint_scenario() {
+    let (actor, session_dir) = actor_with_compacted_fixture("missing-pre").await;
+    std::fs::remove_file(session_dir.join("compaction_checkpoints/ckpt5.json")).unwrap();
+
+    let resp = actor
+        .handle_rewind(RewindRequest {
+            target_prompt_index: 3,
+            force: true,
+            mode: RewindMode::ConversationOnly,
+        })
+        .await
+        .expect("handle_rewind ok");
+
+    let conv = actor.chat_state_handle.get_conversation().await;
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
+    let marker = actor
+        .chat_state_handle
+        .get_last_compaction_prompt_index()
+        .await;
+    let prompt_index = actor.chat_state_handle.get_prompt_index().await;
+
+    let _ = std::fs::remove_dir_all(&session_dir);
+
+    assert!(resp.success, "rewind should succeed: {resp:?}");
+    assert_eq!(vec!["SYS", "UI1", "P0", "P1", "P2"], texts);
+    assert_eq!(None, marker);
+    assert_eq!(3, prompt_index);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_after_missing_checkpoint_reports_dependent_range() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_after_missing_checkpoint_scenario())
+        .await;
+}
+
+async fn run_after_missing_checkpoint_scenario() {
+    let (actor, session_dir) = actor_with_compacted_fixture("missing-post").await;
+    std::fs::remove_file(session_dir.join("compaction_checkpoints/ckpt5.json")).unwrap();
+
+    let resp = actor
+        .handle_rewind(RewindRequest {
+            target_prompt_index: 6,
+            force: true,
+            mode: RewindMode::ConversationOnly,
+        })
+        .await
+        .expect("handle_rewind returns Ok(success=false)");
+
+    let conv = actor.chat_state_handle.get_conversation().await;
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
+    let prompt_index = actor.chat_state_handle.get_prompt_index().await;
+
+    let _ = std::fs::remove_dir_all(&session_dir);
+
+    assert!(!resp.success, "rewind must be rejected: {resp:?}");
+    assert_eq!(
+        Some(
+            "Cannot rewind to prompt #6: checkpoint for prompts #5 onward is missing. \
+             Pick a prompt before #5 or at or after the next compaction. \
+             (compaction_checkpoints/ckpt5.json)"
+                .to_owned()
+        ),
+        resp.error
+    );
+    assert_eq!(vec!["SYS", "UI1", "SUMMARY", "P5", "R5", "P6"], texts);
+    assert_eq!(7, prompt_index);
+}
+
+/// Forking must copy the base checkpoint file along with its record; the test drives the production `fork_session` path.
 #[tokio::test(flavor = "current_thread")]
 async fn rewind_succeeds_in_forked_session_with_compaction_checkpoint() {
     let local = tokio::task::LocalSet::new();

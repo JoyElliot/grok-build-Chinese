@@ -6,6 +6,8 @@
 //! [`ConversationItem`]) — but headers, sections, detail levels, and INDEX
 //! columns match.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -144,7 +146,7 @@ pub fn classify_compaction_path(path: &str) -> Option<CompactionArtifact> {
 /// the Python `text[:n]`). Char boundaries are respected so we never panic.
 fn truncate_chars(s: &str, max: usize, marker: &str) -> String {
     match s.char_indices().nth(max) {
-        Some((byte_idx, _)) => format!("{}{marker}", &s[..byte_idx]),
+        Some((byte_idx, _)) => format!("{}{marker}", s.get(..byte_idx).unwrap_or(s)),
         None => s.to_string(),
     }
 }
@@ -296,7 +298,11 @@ fn render_stats_block(stats: &TurnStats) -> String {
     } else if uf.len() <= 8 {
         uf.join(", ")
     } else {
-        format!("{}, ... and {} more", uf[..5].join(", "), uf.len() - 5)
+        format!(
+            "{}, ... and {} more",
+            uf.get(..5).unwrap_or(uf).join(", "),
+            uf.len() - 5
+        )
     };
     let _ = writeln!(out, "- Unique target files ({}): {uf_str}", uf.len());
     let _ = writeln!(out, "- Tool errors: {}", stats.tool_error_count);
@@ -580,7 +586,7 @@ pub fn extract_keywords(summary: &str) -> Vec<String> {
                 .find_at(summary, m.end())
                 .map(|h| h.start())
                 .unwrap_or(summary.len());
-            &summary[m.start()..end]
+            summary.get(m.start()..end).unwrap_or(summary)
         }
         None => summary,
     };

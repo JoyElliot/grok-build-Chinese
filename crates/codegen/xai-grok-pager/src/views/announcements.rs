@@ -788,7 +788,10 @@ mod tests {
             "expired first critical must yield to the next live one"
         );
 
-        let only_expired = vec![list[0].clone()];
+        let Some(first) = list.first() else {
+            panic!("expected a critical announcement: {list:?}");
+        };
+        let only_expired = vec![first.clone()];
         assert!(
             first_critical_session_announcement_at(&only_expired, &no_hidden(), expiry).is_none(),
             "all-expired list must close the banner slot"

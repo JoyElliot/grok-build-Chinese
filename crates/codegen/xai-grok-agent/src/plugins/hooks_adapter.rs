@@ -166,6 +166,11 @@ fn prefilter_unsupported_events(json_content: &str) -> (String, Vec<String>) {
 mod tests {
     use super::*;
 
+    /// Test-only lookup: `["k"]` would panic on a missing key, so index through a pointer path.
+    fn jp<'a>(v: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+        v.pointer(path).unwrap_or(&serde_json::Value::Null)
+    }
+
     #[test]
     fn prefilter_removes_unsupported_events() {
         let json = r#"{
@@ -184,7 +189,7 @@ mod tests {
         assert!(skipped.contains(&"UnknownHook".to_string()));
 
         let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
-        let hooks = parsed["hooks"].as_object().unwrap();
+        let hooks = jp(&parsed, "/hooks").as_object().unwrap();
         assert!(hooks.contains_key("SessionStart"));
         assert!(hooks.contains_key("PostToolUse"));
         assert!(!hooks.contains_key("CustomEvent"));
@@ -271,18 +276,21 @@ mod tests {
 
         // One spec from SessionStart; FutureEvent was filtered
         assert_eq!(specs.len(), 1);
-        assert!(specs[0].name.starts_with("plugin/my-plugin/"));
+        let Some(spec) = specs.first() else {
+            panic!("expected one spec: {specs:?}");
+        };
+        assert!(spec.name.starts_with("plugin/my-plugin/"));
         assert_eq!(
-            specs[0].extra_env.get("GROK_PLUGIN_ROOT").unwrap(),
-            "/path/to/plugin"
+            spec.extra_env.get("GROK_PLUGIN_ROOT").map(String::as_str),
+            Some("/path/to/plugin")
         );
         assert_eq!(
-            specs[0].extra_env.get("CLAUDE_PLUGIN_ROOT").unwrap(),
-            "/path/to/plugin"
+            spec.extra_env.get("CLAUDE_PLUGIN_ROOT").map(String::as_str),
+            Some("/path/to/plugin")
         );
         assert_eq!(
-            specs[0].extra_env.get("GROK_PLUGIN_DATA").unwrap(),
-            "/path/to/data"
+            spec.extra_env.get("GROK_PLUGIN_DATA").map(String::as_str),
+            Some("/path/to/data")
         );
 
         assert!(warnings.iter().any(|w| w.contains("FutureEvent")));
@@ -310,10 +318,13 @@ mod tests {
         );
 
         assert_eq!(specs.len(), 1);
-        assert!(specs[0].name.starts_with("plugin/inline-plugin/"));
+        let Some(spec) = specs.first() else {
+            panic!("expected one spec: {specs:?}");
+        };
+        assert!(spec.name.starts_with("plugin/inline-plugin/"));
         assert_eq!(
-            specs[0].extra_env.get("GROK_PLUGIN_ROOT").unwrap(),
-            "/path/to/plugin"
+            spec.extra_env.get("GROK_PLUGIN_ROOT").map(String::as_str),
+            Some("/path/to/plugin")
         );
         assert!(warnings.is_empty());
     }
@@ -429,12 +440,11 @@ mod tests {
 
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(specs.len(), 1);
-        let cmd = specs[0]
-            .command
-            .as_ref()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let cmd = specs
+            .first()
+            .and_then(|s| s.command.as_ref())
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|| panic!("expected command on first spec: {specs:?}"));
         assert_eq!(cmd, "/the/plugin/root/x.sh");
         assert!(
             !cmd.contains('$'),
@@ -476,8 +486,11 @@ mod tests {
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(specs.len(), 1);
 
+        let Some(spec) = specs.first() else {
+            panic!("expected one spec: {specs:?}");
+        };
         assert_eq!(
-            specs[0].extra_env.get("FOO").map(String::as_str),
+            spec.extra_env.get("FOO").map(String::as_str),
             Some("bar"),
             "user-declared env keys must survive plugin merge"
         );
@@ -490,7 +503,7 @@ mod tests {
             ("GROK_PLUGIN_DATA", "/actual/plugin/data"),
         ] {
             assert_eq!(
-                specs[0].extra_env.get(key).map(String::as_str),
+                spec.extra_env.get(key).map(String::as_str),
                 Some(expected),
                 "plugin-injected key {key} must override user-declared value"
             );

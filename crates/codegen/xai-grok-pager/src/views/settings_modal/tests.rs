@@ -623,7 +623,7 @@ fn rebuild_rows_drops_voice_settings_when_gate_turns_off() {
 }
 
 #[test]
-fn setting_row_visible_hides_theme_rows_in_minimal() {
+fn setting_row_visible_hides_theme_rows_when_hide_appearance() {
     let reg = SettingsRegistry::defaults();
     for key in [
         "theme",
@@ -635,11 +635,11 @@ fn setting_row_visible_hides_theme_rows_in_minimal() {
         assert!(meta.hidden_in_minimal, "{key} must declare the flag");
         assert!(
             !setting_row_visible(meta, true, true, true),
-            "{key} in minimal"
+            "{key} when hide_appearance"
         );
         assert!(
             setting_row_visible(meta, true, false, true),
-            "{key} in full TUI"
+            "{key} when appearance rows stay visible"
         );
     }
     assert!(setting_row_visible(
@@ -648,6 +648,41 @@ fn setting_row_visible_hides_theme_rows_in_minimal() {
         true,
         true
     ));
+}
+
+#[test]
+fn new_with_row_visibility_controls_theme_row() {
+    let registry = Arc::new(SettingsRegistry::defaults());
+    let shown = SettingsModalState::new_with_row_visibility(
+        Arc::clone(&registry),
+        UiConfig::default(),
+        PagerLocalSnapshot::default(),
+        RowVisibility {
+            hide_appearance: false,
+        },
+    );
+    let hidden = SettingsModalState::new_with_row_visibility(
+        registry,
+        UiConfig::default(),
+        PagerLocalSnapshot::default(),
+        RowVisibility {
+            hide_appearance: true,
+        },
+    );
+    assert!(
+        shown
+            .rows
+            .iter()
+            .any(|r| matches!(r, RowEntry::Setting { key: "theme", .. })),
+        "hide_appearance false must list theme"
+    );
+    assert!(
+        !hidden
+            .rows
+            .iter()
+            .any(|r| matches!(r, RowEntry::Setting { key: "theme", .. })),
+        "hide_appearance true must hide theme"
+    );
 }
 
 /// `action_for_bool` mirrors `current_value_for`: every registered Bool setting must have an arm here too.
@@ -868,10 +903,10 @@ fn render_setting_row_selected_is_reversed_on_terminal_theme() {
     );
     for x in [0u16, 4, 40, 79] {
         assert!(
-            buf[(x, 0)]
+            buf.cell((x, 0)).is_some_and(|c| c
                 .style()
                 .add_modifier
-                .contains(ratatui::style::Modifier::REVERSED),
+                .contains(ratatui::style::Modifier::REVERSED)),
             "cell {x} must be reversed"
         );
     }
@@ -892,13 +927,16 @@ fn render_setting_row_selected_is_reversed_on_terminal_theme() {
         None,
     );
     assert!(
-        !buf[(4, 0)]
+        buf.cell((4, 0)).is_some_and(|c| !c
             .style()
             .add_modifier
-            .contains(ratatui::style::Modifier::REVERSED),
+            .contains(ratatui::style::Modifier::REVERSED)),
         "RGB keeps the unreversed band"
     );
-    assert_eq!(buf[(4, 0)].style().bg, Some(theme.bg_visual));
+    assert_eq!(
+        buf.cell((4, 0)).map(|c| c.style().bg),
+        Some(Some(theme.bg_visual))
+    );
 }
 
 /// At an 80-col area a 42-col label fits on one line, so the full label renders without an ellipsis.
@@ -1075,7 +1113,10 @@ fn rows_contain_categories_and_settings_through_pr_14() {
 #[test]
 fn initial_selection_skips_header() {
     let s = make_state();
-    match &s.rows[s.selected] {
+    let Some(row) = s.rows.get(s.selected) else {
+        panic!("selected row {} missing", s.selected);
+    };
+    match row {
         RowEntry::Setting { key, .. } => assert_eq!(*key, "compact_mode"),
         RowEntry::Header { .. } => panic!("selection landed on a header"),
     }
@@ -1107,7 +1148,10 @@ fn j_advances_past_setting_rows() {
             handle_settings_key(&mut s, &key1),
             SettingsKeyOutcome::Changed
         ));
-        match &s.rows[s.selected] {
+        let Some(row) = s.rows.get(s.selected) else {
+            panic!("selected row {} missing", s.selected);
+        };
+        match row {
             RowEntry::Setting { key, .. } => assert_eq!(*key, *expected),
             _ => panic!("expected setting row after j"),
         }
@@ -1258,14 +1302,20 @@ fn mouse_click_on_bool_row_dispatches_toggle() {
     };
     s.row_rects.resize(s.rows.len(), Rect::default());
     // Row 0 is the Appearance header.
-    s.row_rects[0] = Rect {
+    let Some(slot) = s.row_rects.get_mut(0) else {
+        panic!("row_rects[0] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 0,
         width: 80,
         height: 1,
     };
     // Row 1 is compact_mode.
-    s.row_rects[1] = Rect {
+    let Some(slot) = s.row_rects.get_mut(1) else {
+        panic!("row_rects[1] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 1,
         width: 80,
@@ -1294,7 +1344,10 @@ fn mouse_click_on_header_is_no_op() {
         height: 10,
     };
     s.row_rects.resize(s.rows.len(), Rect::default());
-    s.row_rects[0] = Rect {
+    let Some(slot) = s.row_rects.get_mut(0) else {
+        panic!("row_rects[0] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 0,
         width: 80,
@@ -1309,8 +1362,6 @@ fn mouse_click_on_header_is_no_op() {
     );
     assert!(matches!(outcome, SettingsKeyOutcome::Unchanged));
 }
-
-// ---------- mouse hover highlight ----------
 
 #[test]
 fn selected_browse_row_label_is_bold() {
@@ -1379,13 +1430,19 @@ fn mouse_moved_over_row_sets_hover_row() {
     };
     s.row_rects.resize(s.rows.len(), Rect::default());
     // Row 0 is a header (Appearance); row 1 is the first setting (compact_mode). Place row 1 at y=1 so the hover-row position math is unambiguous.
-    s.row_rects[0] = Rect {
+    let Some(slot) = s.row_rects.get_mut(0) else {
+        panic!("row_rects[0] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 0,
         width: 80,
         height: 1,
     };
-    s.row_rects[1] = Rect {
+    let Some(slot) = s.row_rects.get_mut(1) else {
+        panic!("row_rects[1] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 1,
         width: 80,
@@ -1425,7 +1482,10 @@ fn mouse_moved_outside_modal_clears_hover() {
         height: 10,
     };
     s.row_rects.resize(s.rows.len(), Rect::default());
-    s.row_rects[1] = Rect {
+    let Some(slot) = s.row_rects.get_mut(1) else {
+        panic!("row_rects[1] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 1,
         width: 80,
@@ -1456,7 +1516,10 @@ fn mouse_moved_over_header_does_not_set_hover() {
         height: 10,
     };
     s.row_rects.resize(s.rows.len(), Rect::default());
-    s.row_rects[0] = Rect {
+    let Some(slot) = s.row_rects.get_mut(0) else {
+        panic!("row_rects[0] missing");
+    };
+    *slot = Rect {
         x: 0,
         y: 0,
         width: 80,
@@ -1509,7 +1572,9 @@ fn hover_row_renders_with_hover_style() {
     render_rows(&mut buf, area, &mut s, &theme);
 
     // Read back the bg of the painted hover row from the first column of the row's allocated area
-    let row_rect = s.row_rects[hover_idx];
+    let Some(row_rect) = s.row_rects.get(hover_idx).copied() else {
+        panic!("row_rects[{hover_idx}] missing");
+    };
     assert!(
         row_rect.width > 0 && row_rect.height > 0,
         "hover row must have a non-zero rect after render",
@@ -1547,7 +1612,9 @@ fn picker_choice_mouse_hover_highlights_choice() {
     );
 
     // Pre-condition: choices_idx = 0 (the initial focus). Hover over choice 1, distinct from the focused choice.
-    let target_rect = s.picker_choice_rects[1];
+    let Some(&target_rect) = s.picker_choice_rects.get(1) else {
+        panic!("picker_choice_rects[1] missing");
+    };
     assert!(
         target_rect.height > 0,
         "choice 1 must be visible after render",
@@ -1570,7 +1637,9 @@ fn picker_choice_mouse_hover_highlights_choice() {
     let mut buf2 = Buffer::empty(area);
     render_picking_enum(&mut buf2, area, &s, &theme);
     let new_rects = take_picker_choice_rects();
-    let rect1 = new_rects[1];
+    let Some(&rect1) = new_rects.get(1) else {
+        panic!("choice rect 1 missing: {new_rects:?}");
+    };
     let cell1 = buf2
         .cell((rect1.x, rect1.y))
         .expect("choice 1 cell must exist");
@@ -1581,7 +1650,9 @@ fn picker_choice_mouse_hover_highlights_choice() {
         cell1.style().bg,
     );
     // Focused choice (index 0) keeps bg_visual; selection wins over hover. Verifies the `is_focused` branch precedence.
-    let rect0 = new_rects[0];
+    let Some(&rect0) = new_rects.first() else {
+        panic!("choice rect 0 missing: {new_rects:?}");
+    };
     let cell0 = buf2
         .cell((rect0.x, rect0.y))
         .expect("choice 0 cell must exist");
@@ -1714,7 +1785,10 @@ fn scroll_wheel_advances_selection() {
         .get(3)
         .copied()
         .unwrap_or(*setting_keys.last().unwrap());
-    match &s.rows[s.selected] {
+    let Some(row) = s.rows.get(s.selected) else {
+        panic!("selected row {} missing", s.selected);
+    };
+    match row {
         RowEntry::Setting { key, .. } => assert_eq!(*key, expected),
         _ => panic!("expected setting after scroll"),
     }
@@ -1844,8 +1918,6 @@ fn render_setting_row_hides_restart_pill_when_at_default_and_collapsed() {
         "at-default, not-expanded row must NOT contain the 'restart' pill: {rendered:?}"
     );
 }
-
-// -- render-buffer tests for the editor's cursor and validation-error display. --
 
 /// Build an editor state pre-positioned at the start of a known buffer for `default_model`.
 /// Catalog populated so the `KnownModel` validator has data to validate against.
@@ -2159,16 +2231,12 @@ fn render_editing_value_int_populates_adornment_hit_rects() {
         inc_rect.x + inc_rect.width < area.width,
         "right arrow must fit inside the area",
     );
-    // Both arrows live on the same stepper row
-    // The description word-wraps, so the input row's y position depends on how many lines the description consumes
-    // The previous hardcoded `== 3` assertion was a side-effect of the truncate-only render
+    // Description wrap moves the input row, so do not hardcode y.
     assert_eq!(
         dec_rect.y, inc_rect.y,
         "left + right arrow must share the same stepper row",
     );
 }
-
-// ---------- Int stepper key and render contracts ----------
 
 /// Helper: build a `SettingsModalState` directly in EditingValue mode for a registered Int setting with the given starting value.
 fn int_stepper_fixture_for(key: &'static str, value: i64) -> SettingsModalState {
@@ -3202,8 +3270,6 @@ fn picker_string_original_value_fills_committed_marker() {
     );
 }
 
-// -- try_enter_picking_enum coverage --
-
 /// Browse-mode Enter on an Enum row transitions to PickingEnum mode. The synthetic "test_enum" key
 /// has no `current_value_for` arm, so `value_for` returns None.
 #[test]
@@ -3211,7 +3277,10 @@ fn browse_enter_on_enum_row_transitions_to_picking_enum() {
     let mut s = picker_test_state_in_browse();
     // Sanity: initial state.
     assert!(matches!(s.mode(), SettingsModalMode::Browse));
-    match &s.rows[s.selected] {
+    let Some(row) = s.rows.get(s.selected) else {
+        panic!("selected row {} missing", s.selected);
+    };
+    match row {
         RowEntry::Setting { key, .. } => assert_eq!(*key, "test_enum"),
         _ => panic!("expected synthetic Enum row at initial selection"),
     }
@@ -3356,8 +3425,6 @@ fn fork_secondary_model_picker_opens_on_persisted_model() {
         ref other => panic!("expected PickingEnum mode, got {other:?}"),
     }
 }
-
-// -- render_picking_enum narrow-terminal coverage --
 
 #[test]
 fn render_picker_with_zero_height_is_noop() {
@@ -3878,8 +3945,12 @@ fn picker_multi_line_choice_hit_rect_spans_all_lines() {
         "expected 2 choice hit-rects, got {}",
         s.picker_choice_rects.len()
     );
-    let rect0 = s.picker_choice_rects[0];
-    let rect1 = s.picker_choice_rects[1];
+    let Some(&rect0) = s.picker_choice_rects.first() else {
+        panic!("picker_choice_rects[0] missing");
+    };
+    let Some(&rect1) = s.picker_choice_rects.get(1) else {
+        panic!("picker_choice_rects[1] missing");
+    };
     assert!(
         rect0.height >= 2,
         "choice 0 should span ≥ 2 lines (wrapped description), got rect {rect0:?}"
@@ -3988,7 +4059,9 @@ fn picker_scroll_offset_accounts_for_variable_height() {
     s.picker_choice_rects = take_picker_choice_rects();
 
     // The focused choice (c4) MUST have a non-zero hit rect (it got rendered)
-    let rect_c4 = s.picker_choice_rects[4];
+    let Some(&rect_c4) = s.picker_choice_rects.get(4) else {
+        panic!("picker_choice_rects[4] missing");
+    };
     assert!(
         rect_c4.width > 0 && rect_c4.height > 0,
         "focused choice c4 must be visible after scroll, got rect {rect_c4:?}"
@@ -3999,7 +4072,9 @@ fn picker_scroll_offset_accounts_for_variable_height() {
         "focused choice c4 must fit inside the viewport, got rect {rect_c4:?} vs area {area:?}"
     );
     // Choice 0 (c0) should be scrolled off the top (rect zero).
-    let rect_c0 = s.picker_choice_rects[0];
+    let Some(&rect_c0) = s.picker_choice_rects.first() else {
+        panic!("picker_choice_rects[0] missing");
+    };
     assert_eq!(
         (rect_c0.width, rect_c0.height),
         (0, 0),
@@ -4194,8 +4269,6 @@ fn render_picker_shows_more_indicator_when_choices_overflow() {
     );
 }
 
-// -- render_settings_modal routing coverage --
-
 /// `render_settings_modal` branches on mode into the picker render path.
 /// Verifies that the search-bar placeholder text is NOT present, proving the picker branch fired and the Browse path was skipped.
 /// Also verifies that hit-test rects are reset on entry.
@@ -4255,8 +4328,6 @@ fn render_settings_modal_routes_to_picker_when_mode_is_picking_enum() {
     );
 }
 
-// -- mouse and catch-all coverage --
-
 /// Scroll wheel during PickingEnum mode is a no-op AND does NOT mutate `state.selected` (the underlying Browse selection). Regression test.
 #[test]
 fn picker_mode_scroll_wheel_is_noop_and_preserves_browse_selection() {
@@ -4312,7 +4383,9 @@ fn install_picker_choice_rects(s: &mut SettingsModalState) {
 }
 
 fn click_picker_choice(s: &mut SettingsModalState, idx: usize) -> SettingsKeyOutcome {
-    let rect = s.picker_choice_rects[idx];
+    let Some(&rect) = s.picker_choice_rects.get(idx) else {
+        panic!("picker_choice_rects[{idx}] missing");
+    };
     assert!(
         rect.width > 0 && rect.height > 0,
         "choice {idx} must be visible, got {rect:?}"
@@ -4588,8 +4661,6 @@ fn string_editor_uses_canonical_edits_policy_and_live_validation() {
     assert!(matches!(state.mode(), SettingsModalMode::Browse));
 }
 
-// -- helper-function coverage --
-
 /// `picker_choices_len` returns 0 for an unknown key, a non-Enum key, and a zero-choice Enum.
 #[test]
 fn picker_choices_len_handles_missing_and_non_enum() {
@@ -4852,7 +4923,9 @@ fn section_headers_have_blank_line_above_except_first() {
         "this test requires ≥2 rendered headers, got: {header_ys:?}"
     );
     // First header has NO blank line above it; it hugs the top
-    let (first_y, _) = header_ys[0];
+    let Some(&(first_y, _)) = header_ys.first() else {
+        panic!("expected a header y: {header_ys:?}");
+    };
     assert_eq!(
         first_y, area.y,
         "first section header must sit at the top of the list area, got y={first_y}"
@@ -4915,14 +4988,21 @@ fn row_rects_shift_down_for_blank_lines_above_headers() {
     // We verify this by checking that the row's content (Header label or Setting label) appears at the rect's y position
     // Skip rows with default Rect (off-screen)
     for (i, r) in s.rows.iter().enumerate() {
-        let rect = s.row_rects[i];
+        let Some(&rect) = s.row_rects.get(i) else {
+            continue;
+        };
         if rect.width == 0 {
             continue;
         }
         let row_text = buf_row_text(&buf, rect.y, area.x, area.width);
         let expected_substring = match r {
             RowEntry::Header { category } => category.label().to_string(),
-            RowEntry::Setting { meta_index, .. } => s.registry.all()[*meta_index].label.to_string(),
+            RowEntry::Setting { meta_index, .. } => s
+                .registry
+                .all()
+                .get(*meta_index)
+                .map(|m| m.label.to_string())
+                .unwrap_or_else(|| panic!("meta {meta_index}")),
         };
         assert!(
             row_text.contains(&expected_substring),
@@ -4948,7 +5028,7 @@ fn wrap_description_empty_and_zero_width_return_empty() {
 fn wrap_description_single_line_when_fits() {
     let wrapped = wrap_description("Short text.", 80);
     assert_eq!(wrapped.len(), 1);
-    assert_eq!(wrapped[0], "Short text.");
+    assert_eq!(wrapped.first().map(String::as_str), Some("Short text."));
 }
 
 #[test]
@@ -5165,7 +5245,9 @@ fn two_line_row_hit_rect_spans_both_lines() {
     s.selected = row_idx;
     render_rows(&mut buf, area, &mut s, &theme);
 
-    let rect = s.row_rects[row_idx];
+    let Some(&rect) = s.row_rects.get(row_idx) else {
+        panic!("row_rects[{row_idx}] missing");
+    };
     assert!(
         rect.height >= 2,
         "two-line row hit-rect must span ≥2 lines, got height={}",
@@ -5224,7 +5306,9 @@ fn two_line_row_with_expansion_renders_three_segments() {
     let theme = Theme::current();
     render_rows(&mut buf, area, &mut s, &theme);
 
-    let rect = s.row_rects[row_idx];
+    let Some(&rect) = s.row_rects.get(row_idx) else {
+        panic!("row_rects[{row_idx}] missing");
+    };
     assert!(
         rect.height >= 2,
         "expanded two-line row must allocate ≥2 lines for the row itself, got height={}",
@@ -5286,7 +5370,9 @@ fn group_row_renders_expanded_description() {
     let theme = Theme::current();
     render_rows(&mut buf, area, &mut s, &theme);
 
-    let rect = s.row_rects[row_idx];
+    let Some(&rect) = s.row_rects.get(row_idx) else {
+        panic!("row_rects[{row_idx}] missing");
+    };
     // Line 1 is the group's chevron row (its label).
     let label_line = buf_row_text(&buf, rect.y, area.x, area.width);
     assert!(
@@ -5523,8 +5609,6 @@ fn footer_total_height_grows_when_hints_wrap() {
     );
 }
 
-// -- palette consistency --
-
 /// Section headers render in the palette's style: ` {label} ` in `gray + BOLD` followed by `─` separator cells in `gray_dim`.
 /// Asserts that (a) the header label cell carries the gray foreground and BOLD modifier matching the palette's `render_picker_entry` Header arm.
 /// Also asserts that (b) at least one trailing cell renders a `─` glyph.
@@ -5745,8 +5829,6 @@ fn filter_search_bar_keeps_narrow_graphemes_and_cursor_aligned() {
         theme.text_primary,
     );
 }
-
-// -- value color, chevron column, and docs footer --
 
 /// Bool `off` values render in the muted `gray` color while Bool `on` values keep the active `accent_user`.
 /// The inactive state should read as visually subordinate.
@@ -6167,8 +6249,6 @@ fn tip_line_has_blank_row_above() {
          (Misha/Kevin Fix 5): full row = {above:?}, interior = {interior:?}",
     );
 }
-
-// -- sub-pane polish --
 
 /// Helper: open the picker for the named enum/dyn-enum key in `make_state()`.
 /// Returns the state with PickingEnum mode active.
@@ -7559,10 +7639,6 @@ fn max_thoughts_width_preview_renders_at_just_fits_width() {
     );
 }
 
-// ──────────────────────────────────────────────────────────────
-// Auto-widen tests for max_thoughts_width EditingValue mode.
-// ──────────────────────────────────────────────────────────────
-
 /// At a wide terminal (200 cols), entering EditingValue mode for `max_thoughts_width` widens the rendered modal.
 /// The popup width becomes `terminal_width - MAX_THOUGHTS_WIDTH_WIDENED_MARGIN` (i.e. 192).
 /// The default sizing would otherwise produce a 70%-of-terminal = 140-wide modal.
@@ -7751,10 +7827,6 @@ fn preview_remains_clamped_when_pending_exceeds_widened_width() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Locked coding_data_sharing row (ZDR / team non-admin)
-// ---------------------------------------------------------------------------
-
 fn make_locked_state(lock: CodingDataSharingLock) -> SettingsModalState {
     SettingsModalState::new(
         Arc::new(SettingsRegistry::defaults()),
@@ -7906,7 +7978,9 @@ fn locked_coding_data_sharing_row_renders_locked_value_without_chevron() {
     s.selected = idx;
     let mut buf = Buffer::empty(area);
     render_rows(&mut buf, area, &mut s, &theme);
-    let rect = s.row_rects[idx];
+    let Some(&rect) = s.row_rects.get(idx) else {
+        panic!("row_rects[{idx}] missing");
+    };
     let line = buf_row_text(&buf, rect.y, area.x, area.width);
     assert!(
         line.contains("ZDR") && !line.contains("Opt"),
@@ -7921,7 +7995,9 @@ fn locked_coding_data_sharing_row_renders_locked_value_without_chevron() {
     s.selected = idx;
     let mut buf = Buffer::empty(area);
     render_rows(&mut buf, area, &mut s, &theme);
-    let rect = s.row_rects[idx];
+    let Some(&rect) = s.row_rects.get(idx) else {
+        panic!("row_rects[{idx}] missing");
+    };
     let line = buf_row_text(&buf, rect.y, area.x, area.width);
     assert!(
         line.contains("Opt out \u{00B7} Admin Managed"),
@@ -7937,7 +8013,9 @@ fn locked_coding_data_sharing_row_renders_locked_value_without_chevron() {
     s.selected = idx;
     let mut buf = Buffer::empty(area);
     render_rows(&mut buf, area, &mut s, &theme);
-    let rect = s.row_rects[idx];
+    let Some(&rect) = s.row_rects.get(idx) else {
+        panic!("row_rects[{idx}] missing");
+    };
     let line = buf_row_text(&buf, rect.y, area.x, area.width);
     assert!(
         line.contains("Opt out") && !line.contains("locked"),

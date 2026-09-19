@@ -17,8 +17,11 @@ fn open_extensions_modal_no_session_sets_flag_no_fetches() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(app.agents[&id].pending_extensions_fetch);
-    assert!(app.agents[&id].extensions_modal.is_some());
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    assert!(agent.pending_extensions_fetch);
+    assert!(agent.extensions_modal.is_some());
     assert!(
         !effects
             .iter()
@@ -40,7 +43,11 @@ fn open_extensions_modal_with_session_emits_fetches_no_flag() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 5);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents
+            .get(&id)
+            .is_some_and(|a| !a.pending_extensions_fetch)
+    );
 }
 
 #[test]
@@ -57,7 +64,11 @@ fn open_extensions_modal_with_session_resets_stale_flag() {
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 5);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents
+            .get(&id)
+            .is_some_and(|a| !a.pending_extensions_fetch)
+    );
 }
 
 #[test]
@@ -73,7 +84,13 @@ fn reload_skills_marks_both_lists_loading_and_refetches() {
     let effects = dispatch(Action::ReloadSkills, &mut app);
 
     // The router arm is the sole owner of the Loading transitions; the modal key handler only emits the action
-    let modal = app.agents[&id].extensions_modal.as_ref().unwrap();
+    let Some(modal) = app
+        .agents
+        .get(&id)
+        .and_then(|a| a.extensions_modal.as_ref())
+    else {
+        panic!("expected extensions modal on {id:?}");
+    };
     assert!(matches!(modal.skills_data, TabDataState::Loading));
     assert!(matches!(modal.workflows_data, TabDataState::Loading));
     assert!(
@@ -105,7 +122,13 @@ fn reload_skills_without_session_keeps_loaded_state() {
 
     // Nothing can fetch without a session, so nothing may flip to Loading; a stranded spinner would make repeat presses no-ops
     assert!(effects.is_empty(), "got {effects:?}");
-    let modal = app.agents[&id].extensions_modal.as_ref().unwrap();
+    let Some(modal) = app
+        .agents
+        .get(&id)
+        .and_then(|a| a.extensions_modal.as_ref())
+    else {
+        panic!("expected extensions modal on {id:?}");
+    };
     assert!(matches!(modal.skills_data, TabDataState::Loaded(_)));
     assert!(matches!(modal.workflows_data, TabDataState::Loaded(_)));
 }
@@ -125,14 +148,17 @@ fn session_created_with_flag_but_modal_closed_clears_flag_no_fetches() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(
+        app.agents
+            .get(&id)
+            .is_some_and(|a| !a.pending_extensions_fetch)
+    );
 }
-
-// ── /new dispatcher tests ─────────────────────────────────────────────
 
 #[test]
 fn dispatch_new_session_opens_question_modal_in_git_repo() {
@@ -142,24 +168,26 @@ fn dispatch_new_session_opens_question_modal_in_git_repo() {
     assert!(effects.is_empty(), "no effects until modal answered");
     // No new agent yet (creation is deferred until modal answered).
     assert_eq!(app.agents.len(), 1);
-    let qv = app.agents[&AgentId(0)]
-        .question_view
-        .as_ref()
-        .expect("modal must be open");
+    let Some(qv) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.question_view.as_ref())
+    else {
+        panic!("modal must be open");
+    };
     match qv.local_kind.as_ref().expect("local_kind must be set") {
         crate::views::question_view::LocalQuestionKind::NewSession => {}
         other => panic!("expected NewSession, got {other:?}"),
     }
+    let Some(question) = qv.questions.first() else {
+        panic!("expected a question: {:?}", qv.questions);
+    };
     assert_eq!(
-        qv.questions[0].options.len(),
+        question.options.len(),
         4,
         "modal must offer exactly 4 options (Yes/No/Always/Never)"
     );
-    let labels: Vec<&str> = qv.questions[0]
-        .options
-        .iter()
-        .map(|o| o.label.as_str())
-        .collect();
+    let labels: Vec<&str> = question.options.iter().map(|o| o.label.as_str()).collect();
     assert_eq!(
         labels,
         vec!["Yes", "No", "Always worktree", "Never worktree"]
@@ -183,7 +211,28 @@ fn dispatch_new_session_skips_modal_in_non_git_repo() {
     );
 }
 
-// ── Session close (shared with dashboard) ─────────────────────────────
+#[test]
+fn drop_other_agents_in_minimal_unregisters_leftovers() {
+    let mut app = three_agent_app();
+    app.agents.get_mut(&AgentId(1)).unwrap().session.session_id = Some("sess-resume".into());
+    app.agents.get_mut(&AgentId(2)).unwrap().session.session_id = Some("sess-fork".into());
+
+    assert!(drop_other_agents_in_minimal(&mut app, AgentId(0)).is_empty());
+    assert_eq!(app.agents.len(), 3);
+
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    let effects = drop_other_agents_in_minimal(&mut app, AgentId(0));
+    let unregistered: Vec<_> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::UnregisterActiveSession { session_id } => Some(session_id.0.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unregistered, ["sess-resume", "sess-fork"]);
+    assert_eq!(app.agents.len(), 1);
+    assert!(app.agents.contains_key(&AgentId(0)));
+}
 
 #[test]
 fn close_inactive_agent_drops_it() {
@@ -231,7 +280,9 @@ fn close_clears_forked_from_on_surviving_children() {
     set_forked_from(&mut app, AgentId(2), AgentId(1));
     dispatch_sessions_confirm_close(&mut app, AgentId(1));
     assert!(
-        app.agents[&AgentId(2)].session.forked_from.is_none(),
+        app.agents
+            .get(&AgentId(2))
+            .is_some_and(|a| a.session.forked_from.is_none()),
         "stale forked_from pointer must be cleared after parent close"
     );
 }
@@ -272,7 +323,9 @@ fn close_does_not_disturb_unrelated_forked_from_pointers() {
     set_forked_from(&mut app, AgentId(2), AgentId(0));
     dispatch_sessions_confirm_close(&mut app, AgentId(1));
     assert_eq!(
-        app.agents[&AgentId(2)].session.forked_from,
+        app.agents
+            .get(&AgentId(2))
+            .and_then(|a| a.session.forked_from),
         Some(AgentId(0)),
         "unrelated forked_from must NOT be cleared"
     );

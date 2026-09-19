@@ -28,7 +28,7 @@
 //! 5. Drains any outbound frames that buffered during step 1-4.
 use crate::auth::{AuthCredential, AuthProvider, PrincipalKey};
 use crate::demux::Demux;
-use crate::error::ClientError;
+use crate::error::{ClientError, RefusalCode};
 use crate::handshake::send_hello;
 use crate::refcount::RefCountedSet;
 use futures::stream::SplitSink;
@@ -47,7 +47,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 use xai_tool_protocol::{
     ConnectionId, ConnectionKind, JsonRpcId, JsonRpcRequest, JsonRpcResponse, JsonRpcVersion,
@@ -414,6 +414,16 @@ fn resolve_ws_liveness_deadline(configured: Option<Duration>, ping_interval: Dur
             .min(Duration::from_secs(120)),
     }
 }
+/// Embedder policy for the first connect, before the reconnect loop owns the socket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InitialConnectPolicy {
+    /// Per-attempt budget for upgrade + hello/hello_ack. `None` or zero ⇒ 10s.
+    pub attempt_timeout: Option<Duration>,
+    /// Start a second transport attempt when the first has not upgraded by then. `None` or zero ⇒ no hedge.
+    pub hedge_after: Option<Duration>,
+    /// Budget for the whole initial connect across attempts. `None` or zero ⇒ the legacy 3-attempt cap.
+    pub deadline: Option<Duration>,
+}
 /// Optional, default-preserving connection-tuning knobs carried from the
 /// pool/builder into [`ConnectionConfig`]. `Default` leaves every value
 /// `None`, reproducing the historical hardcoded behaviour — and lets
@@ -449,10 +459,8 @@ pub struct ConnectionTuning {
     /// (force eviction, session expiry, admin disconnect, supersession)
     /// must not.
     pub reconnect_after_terminal_close_codes: Vec<u16>,
-    /// Per-attempt budget for the initial connect (WebSocket upgrade +
-    /// hello/hello_ack). `None` (or zero) ⇒
-    /// [`INITIAL_CONNECT_ATTEMPT_TIMEOUT`].
-    pub initial_connect_attempt_timeout: Option<Duration>,
+    /// Policy for the initial connection before reconnect handling begins.
+    pub initial_connect: InitialConnectPolicy,
 }
 /// Pool dedup key. Two connections are pooled together iff their
 /// `(url, principal)` match.
@@ -498,6 +506,10 @@ pub type DisconnectCallback = Box<dyn Fn() + Send + Sync + 'static>;
 /// opts the embedder into recovery after this callback. Always followed by
 /// [`DisconnectCallback`] so readiness still flips.
 pub type TerminalCloseCallback = Box<dyn Fn(u16) + Send + Sync + 'static>;
+/// Boxed callback fired when a *reconnect's* upgrade is answered `401`/`403`, with the status and
+/// the policy code a `403` body names. The actor stops afterwards: the same credential fails the
+/// same way. (The initial connect reports this as [`ClientError::HandshakeAuthFailed`] instead.)
+pub type HandshakeRefusedCallback = Box<dyn Fn(u16, Option<RefusalCode>) + Send + Sync + 'static>;
 /// Boxed connect callback, fired once on the initial successful connect
 /// after the writer keepalive loop has entered (so `/ready` cannot race
 /// the first ping) and before the reader actor task spawns. It therefore
@@ -549,6 +561,9 @@ pub struct ConnectionConfig {
     /// stops afterwards unless the code is in
     /// [`ConnectionTuning::reconnect_after_terminal_close_codes`].
     pub on_terminal_close: Option<Arc<TerminalCloseCallback>>,
+    /// Optional callback for a reconnect refused at the upgrade with `401`/`403`; see
+    /// [`HandshakeRefusedCallback`].
+    pub on_handshake_refused: Option<Arc<HandshakeRefusedCallback>>,
     /// Optional connect callback, fired once on the initial successful connect
     /// after the writer task enters its loop (happens-before reader start).
     /// The first keepalive may still be in flight or one scheduler quanta away.
@@ -605,6 +620,7 @@ struct HubConnectionInner {
     on_reconnect: Option<Arc<ReconnectCallback>>,
     on_disconnect: Option<Arc<DisconnectCallback>>,
     on_terminal_close: Option<Arc<TerminalCloseCallback>>,
+    on_handshake_refused: Option<Arc<HandshakeRefusedCallback>>,
     server_id: Option<xai_tool_protocol::ServerId>,
     server_description: Option<String>,
     server_metadata: Option<serde_json::Value>,
@@ -697,47 +713,103 @@ impl HubConnection {
         let bound_sessions = Arc::new(RefCountedSet::<SessionId>::new());
         let connection_id = Arc::new(Mutex::new(None));
         let shutdown = CancellationToken::new();
-        let budget =
-            resolve_initial_connect_attempt_timeout(config.tuning.initial_connect_attempt_timeout);
+        let policy = config.tuning.initial_connect;
+        let attempt_timeout = resolve_initial_connect_attempt_timeout(policy.attempt_timeout);
+        let deadline = policy.deadline.filter(|deadline| !deadline.is_zero());
+        let deadline_at = deadline.map(|deadline| tokio::time::Instant::now() + deadline);
+        let hedge_after = policy.hedge_after.filter(|delay| !delay.is_zero());
+        if hedge_after.is_some_and(|delay| delay >= attempt_timeout) {
+            warn!(
+                ?hedge_after,
+                ?attempt_timeout,
+                "initial connect hedge delay is not below the attempt timeout; the hedge can never fire"
+            );
+        }
         let initial_jitter_seed = new_reconnect_jitter_seed();
         let mut attempt: u32 = 0;
+        let mut last_err = None;
         let (sink, stream, ack) = loop {
+            let now = tokio::time::Instant::now();
+            let remaining = deadline_at.map(|deadline| deadline.saturating_duration_since(now));
+            let attempt_budget = match remaining {
+                Some(remaining) if remaining.is_zero() => {
+                    return Err(
+                        last_err
+                            .unwrap_or_else(|| ClientError::NetworkError(
+                                match deadline {
+                                    Some(deadline) => {
+                                        format!(
+                                "initial connect attempt timed out after {attempt_timeout:?} (attempt {attempt}, deadline {deadline:?})"
+                            )
+                                    }
+                                    None => {
+                                        format!(
+                                "initial connect attempt timed out after {attempt_timeout:?}"
+                            )
+                                    }
+                                },
+                            )),
+                    );
+                }
+                Some(remaining) => attempt_timeout.min(remaining),
+                None => attempt_timeout,
+            };
             attempt += 1;
             let cred = config.credential.current();
-            let attempt_result = match tokio::time::timeout(budget, async {
-                let ws = open_socket(
-                    &config.url,
-                    &cred,
-                    config.kind,
-                    config.alpha_test_key.as_deref(),
-                    config.allow_insecure_ws,
-                )
-                .await?;
-                let (sink, stream) = ws.split();
-                run_handshake(
-                    sink,
-                    stream,
-                    config.kind,
-                    config.server_id.clone(),
-                    config.server_description.clone(),
-                    config.server_metadata.clone(),
-                )
-                .await
-            })
+            let attempt_result = match tokio::time::timeout(
+                attempt_budget,
+                Box::pin(async {
+                    let ws = hedged_open_socket(
+                        &config.url,
+                        &cred,
+                        config.kind,
+                        config.alpha_test_key.as_deref(),
+                        config.allow_insecure_ws,
+                        hedge_after.filter(|delay| *delay < attempt_budget),
+                    )
+                    .await?;
+                    let (sink, stream) = ws.split();
+                    run_handshake(
+                        sink,
+                        stream,
+                        config.kind,
+                        config.server_id.clone(),
+                        config.server_description.clone(),
+                        config.server_metadata.clone(),
+                    )
+                    .await
+                }),
+            )
             .await
             {
                 Ok(result) => result,
-                Err(_) => Err(ClientError::NetworkError(format!(
-                    "initial connect attempt timed out after {budget:?}"
-                ))),
+                Err(_) => Err(ClientError::NetworkError(match deadline {
+                    Some(deadline) => {
+                        format!(
+                            "initial connect attempt timed out after {attempt_budget:?} (attempt {attempt}, deadline {deadline:?})"
+                        )
+                    }
+                    None => {
+                        format!("initial connect attempt timed out after {attempt_budget:?}")
+                    }
+                })),
             };
             match attempt_result {
                 Ok(parts) => break parts,
                 Err(err) => {
-                    if attempt >= INITIAL_CONNECT_MAX_ATTEMPTS || !initial_connect_retryable(&err) {
+                    if !initial_connect_retryable(&err) {
                         return Err(err);
                     }
+                    if deadline_at.is_none() && attempt >= INITIAL_CONNECT_MAX_ATTEMPTS {
+                        return Err(err);
+                    }
+                    let now = tokio::time::Instant::now();
                     let wait = backoff_for(attempt, &reconnect_backoff, initial_jitter_seed, 0);
+                    let remaining =
+                        deadline_at.map(|deadline| deadline.saturating_duration_since(now));
+                    if remaining.is_some_and(|remaining| remaining <= wait) {
+                        return Err(err);
+                    }
                     warn!(
                         url = %config.url,
                         attempt,
@@ -745,6 +817,7 @@ impl HubConnection {
                         error = %err,
                         "initial connect attempt failed; retrying"
                     );
+                    last_err = Some(err);
                     tokio::time::sleep(wait).await;
                 }
             }
@@ -767,6 +840,7 @@ impl HubConnection {
             on_reconnect: config.on_reconnect.clone(),
             on_disconnect: config.on_disconnect.clone(),
             on_terminal_close: config.on_terminal_close.clone(),
+            on_handshake_refused: config.on_handshake_refused.clone(),
             server_id: config.server_id,
             server_description: config.server_description,
             server_metadata: config.server_metadata,
@@ -1138,6 +1212,67 @@ pub(crate) fn host_is_loopback(url: &Url) -> bool {
         None => false,
     }
 }
+/// Hedges the transport only. The hub supersedes a same-`server_id`
+/// registration on a later hello (close 4104), so a connect must send exactly
+/// one hello, after this returns.
+async fn hedged_open_socket(
+    url: &Url,
+    credential: &AuthCredential,
+    kind: ConnectionKind,
+    alpha_test_key: Option<&str>,
+    allow_insecure_ws: bool,
+    hedge_after: Option<Duration>,
+) -> Result<WsStream, ClientError> {
+    let Some(hedge_after) = hedge_after else {
+        return open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws).await;
+    };
+    let started = tokio::time::Instant::now();
+    let first = open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws);
+    tokio::pin!(first);
+    tokio::select! {
+        biased;
+        result = &mut first => return result,
+        _ = tokio::time::sleep(hedge_after) => {}
+    }
+    debug!(url = %url, elapsed = ?started.elapsed(), "launching hedged transport attempt");
+    let second = open_socket(url, credential, kind, alpha_test_key, allow_insecure_ws);
+    tokio::pin!(second);
+    let (result, from_hedge) = tokio::select! {
+        result = &mut first => (result, false),
+        result = &mut second => (result, true),
+    };
+    match result {
+        Ok(ws) => {
+            if from_hedge {
+                info!(url = %url, elapsed = ?started.elapsed(), "hedged transport attempt won");
+            }
+            Ok(ws)
+        }
+        Err(winner_error) if !initial_connect_retryable(&winner_error) => Err(winner_error),
+        Err(winner_error) => {
+            debug!(
+                error = %winner_error,
+                from_hedge,
+                "transport attempt failed while the other leg is pending"
+            );
+            let other = if from_hedge {
+                first.await
+            } else {
+                second.await
+            };
+            match other {
+                Ok(ws) => {
+                    if !from_hedge {
+                        info!(url = %url, elapsed = ?started.elapsed(), "hedged transport attempt won");
+                    }
+                    Ok(ws)
+                }
+                Err(other_error) if !initial_connect_retryable(&other_error) => Err(other_error),
+                Err(_) => Err(winner_error),
+            }
+        }
+    }
+}
 /// Open a fresh `ws://` / `wss://` socket. No handshake yet.
 ///
 /// Refuses to send the credential over `ws://` to any non-loopback host
@@ -1192,7 +1327,7 @@ async fn open_socket(
     }
     let _ = alpha_test_key;
     xai_tracing::http_client::attach_trace_to_http_request(headers);
-    let (ws, _resp) = connect_async(request)
+    let (ws, _resp) = Box::pin(connect_async(request))
         .await
         .map_err(ClientError::from_handshake_error)?;
     Ok(ws)
@@ -1790,13 +1925,16 @@ async fn run_reader_actor(
                             crate::metrics::reconnect_writer_resume();
                             break;
                         }
-                        Err(ClientError::HandshakeAuthFailed { status }) => {
+                        Err(ClientError::HandshakeAuthFailed { status, refusal }) => {
                             warn!(
                                 status,
                                 attempt,
                                 "reconnect rejected with handshake auth failure; evicting pool entry and stopping"
                             );
                             crate::metrics::reconnect_failed("handshake_auth");
+                            if let Some(cb) = &inner.on_handshake_refused {
+                                cb(status, refusal);
+                            }
                             inner.demux.drain_waiters_with(|| {
                                 ClientError::AuthError(format!(
                                     "server rejected reconnect handshake (HTTP {status})"

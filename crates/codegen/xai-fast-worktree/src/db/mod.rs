@@ -501,7 +501,6 @@ impl GrokHomeFixture {
         }
     }
 
-    /// Point grove lookup at `$XDG_DATA_HOME/grove` with `GROVE_DATA_DIR` unset
     /// and `HOME` confined to this fixture so pin-GC cannot touch the host.
     pub(crate) fn isolate_xdg_grove_data(&mut self) -> PathBuf {
         if !self.touched_grove_env {

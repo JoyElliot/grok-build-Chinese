@@ -1,7 +1,7 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "1.0.24"
+version = "1.0.35"
 edition.workspace = true
 
 [features]
@@ -9,8 +9,13 @@ default = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
-# it via `required-features`. Forwards `xai-grok-login/test-support` for downstream test builds.
-test-support = ["xai-grok-login/test-support"]
+# it via `required-features`. Forwards login, sampler, and workspace `test-support` so
+# downstream test builds see those crates' test seams.
+test-support = [
+    "xai-grok-login/test-support",
+    "xai-grok-sampler/test-support",
+    "xai-grok-workspace/test-support",
+]
 test-util = []
 # Local Computer Hub workspace_server (own/attach + crash-restart). Requires
 local-workspace = []
@@ -212,7 +217,6 @@ xai-grok-memory = { workspace = true, features = ["test-support"] }
 # sandbox-enforce: keep tests running against the enforcing sandbox build.
 xai-grok-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 xai-grok-config = { workspace = true, features = [] }
-ring = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 semver = { workspace = true }
@@ -223,6 +227,8 @@ xai-grok-shell-base = { workspace = true, features = ["test-support"] }
 # Exposes the login crate's `#[cfg(test)]`-only auth-provider helpers
 # (`test_counting_provider`, `test_backdate_provider_mint`) to shell tests.
 xai-grok-login = { workspace = true, features = ["test-support"] }
+# Exposes sampler's `notify_on_submit` mock to lib tests via feature unification.
+xai-grok-sampler = { path = "../xai-grok-sampler", features = ["test-support"] }
 xai-grok-test-support = { workspace = true, features = [] }
 xai-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual

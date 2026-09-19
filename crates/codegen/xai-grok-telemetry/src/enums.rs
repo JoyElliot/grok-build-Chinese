@@ -30,8 +30,9 @@ pub enum PrCreationSource {
     Mcp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum PermissionMode {
     /// Prompt the user for each tool call (default).
     #[default]
