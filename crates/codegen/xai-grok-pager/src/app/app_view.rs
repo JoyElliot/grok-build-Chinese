@@ -4997,7 +4997,12 @@ impl AppView {
                                             crate::views::dashboard::popup_rect(view_area);
                                         let title = agents
                                             .get(&agent_id)
-                                            .map(crate::views::session_title::entry_title)
+                                            .map(|agent| {
+                                                crate::views::session_title::entry_title_with_locale(
+                                                    agent,
+                                                    Some(self.locale.as_ref()),
+                                                )
+                                            })
                                             .unwrap_or_else(|| "(session)".to_string());
                                         let bundle_state = &self.bundle_state;
                                         let (cursor, post_flush, drawn) =

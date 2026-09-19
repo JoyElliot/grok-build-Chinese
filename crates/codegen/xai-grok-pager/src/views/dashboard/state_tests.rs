@@ -3385,6 +3385,65 @@ fn completion_pasted_image() -> crate::prompt_images::PastedImage {
     crate::prompt_images::from_clipboard_data(&probe_image_data())
 }
 
+#[test]
+fn zh_localization_dashboard_image_rejections_keep_both_inputs_unchanged() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    for peek in [false, true] {
+        for at_limit in [false, true] {
+            let mut state = if peek {
+                state_with_open_peek()
+            } else {
+                DashboardState::new()
+            };
+            state.set_ui_locale(Some(&locale));
+            let widget = if peek {
+                &mut state.peek_reply
+            } else {
+                &mut state.dispatch
+            };
+            widget.set_text("Original English draft");
+            if at_limit {
+                for _ in 0..crate::views::prompt_widget::PromptWidget::IMAGE_CAP {
+                    widget.insert_image(completion_pasted_image()).unwrap();
+                }
+            }
+            let text_before = widget.text().to_string();
+            let images_before = widget.images.len();
+            let mut pasted = completion_pasted_image();
+            if !at_limit {
+                pasted.dimensions = Some((1, 1));
+            }
+            let result = state.complete_clipboard_attachment_paste(
+                completion_ctx(None, peek),
+                crate::app::actions::ProbedAttachment::Image(pasted),
+                None,
+            );
+            assert_eq!(
+                result,
+                crate::app::actions::ClipboardPasteCompletion::Failed(
+                    crate::app::actions::ClipboardPasteFailure::AlreadyReported
+                )
+            );
+            let expected = if at_limit {
+                "图片数量已达上限（最多 10 张）"
+            } else {
+                "图片过小（1×1）。尺寸至少应为 8×8 像素。"
+            };
+            assert!(state.error_toast.as_deref().unwrap().contains(expected));
+            let widget = if peek {
+                &state.peek_reply
+            } else {
+                &state.dispatch
+            };
+            assert_eq!(widget.text(), text_before);
+            assert_eq!(widget.images.len(), images_before);
+        }
+    }
+}
+
 /// A `ClipboardPasteContext` for driving `complete_clipboard_attachment_paste`
 /// directly (image-wins Cmd+V: carries the caption, inserts on a no-image
 /// miss). The peek target stamps the row `state_with_open_peek` peeks.

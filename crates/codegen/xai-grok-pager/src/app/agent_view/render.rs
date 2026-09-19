@@ -1488,7 +1488,7 @@ impl AgentView {
             status.push(
                 "dashboard",
                 Line::from(Span::styled(
-                    "[Dashboard]",
+                    localized_ui_label(locale, "dashboard.session.return", "[Dashboard]"),
                     hover_or(self.hit_dashboard.hovered, bg.fg(theme.gray)),
                 )),
             );

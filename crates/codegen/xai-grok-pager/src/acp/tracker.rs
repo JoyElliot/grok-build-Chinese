@@ -150,11 +150,23 @@ impl WaitingReason {
             Self::TaskOutput { .. } => text("turn.waiting.task_output", "Waiting on task output…"),
             Self::TasksComplete => text("turn.waiting.tasks", "Waiting on tasks…"),
             Self::Sleep => text("turn.waiting.sleep", "Sleeping…"),
-            Self::Hooks { event_name, count } if *count > 1 => {
-                format!("Running {count} {event_name} hooks…")
+            Self::Hooks { event_name, count } => {
+                let (id, english) = if *count > 1 {
+                    (
+                        "turn.waiting.hooks.many",
+                        "Running {count} {event_name} hooks…",
+                    )
+                } else {
+                    ("turn.waiting.hooks.one", "Running {event_name} hook…")
+                };
+                text(id, english)
+                    .replace("{count}", &count.to_string())
+                    .replace("{event_name}", event_name)
             }
-            Self::Hooks { event_name, .. } => format!("Running {event_name} hook…"),
-            Self::PromptAck => "Waiting for the agent to accept the prompt…".to_string(),
+            Self::PromptAck => text(
+                "turn.waiting.prompt_ack",
+                "Waiting for the agent to accept the prompt…",
+            ),
         }
     }
     /// Short, stable snake_case label for telemetry / phase-transition logs.

@@ -20,15 +20,29 @@ const MAX_TITLE_CHARS: usize = 60;
 /// id). Centralised so every place that shows a session name agrees on the same precedence.
 /// Trimming and truncation happen in this single place to avoid drift.
 pub fn entry_title(agent: &AgentView) -> String {
+    entry_title_with_locale(agent, None)
+}
+
+/// Translate only synthetic titles; user and model titles keep their original text.
+pub(crate) fn entry_title_with_locale(
+    agent: &AgentView,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
     if let Some(title) = named_title(agent) {
         return title;
     }
     match agent.session.session_id.as_ref() {
         Some(sid) => {
             let short: String = sid.0.chars().take(8).collect();
-            format!("session {short}")
+            locale
+                .map(|locale| locale.named_static_text("session.title.fallback", "session {id}"))
+                .unwrap_or("session {id}")
+                .replace("{id}", &short)
         }
-        None => "loading...".to_string(),
+        None => locale
+            .map(|locale| locale.named_static_text("session.title.loading", "loading..."))
+            .unwrap_or("loading...")
+            .to_string(),
     }
 }
 
@@ -203,6 +217,41 @@ pub(crate) fn format_relative_time(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zh_localization_session_titles_translate_only_synthetic_fallbacks() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let mut agent =
+            crate::app::agent_view::test_agent_view(Some("abcd1234-opaque-id"), "/tmp".into());
+        assert_eq!(entry_title(&agent), "session abcd1234");
+        assert_eq!(
+            entry_title_with_locale(&agent, Some(&locale)),
+            "会话 abcd1234"
+        );
+        agent.generated_session_title = Some("Model generated English title".into());
+        assert_eq!(
+            entry_title_with_locale(&agent, Some(&locale)),
+            "Model generated English title"
+        );
+        agent.display_name = Some("My English session".into());
+        assert_eq!(
+            entry_title_with_locale(&agent, Some(&locale)),
+            "My English session"
+        );
+        let mut pending = crate::app::agent_view::test_agent_view(None, "/tmp".into());
+        assert_eq!(entry_title(&pending), "loading...");
+        assert_eq!(entry_title_with_locale(&pending, Some(&locale)), "加载中…");
+        pending
+            .scrollback
+            .push_block(RenderBlock::user_prompt("Original English prompt"));
+        assert_eq!(
+            entry_title_with_locale(&pending, Some(&locale)),
+            "Original English prompt"
+        );
+    }
 
     // ── sanitize_display_text ───────────────────────────────────────
 

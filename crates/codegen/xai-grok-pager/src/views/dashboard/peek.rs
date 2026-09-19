@@ -235,16 +235,16 @@ pub fn compute_peek_fields_with_locale(
     agents: &indexmap::IndexMap<crate::app::agent::AgentId, AgentView>,
     locale: Option<&crate::locale::LocaleContext>,
 ) -> Option<PeekFields> {
-    use crate::views::session_title::{entry_title, sanitize_display_text};
+    use crate::views::session_title::{entry_title_with_locale, sanitize_display_text};
     match row {
         DashboardRowId::TopLevel(id) => {
             let agent = agents.get(id)?;
-            let label = sanitize_display_text(&entry_title(agent)).into_owned();
+            let label = sanitize_display_text(&entry_title_with_locale(agent, locale)).into_owned();
             let response_type = extract_last_response_type(agent);
             let last_user_message = extract_last_user_message(agent);
             let time_ago = agent
                 .last_active_at
-                .map(|t| crate::util::format_time_ago(t.elapsed()))
+                .map(|t| super::format_time_ago_with_locale(t.elapsed(), locale))
                 .unwrap_or_default();
             // A pending permission takes the question slot. Otherwise a single-question, single-select agent
             // `AskUserQuestion` (ext, not a local pager dialog) renders the same way.
@@ -377,7 +377,8 @@ pub fn compute_peek_fields_with_locale(
                 .map(extract_last_response_type)
                 .unwrap_or_else(|| "Subagent".to_string());
             let last_user_message = child.and_then(extract_last_user_message);
-            let time_ago = crate::util::format_time_ago(info.attempt.last_progress_at.elapsed());
+            let time_ago =
+                super::format_time_ago_with_locale(info.attempt.last_progress_at.elapsed(), locale);
             Some(PeekFields {
                 label,
                 time_ago,
@@ -1122,6 +1123,52 @@ mod tests {
     /// Fresh reply widget for render tests (the dashboard-owned `peek_reply` stand-in).
     fn test_reply() -> crate::views::prompt_widget::PromptWidget {
         crate::views::prompt_widget::PromptWidget::new()
+    }
+
+    #[test]
+    fn zh_localization_dashboard_peek_paints_localized_age_and_keeps_prompt() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let mut agent = crate::app::agent_view::test_agent_view(Some("peek-id"), "/tmp".into());
+        agent.last_active_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(125));
+        agent
+            .scrollback
+            .push_block(crate::scrollback::block::RenderBlock::user_prompt(
+                "Keep this English prompt",
+            ));
+        let row = DashboardRowId::TopLevel(AgentId(0));
+        let agents = indexmap::IndexMap::from([(AgentId(0), agent)]);
+        assert_eq!(compute_peek_fields(&row, &agents).unwrap().time_ago, "2m");
+        let fields = compute_peek_fields_with_locale(&row, &agents, Some(&locale)).unwrap();
+        assert_eq!(fields.time_ago, "2分钟前");
+        assert_eq!(
+            fields.last_user_message.as_deref(),
+            Some("Keep this English prompt")
+        );
+        let panel = PeekPanelState::new(row, fields);
+        let area = Rect::new(0, 0, 100, 12);
+        let mut buf = Buffer::empty(area);
+        render_peek_panel_with_locale(
+            &mut buf,
+            area,
+            &panel,
+            &mut test_reply(),
+            &Theme::current(),
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+            Some(&locale),
+        );
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("2分钟前"), "{text}");
+        assert!(!text.contains("2m"), "{text}");
     }
 
     #[test]

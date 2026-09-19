@@ -3656,6 +3656,129 @@ fn render_footer_names_enter_action_for_each_actions_item() {
     }
 }
 
+#[test]
+fn zh_localization_dashboard_footer_actions_and_confirmation_states() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let registry = crate::actions::ActionRegistry::defaults();
+    let theme = Theme::current();
+    let footer = |state: &DashboardState, locale| {
+        let area = Rect::new(0, 0, 240, 1);
+        let mut buf = Buffer::empty(area);
+        render_footer_with_locale(
+            &mut buf,
+            area,
+            &theme,
+            state,
+            &registry,
+            Some(RowState::Working),
+            false,
+            None,
+            locale,
+        );
+        buf_to_text(&buf).replace(' ', "")
+    };
+    for (focus, worktree, draft, english, chinese) in [
+        (ActionsFocus::NewAgent, false, "", "create", "创建"),
+        (
+            ActionsFocus::NewAgent,
+            false,
+            "Original English draft",
+            "send",
+            "发送",
+        ),
+        (
+            ActionsFocus::OpenPrevious,
+            false,
+            "",
+            "openprevious",
+            "打开历史会话",
+        ),
+        (
+            ActionsFocus::Worktree,
+            false,
+            "",
+            "enableworktree",
+            "启用工作树",
+        ),
+        (
+            ActionsFocus::Worktree,
+            true,
+            "",
+            "disableworktree",
+            "禁用工作树",
+        ),
+    ] {
+        for list_focused in [true, false] {
+            let mut state = DashboardState::new();
+            state.cwd_has_git_ancestor = true;
+            state.dispatch_worktree = worktree;
+            state.dispatch.set_text(draft);
+            state.focus_action(focus);
+            state.list_focused = list_focused;
+            let en = footer(&state, None);
+            assert!(en.contains(english), "{en}");
+            let zh = footer(&state, Some(&locale));
+            assert!(zh.contains(chinese), "{zh}");
+            assert!(!zh.contains(english), "{zh}");
+            assert!(zh.contains("快捷键"), "{zh}");
+            if list_focused {
+                assert!(zh.contains("输入"), "{zh}");
+            }
+            if !draft.is_empty() {
+                assert!(zh.contains("发送并打开"), "{zh}");
+            }
+            assert_eq!(state.dispatch.text(), draft);
+        }
+    }
+    let row = DashboardRowId::TopLevel(crate::app::agent::AgentId(0));
+    let mut state = DashboardState::new();
+    state.workspace_membership_mode = true;
+    state.focus_row(row.clone());
+    for (action, list_focused, armed, english, chinese) in [
+        (DashboardStopAction::Archive, true, false, "archive", "归档"),
+        (
+            DashboardStopAction::Close,
+            true,
+            true,
+            "confirmclose",
+            "确认关闭",
+        ),
+        (
+            DashboardStopAction::Archive,
+            true,
+            true,
+            "confirmarchive",
+            "确认归档",
+        ),
+        (
+            DashboardStopAction::Archive,
+            false,
+            true,
+            "archivethissession",
+            "归档此会话",
+        ),
+        (
+            DashboardStopAction::Stop,
+            false,
+            true,
+            "stopthissession",
+            "停止此会话",
+        ),
+    ] {
+        state.list_focused = list_focused;
+        state.selected_stop_action = Some(action);
+        state.delete_confirm = armed.then(|| (row.clone(), std::time::Instant::now()));
+        let en = footer(&state, None);
+        assert!(en.contains(english), "{en}");
+        let zh = footer(&state, Some(&locale));
+        assert!(zh.contains(chinese), "{zh}");
+        assert!(!zh.contains(english), "{zh}");
+    }
+}
+
 /// With a draft typed, Enter on `+ New Agent` sends it (from either pane), so the footer says `send`, never `create`.
 /// From the list pane Enter on a right-hand item still acts on the item (its label stays); from the input pane a draft always sends.
 #[test]

@@ -2250,7 +2250,10 @@ impl DashboardState {
         // Dashboard prompts keep display metadata while durable paths remain session-owned.
         pasted.session_image_path = None;
         pasted.staged_temp_path = None;
-        let completion = match self.dispatch.insert_image(pasted) {
+        let completion = match self
+            .dispatch
+            .insert_image_with_locale(pasted, Some(&self.ui_locale))
+        {
             Ok(()) => {
                 if let Some(preparation) = preparation {
                     self.pending_effects.push(
@@ -2345,7 +2348,10 @@ impl DashboardState {
         let preparation = pasted.preview_preparation();
         pasted.session_image_path = None;
         pasted.staged_temp_path = None;
-        let completion = match self.peek_reply.insert_image(pasted) {
+        let completion = match self
+            .peek_reply
+            .insert_image_with_locale(pasted, Some(&self.ui_locale))
+        {
             Ok(()) => {
                 if let Some(preparation) = preparation {
                     self.pending_effects.push(

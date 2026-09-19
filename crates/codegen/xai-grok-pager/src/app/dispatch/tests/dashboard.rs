@@ -476,45 +476,63 @@ fn dashboard_picker_mouse_selection_uses_surface_hit_areas() {
     ));
 }
 #[test]
-fn missing_workspace_row_toasts_without_remote_restore() {
-    use crate::views::dashboard::DashboardRowId;
-    let session_id = format!("dash-missing-{}", uuid::Uuid::new_v4());
-    let mut app = test_app();
-    app.workspace_dashboard_enabled = true;
-    app.active_view = ActiveView::AgentDashboard;
-    ensure_dashboard_state(&mut app);
-    app.workspace_membership
-        .set_snapshot_for_test(xai_grok_dashboard_store::WorkspaceSnapshot {
-            grouping: xai_grok_dashboard_store::Grouping::State,
-            members: vec![xai_grok_dashboard_store::Member {
-                session_id: xai_grok_dashboard_store::SessionId::new(session_id.clone()).unwrap(),
-                kind: xai_grok_dashboard_store::MemberKind::Build,
-                origin: xai_grok_dashboard_store::MemberOrigin::Local,
-                cwd: Some("/definitely/missing".to_owned()),
-                title: None,
-                model: None,
-                last_turn_summary: None,
-                is_worktree: false,
-                last_change_unix_ms: 1,
-                pin_rank: None,
-                order_rank: None,
-            }],
-            data_version: 1,
-        });
-    let effects = dispatch(
-        Action::DashboardAttach(DashboardRowId::Workspace {
-            session_id: session_id.clone(),
-        }),
-        &mut app,
-    );
-    assert!(effects.is_empty());
-    assert!(matches!(app.active_view, ActiveView::AgentDashboard));
-    assert_eq!(
-        app.dashboard
-            .as_ref()
-            .and_then(|dashboard| dashboard.error_toast.as_deref()),
-        Some("Session not found locally")
-    );
+fn zh_localization_missing_workspace_row_toasts_without_remote_restore() {
+    for chinese in [false, true] {
+        use crate::views::dashboard::DashboardRowId;
+        let session_id = format!("dash-missing-{}", uuid::Uuid::new_v4());
+        let mut app = test_app();
+        app.locale = std::sync::Arc::new(crate::locale::LocaleContext::new(
+            crate::locale::ResolvedLocale {
+                locale: if chinese {
+                    crate::locale::UiLocale::ZhCn
+                } else {
+                    crate::locale::UiLocale::EnUs
+                },
+                source: crate::locale::LocaleSource::Cli,
+            },
+        ));
+        app.workspace_dashboard_enabled = true;
+        app.active_view = ActiveView::AgentDashboard;
+        ensure_dashboard_state(&mut app);
+        app.workspace_membership.set_snapshot_for_test(
+            xai_grok_dashboard_store::WorkspaceSnapshot {
+                grouping: xai_grok_dashboard_store::Grouping::State,
+                members: vec![xai_grok_dashboard_store::Member {
+                    session_id: xai_grok_dashboard_store::SessionId::new(session_id.clone())
+                        .unwrap(),
+                    kind: xai_grok_dashboard_store::MemberKind::Build,
+                    origin: xai_grok_dashboard_store::MemberOrigin::Local,
+                    cwd: Some("/definitely/missing".to_owned()),
+                    title: None,
+                    model: None,
+                    last_turn_summary: None,
+                    is_worktree: false,
+                    last_change_unix_ms: 1,
+                    pin_rank: None,
+                    order_rank: None,
+                }],
+                data_version: 1,
+            },
+        );
+        let effects = dispatch(
+            Action::DashboardAttach(DashboardRowId::Workspace {
+                session_id: session_id.clone(),
+            }),
+            &mut app,
+        );
+        assert!(effects.is_empty());
+        assert!(matches!(app.active_view, ActiveView::AgentDashboard));
+        assert_eq!(
+            app.dashboard
+                .as_ref()
+                .and_then(|dashboard| dashboard.error_toast.as_deref()),
+            Some(if chinese {
+                "在本地找不到该会话"
+            } else {
+                "Session not found locally"
+            })
+        );
+    }
 }
 /// `app` as a dashboard v2 client over `store`, ready for writes.
 fn ready_workspace_app(
@@ -2651,71 +2669,116 @@ fn workspace_live_row_hidden_while_archive_is_in_flight() {
 /// Pin and reorder on a provisional row explain why nothing happened instead of failing silently.
 /// The wording follows the store: "yet" while the upsert can still land, read-only when it never will.
 #[test]
-fn workspace_layout_on_provisional_row_toasts() {
-    use crate::views::dashboard::DashboardRowId;
-    let (temp, store) = temp_store();
-    let snapshot = store.snapshot().unwrap();
-    let mut app = ready_workspace_app(test_app(), store);
-    ensure_dashboard_state(&mut app);
-    app.active_view = ActiveView::AgentDashboard;
-    let _ = dispatch_dashboard_dispatch(&mut app, "pin me".into(), false);
-    let new_id = *app.agents.keys().last().unwrap();
-    app.dashboard
-        .as_mut()
-        .unwrap()
-        .focus_row(DashboardRowId::TopLevel(new_id));
-    let order_before = app.workspace_membership.effective_manual_order();
-    assert!(dispatch_dashboard_toggle_pin(&mut app).is_empty());
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
-        Some("Session isn't saved to the workspace yet"),
-    );
-    app.dashboard.as_mut().unwrap().error_toast = None;
-    assert!(dispatch(Action::DashboardReorderDown, &mut app).is_empty());
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
-        Some("Session isn't saved to the workspace yet"),
-    );
-    assert_eq!(
-        app.workspace_membership.effective_manual_order(),
-        order_before,
-        "a provisional row must not take a manual-order slot",
-    );
-    let store =
-        xai_grok_dashboard_store::WorkspaceStore::open(&temp.path().join("workspace.db")).unwrap();
-    app.workspace_membership
-        .set_read_only_for_test(store, snapshot);
-    app.dashboard.as_mut().unwrap().error_toast = None;
-    assert!(dispatch_dashboard_toggle_pin(&mut app).is_empty());
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
-        Some("Dashboard workspace is read-only"),
-    );
+fn zh_localization_workspace_layout_on_provisional_row_toasts() {
+    for chinese in [false, true] {
+        use crate::views::dashboard::DashboardRowId;
+        let (temp, store) = temp_store();
+        let snapshot = store.snapshot().unwrap();
+        let mut app = ready_workspace_app(test_app(), store);
+        app.locale = std::sync::Arc::new(crate::locale::LocaleContext::new(
+            crate::locale::ResolvedLocale {
+                locale: if chinese {
+                    crate::locale::UiLocale::ZhCn
+                } else {
+                    crate::locale::UiLocale::EnUs
+                },
+                source: crate::locale::LocaleSource::Cli,
+            },
+        ));
+        ensure_dashboard_state(&mut app);
+        app.active_view = ActiveView::AgentDashboard;
+        let _ = dispatch_dashboard_dispatch(&mut app, "pin me".into(), false);
+        let new_id = *app.agents.keys().last().unwrap();
+        app.dashboard
+            .as_mut()
+            .unwrap()
+            .focus_row(DashboardRowId::TopLevel(new_id));
+        let order_before = app.workspace_membership.effective_manual_order();
+        assert!(dispatch_dashboard_toggle_pin(&mut app).is_empty());
+        assert_eq!(
+            app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+            Some(if chinese {
+                "会话尚未保存到工作区"
+            } else {
+                "Session isn't saved to the workspace yet"
+            }),
+        );
+        app.dashboard.as_mut().unwrap().error_toast = None;
+        assert!(dispatch(Action::DashboardReorderDown, &mut app).is_empty());
+        assert_eq!(
+            app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+            Some(if chinese {
+                "会话尚未保存到工作区"
+            } else {
+                "Session isn't saved to the workspace yet"
+            }),
+        );
+        assert_eq!(
+            app.workspace_membership.effective_manual_order(),
+            order_before,
+            "a provisional row must not take a manual-order slot",
+        );
+        let store =
+            xai_grok_dashboard_store::WorkspaceStore::open(&temp.path().join("workspace.db"))
+                .unwrap();
+        app.workspace_membership
+            .set_read_only_for_test(store, snapshot);
+        app.dashboard.as_mut().unwrap().error_toast = None;
+        assert!(dispatch_dashboard_toggle_pin(&mut app).is_empty());
+        assert_eq!(
+            app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+            Some(if chinese {
+                "当前 Grok 版本中的智能体面板工作区为只读"
+            } else {
+                "Dashboard workspace is read-only"
+            }),
+        );
+    }
 }
 #[test]
-fn workspace_layout_on_vanished_row_toasts_no_longer_in_workspace() {
-    use crate::views::dashboard::DashboardRowId;
-    let (_temp, store) = temp_store();
-    let mut app = ready_workspace_app(test_app(), store);
-    ensure_dashboard_state(&mut app);
-    app.active_view = ActiveView::AgentDashboard;
-    app.dashboard
-        .as_mut()
-        .unwrap()
-        .focus_row(DashboardRowId::Workspace {
-            session_id: "gone".into(),
-        });
-    assert!(dispatch_dashboard_toggle_pin(&mut app).is_empty());
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
-        Some("Session is no longer in the workspace"),
-    );
-    app.dashboard.as_mut().unwrap().error_toast = None;
-    assert!(dispatch(Action::DashboardReorderUp, &mut app).is_empty());
-    assert_eq!(
-        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
-        Some("Session is no longer in the workspace"),
-    );
+fn zh_localization_workspace_layout_on_vanished_row_toasts_no_longer_in_workspace() {
+    for chinese in [false, true] {
+        use crate::views::dashboard::DashboardRowId;
+        let (_temp, store) = temp_store();
+        let mut app = ready_workspace_app(test_app(), store);
+        app.locale = std::sync::Arc::new(crate::locale::LocaleContext::new(
+            crate::locale::ResolvedLocale {
+                locale: if chinese {
+                    crate::locale::UiLocale::ZhCn
+                } else {
+                    crate::locale::UiLocale::EnUs
+                },
+                source: crate::locale::LocaleSource::Cli,
+            },
+        ));
+        ensure_dashboard_state(&mut app);
+        app.active_view = ActiveView::AgentDashboard;
+        app.dashboard
+            .as_mut()
+            .unwrap()
+            .focus_row(DashboardRowId::Workspace {
+                session_id: "gone".into(),
+            });
+        assert!(dispatch_dashboard_toggle_pin(&mut app).is_empty());
+        assert_eq!(
+            app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+            Some(if chinese {
+                "会话已不在工作区中"
+            } else {
+                "Session is no longer in the workspace"
+            }),
+        );
+        app.dashboard.as_mut().unwrap().error_toast = None;
+        assert!(dispatch(Action::DashboardReorderUp, &mut app).is_empty());
+        assert_eq!(
+            app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+            Some(if chinese {
+                "会话已不在工作区中"
+            } else {
+                "Session is no longer in the workspace"
+            }),
+        );
+    }
 }
 #[test]
 fn workspace_row_ctrl_x_archives_membership_without_deleting_history() {
@@ -6359,49 +6422,67 @@ fn workspace_archive_keeps_conversation_twin_open_and_registered() {
     ));
 }
 #[test]
-fn confirmed_workspace_archive_reports_when_session_became_busy() {
-    let mut app = test_app_with_agent();
-    let id = AgentId(0);
-    app.agents.get_mut(&id).unwrap().session.session_id = Some(acp::SessionId::new("archive-race"));
-    app.workspace_dashboard_enabled = true;
-    app.workspace_membership
-        .set_snapshot_for_test(xai_grok_dashboard_store::WorkspaceSnapshot {
-            grouping: xai_grok_dashboard_store::Grouping::State,
-            members: vec![xai_grok_dashboard_store::Member {
-                session_id: xai_grok_dashboard_store::SessionId::new("archive-race").unwrap(),
-                kind: xai_grok_dashboard_store::MemberKind::Build,
-                origin: xai_grok_dashboard_store::MemberOrigin::Local,
-                cwd: Some("/tmp".into()),
-                title: Some("archive race".into()),
-                model: None,
-                last_turn_summary: None,
-                is_worktree: false,
-                last_change_unix_ms: 1,
-                pin_rank: None,
-                order_rank: None,
-            }],
-            data_version: 1,
-        });
-    ensure_dashboard_state(&mut app);
-    app.active_view = ActiveView::AgentDashboard;
-    app.dashboard
-        .as_mut()
-        .unwrap()
-        .focus_row(crate::views::dashboard::DashboardRowId::TopLevel(id));
-    assert!(dispatch_dashboard_stop(&mut app).is_empty());
-    app.agents.get_mut(&id).unwrap().session.loading_replay = true;
-    let effects = dispatch_dashboard_delete(&mut app);
-    assert!(effects.is_empty());
-    assert!(app.agents.contains_key(&id));
-    assert!(!app.workspace_membership.removal_pending_for_test(
-        &xai_grok_dashboard_store::SessionId::new("archive-race").unwrap()
-    ));
-    let dashboard = app.dashboard.as_ref().unwrap();
-    assert!(dashboard.delete_confirm.is_none());
-    assert_eq!(
-        dashboard.error_toast.as_deref(),
-        Some("Session became active; stop it before archiving")
-    );
+fn zh_localization_confirmed_workspace_archive_reports_when_session_became_busy() {
+    for chinese in [false, true] {
+        let mut app = test_app_with_agent();
+        app.locale = std::sync::Arc::new(crate::locale::LocaleContext::new(
+            crate::locale::ResolvedLocale {
+                locale: if chinese {
+                    crate::locale::UiLocale::ZhCn
+                } else {
+                    crate::locale::UiLocale::EnUs
+                },
+                source: crate::locale::LocaleSource::Cli,
+            },
+        ));
+        let id = AgentId(0);
+        app.agents.get_mut(&id).unwrap().session.session_id =
+            Some(acp::SessionId::new("archive-race"));
+        app.workspace_dashboard_enabled = true;
+        app.workspace_membership.set_snapshot_for_test(
+            xai_grok_dashboard_store::WorkspaceSnapshot {
+                grouping: xai_grok_dashboard_store::Grouping::State,
+                members: vec![xai_grok_dashboard_store::Member {
+                    session_id: xai_grok_dashboard_store::SessionId::new("archive-race").unwrap(),
+                    kind: xai_grok_dashboard_store::MemberKind::Build,
+                    origin: xai_grok_dashboard_store::MemberOrigin::Local,
+                    cwd: Some("/tmp".into()),
+                    title: Some("archive race".into()),
+                    model: None,
+                    last_turn_summary: None,
+                    is_worktree: false,
+                    last_change_unix_ms: 1,
+                    pin_rank: None,
+                    order_rank: None,
+                }],
+                data_version: 1,
+            },
+        );
+        ensure_dashboard_state(&mut app);
+        app.active_view = ActiveView::AgentDashboard;
+        app.dashboard
+            .as_mut()
+            .unwrap()
+            .focus_row(crate::views::dashboard::DashboardRowId::TopLevel(id));
+        assert!(dispatch_dashboard_stop(&mut app).is_empty());
+        app.agents.get_mut(&id).unwrap().session.loading_replay = true;
+        let effects = dispatch_dashboard_delete(&mut app);
+        assert!(effects.is_empty());
+        assert!(app.agents.contains_key(&id));
+        assert!(!app.workspace_membership.removal_pending_for_test(
+            &xai_grok_dashboard_store::SessionId::new("archive-race").unwrap()
+        ));
+        let dashboard = app.dashboard.as_ref().unwrap();
+        assert!(dashboard.delete_confirm.is_none());
+        assert_eq!(
+            dashboard.error_toast.as_deref(),
+            Some(if chinese {
+                "会话已恢复活动，请先停止再归档"
+            } else {
+                "Session became active; stop it before archiving"
+            })
+        );
+    }
 }
 #[test]
 fn workspace_overlay_ctrl_x_archives_settled_only_agent() {

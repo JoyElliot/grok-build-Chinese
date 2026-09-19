@@ -25,6 +25,15 @@ fn draw(
     in_overlay: bool,
     header: OverlayHeader<'_>,
 ) -> Buffer {
+    draw_with_locale(agent, registry, in_overlay, header, None)
+}
+fn draw_with_locale(
+    agent: &mut AgentView,
+    registry: &ActionRegistry,
+    in_overlay: bool,
+    header: OverlayHeader<'_>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Buffer {
     let (width, height) = agent.last_terminal_size;
     let area = Rect::new(0, 0, width, height);
     let bundle = BundleState::default();
@@ -43,6 +52,7 @@ fn draw(
         &mut Vec::new(),
         AppRenderParams {
             overlay_header: header,
+            locale,
             ..AppRenderParams::default()
         },
     );
@@ -148,6 +158,48 @@ fn plain_session_header_has_path_and_dashboard_button_only() {
         agent.handle_input(&click(dash.x, dash.y), &registry),
         InputOutcome::Action(Action::OpenDashboard)
     ));
+}
+
+#[test]
+fn zh_localization_dashboard_header_button_keeps_painted_hit_rect_and_action() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let registry = ActionRegistry::defaults();
+    for (locale, label) in [(None, "[Dashboard]"), (Some(&locale), "[智能体面板]")] {
+        for in_overlay in [false, true] {
+            let mut agent = agent_at(120);
+            let buf = draw_with_locale(
+                &mut agent,
+                &registry,
+                in_overlay,
+                OverlayHeader::default(),
+                locale,
+            );
+            let rect = agent.hit_dashboard.rect.expect("dashboard button");
+            assert_eq!(
+                rect.width,
+                unicode_width::UnicodeWidthStr::width(label) as u16
+            );
+            assert_eq!(text_at(&buf, rect).replace(' ', ""), label);
+            assert!(header_row(&agent, &buf).contains(PATH));
+            for x in [rect.x, rect.right() - 1] {
+                let outcome = agent.handle_input(&click(x, rect.y), &registry);
+                if in_overlay {
+                    assert!(matches!(
+                        outcome,
+                        InputOutcome::Action(Action::DashboardOverlayExit)
+                    ));
+                } else {
+                    assert!(matches!(
+                        outcome,
+                        InputOutcome::Action(Action::OpenDashboard)
+                    ));
+                }
+            }
+        }
+    }
 }
 /// Outside the overlay `[Dashboard]` follows the `/dashboard` feature gate: a disabled dashboard paints no dead button. Inside
 /// the overlay the button is the way back, so it stays regardless.

@@ -442,7 +442,10 @@ fn dispatch_dashboard_load_local_build(
         });
 
     let Some((resolved_id, resolved_cwd)) = resolved else {
-        app.show_toast("Session not found locally");
+        app.show_toast(
+            app.locale
+                .named_static_text("session.toast.not_found_local", "Session not found locally"),
+        );
         return vec![];
     };
 
@@ -2014,13 +2017,22 @@ fn workspace_layout_target(
 }
 
 fn refuse_workspace_layout(app: &mut AppView, refusal: impl Into<LayoutRefusal>) {
-    let message = match refusal.into() {
+    let (id, english) = match refusal.into() {
         LayoutRefusal::NotWorkspaceRow => return,
-        LayoutRefusal::NotFound => "Session is no longer in the workspace",
-        LayoutRefusal::ReadOnly => "Dashboard workspace is read-only",
-        LayoutRefusal::NotSavedYet => "Session isn't saved to the workspace yet",
+        LayoutRefusal::NotFound => (
+            "dashboard.toast.workspace_session_missing",
+            "Session is no longer in the workspace",
+        ),
+        LayoutRefusal::ReadOnly => (
+            "dashboard.toast.workspace_read_only",
+            "Dashboard workspace is read-only",
+        ),
+        LayoutRefusal::NotSavedYet => (
+            "dashboard.toast.workspace_session_unsaved",
+            "Session isn't saved to the workspace yet",
+        ),
     };
-    app.show_toast(message);
+    app.show_toast(app.locale.named_static_text(id, english));
 }
 
 pub(super) fn dispatch_dashboard_toggle_pin(app: &mut AppView) -> Vec<Effect> {
@@ -2655,7 +2667,10 @@ fn archive_dashboard_row(
                     .get(id)
                     .is_some_and(|agent| !dashboard_stop_readiness(agent).can_close())
             }) {
-                app.show_toast("Session became active; stop it before archiving");
+                app.show_toast(app.locale.named_static_text(
+                    "dashboard.toast.active_before_archive",
+                    "Session became active; stop it before archiving",
+                ));
                 return vec![];
             }
             (session_id, loaded_ids)

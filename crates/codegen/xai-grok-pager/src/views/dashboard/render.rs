@@ -17,7 +17,6 @@ use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
 use crate::render::line_utils::truncate_str;
 use crate::theme::Theme;
-use crate::util::format_time_ago;
 use crate::views::dashboard::row_title::RowTitle;
 
 fn dashboard_text<'a>(
@@ -1960,7 +1959,10 @@ fn render_row(
         && (state.hovered_row.as_ref() == Some(&row.id) || armed_delete == Some(&row.id));
     let delete_label = crate::glyphs::ballot_x_button();
     let delete_w = UnicodeWidthStr::width(delete_label) as u16;
-    let age = format_time_ago(row.last_change_at.elapsed().unwrap_or_default());
+    let age = super::format_time_ago_with_locale(
+        row.last_change_at.elapsed().unwrap_or_default(),
+        Some(state.ui_locale()),
+    );
     let age_w = UnicodeWidthStr::width(age.as_str()) as u16;
     // Each row pins its own age to the right edge. Chips, when present, sit
     // immediately left of ` · <age>`. Working rows never swap the age for delete.
@@ -3250,6 +3252,7 @@ fn render_footer_with_locale(
             }
             hints.push(HintItem::new(key!(Tab), "input"));
             ShortcutsBar::new(&hints)
+                .with_locale(locale)
                 .compact(4, Some(HintItem::new(help, "shortcuts")))
                 .render(inner, buf);
             return;

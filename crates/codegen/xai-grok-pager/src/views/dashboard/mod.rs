@@ -54,6 +54,37 @@ pub use state::{
     parse_filter, parse_row_state_token,
 };
 
+/// Localize age columns without changing their coarse time buckets.
+pub(crate) fn format_time_ago_with_locale(
+    elapsed: std::time::Duration,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
+    let text = |id: &str, english: &'static str| {
+        locale
+            .map(|locale| locale.named_static_text(id, english))
+            .unwrap_or(english)
+    };
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        return text("dashboard.time.just_now", "just now").to_string();
+    }
+    let (value, id, english) = if secs < 3_600 {
+        (secs / 60, "dashboard.time.minutes", "{value}m")
+    } else if secs < 86_400 {
+        (secs / 3_600, "dashboard.time.hours", "{value}h")
+    } else {
+        let days = secs / 86_400;
+        if days < 30 {
+            (days, "dashboard.time.days", "{value}d")
+        } else if days < 365 {
+            (days / 30, "dashboard.time.months", "{value}mo")
+        } else {
+            (days / 365, "dashboard.time.years", "{value}y")
+        }
+    };
+    text(id, english).replace("{value}", &value.to_string())
+}
+
 /// Top-level agents visible in the dashboard's row list, in the exact order [`render_dashboard`]
 /// paints them. "Previous" / "next" then follow what the user actually sees instead of the agent
 /// map's insertion order.
@@ -106,6 +137,33 @@ pub(crate) fn session_switch_hint_command(minimal: bool) -> Option<&'static str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zh_localization_dashboard_relative_time_preserves_bucket_boundaries() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        for (seconds, english, chinese) in [
+            (0, "just now", "刚刚"),
+            (59, "just now", "刚刚"),
+            (60, "1m", "1分钟前"),
+            (3_599, "59m", "59分钟前"),
+            (3_600, "1h", "1小时前"),
+            (86_399, "23h", "23小时前"),
+            (86_400, "1d", "1天前"),
+            (29 * 86_400, "29d", "29天前"),
+            (30 * 86_400, "1mo", "1个月前"),
+            (364 * 86_400, "12mo", "12个月前"),
+            (365 * 86_400, "1y", "1年前"),
+            (730 * 86_400, "2y", "2年前"),
+        ] {
+            let elapsed = std::time::Duration::from_secs(seconds);
+            assert_eq!(format_time_ago_with_locale(elapsed, None), english);
+            assert_eq!(format_time_ago_with_locale(elapsed, Some(&locale)), chinese);
+            assert_eq!(crate::util::format_time_ago(elapsed), english);
+        }
+    }
 
     /// Minimal mode always points at `/resume`: the dashboard is refused there no matter what the feature flag says, so the hint must not depend on it.
     /// Runs under the same serial key as the other `GROK_AGENT_DASHBOARD` env-mutating tests.

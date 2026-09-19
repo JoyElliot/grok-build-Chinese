@@ -2553,6 +2553,44 @@ fn zh_localization_feedback_writing_label_keeps_ordinal_and_tool_identity() {
     }
 }
 
+#[test]
+fn zh_localization_dashboard_waiting_labels_preserve_hook_names_and_telemetry() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    for (count, english, chinese) in [
+        (
+            1,
+            "Running PreToolUse {count} hook…",
+            "正在执行 PreToolUse {count} 钩子…",
+        ),
+        (
+            2,
+            "Running 2 PreToolUse {count} hooks…",
+            "正在执行 2 个 PreToolUse {count} 钩子…",
+        ),
+    ] {
+        let reason = WaitingReason::Hooks {
+            event_name: "PreToolUse {count}".to_string(),
+            count,
+        };
+        assert_eq!(reason.label(), english);
+        assert_eq!(reason.label_with_locale(Some(&locale)), chinese);
+        assert_eq!(reason.as_telemetry_label(), "waiting_hooks");
+    }
+    let reason = WaitingReason::PromptAck;
+    assert_eq!(
+        reason.label(),
+        "Waiting for the agent to accept the prompt…"
+    );
+    assert_eq!(
+        reason.label_with_locale(Some(&locale)),
+        "正在等待智能体接受输入…"
+    );
+    assert_eq!(reason.as_telemetry_label(), "waiting_prompt_ack");
+}
+
 /// First-party tools with long argument streams read as friendly phrases
 /// (wire spellings pinned per toolset); tiny-payload read-style tools keep
 /// the raw-name fallback.
