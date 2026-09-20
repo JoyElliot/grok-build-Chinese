@@ -403,6 +403,15 @@ impl LocaleContext {
         self.resolved.locale
     }
 
+    /// Display-only format for message timestamps, including their left padding.
+    pub fn message_timestamp_format(&self, expanded: bool) -> &'static str {
+        if expanded {
+            self.named_static_text("timestamp.message.expanded_format", "  %H:%M:%S | %b %d")
+        } else {
+            self.named_static_text("timestamp.message.short_format", "  %-I:%M %p")
+        }
+    }
+
     /// Get a static message, falling back to the complete English catalog.
     pub fn text(&self, key: TextKey) -> &'static str {
         let id = key.id();

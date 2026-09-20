@@ -831,7 +831,7 @@ impl Renderable for EntryRenderer<'_> {
         }
 
         // Overlay timestamp on the first content line for message blocks.
-        // Short format (h:mm AM/PM) by default; expands to full format (HH:mm:ss | MMM DD) when the mouse hovers over the timestamp area
+        // Locale-specific short time by default; adds seconds and date on hover.
         // Gated on appearance.show_timestamps (toggled via /timestamps).
         if self.appearance().show_timestamps
             && content_skip == 0
@@ -846,12 +846,11 @@ impl Renderable for EntryRenderer<'_> {
                     && mx >= content_area.x + content_area.width.saturating_sub(10)
                     && mx < content_area.x + content_area.width
             });
-            let ts_str = if ts_hovered {
-                ts.format("  %H:%M:%S | %b %d").to_string()
-            } else {
-                ts.format("  %-I:%M %p").to_string()
-            };
-            let ts_width = ts_str.len() as u16;
+            let locale = self.locale.cloned().unwrap_or_default();
+            let ts_str = ts
+                .format(locale.message_timestamp_format(ts_hovered))
+                .to_string();
+            let ts_width = unicode_width::UnicodeWidthStr::width(ts_str.as_str()) as u16;
             if content_area.width > ts_width + 1 && first_content_y < max_row {
                 let ts_x = content_area.x + content_area.width - ts_width;
                 let ts_style = Style::default().fg(self.theme.gray);
@@ -1204,6 +1203,47 @@ mod tests {
             rendered, expected,
             "Mouse-hovered timestamp should show expanded format '{expected}'"
         );
+    }
+
+    #[test]
+    fn test_timestamp_zh_localization_right_aligned() {
+        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+        use chrono::TimeZone;
+
+        let theme = Theme::current();
+        let locale = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Config,
+        });
+        for (block, row) in [
+            (RenderBlock::user_prompt("hello"), 1),
+            (RenderBlock::agent_message("hello"), 0),
+        ] {
+            let mut entry = ScrollbackEntry::new(block);
+            entry.created_at = Some(
+                chrono::Local
+                    .with_ymd_and_hms(2026, 9, 20, 13, 30, 4)
+                    .unwrap(),
+            );
+            for (hovered, expected) in [(false, "  13:30"), (true, "  13:30:04 | 9月20日")] {
+                let renderer = EntryRenderer::new(&entry, &theme)
+                    .with_locale(Some(&locale))
+                    .with_mouse_pos(hovered.then_some((73, row)));
+                let area = Rect::new(0, 0, 80, renderer.desired_height(80));
+                let mut buf = Buffer::empty(area);
+                renderer.render(area, &mut buf);
+                let right = area.right() - renderer.appearance().scrollback.layout.block_pad_right;
+                let mut x = right - unicode_width::UnicodeWidthStr::width(expected) as u16;
+                for ch in expected.chars() {
+                    assert_eq!(buf.cell((x, row)).unwrap().symbol(), ch.to_string());
+                    x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+                }
+                assert_eq!(
+                    x, right,
+                    "Chinese dates must end at the same right edge as short times"
+                );
+            }
+        }
     }
 
     #[test]

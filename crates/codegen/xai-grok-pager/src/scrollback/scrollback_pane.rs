@@ -619,7 +619,7 @@ impl ScrollbackPane {
         };
         let content_width_for_block = layout.content_width().saturating_sub(ts_reserved);
 
-        let ctx = entry.context_with_mode_and_budget(
+        let mut ctx = entry.context_with_mode_and_budget(
             content_width_for_block,
             mode,
             content_lines,
@@ -627,6 +627,9 @@ impl ScrollbackPane {
             is_selected,
             cwd,
         );
+        if let Some(locale) = &self.locale {
+            ctx.locale = locale.clone();
+        }
 
         // Published `block_line_idx` values index this budgeted output, while copy re-derives them without `max_lines`
         // The two agree only for blocks that ignore the budget
@@ -839,12 +842,10 @@ impl ScrollbackPane {
                     && mx >= content_area.x + content_area.width.saturating_sub(10)
                     && mx < content_area.x + content_area.width
             });
-            let ts_str = if ts_hovered {
-                ts.format("  %H:%M:%S | %b %d").to_string()
-            } else {
-                ts.format("  %-I:%M %p").to_string()
-            };
-            let ts_width = ts_str.len() as u16;
+            let ts_str = ts
+                .format(ctx.locale.message_timestamp_format(ts_hovered))
+                .to_string();
+            let ts_width = unicode_width::UnicodeWidthStr::width(ts_str.as_str()) as u16;
             if content_area.width > ts_width + 1
                 && first_content_y < content_area.y + content_area.height
             {
@@ -1223,6 +1224,58 @@ mod tests {
 
     // Pinned-header selectability is covered end to end by the sticky_header_drag_copy_pty e2e
     // Only the pushed/clip rebase branch needs a unit test (the PTY case never drags during a push)
+
+    #[test]
+    fn sticky_header_timestamp_zh_localization_right_aligned() {
+        use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+        use chrono::TimeZone;
+
+        let locale = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Config,
+        });
+        let theme = Theme::current();
+        let area = Rect::new(5, 7, 80, 3);
+        let mut state = ScrollbackState::new();
+        let mut appearance = AppearanceConfig::default();
+        appearance.scrollback.blocks.prompt.vpad = true;
+        let right = area.right() - appearance.scrollback.layout.block_pad_right;
+        state.set_appearance(appearance);
+        state.push_block(RenderBlock::user_prompt("hello"));
+        state.entry_mut(0).unwrap().created_at = Some(
+            chrono::Local
+                .with_ymd_and_hms(2026, 9, 20, 13, 30, 4)
+                .unwrap(),
+        );
+        let pane = ScrollbackPane::new().with_locale(Some(&locale));
+        for (hovered, expected) in [(false, "  13:30"), (true, "  13:30:04 | 9月20日")] {
+            let mut buf = Buffer::empty(area);
+            let mut scratch = ScratchBuffer::default();
+            pane.render_sticky_header(
+                &mut buf,
+                area,
+                &state,
+                0,
+                0,
+                &theme,
+                3,
+                0,
+                &mut scratch,
+                false,
+                hovered.then_some((right - 5, area.y + 1)),
+            )
+            .expect("prompt header should render");
+            let mut x = right - unicode_width::UnicodeWidthStr::width(expected) as u16;
+            for ch in expected.chars() {
+                assert_eq!(buf.cell((x, area.y + 1)).unwrap().symbol(), ch.to_string());
+                x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            }
+            assert_eq!(
+                x, right,
+                "sticky header must align Chinese dates by display width"
+            );
+        }
+    }
 
     /// A pushed header paints through a scratch buffer, so its lines must be rebased onto the rows that reached the screen; clipped rows are dropped.
     #[test]

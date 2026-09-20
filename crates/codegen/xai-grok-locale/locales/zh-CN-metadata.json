@@ -3489,5 +3489,7 @@
   "turn.waiting.hooks.many": "正在执行 {count} 个 {event_name} 钩子…",
   "turn.waiting.prompt_ack": "正在等待智能体接受输入…",
   "session.title.fallback": "会话 {id}",
-  "session.title.loading": "加载中…"
+  "session.title.loading": "加载中…",
+  "timestamp.message.expanded_format": "  %H:%M:%S | %-m月%-d日",
+  "timestamp.message.short_format": "  %H:%M"
 }
