@@ -152,6 +152,79 @@ try {
         Pop-Location
     }
 
+    Push-Location $fixtureRepo
+    try {
+        $fixtureTree = (& git rev-parse 'HEAD^{tree}').Trim()
+        $baseCommit = (& git rev-parse 'v1.0.1').Trim()
+        $localCommit = (& git rev-parse 'release-v1.0.9').Trim()
+        function New-NestedFixtureCommit([string] $Subject, [string[]] $Parents) {
+            $commitArgs = @('commit-tree', $fixtureTree, '-m', $Subject)
+            foreach ($parentCommit in $Parents) { $commitArgs += @('-p', $parentCommit) }
+            $commit = & git @commitArgs
+            if ($LASTEXITCODE -ne 0) { throw '无法创建嵌套合并 fixture 提交。' }
+            return $commit.Trim()
+        }
+        $upstreamCommit = New-NestedFixtureCommit 'Upstream change' @($baseCommit)
+        $innerMerge = New-NestedFixtureCommit '同步已审核上游' @($localCommit, $upstreamCommit)
+        $outerMerge = New-NestedFixtureCommit '合并同步审查 PR' @($localCommit, $innerMerge)
+        $laterCommit = New-NestedFixtureCommit '后续中文修复' @($outerMerge)
+        & git tag 'release-v1.0.10' $outerMerge
+        & git tag 'release-v1.0.11' $laterCommit
+        if ($LASTEXITCODE -ne 0) { throw '无法创建嵌套合并 fixture 标签。' }
+        $nestedMapPath = Join-Path $tempRoot 'nested-map.json'
+        $nestedMap = @{
+            schema = 1
+            entries = @(@{ sha = $upstreamCommit; source_subject = 'Upstream change'; title_zh = '上游中文更新' })
+            upstream_merges = @(@{
+                merge_sha = $innerMerge; first_parent = $localCommit
+                upstream_tip = $upstreamCommit; upstream_base = $baseCommit
+            })
+            local_merges = @($outerMerge)
+        }
+        function Write-NestedFixtureMap {
+            [IO.File]::WriteAllText($nestedMapPath, ($nestedMap | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
+        }
+        Write-NestedFixtureMap
+        $nestedPath = Join-Path $tempRoot 'nested.md'
+        $nestedArgs = @{
+            CurrentTag = 'release-v1.0.10'; OutputPath = $nestedPath
+            Repository = $repository; TranslationMapPath = $nestedMapPath
+            PublishedReleaseTags = @('release-v1.0.9')
+        }
+        & $generator @nestedArgs
+        $nested = Get-Content -LiteralPath $nestedPath -Raw
+        Assert-Contains $nested "[合并同步审查 PR](https://github.com/$repository/commit/$outerMerge)" '外层 PR 必须保留在本次更新中'
+        Assert-Contains $nested '## 上游更新' '嵌套的已审核上游合并必须生成独立区块'
+        Assert-Contains $nested "https://github.com/xai-org/grok-build/compare/$baseCommit...$upstreamCommit" '嵌套合并必须保留真实上游范围'
+        $upstreamLink = "https://github.com/xai-org/grok-build/commit/$upstreamCommit"
+        Assert-True (([regex]::Matches($nested, [regex]::Escape($upstreamLink))).Count -eq 1) '每条上游提交必须只列一次'
+        Assert-NotContains $nested "https://github.com/xai-org/grok-build/commit/$outerMerge" '本地 PR 不得伪装为上游提交'
+
+        $nestedMap.local_merges = @()
+        Write-NestedFixtureMap
+        Assert-Throws { & $generator @nestedArgs } '尚未在中文映射中分类' '未分类外层合并仍必须阻止发布'
+        $nestedMap.local_merges = @($outerMerge)
+        $nestedMap.upstream_merges[0].first_parent = $baseCommit
+        Write-NestedFixtureMap
+        Assert-Throws { & $generator @nestedArgs } '父提交与已审核定义不一致' '嵌套合并仍须校验父提交'
+        $nestedMap.upstream_merges[0].first_parent = $localCommit
+        $nestedMap.upstream_merges[0].upstream_base = $localCommit
+        Write-NestedFixtureMap
+        Assert-Throws { & $generator @nestedArgs } 'merge-base 与已审核定义不一致' '嵌套合并仍须校验上游基线'
+        $nestedMap.upstream_merges[0].upstream_base = $baseCommit
+        Write-NestedFixtureMap
+
+        $nestedArgs.PublishedReleaseTags = @()
+        & $generator @nestedArgs
+        Assert-NotContains (Get-Content -LiteralPath $nestedPath -Raw) '## 上游更新' '首个 Release 不得回溯嵌套祖先'
+        $nestedArgs.CurrentTag = 'release-v1.0.11'
+        $nestedArgs.PublishedReleaseTags = @('release-v1.0.10')
+        & $generator @nestedArgs
+        Assert-NotContains (Get-Content -LiteralPath $nestedPath -Raw) '## 上游更新' '已发布的嵌套上游合并不得再次列入'
+    } finally {
+        Pop-Location
+    }
+
     foreach ($invalidTag in @(
         'V1.0.0.1',
         'v1.0.0.0',

@@ -325,9 +325,21 @@ foreach ($record in $releaseCommits) {
         !$localMergeDefinitions.ContainsKey($record.Sha)) {
         throw "合并提交 $($record.ShortSha) 尚未在中文映射中分类为 upstream_merges 或 local_merges。"
     }
-    if (!$upstreamDefinitions.ContainsKey($record.Sha)) {
+}
+
+# A reviewed upstream merge can arrive inside a local PR merge. Keep the main
+# release list on the first-parent chain, but discover audited upstream merges
+# throughout the new range. A first release still describes only its own commit.
+$upstreamMergeIds = @($currentCommit)
+if ($previousTag) {
+    $mergeLog = Invoke-Git -Arguments @('rev-list', '--reverse', '--topo-order', '--merges', $range)
+    $upstreamMergeIds = @($mergeLog.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+foreach ($mergeId in $upstreamMergeIds) {
+    if (!$upstreamDefinitions.ContainsKey($mergeId)) {
         continue
     }
+    $record = Get-CommitRecord $mergeId
 
     $definition = $upstreamDefinitions[$record.Sha]
     if ($record.Parents.Count -ne 2 -or
