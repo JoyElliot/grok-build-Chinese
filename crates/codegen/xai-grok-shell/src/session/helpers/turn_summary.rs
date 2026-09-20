@@ -55,6 +55,13 @@ pub(crate) fn turn_summary_instruction(tag: &str, anchor: &str) -> String {
          Output ONLY the fragment: 5-12 words, plain text, glanceable on a status row. \
          Prefer the payload: answer, finding, change, or decision needed. \
          Do NOT call any tools — respond with plain text only.\n\n\
+         Language: if the last real user message contains Chinese, the summary MUST be \
+         concise Chinese and MUST NOT be translated into English. Check the full user \
+         message, not just its quoted beginning. Preserve code identifiers, commands, \
+         paths, and product names verbatim. Otherwise retain the default language and \
+         summarization behavior. Apply this Chinese-language requirement only to the \
+         last real user message, not to earlier turns, the assistant's reply, injected \
+         reminders, or the interface language.\n\n\
          Synthetic examples (style only — adapt to THIS turn, do not copy):\n\
          `queue_worker` shutdown race fixed; suite green\n\
          Payment retries: exp backoff in `billing/retry.rs`, 5× on 429\n\

@@ -1155,17 +1155,14 @@ async fn turn_summary_generate_persists_and_broadcasts() {
                 "generation task must be registered"
             );
 
-            // Drive the LocalSet until the task finishes and clears its slot.
-            for _ in 0..200 {
-                if actor.turn_summary_task.borrow().is_none() {
-                    break;
+            // Wait for actual mock-server I/O, not a fixed number of scheduler yields.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while actor.turn_summary_task.borrow().is_some() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
-                tokio::task::yield_now().await;
-            }
-            assert!(
-                actor.turn_summary_task.borrow().is_none(),
-                "slot must clear when generation finishes"
-            );
+            })
+            .await
+            .expect("slot must clear when generation finishes");
 
             let mut found_persist = false;
             while let Ok(msg) = prx.try_recv() {
