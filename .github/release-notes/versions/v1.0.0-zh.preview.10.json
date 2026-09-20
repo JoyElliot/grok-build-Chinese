@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "tag": "v1.0.0-zh.preview.10",
+  "previous_tag": "v1.0.0-zh.preview.5",
+  "community": [
+    {
+      "text": "补齐终端标题、通知状态、输入提示及媒体工具标题的中文显示，完善会话标题生成。",
+      "commits": [
+        "27da7c7bdda2df568df56eb45e9c9fce9855faa9"
+      ]
+    },
+    {
+      "text": "修复任务提示的语言传递，使任务面板正确使用中文提示。",
+      "commits": [
+        "20286037bd4cbb5fc6efb8e380133ecdd5f7184e"
+      ]
+    }
+  ],
+  "upstream": [],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。"
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "tag": "release-v1.0.16",
+  "previous_tag": "release-v1.0.13",
+  "community": [
+    {
+      "text": "新增 Windows 中文在线安装与便携部署，完善官方版检测和可选命令接管。",
+      "commits": [
+        "88718b5f4fd2e222ec4740a57cd0ba28561623cc",
+        "c86280de6d76f42b59da0948e2961bfd15c06b29"
+      ]
+    },
+    {
+      "text": "公告中文译文可独立更新，改善异步缓存并避免超时旧结果覆盖新译文。",
+      "commits": [
+        "94550bafa8f4259de4a0fe13c9b0f959925b2db3",
+        "4bbf80cb7c97c58c7279eab564a4d57efb2b6a09"
+      ]
+    },
+    {
+      "text": "三平台采用兼容旧客户端的单包更新协议，按包内清单核对完整文件。",
+      "commits": [
+        "ee37309f6e5042737346a7c0e18392ea2c956cb2"
+      ]
+    },
+    {
+      "text": "补全账号限流提示汉化，保留服务端错误详情。",
+      "commits": [
+        "1af2310903e01153db420d003d30de3e477d0752"
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "base": "bc7f02eddd3d84085849dc19ed216f11c23b0571",
+      "tip": "72a61251fcffb464bcc687aeb5a998e5a98ec0c9",
+      "label": "上游 1.0.13–1.0.16",
+      "highlights": [
+        {
+          "text": "完善企业模型策略与会话配置，并在会话绑定阶段提供 MCP 工具信息。",
+          "commits": [
+            "72a61251fcffb464bcc687aeb5a998e5a98ec0c9"
+          ]
+        },
+        {
+          "text": "支持多轮 MCP 交互表单，修复 /mcps OAuth 死锁和令牌过期时的工作保留问题。",
+          "commits": [
+            "72a61251fcffb464bcc687aeb5a998e5a98ec0c9"
+          ]
+        },
+        {
+          "text": "修复子智能体尚未就绪时发送消息失败，将长等待上限扩展到一小时。",
+          "commits": [
+            "72a61251fcffb464bcc687aeb5a998e5a98ec0c9"
+          ]
+        },
+        {
+          "text": "改进启动与设置缓存，减少重复加载。",
+          "commits": [
+            "bb7f39d5858cbf5e00de639367f59debbdcb0138"
+          ]
+        }
+      ]
+    }
+  ]
+}

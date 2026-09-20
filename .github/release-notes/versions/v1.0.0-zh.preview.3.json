@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "tag": "v1.0.0-zh.preview.3",
+  "previous_tag": "v0.2.121-zh.ci.6",
+  "community": [
+    {
+      "text": "接入社区 GitHub Release 更新源，支持稳定与预览通道，通过 Ctrl+U 确认更新。",
+      "commits": [
+        "4693d1a8b8d49e3daeef67c27d1d30cfad6afb66"
+      ]
+    },
+    {
+      "text": "更新前核对文件大小、SHA-256 和程序版本；失败时保留现有程序。",
+      "commits": [
+        "4693d1a8b8d49e3daeef67c27d1d30cfad6afb66"
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "base": "393430ee4934bc791b0d538f304a21691c517433",
+      "tip": "8a14c91d88875a831a38b3a066b1683116bcb31c",
+      "label": "上游 1.0.0",
+      "highlights": [
+        {
+          "text": "减少 Git 状态输出刷屏，完善会话信息查看及回顾的语言跟随。",
+          "commits": [
+            "afbc0fb710320c7add294c2106d447ecc3e3af2e"
+          ]
+        },
+        {
+          "text": "改进工作树识别、运行中立即发送消息及退出流程。",
+          "commits": [
+            "8a14c91d88875a831a38b3a066b1683116bcb31c"
+          ]
+        },
+        {
+          "text": "加快大型会话恢复，并完善 MCP 与工具服务的内存保护。",
+          "commits": [
+            "8a14c91d88875a831a38b3a066b1683116bcb31c"
+          ]
+        }
+      ]
+    }
+  ],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。",
+    "该早期版本同时提供 EXE 与完整 ZIP；完整安装请使用 ZIP 中的安装说明。"
+  ]
+}

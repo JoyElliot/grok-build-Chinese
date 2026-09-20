@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "tag": "v1.0.0",
+  "previous_tag": "v1.0.0-zh.preview.10",
+  "community": [
+    {
+      "text": "修复中文文档弹窗中宽字符和 Windows 换行导致的显示错位。",
+      "commits": [
+        "cdac9308bd5256ac5d05a4dd9a815d3deb214409",
+        "8308d3fe9d84b28eee1a405cfb15ab9ba73bf401"
+      ]
+    },
+    {
+      "text": "完善应用内更新日志的中文显示。",
+      "commits": [
+        "e64f0189c29b1f00e4575ad79020e64703e7c70c"
+      ]
+    }
+  ],
+  "upstream": [],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。",
+    "此版本尚无双击安装入口，请完整解压 ZIP 后按包内说明运行 Install-GrokZh.ps1。"
+  ]
+}

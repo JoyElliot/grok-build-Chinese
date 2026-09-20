@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "tag": "v1.0.8",
+  "previous_tag": "v1.0.5",
+  "community": [
+    {
+      "text": "补齐设置、前端界面和内置文档汉化，并改善更新提示。",
+      "commits": [
+        "3b9fff59010bdf29704dfda6a99d688b090f5a0f",
+        "d276a21b12ff25ee7de7ba51f49f443352f37e84"
+      ]
+    },
+    {
+      "text": "完善 Windows 兼容命令识别及接管后的启动提示。",
+      "commits": [
+        "e73254b1b7ef392011452a163eff3ac578a35c70",
+        "3a3fd2d8f120ced356055ecced48c5807eff5afc"
+      ]
+    },
+    {
+      "text": "保留旧版更新器可识别的安装包清单，提供社区更新通道的过渡版本。",
+      "commits": [
+        "b8d3b7e6c0ef7d5aeae4a2de0e41ef79995ae32d",
+        "4166c33672af9b340ccb813e1f6c42cff274c3e1"
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "base": "d92c5b0b8582fda358de1f97446aa74af44a464f",
+      "tip": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8",
+      "label": "上游 1.0.6–1.0.8",
+      "highlights": [
+        {
+          "text": "新增可配置状态栏，并完善审批记忆、长期拒绝规则和工作流暂停管理。",
+          "commits": [
+            "19d42e35c07a9c9244f03f6df0c4c353f970d4f9"
+          ]
+        },
+        {
+          "text": "支持在同一进程中切换精简与完整界面，新增自定义插件市场和插件智能体支持。",
+          "commits": [
+            "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8"
+          ]
+        },
+        {
+          "text": "支持 MCP 交互表单和反馈图片附件，改善子智能体并发与重试。",
+          "commits": [
+            "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8"
+          ]
+        }
+      ]
+    }
+  ],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。",
+    "这是旧 Windows 更新通道的桥接版本；后续三平台正式版本使用 release-v 标签。"
+  ]
+}

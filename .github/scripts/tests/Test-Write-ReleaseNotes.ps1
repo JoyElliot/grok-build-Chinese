@@ -2,297 +2,213 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Assert-True([bool] $Condition, [string] $Message) {
-    if (!$Condition) {
-        throw "断言失败：$Message"
-    }
+    if (!$Condition) { throw "断言失败：$Message" }
 }
-
 function Assert-Contains([string] $Text, [string] $Expected, [string] $Message) {
     Assert-True $Text.Contains($Expected) "$Message；缺少：$Expected"
 }
-
 function Assert-NotContains([string] $Text, [string] $Unexpected, [string] $Message) {
     Assert-True (!$Text.Contains($Unexpected)) "$Message；不应包含：$Unexpected"
 }
-
-function Assert-Throws([scriptblock] $Action, [string] $Expected, [string] $Message) {
-    try {
-        & $Action
-    } catch {
-        Assert-Contains $_.Exception.Message $Expected $Message
+function Assert-Throws([scriptblock] $Action, [string] $Expected) {
+    try { & $Action } catch {
+        Assert-Contains $_.Exception.Message $Expected '错误必须说明具体原因'
         return
     }
-    throw "断言失败：$Message；预期抛出异常。"
+    throw "断言失败：预期异常 $Expected"
 }
 
 $repoRoot = (& git rev-parse --show-toplevel).Trim()
-if ($LASTEXITCODE -ne 0 -or !$repoRoot) {
-    throw '必须在 Git 仓库中运行 Release notes 测试。'
-}
-$generator = Join-Path $repoRoot '.github\scripts\write-release-notes.ps1'
-$publishedTags = @(
-    'v0.2.121-zh.ci.6',
-    'v1.0.0-zh.preview.3',
-    'v1.0.0-zh.preview.4',
-    'v1.0.0-zh.preview.5',
-    'v1.0.0-zh.preview.10'
-)
-$repository = 'example/grok-build-Chinese'
+if ($LASTEXITCODE -ne 0 -or !$repoRoot) { throw '必须在 Git 仓库中运行 Release notes 测试。' }
+$generator = Join-Path $repoRoot '.github/scripts/write-release-notes.ps1'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) "grok-zh-release-notes-$([Guid]::NewGuid().ToString('N'))"
-[IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+$fixtureRepo = Join-Path $tempRoot 'repo'
+[IO.Directory]::CreateDirectory($fixtureRepo) | Out-Null
+# Retain the small fixture for diagnostics; CI runner teardown handles its lifetime.
+Write-Host "Release notes 测试目录：$tempRoot"
+& git -C $fixtureRepo init --quiet
+& git -C $fixtureRepo config user.name 'Release Notes Test'
+& git -C $fixtureRepo config user.email 'release-notes-test@example.invalid'
+[IO.File]::WriteAllText((Join-Path $fixtureRepo 'fixture.txt'), 'fixture')
+& git -C $fixtureRepo add fixture.txt
+& git -C $fixtureRepo commit --quiet -m 'internal base commit'
+if ($LASTEXITCODE -ne 0) { throw '创建 fixture 失败。' }
 
+Push-Location $fixtureRepo
 try {
-    $preview3Path = Join-Path $tempRoot 'preview3.md'
-    & $generator `
-        -CurrentTag 'v1.0.0-zh.preview.3' `
-        -OutputPath $preview3Path `
-        -Repository $repository `
-        -PublishedReleaseTags $publishedTags
-    $preview3 = Get-Content -LiteralPath $preview3Path -Raw
-
-    Assert-Contains $preview3 '## 本次更新' '正文必须使用中文区块标题'
-    Assert-Contains $preview3 '## Windows 中文安装' '正文必须提供在线安装入口'
-    $installCommand = [IO.File]::ReadAllText((Join-Path $repoRoot 'packaging/windows/ONLINE-INSTALL-COMMAND.txt'), [Text.Encoding]::UTF8).Trim()
-    Assert-Contains $preview3 $installCommand 'Release 正文必须使用统一的一行安装命令'
-    Assert-Contains $preview3 '此入口始终安装最新正式版' '历史或预览页必须说明在线入口版本选择'
-    Assert-Contains $preview3 '## 上游更新' '上游合并必须生成独立区块'
-    Assert-Contains $preview3 "[本地化 Windows 预览工作流](https://github.com/$repository/commit/a13165f9a03faec5c815e1cbddbd7fdb57e29643)" '本地提交标题必须翻译并链接完整 SHA'
-    Assert-Contains $preview3 "[同步上游 1.0.0 并完成中文本地化](https://github.com/$repository/commit/983bc53f89efde6692faabf2f7ac90fde8fd3f4e)" '上游 merge 提交必须翻译并链接'
-    Assert-Contains $preview3 '[查看上游变更范围 393430e...8a14c91](https://github.com/xai-org/grok-build/compare/393430ee4934bc791b0d538f304a21691c517433...8a14c91d88875a831a38b3a066b1683116bcb31c)' '上游更新必须包含 compare 链接'
-    Assert-Contains $preview3 '[同步上游代码快照](https://github.com/xai-org/grok-build/commit/afbc0fb710320c7add294c2106d447ecc3e3af2e)' '上游提交必须翻译并链接'
-    Assert-Contains $preview3 '[同步上游代码快照](https://github.com/xai-org/grok-build/commit/8a14c91d88875a831a38b3a066b1683116bcb31c)' '上游 tip 必须翻译并链接'
-    foreach ($englishSubject in @(
-        'ci: localize Windows preview workflow',
-        'merge: sync upstream 1.0.0 and complete Chinese localization',
-        'Synced from monorepo'
-    )) {
-        Assert-NotContains $preview3 $englishSubject 'Release 正文不得混入英文原始提交标题'
+    $tree = (& git rev-parse 'HEAD^{tree}').Trim()
+    $base = (& git rev-parse HEAD).Trim()
+    function New-Commit([string] $Message, [string[]] $Parents) {
+        $arguments = @('commit-tree', $tree, '-m', $Message)
+        foreach ($parentCommit in $Parents) { $arguments += @('-p', $parentCommit) }
+        $result = & git @arguments
+        if ($LASTEXITCODE -ne 0) { throw '创建 fixture 提交失败。' }
+        return $result.Trim()
     }
-    $preview3Bytes = [IO.File]::ReadAllBytes($preview3Path)
-    Assert-True (!($preview3Bytes.Length -ge 3 -and $preview3Bytes[0] -eq 0xEF -and $preview3Bytes[1] -eq 0xBB -and $preview3Bytes[2] -eq 0xBF)) 'Release notes 必须使用 UTF-8 无 BOM'
-
-    $preview4Path = Join-Path $tempRoot 'preview4.md'
-    & $generator `
-        -CurrentTag 'v1.0.0-zh.preview.4' `
-        -OutputPath $preview4Path `
-        -Repository $repository `
-        -PublishedReleaseTags $publishedTags
-    $preview4 = Get-Content -LiteralPath $preview4Path -Raw
-    Assert-Contains $preview4 "[发布前检查草稿发布](https://github.com/$repository/commit/e4b838ebaddf6802483c87e249a9cd8bec7ab131)" '英文提交必须使用中文映射'
-    Assert-Contains $preview4 "[将社区发布切换为仅 ZIP 资产](https://github.com/$repository/commit/9f8a1850a56a35ae8983c3ee7bf6f60782abb016)" '第二个英文提交必须使用中文映射'
-    Assert-NotContains $preview4 '## 上游更新' '普通发布区间不得伪造上游更新'
-    Assert-NotContains $preview4 'fix: inspect draft releases before publishing' '正文不得保留未翻译英文标题'
-
-    $emptyMap = Join-Path $tempRoot 'empty-map.json'
-    [IO.File]::WriteAllText($emptyMap, '{"schema":1,"entries":[]}', (New-Object Text.UTF8Encoding($false)))
-
-    $fixtureRepo = Join-Path $tempRoot 'same-commit-repo'
-    [IO.Directory]::CreateDirectory($fixtureRepo) | Out-Null
-    & git -C $fixtureRepo init --quiet
-    & git -C $fixtureRepo config user.name 'Release Notes Test'
-    & git -C $fixtureRepo config user.email 'release-notes-test@example.invalid'
-    [IO.File]::WriteAllText((Join-Path $fixtureRepo 'fixture.txt'), 'fixture', (New-Object Text.UTF8Encoding($false)))
-    & git -C $fixtureRepo add fixture.txt
-    & git -C $fixtureRepo commit --quiet -m '创建中文测试提交'
-    & git -C $fixtureRepo tag 'v1.0.0-zh.preview.1'
-    & git -C $fixtureRepo tag 'v1.0.0'
-    if ($LASTEXITCODE -ne 0) { throw '无法创建隔离的同提交 Tag fixture。' }
-    Push-Location $fixtureRepo
-    try {
-        $sameCommitPath = Join-Path $tempRoot 'same-commit.md'
-        & $generator `
-            -CurrentTag 'v1.0.0' `
-            -OutputPath $sameCommitPath `
-            -Repository $repository `
-            -TranslationMapPath $emptyMap `
-            -PublishedReleaseTags @('v1.0.0-zh.preview.1')
-        $sameCommit = Get-Content -LiteralPath $sameCommitPath -Raw
-        Assert-Contains $sameCommit '- （无新增提交）' '同一提交提升为新 Tag 时不应重复上一版提交'
-        Assert-NotContains $sameCommit '创建中文测试提交' '同提交 Tag 不得重复已有 Release 内容'
-    } finally {
-        Pop-Location
+    $local = New-Commit 'internal local commit' @($base)
+    $upstream = New-Commit 'Synced from monorepo' @($base)
+    $inner = New-Commit 'internal upstream merge' @($local, $upstream)
+    $current = New-Commit 'internal outer PR merge' @($local, $inner)
+    $future = New-Commit 'future changes' @($current)
+    & git tag v1.0.0 $base
+    & git tag v1.0.1-rc.1 $current
+    & git tag v1.0.1 $current
+    & git tag v1.0.2 $future
+    $notesPath = Join-Path $tempRoot 'notes.json'
+    $outputPath = Join-Path $tempRoot 'notes.md'
+    $valid = @{
+        schema = 1; tag = 'v1.0.1'; previous_tag = 'v1.0.0'
+        community = @(@{ text = '修复 <img src=x> & 中文显示'; commits = @($local) })
+        upstream = @(@{
+            base = $base; tip = $upstream; label = '上游 1.0.1'
+            highlights = @(@{ text = '改善上游会话恢复。'; commits = @($upstream) })
+        })
     }
-
-    [IO.File]::WriteAllText((Join-Path $fixtureRepo 'fixture.txt'), 'fixture-2', (New-Object Text.UTF8Encoding($false)))
-    & git -C $fixtureRepo add fixture.txt
-    & git -C $fixtureRepo commit --quiet -m '修复 <img src=x> & 链接'
-    & git -C $fixtureRepo tag 'v1.0.1'
-    Push-Location $fixtureRepo
-    try {
-        $escapedTitlePath = Join-Path $tempRoot 'escaped-title.md'
-        & $generator `
-            -CurrentTag 'v1.0.1' `
-            -OutputPath $escapedTitlePath `
-            -Repository $repository `
-            -TranslationMapPath $emptyMap `
-            -PublishedReleaseTags @('v1.0.0')
-        $escapedTitle = Get-Content -LiteralPath $escapedTitlePath -Raw
-        Assert-Contains $escapedTitle '修复 &lt;img src=x&gt; &amp; 链接' '提交标题中的 HTML 必须转义'
-        Assert-NotContains $escapedTitle '<img src=x>' '正文不得注入原始 HTML'
-    } finally {
-        Pop-Location
+    $validJson = $valid | ConvertTo-Json -Depth 10
+    function Reset-Notes { return $validJson | ConvertFrom-Json -AsHashtable }
+    function Write-Notes($Document) {
+        [IO.File]::WriteAllText($notesPath, ($Document | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
     }
-
-    [IO.File]::WriteAllText((Join-Path $fixtureRepo 'fixture.txt'), 'fixture-3', (New-Object Text.UTF8Encoding($false)))
-    & git -C $fixtureRepo add fixture.txt
-    & git -C $fixtureRepo commit --quiet -m '验证后续发布标签'
-    & git -C $fixtureRepo tag 'release-v1.0.9'
-    Push-Location $fixtureRepo
-    try {
-        $modernTagPath = Join-Path $tempRoot 'modern-tag.md'
-        & $generator `
-            -CurrentTag 'release-v1.0.9' `
-            -OutputPath $modernTagPath `
-            -Repository $repository `
-            -TranslationMapPath $emptyMap `
-            -PublishedReleaseTags @('v1.0.1')
-        $modernTag = Get-Content -LiteralPath $modernTagPath -Raw
-        Assert-Contains $modernTag '验证后续发布标签' 'release-v* 后续标签必须可生成更新日志'
-    } finally {
-        Pop-Location
+    $invoke = @{
+        CurrentTag = 'v1.0.1'; Repository = 'example/grok-build-Chinese'
+        OutputPath = $outputPath; NotesPath = $notesPath; PublishedReleaseTags = @('v1.0.0')
     }
-
-    Push-Location $fixtureRepo
-    try {
-        $fixtureTree = (& git rev-parse 'HEAD^{tree}').Trim()
-        $baseCommit = (& git rev-parse 'v1.0.1').Trim()
-        $localCommit = (& git rev-parse 'release-v1.0.9').Trim()
-        function New-NestedFixtureCommit([string] $Subject, [string[]] $Parents) {
-            $commitArgs = @('commit-tree', $fixtureTree, '-m', $Subject)
-            foreach ($parentCommit in $Parents) { $commitArgs += @('-p', $parentCommit) }
-            $commit = & git @commitArgs
-            if ($LASTEXITCODE -ne 0) { throw '无法创建嵌套合并 fixture 提交。' }
-            return $commit.Trim()
-        }
-        $upstreamCommit = New-NestedFixtureCommit 'Upstream change' @($baseCommit)
-        $innerMerge = New-NestedFixtureCommit '同步已审核上游' @($localCommit, $upstreamCommit)
-        $outerMerge = New-NestedFixtureCommit '合并同步审查 PR' @($localCommit, $innerMerge)
-        $laterCommit = New-NestedFixtureCommit '后续中文修复' @($outerMerge)
-        & git tag 'release-v1.0.10' $outerMerge
-        & git tag 'release-v1.0.11' $laterCommit
-        if ($LASTEXITCODE -ne 0) { throw '无法创建嵌套合并 fixture 标签。' }
-        $nestedMapPath = Join-Path $tempRoot 'nested-map.json'
-        $nestedMap = @{
-            schema = 1
-            entries = @(@{ sha = $upstreamCommit; source_subject = 'Upstream change'; title_zh = '上游中文更新' })
-            upstream_merges = @(@{
-                merge_sha = $innerMerge; first_parent = $localCommit
-                upstream_tip = $upstreamCommit; upstream_base = $baseCommit
-            })
-            local_merges = @($outerMerge)
-        }
-        function Write-NestedFixtureMap {
-            [IO.File]::WriteAllText($nestedMapPath, ($nestedMap | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
-        }
-        Write-NestedFixtureMap
-        $nestedPath = Join-Path $tempRoot 'nested.md'
-        $nestedArgs = @{
-            CurrentTag = 'release-v1.0.10'; OutputPath = $nestedPath
-            Repository = $repository; TranslationMapPath = $nestedMapPath
-            PublishedReleaseTags = @('release-v1.0.9')
-        }
-        & $generator @nestedArgs
-        $nested = Get-Content -LiteralPath $nestedPath -Raw
-        Assert-Contains $nested "[合并同步审查 PR](https://github.com/$repository/commit/$outerMerge)" '外层 PR 必须保留在本次更新中'
-        Assert-Contains $nested '## 上游更新' '嵌套的已审核上游合并必须生成独立区块'
-        Assert-Contains $nested "https://github.com/xai-org/grok-build/compare/$baseCommit...$upstreamCommit" '嵌套合并必须保留真实上游范围'
-        $upstreamLink = "https://github.com/xai-org/grok-build/commit/$upstreamCommit"
-        Assert-True (([regex]::Matches($nested, [regex]::Escape($upstreamLink))).Count -eq 1) '每条上游提交必须只列一次'
-        Assert-NotContains $nested "https://github.com/xai-org/grok-build/commit/$outerMerge" '本地 PR 不得伪装为上游提交'
-
-        $nestedMap.local_merges = @()
-        Write-NestedFixtureMap
-        Assert-Throws { & $generator @nestedArgs } '尚未在中文映射中分类' '未分类外层合并仍必须阻止发布'
-        $nestedMap.local_merges = @($outerMerge)
-        $nestedMap.upstream_merges[0].first_parent = $baseCommit
-        Write-NestedFixtureMap
-        Assert-Throws { & $generator @nestedArgs } '父提交与已审核定义不一致' '嵌套合并仍须校验父提交'
-        $nestedMap.upstream_merges[0].first_parent = $localCommit
-        $nestedMap.upstream_merges[0].upstream_base = $localCommit
-        Write-NestedFixtureMap
-        Assert-Throws { & $generator @nestedArgs } 'merge-base 与已审核定义不一致' '嵌套合并仍须校验上游基线'
-        $nestedMap.upstream_merges[0].upstream_base = $baseCommit
-        Write-NestedFixtureMap
-
-        $nestedArgs.PublishedReleaseTags = @()
-        & $generator @nestedArgs
-        Assert-NotContains (Get-Content -LiteralPath $nestedPath -Raw) '## 上游更新' '首个 Release 不得回溯嵌套祖先'
-        $nestedArgs.CurrentTag = 'release-v1.0.11'
-        $nestedArgs.PublishedReleaseTags = @('release-v1.0.10')
-        & $generator @nestedArgs
-        Assert-NotContains (Get-Content -LiteralPath $nestedPath -Raw) '## 上游更新' '已发布的嵌套上游合并不得再次列入'
-    } finally {
-        Pop-Location
+    Write-Notes $valid
+    & $generator @invoke
+    $body = Get-Content -LiteralPath $outputPath -Raw
+    Assert-Contains $body '## 社区版重点' '正文保留社区重点'
+    Assert-Contains $body '## 上游更新' '嵌套上游合并仍显示独立重点'
+    Assert-Contains $body '修复 &lt;img src=x&gt; &amp; 中文显示' '重点必须转义 HTML'
+    Assert-Contains $body "https://github.com/xai-org/grok-build/compare/$base...$upstream" '上游保留完整比较链接'
+    Assert-Contains $body '/compare/v1.0.0...v1.0.1' '社区基线比较链接'
+    Assert-Contains $body '<summary>下载与安装</summary>' '安装说明折叠'
+    Assert-Contains $body '始终安装最新正式版' '历史页面说明在线命令选择最新正式版'
+    $install = [IO.File]::ReadAllText((Join-Path $repoRoot 'packaging/windows/ONLINE-INSTALL-COMMAND.txt')).Trim()
+    Assert-Contains $body $install '统一在线安装命令'
+    foreach ($hidden in @('/commit/', 'Synced from monorepo', 'internal outer PR merge', '<img src=x>')) {
+        Assert-NotContains $body $hidden '正文不得变回提交清单或注入 HTML'
     }
+    $bytes = [IO.File]::ReadAllBytes($outputPath)
+    Assert-True (!($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'UTF-8 无 BOM'
 
-    foreach ($invalidTag in @(
-        'V1.0.0.1',
-        'v1.0.0.0',
-        'v1.0.0.01',
-        'v1.0.0.1.2',
-        'v1.0.0.1-alpha.1',
-        'v1.0.0.1١',
-        'v1.0.0.18446744073709551616',
-        'v1.0.0-alpha.18446744073709551616'
-    )) {
-        Assert-Throws {
-            & $generator `
-                -CurrentTag $invalidTag `
-                -OutputPath (Join-Path $tempRoot 'invalid-tag.md') `
-                -Repository $repository `
-                -TranslationMapPath $emptyMap `
-                -PublishedReleaseTags @()
-        } 'CurrentTag 必须' "非三段 Release Tag 必须被拒绝：$invalidTag"
-    }
-
-    $invalidSchemaMap = Join-Path $tempRoot 'invalid-schema-map.json'
-    [IO.File]::WriteAllText($invalidSchemaMap, '{"schema":true,"entries":[]}', (New-Object Text.UTF8Encoding($false)))
-    Assert-Throws {
-        & $generator `
-            -CurrentTag 'v0.2.121-zh.ci.6' `
-            -OutputPath (Join-Path $tempRoot 'invalid-schema.md') `
-            -Repository $repository `
-            -TranslationMapPath $invalidSchemaMap `
-            -PublishedReleaseTags @()
-    } 'schema 必须为 1' '映射 schema 必须严格使用整数 1'
-
-    $invalidEntriesMap = Join-Path $tempRoot 'invalid-entries-map.json'
-    [IO.File]::WriteAllText(
-        $invalidEntriesMap,
-        '{"schema":1,"entries":{"sha":"4072da692c799c4fa9eaa469b89af6aec9dcc56d"}}',
-        (New-Object Text.UTF8Encoding($false))
+    # Invoke-RestMethod emits a JSON array as one pipeline object. Include a
+    # historical prerelease with a stable-looking tag and a later same-SHA tag.
+    $apiReleases = @(
+        [pscustomobject]@{ tag_name = 'v1.0.0'; draft = $false; immutable = $true; prerelease = $true; published_at = '2026-01-01T00:00:00Z' },
+        [pscustomobject]@{ tag_name = 'v1.0.1'; draft = $false; immutable = $true; prerelease = $false; published_at = '2026-01-02T00:00:00Z' },
+        [pscustomobject]@{ tag_name = 'v1.0.1-rc.1'; draft = $false; immutable = $true; prerelease = $true; published_at = '2026-01-03T00:00:00Z' },
+        [pscustomobject]@{ tag_name = 'v1.0.2'; draft = $true; immutable = $false; prerelease = $false; published_at = $null }
     )
-    Assert-Throws {
-        & $generator `
-            -CurrentTag 'v0.2.121-zh.ci.6' `
-            -OutputPath (Join-Path $tempRoot 'invalid-entries.md') `
-            -Repository $repository `
-            -TranslationMapPath $invalidEntriesMap `
-            -PublishedReleaseTags @()
-    } '缺少 entries 数组' '映射 entries 必须严格使用 JSON 数组'
-
-    $firstReleasePath = Join-Path $tempRoot 'first-release.md'
-    & $generator `
-        -CurrentTag 'v0.2.121-zh.ci.6' `
-        -OutputPath $firstReleasePath `
-        -Repository $repository `
-        -PublishedReleaseTags @()
-    $firstRelease = Get-Content -LiteralPath $firstReleasePath -Raw
-    Assert-Contains $firstRelease "[完成简体中文文档](https://github.com/$repository/commit/4072da692c799c4fa9eaa469b89af6aec9dcc56d)" '首个 Release 只能记录当前 Tag 提交'
-    Assert-NotContains $firstRelease '同步上游并与官方版共享 Grok 用户数据' '首个 Release 不得回溯全部历史'
-
-    Assert-Throws {
-        & $generator `
-            -CurrentTag 'v0.2.121-zh.ci.6' `
-            -OutputPath (Join-Path $tempRoot 'must-fail.md') `
-            -Repository $repository `
-            -TranslationMapPath $emptyMap `
-            -PublishedReleaseTags $publishedTags
-    } '英文标题没有中文映射' '未翻译英文提交必须阻止发布'
-
-    'Release notes 中文、提交链接与上游更新测试通过。'
-} finally {
-    if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    function Invoke-RestMethod {
+        param($Method, $Uri, $Headers)
+        Write-Output -NoEnumerate $apiReleases
     }
+    $apiInvoke = $invoke.Clone()
+    $apiInvoke.Remove('PublishedReleaseTags')
+    $apiInvoke.GitHubToken = 'fixture-token'
+    & $generator @apiInvoke
+    Assert-Contains (Get-Content $outputPath -Raw) '/compare/v1.0.0...v1.0.1' 'API 数组展开、历史预发布基线与时间截断'
+    Remove-Item Function:Invoke-RestMethod
+
+    $bad = Reset-Notes; $bad.community[0].commits = @($future); Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '来源提交未包含在目标版本'
+    $bad = Reset-Notes; $bad.community[0].commits = @($base); Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '来源提交已属于上一版'
+    $bad = Reset-Notes; $bad.upstream[0].highlights[0].commits = @($local); Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '来源提交未包含在目标版本'
+    $bad = Reset-Notes; $bad.upstream[0].base = $future; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '不是当前版本包含的有效祖先范围'
+    $bad = Reset-Notes; $bad.upstream += $bad.upstream[0]; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '上游范围重复'
+    $bad = Reset-Notes; $bad.previous_tag = $null; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '基线与已发布历史不一致'
+    $bad = Reset-Notes; $bad.schema = $true; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } 'schema 必须为整数 1'
+    $bad = Reset-Notes; $bad.tag = 'v1.0.2'; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } 'tag 与当前标签不一致'
+    $bad = Reset-Notes; $bad.community[0].text = 'English only'; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '非空单行文本'
+    $bad = Reset-Notes; $bad.community[0].text = "中文`n换行"; Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '非空单行文本'
+    $bad = Reset-Notes; $bad.community = @(); $bad.upstream = @(); Write-Notes $bad
+    Assert-Throws { & $generator @invoke } '至少需要一条社区或上游重点'
+    $onlyUpstream = Reset-Notes; $onlyUpstream.community = @(); Write-Notes $onlyUpstream
+    & $generator @invoke
+    Assert-NotContains (Get-Content $outputPath -Raw) '## 社区版重点' '只有上游更新时不捏造社区改动'
+
+    # A fork may skip upstream releases. Both intermediate and latest changes
+    # belong in its next release, but already published upstream changes do not.
+    $middleUpstream = New-Commit 'intermediate upstream version' @($upstream)
+    $latestUpstream = New-Commit 'latest upstream version' @($middleUpstream)
+    $nextFork = New-Commit 'next periodic upstream sync' @($current, $latestUpstream)
+    & git tag v1.0.3 $nextFork
+    $cumulative = Reset-Notes
+    $cumulative.tag = 'v1.0.3'; $cumulative.previous_tag = 'v1.0.1'; $cumulative.community = @()
+    $cumulative.upstream[0].base = $upstream; $cumulative.upstream[0].tip = $latestUpstream
+    $cumulative.upstream[0].highlights = @(
+        @{ text = '纳入中间版本新增能力。'; commits = @($middleUpstream) },
+        @{ text = '纳入最新版本恢复修复。'; commits = @($latestUpstream) }
+    )
+    $cumulativeInvoke = $invoke.Clone()
+    $cumulativeInvoke.CurrentTag = 'v1.0.3'; $cumulativeInvoke.PublishedReleaseTags = @('v1.0.1', 'v1.0.0')
+    Write-Notes $cumulative
+    & $generator @cumulativeInvoke
+    $cumulativeBody = Get-Content $outputPath -Raw
+    Assert-Contains $cumulativeBody '纳入中间版本新增能力' '跨版本同步不能只展示最新单版'
+    Assert-Contains $cumulativeBody '纳入最新版本恢复修复' '保留最新版本重点'
+    Assert-Contains $cumulativeBody "/compare/$upstream...$latestUpstream" '覆盖上次到本次的完整上游范围'
+    $cumulative.upstream[0].base = $base
+    Write-Notes $cumulative
+    Assert-Throws { & $generator @cumulativeInvoke } '上游基线必须等于上一版与本次上游的共同祖先'
+
+    $first = Reset-Notes; $first.tag = 'v1.0.0'; $first.previous_tag = $null
+    $first.community[0].commits = @($base); $first.upstream = @(); Write-Notes $first
+    $invoke.CurrentTag = 'v1.0.0'; $invoke.PublishedReleaseTags = @()
+    & $generator @invoke
+    Assert-NotContains (Get-Content $outputPath -Raw) '/compare/' '首发无虚构基线'
+
+    $promotion = Reset-Notes; $promotion.previous_tag = 'v1.0.1-rc.1'
+    $promotion.community[0] = @{ text = '预发布验证完成，提升为正式版。'; commits = @($current) }
+    $promotion.upstream = @(); Write-Notes $promotion
+    $invoke.CurrentTag = 'v1.0.1'; $invoke.PublishedReleaseTags = @('v1.0.1-rc.1', 'v1.0.0')
+    & $generator @invoke
+    Assert-Contains (Get-Content $outputPath -Raw) '/compare/v1.0.1-rc.1...v1.0.1' '支持同提交正式提升'
+
+    foreach ($invalid in @('V1.0.0', 'v1.0.0.1', 'v01.0.0', 'v1.0.0+build', 'v1.0.0-rc.01', 'v1.0.0-alpha.18446744073709551616')) {
+        $invoke.CurrentTag = $invalid
+        Assert-Throws { & $generator @invoke } 'CurrentTag 必须'
+    }
+    $invoke.CurrentTag = 'v1.0.1'; $invoke.NotesPath = Join-Path $tempRoot 'missing.json'
+    Assert-Throws { & $generator @invoke } '缺少经过整理的中文发布说明'
+} finally { Pop-Location }
+
+# Validate every curated version against the real Git history without network access.
+$records = @{}
+foreach ($file in Get-ChildItem (Join-Path $repoRoot '.github/release-notes/versions') -Filter '*.json') {
+    $record = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+    Assert-True ($file.BaseName -ceq $record.tag) '文件名必须与 Tag 一致'
+    $records[$record.tag] = @{ Document = $record; Path = $file.FullName }
 }
+$validatedCount = 0
+foreach ($tag in ($records.Keys | Sort-Object)) {
+    & git show-ref --verify --quiet "refs/tags/$tag"
+    if ($LASTEXITCODE -eq 1) {
+        Write-Host "尚未创建 $tag 标签；实际范围由发布计划在打标签后核验。"
+        $global:LASTEXITCODE = 0
+        continue
+    }
+    if ($LASTEXITCODE -ne 0) { throw "无法检查标签：$tag" }
+    $earlier = [Collections.Generic.List[string]]::new()
+    $previous = $records[$tag].Document.previous_tag
+    while ($previous) {
+        Assert-True (!$earlier.Contains($previous) -and $previous -cne $tag) '版本基线不能循环'
+        Assert-True $records.ContainsKey($previous) '前序版本必须保留说明'
+        $earlier.Add($previous)
+        $previous = $records[$previous].Document.previous_tag
+    }
+    & $generator -CurrentTag $tag -Repository 'JoyElliot/grok-build-Chinese' `
+        -NotesPath $records[$tag].Path -PublishedReleaseTags $earlier.ToArray() `
+        -OutputPath (Join-Path $tempRoot "$tag.md")
+    $validatedCount++
+}
+Write-Host "Release notes 回归通过；已核验 $validatedCount 份已打标签版本说明的来源和范围。"

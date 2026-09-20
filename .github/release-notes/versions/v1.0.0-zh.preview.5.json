@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "tag": "v1.0.0-zh.preview.5",
+  "previous_tag": "v1.0.0-zh.preview.4",
+  "community": [
+    {
+      "text": "Windows 安装器采用中文提示，安装前核对必需文件和 SHA-256 清单。",
+      "commits": [
+        "10a45874a147f72f93d48bbaab79b407ca548704"
+      ]
+    },
+    {
+      "text": "支持独立安装目录、用户 PATH 和可选兼容命令，保留共享用户数据及官方命令备份。",
+      "commits": [
+        "10a45874a147f72f93d48bbaab79b407ca548704"
+      ]
+    }
+  ],
+  "upstream": [],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。"
+  ]
+}

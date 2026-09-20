@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "tag": "v1.0.5",
+  "previous_tag": "v1.0.3",
+  "community": [
+    {
+      "text": "补齐会话信息、权限选项、子智能体状态和“立即运行”提示的中文显示。",
+      "commits": [
+        "558e22c9ed517111fb84ebb0da53e7391b3956a8",
+        "1f30563e919dcbed7cd131b511c030aad0d5bccc",
+        "d7ff8ef4328f5b27e9b1db77f2acc420d4926c90"
+      ]
+    },
+    {
+      "text": "新增问题反馈和社区讨论入口。",
+      "commits": [
+        "29b222694acc3de8ed99cffd8c2ff71bce0d2066"
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "base": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "tip": "d92c5b0b8582fda358de1f97446aa74af44a464f",
+      "label": "上游 1.0.4–1.0.5",
+      "highlights": [
+        {
+          "text": "支持通过 GROK_CONFIG 和 GROK_CONFIG_PATH 覆盖配置，并改善阿拉伯语和波斯语排版。",
+          "commits": [
+            "d6a22a1aed70b58d30a0f82a1a2a76ce1301631e"
+          ]
+        },
+        {
+          "text": "完善会话同意提示与权限记录，强化工作树自动清理的安全检查。",
+          "commits": [
+            "5163763e703c319e4554c2f455535c5adb6e51e8",
+            "d92c5b0b8582fda358de1f97446aa74af44a464f"
+          ]
+        },
+        {
+          "text": "改进会话信息摘要及目标模式下的消息队列处理。",
+          "commits": [
+            "9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4",
+            "d92c5b0b8582fda358de1f97446aa74af44a464f"
+          ]
+        }
+      ]
+    }
+  ],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "tag": "release-v1.0.13",
+  "previous_tag": "release-v1.0.12",
+  "community": [
+    {
+      "text": "修复 Linux 归档过大导致的自动更新问题，提供可正常升级的三平台统一正式版。",
+      "commits": [
+        "748ebb0fa8289657e3926eb9a7ca26cdf5b217f2"
+      ]
+    }
+  ],
+  "upstream": [],
+  "notices": [
+    "从 1.0.12 预发布升级的 Linux 用户，建议使用本版或更新正式版的完整安装包。"
+  ]
+}

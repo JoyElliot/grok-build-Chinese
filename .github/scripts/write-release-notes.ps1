@@ -10,7 +10,7 @@ param(
 
     [string] $GitHubToken = $env:GH_TOKEN,
 
-    [string] $TranslationMapPath,
+    [string] $NotesPath,
 
     [string] $UpstreamRepository = 'xai-org/grok-build',
 
@@ -73,342 +73,208 @@ if (!(Test-RepositoryName $Repository)) {
 if (!(Test-RepositoryName $UpstreamRepository)) {
     throw "UpstreamRepository 必须是 owner/name：$UpstreamRepository"
 }
-if (!$TranslationMapPath) {
-    $githubRoot = Split-Path -Parent $PSScriptRoot
-    $TranslationMapPath = Join-Path (Join-Path $githubRoot 'release-notes') 'commit-titles.zh-CN.json'
+if (!$NotesPath) {
+    $NotesPath = Join-Path $PSScriptRoot "../release-notes/versions/$CurrentTag.json"
 }
-if (!(Test-Path -LiteralPath $TranslationMapPath -PathType Leaf)) {
-    throw "缺少提交标题中文映射：$TranslationMapPath"
+if (!(Test-Path -LiteralPath $NotesPath -PathType Leaf)) {
+    throw "缺少经过整理的中文发布说明：$NotesPath；请先编写版本重点，不自动回退为提交清单。"
 }
 
 function Invoke-Git {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments,
-        [switch] $AllowFailure
-    )
-
+    param([string[]] $Arguments, [switch] $AllowFailure)
     $output = @(& git @Arguments 2>&1)
     $exitCode = $LASTEXITCODE
     $global:LASTEXITCODE = 0
     if ($exitCode -ne 0 -and !$AllowFailure) {
         throw "git $($Arguments -join ' ') 失败（exit $exitCode）：$($output -join [Environment]::NewLine)"
     }
-    [pscustomobject]@{
-        ExitCode = $exitCode
-        Lines = @($output | ForEach-Object { $_.ToString() })
-    }
+    [pscustomobject]@{ ExitCode = $exitCode; Lines = @($output | ForEach-Object { $_.ToString() }) }
 }
-
-function Get-CommitRecord([string] $Commit) {
-    $shaResult = Invoke-Git -Arguments @('rev-parse', '--verify', "$Commit^{commit}")
-    $sha = $shaResult.Lines[0].Trim().ToLowerInvariant()
-    if ($sha -notmatch '^[0-9a-f]{40}$') {
-        throw "Git 未返回有效的完整提交 SHA：$Commit -> $sha"
-    }
-    $parentsResult = Invoke-Git -Arguments @('rev-list', '--parents', '-n', '1', $sha)
-    $parts = @($parentsResult.Lines[0].Trim() -split '\s+')
-    $subjectResult = Invoke-Git -Arguments @(
-        '-c', 'i18n.logOutputEncoding=UTF-8',
-        'show', '-s', '--format=%s', $sha
-    )
-    [pscustomobject]@{
-        Sha = $sha
-        ShortSha = $sha.Substring(0, 7)
-        Parents = @($parts | Select-Object -Skip 1)
-        Subject = $subjectResult.Lines[0]
-    }
+function Resolve-Commit([string] $Ref) {
+    $result = Invoke-Git -Arguments @('rev-parse', '--verify', "$Ref^{commit}")
+    $sha = $result.Lines[0].Trim().ToLowerInvariant()
+    if ($sha -notmatch '^[0-9a-f]{40}$') { throw "无效提交：$Ref" }
+    return $sha
 }
-
-function Read-TranslationMap([string] $Path) {
-    $document = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    if (!$document.PSObject.Properties['schema'] -or
-        ($document.schema -isnot [int] -and $document.schema -isnot [long]) -or
-        $document.schema -ne 1) {
-        throw "提交标题中文映射 schema 必须为 1：$Path"
-    }
-    if (!$document.PSObject.Properties['entries'] -or
-        $null -eq $document.entries -or
-        $document.entries -isnot [System.Collections.IList]) {
-        throw "提交标题中文映射缺少 entries 数组：$Path"
-    }
-
-    $bySha = @{}
-    foreach ($entry in @($document.entries)) {
-        $sha = ([string]$entry.sha).ToLowerInvariant()
-        $sourceSubject = [string]$entry.source_subject
-        $title = [string]$entry.title_zh
-        if ($sha -notmatch '^[0-9a-f]{40}$') {
-            throw "中文映射包含无效提交 SHA：$sha"
-        }
-        if ($bySha.ContainsKey($sha)) {
-            throw "中文映射包含重复提交 SHA：$sha"
-        }
-        if ([string]::IsNullOrWhiteSpace($sourceSubject) -or $sourceSubject -match '[\x00-\x1F\x7F]') {
-            throw "中文映射 source_subject 必须是非空单行文本：$sha"
-        }
-        if ([string]::IsNullOrWhiteSpace($title) -or $title -match '[\x00-\x1F\x7F]' -or !(Test-ContainsChinese $title)) {
-            throw "中文映射 title_zh 必须是包含中文的非空单行文本：$sha"
-        }
-        $bySha[$sha] = [pscustomobject]@{
-            SourceSubject = $sourceSubject
-            Title = $title
-        }
-    }
-    return $bySha
+function Test-Ancestor([string] $Ancestor, [string] $Descendant) {
+    $result = Invoke-Git -Arguments @('merge-base', '--is-ancestor', $Ancestor, $Descendant) -AllowFailure
+    if ($result.ExitCode -gt 1) { throw "无法核验提交祖先关系：$Ancestor -> $Descendant" }
+    return $result.ExitCode -eq 0
 }
-
-$translations = Read-TranslationMap $TranslationMapPath
-
-function Resolve-ChineseTitle($Record) {
-    if ($Record.Subject -match '^[A-Za-z][A-Za-z0-9_-]*(?:\([^)]+\))?!?:\s*(?<body>.+)$' -and
-        (Test-ContainsChinese $matches.body)) {
-        return $matches.body
-    }
-    if (Test-ContainsChinese $Record.Subject) {
-        return $Record.Subject
-    }
-    if (!$translations.ContainsKey($Record.Sha)) {
-        throw "提交 $($Record.ShortSha) 的英文标题没有中文映射：$($Record.Subject)"
-    }
-    $translation = $translations[$Record.Sha]
-    if ($translation.SourceSubject -cne $Record.Subject) {
-        throw "提交 $($Record.ShortSha) 的 source_subject 与 Git 历史不一致：map=$($translation.SourceSubject) git=$($Record.Subject)"
-    }
-    return $translation.Title
-}
-
-function New-CommitLine($Record, [string] $Repo) {
-    $title = ConvertTo-MarkdownLinkText (Resolve-ChineseTitle $Record)
-    return "- [$title](https://github.com/$Repo/commit/$($Record.Sha)) (``$($Record.ShortSha)``)"
-}
-
 function Get-PublishedReleaseTags {
-    if (!$GitHubToken -or !$Repository) {
-        throw '必须提供 GitHub token 和 repository，防止把失败但残留的 Git tag 误当作已发布基线。'
-    }
-
+    if (!$GitHubToken) { throw '必须提供 GitHub token 或 PublishedReleaseTags 以核对已发布基线。' }
     $headers = @{
         Accept = 'application/vnd.github+json'
         Authorization = "Bearer $GitHubToken"
         'X-GitHub-Api-Version' = '2022-11-28'
     }
-    $tags = [System.Collections.Generic.List[string]]::new()
+    $releases = [System.Collections.Generic.List[object]]::new()
     for ($page = 1; ; $page++) {
-        $uri = "https://api.github.com/repos/$Repository/releases?per_page=100&page=$page"
-        $pageResult = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
-        $releases = @($pageResult)
-        foreach ($release in $releases) {
-            $tagName = [string]$release.tag_name
-            $tagVersion = Get-ReleaseTagVersion $tagName
-            $tagPrerelease = $tagVersion -and $tagVersion.Contains('-')
-            if (!$release.draft -and $release.immutable -and
-                ([bool]$release.prerelease -eq $tagPrerelease) -and
-                $tagVersion) {
-                $tags.Add([string]$release.tag_name)
+        # Assign before wrapping: Invoke-RestMethod emits a JSON array as one
+        # pipeline object, so @(Invoke-RestMethod ...) would nest the page.
+        $pageResult = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/releases?per_page=100&page=$page" -Headers $headers
+        $items = @($pageResult)
+        foreach ($release in $items) {
+            # Historical releases may have a prerelease display name but a stable
+            # tag. Notes editing must preserve that metadata, not reinterpret it.
+            if (!$release.draft -and $release.immutable -and (Test-ReleaseTag $release.tag_name)) {
+                $releases.Add($release)
             }
         }
-        if ($releases.Count -lt 100) { break }
+        if ($items.Count -lt 100) { break }
     }
-    return @($tags)
+    $current = @($releases | Where-Object { $_.tag_name -ceq $CurrentTag })
+    $eligible = @($releases)
+    if ($current.Count -eq 1) {
+        $eligible = @($eligible | Where-Object { [datetime]$_.published_at -lt [datetime]$current[0].published_at })
+    }
+    return @($eligible | Sort-Object { [datetime]$_.published_at } -Descending | ForEach-Object { $_.tag_name })
 }
 
-$currentCommitRecord = Get-CommitRecord $CurrentTag
-$currentCommit = $currentCommitRecord.Sha
+$document = Get-Content -LiteralPath $NotesPath -Raw | ConvertFrom-Json
+foreach ($field in @('schema', 'tag', 'previous_tag', 'community', 'upstream')) {
+    if (!$document.PSObject.Properties[$field]) { throw "发布说明缺少字段：$field" }
+}
+if (($document.schema -isnot [int] -and $document.schema -isnot [long]) -or $document.schema -ne 1) {
+    throw '发布说明 schema 必须为整数 1。'
+}
+if ($document.tag -isnot [string] -or $document.tag -cne $CurrentTag) { throw '发布说明 tag 与当前标签不一致。' }
+if ($null -ne $document.previous_tag -and ($document.previous_tag -isnot [string] -or !(Test-ReleaseTag $document.previous_tag))) {
+    throw 'previous_tag 必须为有效 Release 标签或 null。'
+}
+if ($document.community -isnot [System.Collections.IList]) { throw 'community 必须为重点数组。' }
+if ($document.upstream -isnot [System.Collections.IList]) { throw 'upstream 必须为数组。' }
+if ($document.community.Count -eq 0 -and $document.upstream.Count -eq 0) { throw '发布说明至少需要一条社区或上游重点。' }
+$currentCommit = Resolve-Commit $CurrentTag
 if ($PSBoundParameters.ContainsKey('PublishedReleaseTags')) {
     $publishedTags = @($PublishedReleaseTags)
-    foreach ($tag in $publishedTags) {
-        if (!(Test-ReleaseTag $tag)) {
-            throw "PublishedReleaseTags 包含无效 Tag：$tag"
-        }
-    }
 } else {
     $publishedTags = @(Get-PublishedReleaseTags)
 }
-
+$publishedByCommit = @{}
+foreach ($tag in $publishedTags) {
+    if (!(Test-ReleaseTag $tag)) { throw "PublishedReleaseTags 包含无效 Tag：$tag" }
+    if ($tag -ceq $CurrentTag) { continue }
+    $commit = Resolve-Commit $tag
+    if (!$publishedByCommit.ContainsKey($commit)) { $publishedByCommit[$commit] = $tag }
+}
 $previousTag = $null
-$firstParentCommits = Invoke-Git -Arguments @('rev-list', '--first-parent', $currentCommit) -AllowFailure
-if ($firstParentCommits.ExitCode -eq 0) {
-    $publishedByCommit = @{}
-    foreach ($tag in $publishedTags) {
-        if ($tag -eq $CurrentTag) { continue }
-        $tagCommitResult = Invoke-Git -Arguments @('rev-parse', '--verify', "$tag^{commit}") -AllowFailure
-        if ($tagCommitResult.ExitCode -ne 0 -or $tagCommitResult.Lines.Count -eq 0) {
-            throw "已发布 Release Tag 无法在本地 Git 历史中解析：$tag"
-        }
-        $tagCommit = $tagCommitResult.Lines[0].Trim().ToLowerInvariant()
-        if (!$publishedByCommit.ContainsKey($tagCommit)) {
-            $publishedByCommit[$tagCommit] = $tag
+$firstParents = Invoke-Git -Arguments @('rev-list', '--first-parent', $currentCommit)
+foreach ($commit in $firstParents.Lines) {
+    if ($publishedByCommit.ContainsKey($commit)) { $previousTag = $publishedByCommit[$commit]; break }
+}
+if ([string]$document.previous_tag -cne [string]$previousTag) {
+    throw "发布说明基线与已发布历史不一致：notes=$($document.previous_tag) actual=$previousTag"
+}
+$previousCommit = if ($previousTag) { Resolve-Commit $previousTag } else { $null }
+
+function Get-HighlightText($Entry, [string] $Tip, [string] $Base, [string] $Context) {
+    if (!$Entry.PSObject.Properties['text'] -or $Entry.text -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($Entry.text) -or $Entry.text -match '[\x00-\x1F\x7F]' -or
+        !(Test-ContainsChinese $Entry.text)) { throw "$Context 重点必须为包含中文的非空单行文本。" }
+    if (!$Entry.PSObject.Properties['commits'] -or $Entry.commits -isnot [System.Collections.IList] -or $Entry.commits.Count -eq 0) {
+        throw "$Context 重点缺少来源 commits 数组。"
+    }
+    foreach ($source in $Entry.commits) {
+        if ($source -isnot [string] -or $source -cnotmatch '^[0-9a-f]{40}$') { throw "$Context 来源必须使用完整提交 SHA。" }
+        $sourceCommit = Resolve-Commit $source
+        if (!(Test-Ancestor $sourceCommit $Tip)) { throw "$Context 来源提交未包含在目标版本：$source" }
+        if ($Base -and $Base -cne $Tip -and (Test-Ancestor $sourceCommit $Base)) {
+            throw "$Context 来源提交已属于上一版或范围基线：$source"
         }
     }
-    foreach ($commit in $firstParentCommits.Lines) {
-        $candidate = $commit.Trim().ToLowerInvariant()
-        if ($publishedByCommit.ContainsKey($candidate)) {
-            $previousTag = $publishedByCommit[$candidate]
-            break
-        }
-    }
+    return ConvertTo-MarkdownLinkText $Entry.text
 }
-
-if ($previousTag) {
-    $range = "$previousTag..$CurrentTag"
-    $log = Invoke-Git -Arguments @('rev-list', '--reverse', '--first-parent', $range)
-    $releaseCommitIds = @($log.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    Write-Host "Release notes 基线：$previousTag"
-} else {
-    $releaseCommitIds = @($currentCommit)
-    Write-Host 'Release notes 基线：无已发布 Release，仅记录当前 Tag 提交。'
-}
-
-$releaseCommits = @($releaseCommitIds | ForEach-Object { Get-CommitRecord $_ })
 $lines = [System.Collections.Generic.List[string]]::new()
-$lines.Add('## 本次更新')
-$lines.Add('')
-if ($releaseCommits.Count -eq 0) {
-    $lines.Add('- （无新增提交）')
-} else {
-    foreach ($record in $releaseCommits) {
-        $lines.Add((New-CommitLine $record $Repository))
-    }
+if ($document.community.Count -gt 0) {
+    $lines.Add('## 社区版重点')
+    $lines.Add('')
 }
-
-$upstreamDefinitions = @{}
-$localMergeDefinitions = @{}
-$mapDocument = Get-Content -LiteralPath $TranslationMapPath -Raw | ConvertFrom-Json
-if ($mapDocument.PSObject.Properties['upstream_merges']) {
-    if ($null -eq $mapDocument.upstream_merges -or
-        $mapDocument.upstream_merges -isnot [System.Collections.IList]) {
-        throw "提交标题中文映射 upstream_merges 必须是数组：$TranslationMapPath"
-    }
-    foreach ($definition in @($mapDocument.upstream_merges)) {
-        $mergeSha = ([string]$definition.merge_sha).ToLowerInvariant()
-        $firstParent = ([string]$definition.first_parent).ToLowerInvariant()
-        $upstreamTip = ([string]$definition.upstream_tip).ToLowerInvariant()
-        $upstreamBase = ([string]$definition.upstream_base).ToLowerInvariant()
-        foreach ($value in @($mergeSha, $firstParent, $upstreamTip, $upstreamBase)) {
-            if ($value -notmatch '^[0-9a-f]{40}$') {
-                throw "上游合并定义包含无效 SHA：$value"
+foreach ($entry in $document.community) {
+    $text = Get-HighlightText $entry $currentCommit $previousCommit '社区版'
+    $lines.Add("- $text")
+}
+$upstreamLinks = [System.Collections.Generic.List[string]]::new()
+if ($document.upstream.Count -gt 0) {
+    if ($lines.Count -gt 0) { $lines.Add('') }
+    $lines.Add('## 上游更新')
+    $seenRanges = @{}
+    foreach ($group in $document.upstream) {
+        foreach ($field in @('base', 'tip', 'label', 'highlights')) {
+            if (!$group.PSObject.Properties[$field]) { throw "上游范围缺少字段：$field" }
+        }
+        if ($group.base -isnot [string] -or $group.tip -isnot [string] -or
+            $group.base -cnotmatch '^[0-9a-f]{40}$' -or $group.tip -cnotmatch '^[0-9a-f]{40}$') {
+            throw '上游范围必须使用完整提交 SHA。'
+        }
+        $base = Resolve-Commit $group.base
+        $tip = Resolve-Commit $group.tip
+        if ($base -ceq $tip -or !(Test-Ancestor $base $tip) -or !(Test-Ancestor $tip $currentCommit)) {
+            throw '上游范围不是当前版本包含的有效祖先范围。'
+        }
+        if ($previousCommit -and (!(Test-Ancestor $base $previousCommit) -or (Test-Ancestor $tip $previousCommit))) {
+            throw '上游范围与上一版基线不一致。'
+        }
+        if ($previousCommit) {
+            $mergeBases = (Invoke-Git -Arguments @('merge-base', '--all', $previousCommit, $tip)).Lines
+            if ($mergeBases.Count -ne 1 -or $mergeBases[0] -cne $base) {
+                throw "上游基线必须等于上一版与本次上游的共同祖先：configured=$base actual=$($mergeBases -join ',')"
             }
         }
-        if ($upstreamDefinitions.ContainsKey($mergeSha)) {
-            throw "上游合并定义包含重复 merge_sha：$mergeSha"
+        $range = "$base...$tip"
+        if ($seenRanges.ContainsKey($range)) { throw '上游范围重复。' }
+        $seenRanges[$range] = $true
+        if ($group.label -isnot [string] -or [string]::IsNullOrWhiteSpace($group.label) -or $group.label -match '[\x00-\x1F\x7F]') {
+            throw '上游范围 label 必须为非空单行文本。'
         }
-        $upstreamDefinitions[$mergeSha] = [pscustomobject]@{
-            FirstParent = $firstParent
-            Tip = $upstreamTip
-            Base = $upstreamBase
+        if ($group.highlights -isnot [System.Collections.IList] -or $group.highlights.Count -eq 0) {
+            throw '上游范围缺少 highlights 重点数组。'
         }
-    }
-}
-if ($mapDocument.PSObject.Properties['local_merges']) {
-    if ($null -eq $mapDocument.local_merges -or
-        $mapDocument.local_merges -isnot [System.Collections.IList]) {
-        throw "提交标题中文映射 local_merges 必须是数组：$TranslationMapPath"
-    }
-    foreach ($merge in @($mapDocument.local_merges)) {
-        $mergeSha = ([string]$merge).ToLowerInvariant()
-        if ($mergeSha -notmatch '^[0-9a-f]{40}$') {
-            throw "本地合并定义包含无效 SHA：$mergeSha"
-        }
-        if ($localMergeDefinitions.ContainsKey($mergeSha) -or $upstreamDefinitions.ContainsKey($mergeSha)) {
-            throw "合并提交存在重复分类：$mergeSha"
-        }
-        $localMergeDefinitions[$mergeSha] = $true
-    }
-}
-
-$upstreamGroups = [System.Collections.Generic.List[object]]::new()
-$seenUpstreamCommits = @{}
-foreach ($record in $releaseCommits) {
-    if ($record.Parents.Count -gt 1 -and
-        !$upstreamDefinitions.ContainsKey($record.Sha) -and
-        !$localMergeDefinitions.ContainsKey($record.Sha)) {
-        throw "合并提交 $($record.ShortSha) 尚未在中文映射中分类为 upstream_merges 或 local_merges。"
-    }
-}
-
-# A reviewed upstream merge can arrive inside a local PR merge. Keep the main
-# release list on the first-parent chain, but discover audited upstream merges
-# throughout the new range. A first release still describes only its own commit.
-$upstreamMergeIds = @($currentCommit)
-if ($previousTag) {
-    $mergeLog = Invoke-Git -Arguments @('rev-list', '--reverse', '--topo-order', '--merges', $range)
-    $upstreamMergeIds = @($mergeLog.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-}
-foreach ($mergeId in $upstreamMergeIds) {
-    if (!$upstreamDefinitions.ContainsKey($mergeId)) {
-        continue
-    }
-    $record = Get-CommitRecord $mergeId
-
-    $definition = $upstreamDefinitions[$record.Sha]
-    if ($record.Parents.Count -ne 2 -or
-        $record.Parents[0] -cne $definition.FirstParent -or
-        $record.Parents[1] -cne $definition.Tip) {
-        throw "上游合并 $($record.ShortSha) 的父提交与已审核定义不一致。"
-    }
-    $baseResult = Invoke-Git -Arguments @('merge-base', $definition.FirstParent, $definition.Tip)
-    $actualBase = $baseResult.Lines[0].Trim().ToLowerInvariant()
-    if ($actualBase -cne $definition.Base) {
-        throw "上游合并 $($record.ShortSha) 的 merge-base 与已审核定义不一致：map=$($definition.Base) git=$actualBase"
-    }
-    $upstreamResult = Invoke-Git -Arguments @('rev-list', '--reverse', '--topo-order', "$($definition.Base)..$($definition.Tip)")
-    $upstreamCommits = [System.Collections.Generic.List[object]]::new()
-    foreach ($commit in $upstreamResult.Lines) {
-        $upstreamRecord = Get-CommitRecord $commit.Trim()
-        if (!$seenUpstreamCommits.ContainsKey($upstreamRecord.Sha)) {
-            $seenUpstreamCommits[$upstreamRecord.Sha] = $true
-            $upstreamCommits.Add($upstreamRecord)
-        }
-    }
-    $upstreamGroups.Add([pscustomobject]@{
-        MergeTitle = Resolve-ChineseTitle $record
-        Base = $definition.Base
-        Tip = $definition.Tip
-        Commits = $upstreamCommits
-    })
-}
-
-if ($upstreamGroups.Count -gt 0) {
-    $lines.Add('')
-    $lines.Add('## 上游更新')
-    foreach ($group in $upstreamGroups) {
+        $label = ConvertTo-MarkdownLinkText $group.label
         $lines.Add('')
-        $lines.Add("### $(ConvertTo-MarkdownLinkText $group.MergeTitle)")
-        $compareText = "$($group.Base.Substring(0, 7))...$($group.Tip.Substring(0, 7))"
-        $lines.Add("- [查看上游变更范围 $compareText](https://github.com/$UpstreamRepository/compare/$($group.Base)...$($group.Tip))")
-        foreach ($upstreamRecord in $group.Commits) {
-            $lines.Add((New-CommitLine $upstreamRecord $UpstreamRepository))
+        $lines.Add("$label：")
+        $lines.Add('')
+        foreach ($entry in $group.highlights) {
+            $text = Get-HighlightText $entry $tip $base '上游'
+            $lines.Add("- $text")
+        }
+        $upstreamLinks.Add("[上游完整变更（$label）](https://github.com/$UpstreamRepository/compare/$range)")
+    }
+}
+if ($document.PSObject.Properties['notices']) {
+    if ($document.notices -isnot [System.Collections.IList]) { throw 'notices 必须为数组。' }
+    if ($document.notices.Count -gt 0) {
+        $lines.Add(''); $lines.Add('## 安装与兼容性'); $lines.Add('')
+        foreach ($notice in $document.notices) {
+            if ($notice -isnot [string] -or [string]::IsNullOrWhiteSpace($notice) -or
+                $notice -match '[\x00-\x1F\x7F]' -or !(Test-ContainsChinese $notice)) { throw '兼容性说明必须为中文单行文本。' }
+            $lines.Add("- $(ConvertTo-MarkdownLinkText $notice)")
         }
     }
 }
-
+$lines.Add('')
+$links = [System.Collections.Generic.List[string]]::new()
+if ($previousTag) { $links.Add("[完整变更](https://github.com/$Repository/compare/$previousTag...$CurrentTag)") }
+foreach ($link in $upstreamLinks) { $links.Add($link) }
+if ($links.Count -gt 0) { $lines.Add(($links -join ' · ')); $lines.Add('') }
 $commandPath = Join-Path $PSScriptRoot '../../packaging/windows/ONLINE-INSTALL-COMMAND.txt'
 $installCommand = [IO.File]::ReadAllText($commandPath, [Text.Encoding]::UTF8).Trim()
 if (!$installCommand -or $installCommand.Contains("`n") -or $installCommand.Contains("`r")) {
     throw 'Windows 在线安装命令必须为非空单行。'
 }
+$lines.Add('<details>')
+$lines.Add('<summary>下载与安装</summary>')
 $lines.Add('')
-$lines.Add('## Windows 中文安装')
-$lines.Add('')
-$lines.Add('在 PowerShell 中粘贴下面一行，按中文菜单安装、更新或创建便携版。此入口始终安装最新正式版；本页为历史版或预发布时，请从下方附件手动下载对应版本。')
+$lines.Add('本版本安装包见下方附件。以下在线命令始终安装最新正式版；安装历史版或预发布版时，请下载对应附件。')
 $lines.Add('')
 $lines.Add('```powershell')
 $lines.Add($installCommand)
 $lines.Add('```')
 $lines.Add('')
-$lines.Add('默认与官方版共存，无需管理员权限。完整说明见 [Windows 安装文档](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/windows/INSTALL-WINDOWS.md)。')
-
+$lines.Add('默认与官方版共存，无需管理员权限。[Windows 安装说明](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/windows/INSTALL-WINDOWS.md) · [macOS 安装说明](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/macos/INSTALL-MACOS.md) · [Linux 安装说明](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/linux/INSTALL-LINUX.md)')
+$lines.Add('')
+$lines.Add('</details>')
 $parent = Split-Path -Parent $OutputPath
-if ($parent) {
-    [IO.Directory]::CreateDirectory($parent) | Out-Null
-}
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[IO.File]::WriteAllText(
-    $OutputPath,
-    (($lines -join [Environment]::NewLine) + [Environment]::NewLine),
-    $utf8NoBom
-)
-
-$linkedCommitCount = $releaseCommits.Count + $seenUpstreamCommits.Count
-Write-Host "Release notes 已写入 $OutputPath（$linkedCommitCount 条带链接提交）。"
+if ($parent) { [IO.Directory]::CreateDirectory($parent) | Out-Null }
+[IO.File]::WriteAllText($OutputPath, (($lines -join "`n") + "`n"), (New-Object Text.UTF8Encoding($false)))
+Write-Host "已生成 $CurrentTag 重点说明：$OutputPath"

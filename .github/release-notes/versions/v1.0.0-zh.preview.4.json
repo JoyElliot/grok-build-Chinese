@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "tag": "v1.0.0-zh.preview.4",
+  "previous_tag": "v1.0.0-zh.preview.3",
+  "community": [
+    {
+      "text": "社区更新改用完整 ZIP 包，增加归档结构与包内 SHA-256 清单校验。",
+      "commits": [
+        "9f8a1850a56a35ae8983c3ee7bf6f60782abb016"
+      ]
+    },
+    {
+      "text": "默认只检查更新信息，由 Ctrl+U 确认下载；附带工具通过完整安装器同步。",
+      "commits": [
+        "9f8a1850a56a35ae8983c3ee7bf6f60782abb016"
+      ]
+    }
+  ],
+  "upstream": [],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。"
+  ]
+}

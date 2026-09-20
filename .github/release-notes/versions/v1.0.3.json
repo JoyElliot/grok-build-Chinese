@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "tag": "v1.0.3",
+  "previous_tag": "v1.0.0",
+  "community": [
+    {
+      "text": "补全 Grok 4.6 相关中文界面，中文请求优先生成中文计划步骤。",
+      "commits": [
+        "d40ac9c591b3a131613baea04e001315e59a2df1",
+        "a9babde66566bd023f4db56848156ade6eee55b1"
+      ]
+    },
+    {
+      "text": "防止社区预览版被自动降级到较旧版本。",
+      "commits": [
+        "ba61115eae6d34e7f99fc931243378b8cdc08608"
+      ]
+    },
+    {
+      "text": "新增 Windows 双击安装入口，并将可选的官方命令接管独立展示。",
+      "commits": [
+        "e377ad881961ba26358bb4604b2aaca3c51a3def"
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "base": "8a14c91d88875a831a38b3a066b1683116bcb31c",
+      "tip": "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+      "label": "上游 1.0.1–1.0.3",
+      "highlights": [
+        {
+          "text": "默认模型更新为 Grok 4.6，并完善计划草稿保留和图像能力处理。",
+          "commits": [
+            "eb267feff13129e568df38fb6fdf0ceb65f735d6"
+          ]
+        },
+        {
+          "text": "Git 差异统计纳入未跟踪文件，修复折行输入时 Home/End 的定位。",
+          "commits": [
+            "75e73f3d6ac0350d211f12ae7d57c2c0aad72576"
+          ]
+        },
+        {
+          "text": "完善运行中发送消息、会话重命名和工作树交互。",
+          "commits": [
+            "b13fa526f5112c0b20dad5f1f2300d3d3b127895",
+            "be713136d2a69080743a3f6b3c72077057e5948f"
+          ]
+        },
+        {
+          "text": "改进 Windows 用户目录识别及 MCP 协议兼容性。",
+          "commits": [
+            "eb267feff13129e568df38fb6fdf0ceb65f735d6",
+            "e5fd4816d43260c15ba785f103990c1ed6cea230"
+          ]
+        }
+      ]
+    }
+  ],
+  "notices": [
+    "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。",
+    "默认使用“一键安装.cmd”；只有需要接管 grok、agent 命令时，才使用可选替换入口。"
+  ]
+}
