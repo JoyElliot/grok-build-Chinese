@@ -197,8 +197,8 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  windows-x64-gnu:
-    name: Windows x64 GNU 构建
+  windows-x64-gnu-validation:
+    name: Windows x64 GNU 发布验证
     needs: release-plan
     runs-on: windows-2022
     timeout-minutes: 180
@@ -209,6 +209,8 @@ jobs:
       ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
       LEGACY_RELEASE: ${{ needs.release-plan.outputs.legacy_release }}
       CARGO_BUILD_JOBS: "4"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_CACHE_SCHEMA: v2
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
       CARGO_HTTP_TIMEOUT: "120"
@@ -221,117 +223,50 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.release-plan.outputs.source_commit }}
 
-      - name: 配置固定版本的 Rust、MinGW 和 protoc
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          rustup toolchain install $env:RUSTUP_TOOLCHAIN `
-            --profile minimal --component rustfmt --component rust-src
-
-          $sysroot = (& rustc --print sysroot).Trim()
-          $rustc = Join-Path $sysroot 'bin\rustc.exe'
-          $rustdoc = Join-Path $sysroot 'bin\rustdoc.exe'
-          $mingw = 'C:\mingw64\bin'
-          $gcc = Join-Path $mingw 'gcc.exe'
-          $gxx = Join-Path $mingw 'g++.exe'
-          $ar = Join-Path $mingw 'ar.exe'
-          foreach ($tool in @($rustc, $rustdoc, $gcc, $gxx, $ar)) {
-            if (!(Test-Path -LiteralPath $tool)) {
-              throw "缺少固定构建工具：$tool"
-            }
-          }
-
-          $protocVersion = '29.3'
-          $archive = Join-Path $env:RUNNER_TEMP "protoc-$protocVersion-win64.zip"
-          $root = Join-Path $env:RUNNER_TEMP "protoc-$protocVersion"
-          Invoke-WebRequest `
-            -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip" `
-            -OutFile $archive
-          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-          if ($hash -ne '57EA59E9F551AD8D71FFAA9B5CFBE0CA1F4E720972A1DB7EC2D12AB44BFF9383') {
-            throw "protoc SHA-256 校验值异常：$hash"
-          }
-          Expand-Archive -LiteralPath $archive -DestinationPath $root
-          $protoc = Join-Path $root 'bin\protoc.exe'
-
-          $cargoHome = Join-Path $env:RUNNER_TEMP 'grok-zh-cargo'
-          $targetDir = Join-Path $env:RUNNER_TEMP 'grok-zh-target'
-          $mingw | Out-File $env:GITHUB_PATH -Append -Encoding utf8
-          "RUSTC=$rustc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "RUSTDOC=$rustdoc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "PROTOC=$protoc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CARGO_HOME=$cargoHome" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CARGO_TARGET_DIR=$targetDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$gcc" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CC=$gcc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CXX=$gxx" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "AR=$ar" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: 恢复 Cargo 依赖缓存
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - name: 准备 Windows GNU 发布环境
+        id: windows_setup
+        uses: ./.github/actions/setup-windows-gnu
         with:
-          path: |
-            ${{ runner.temp }}/grok-zh-cargo/registry
-            ${{ runner.temp }}/grok-zh-cargo/git
-          key: grok-zh-release-cargo-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            grok-zh-cargo-home-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-
-
-      - name: 恢复 GNU Release 构建缓存
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release
-          key: grok-zh-release-target-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs') }}
-          restore-keys: |
-            grok-zh-target-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
-
-      - name: 恢复 GNU Release 宿主构建缓存
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release
-          key: grok-zh-release-host-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/build.rs') }}
-          restore-keys: |
-            grok-zh-host-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
+          version: ${{ needs.release-plan.outputs.grok_version }}
 
       - name: 运行离线发布门
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & .\.github\scripts\tests\Test-Write-ReleaseNotes.ps1
+          python .github/scripts/tests/test_release_workflow.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release 并行验证与发布门禁测试失败。' }
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw "cargo fmt 失败：$LASTEXITCODE" }
-          cargo fetch --locked --target $env:TARGET
-          if ($LASTEXITCODE -ne 0) { throw "cargo fetch 失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-product
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-product
           if ($LASTEXITCODE -ne 0) { throw "xai-grok-product 测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-version
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-version
           if ($LASTEXITCODE -ne 0) { throw "xai-grok-version 测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-update --features community-build --lib
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-update --features community-build --lib
           if ($LASTEXITCODE -ne 0) { throw "xai-grok-update 测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-locale
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-locale
           if ($LASTEXITCODE -ne 0) { throw "xai-grok-locale 测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-config --lib version_match_boundaries
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-config --lib version_match_boundaries
           if ($LASTEXITCODE -ne 0) { throw "三段版本配置覆盖测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib session_summary
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib session_summary
           if ($LASTEXITCODE -ne 0) { throw "中文会话标题测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib bundled_model_provenance_survives_acp_but_config_override_clears_it
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib bundled_model_provenance_survives_acp_but_config_override_clears_it
           if ($LASTEXITCODE -ne 0) { throw "内置模型来源隔离测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib zh_localization_
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib zh_localization_
           if ($LASTEXITCODE -ne 0) { throw "中文界面定向测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-pager-minimal --lib zh_localization_
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-pager-minimal --lib zh_localization_
           if ($LASTEXITCODE -ne 0) { throw "精简界面中文定向测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib free_usage_upsell_shows_three_options_with_exact_labels
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib free_usage_upsell_shows_three_options_with_exact_labels
           if ($LASTEXITCODE -ne 0) { throw "免费账户升级选项测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib chinese_effort_rows_use_typed_values_for_all_tiers_and_keep_option_ids
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib chinese_effort_rows_use_typed_values_for_all_tiers_and_keep_option_ids
           if ($LASTEXITCODE -ne 0) { throw "推理强度汉化测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib localization_regression_grok_announcements_cover_4_5_and_4_6
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib localization_regression_grok_announcements_cover_4_5_and_4_6
           if ($LASTEXITCODE -ne 0) { throw "Grok 4.6 公告汉化测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib localization_regression_slash_snapshot_uses_canonical_metadata_only
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-pager --lib localization_regression_slash_snapshot_uses_canonical_metadata_only
           if ($LASTEXITCODE -ne 0) { throw "斜杠菜单汉化回归失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib 'builtin::tests::'
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib 'builtin::tests::'
           if ($LASTEXITCODE -ne 0) { throw "内置中文更新日志测试失败：$LASTEXITCODE" }
-          cargo test --frozen -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib leader_is_older_than_directional
+          cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-shell --lib leader_is_older_than_directional
           if ($LASTEXITCODE -ne 0) { throw "版本 leader 比较测试失败：$LASTEXITCODE" }
           & .\packaging\windows\tests\Test-Install-GrokZh.ps1
           & powershell.exe -NoProfile -NonInteractive `
@@ -349,11 +284,133 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw '包内更新协议生成测试失败。' }
           & ./.github/scripts/tests/Test-ReleasePolicy.ps1
 
+      - name: 汇总 Windows 测试编译数据
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnosticsRoot = Join-Path $env:RUNNER_TEMP 'grok-zh-windows-release-validation'
+          New-Item -ItemType Directory -Path $diagnosticsRoot -Force | Out-Null
+          $summary = [ordered]@{
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            commit = $env:GITHUB_SHA
+            profile_debug = $env:CARGO_PROFILE_TEST_DEBUG
+            cargo_incremental = $env:CARGO_INCREMENTAL
+            build_jobs = $env:CARGO_BUILD_JOBS
+            target_dir = $env:CARGO_TARGET_DIR
+            debug_dir_exists = $false
+            debug_file_count = $null
+            debug_total_bytes = $null
+            measurement_error = $null
+          }
+          try {
+            if (![string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+              $debugPath = Join-Path $env:CARGO_TARGET_DIR 'debug'
+              $summary.debug_dir_exists = Test-Path -LiteralPath $debugPath -PathType Container
+              if ($summary.debug_dir_exists) {
+                $stats = Get-ChildItem -LiteralPath $debugPath -Recurse -File -Force |
+                  Measure-Object -Property Length -Sum
+                $summary.debug_file_count = [long]$stats.Count
+                $summary.debug_total_bytes = [long]$stats.Sum
+              }
+            }
+          } catch {
+            $summary.measurement_error = $_.Exception.Message
+            Write-Warning "测试编译目录统计失败：$($summary.measurement_error)"
+          }
+          $summary | ConvertTo-Json |
+            Tee-Object -FilePath (Join-Path $diagnosticsRoot 'summary.json')
+
+      - name: 上传 Windows 测试编译诊断
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grok-zh-windows-release-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/grok-zh-target/cargo-timings
+            ${{ runner.temp }}/grok-zh-windows-release-validation
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows-x64-gnu:
+    name: Windows x64 GNU 构建
+    needs: release-plan
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      RELEASE_TAG: ${{ needs.release-plan.outputs.release_tag }}
+      GROK_VERSION: ${{ needs.release-plan.outputs.grok_version }}
+      PACKAGE_NAME: ${{ needs.release-plan.outputs.package_name }}
+      ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      LEGACY_RELEASE: ${{ needs.release-plan.outputs.legacy_release }}
+      CARGO_BUILD_JOBS: "4"
+      CARGO_CACHE_SCHEMA: v2
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-gnu
+      TARGET: x86_64-pc-windows-gnu
+    steps:
+      - name: 检出已验证的发布提交
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+
+      - name: 准备 Windows GNU 发布环境
+        id: windows_setup
+        uses: ./.github/actions/setup-windows-gnu
+        with:
+          version: ${{ needs.release-plan.outputs.grok_version }}
+
+      - name: 恢复 Cargo GNU release 缓存
+        id: cargo_target_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release
+          key: grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
+            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
+            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
+
+      # Explicit --target builds keep proc macros and build scripts outside the
+      # target triple directory. Cache them separately to retain old cache hits.
+      - name: 恢复 Cargo GNU 宿主构建缓存
+        id: cargo_host_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/grok-zh-target/release
+          key: grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
+            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-lto0-debug0-cgu16-shellopt1-shellcgu16-feature-release-dist-
+
+      - name: 记录 Windows Release 缓存命中
+        shell: pwsh
+        env:
+          CARGO_HOME_CACHE_HIT: ${{ steps.windows_setup.outputs.cargo-home-cache-hit }}
+          CARGO_HOME_CACHE_KEY: ${{ steps.windows_setup.outputs.cargo-home-cache-matched-key }}
+          CARGO_TARGET_CACHE_HIT: ${{ steps.cargo_target_cache.outputs.cache-hit }}
+          CARGO_TARGET_CACHE_KEY: ${{ steps.cargo_target_cache.outputs.cache-matched-key }}
+          CARGO_HOST_CACHE_HIT: ${{ steps.cargo_host_cache.outputs.cache-hit }}
+          CARGO_HOST_CACHE_KEY: ${{ steps.cargo_host_cache.outputs.cache-matched-key }}
+        run: |
+          @"
+          ### Windows Release Cargo caches
+
+          - Dependencies: exact=$env:CARGO_HOME_CACHE_HIT; key=$env:CARGO_HOME_CACHE_KEY
+          - Target: exact=$env:CARGO_TARGET_CACHE_HIT; key=$env:CARGO_TARGET_CACHE_KEY
+          - Host: exact=$env:CARGO_HOST_CACHE_HIT; key=$env:CARGO_HOST_CACHE_KEY
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - name: 构建 grok-zh
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo build --frozen -j $env:CARGO_BUILD_JOBS `
+          cargo build --frozen --timings -j $env:CARGO_BUILD_JOBS `
             --target $env:TARGET `
             -p xai-grok-pager-bin `
             --profile release `
@@ -366,6 +423,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Cargo Release 构建失败：$LASTEXITCODE"
           }
+
+      - name: 上传 Windows Release 编译诊断
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grok-zh-windows-release-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: 生成并验证完整安装 ZIP
         shell: pwsh
@@ -703,6 +769,7 @@ jobs:
     name: 生成 Release 资产构建来源证明
     needs:
       - release-plan
+      - windows-x64-gnu-validation
       - windows-x64-gnu
       - macos-arm-release
       - linux-x64-gnu-release
@@ -710,6 +777,7 @@ jobs:
       ${{
         !cancelled() &&
         needs.release-plan.result == 'success' &&
+        needs.windows-x64-gnu-validation.result == 'success' &&
         needs.windows-x64-gnu.result == 'success' &&
         (
           needs.macos-arm-release.result == 'success' ||
@@ -784,6 +852,7 @@ jobs:
     name: 核验并发布唯一 Release
     needs:
       - release-plan
+      - windows-x64-gnu-validation
       - windows-x64-gnu
       - macos-arm-release
       - linux-x64-gnu-release
@@ -792,6 +861,7 @@ jobs:
       ${{
         !cancelled() &&
         needs.release-plan.result == 'success' &&
+        needs.windows-x64-gnu-validation.result == 'success' &&
         needs.windows-x64-gnu.result == 'success' &&
         needs.release-attestations.result == 'success' &&
         (

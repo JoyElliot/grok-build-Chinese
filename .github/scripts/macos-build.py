@@ -14,19 +14,14 @@ import time
 
 
 def build_config(release_build):
-    if release_build:
-        return {
-            "profile": "release-dist",
-            "cache_key": "release-dist",
-            "description": "release-dist (Thin LTO, codegen-units=1, split-debuginfo=off)",
-            "overrides": [],
-        }
+    build_kind = "Release" if release_build else "CI preview"
     return {
         "profile": "release",
+        # Keep the verified preview key so tags can restore the same profile cache.
         "cache_key": "preview-release-lto0-debug0-cgu16-shellopt1-shellcgu16-v1",
         "description": (
             "release with release-dist features (cross-crate LTO disabled, debug=0, "
-            "codegen-units=16, shell opt-level=1/codegen-units=16; CI preview)"
+            f"codegen-units=16, shell opt-level=1/codegen-units=16; {build_kind})"
         ),
         "overrides": [
             "profile.release.lto=false",

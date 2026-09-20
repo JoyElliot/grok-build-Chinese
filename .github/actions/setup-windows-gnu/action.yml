@@ -1,13 +1,13 @@
-name: Setup Windows GNU preview
-description: Select a preview version, prepare the pinned Windows tools, and fetch Cargo dependencies.
+name: Setup Windows GNU
+description: Select the build version, prepare the pinned Windows tools, and fetch Cargo dependencies.
 inputs:
   version:
-    description: Optional embedded preview version; defaults to the CI run number.
+    description: Explicit embedded version for Release; previews may omit it to use the CI run number.
     required: false
     default: ''
 outputs:
   package_name:
-    description: Windows preview package directory name.
+    description: Windows package directory name.
     value: ${{ steps.preview.outputs.package_name }}
   cargo-home-cache-hit:
     description: Whether the Cargo dependency cache key matched exactly.
@@ -21,7 +21,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: 选择预览版本
+    - name: 选择构建版本
       id: preview
       shell: pwsh
       env:
@@ -62,8 +62,10 @@ runs:
         $sysroot = (& rustc --print sysroot).Trim()
         $rustc = Join-Path $sysroot 'bin\rustc.exe'
         $rustdoc = Join-Path $sysroot 'bin\rustdoc.exe'
-        if (!(Test-Path -LiteralPath $rustc)) {
-          throw "缺少固定版本的 rustc：$rustc"
+        foreach ($tool in @($rustc, $rustdoc)) {
+          if (!(Test-Path -LiteralPath $tool)) {
+            throw "缺少固定版本的 Rust 工具：$tool"
+          }
         }
 
         $mingw = 'C:\mingw64\bin'

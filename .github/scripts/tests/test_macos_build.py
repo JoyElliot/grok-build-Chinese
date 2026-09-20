@@ -23,16 +23,19 @@ TARGET = "aarch64-apple-darwin"
 
 
 class MacosBuildTests(unittest.TestCase):
-    def test_formal_release_keeps_the_canonical_profile_without_overrides(self):
-        command = macos_build.cargo_command(True, TARGET, 3)
-        self.assertEqual(command, [
-            "cargo", "build", "--frozen", "-j", "3", "--target", TARGET,
-            "-p", "xai-grok-pager-bin", "--profile", "release-dist",
-            "--features", "release-dist", "--timings",
-        ])
-        self.assertEqual(macos_build.build_config(True)["cache_key"], "release-dist")
+    def test_formal_release_reuses_the_verified_preview_command_and_cache(self):
+        self.assertEqual(
+            macos_build.cargo_command(True, TARGET, 3),
+            macos_build.cargo_command(False, TARGET, 3),
+        )
+        self.assertEqual(
+            macos_build.build_config(True)["cache_key"],
+            macos_build.build_config(False)["cache_key"],
+        )
+        self.assertIn("; Release)", macos_build.build_config(True)["description"])
+        self.assertIn("; CI preview)", macos_build.build_config(False)["description"])
 
-    def test_preview_uses_separate_cache_and_windows_preview_optimization_settings(self):
+    def test_verified_profile_keeps_windows_preview_optimization_settings(self):
         command = macos_build.cargo_command(False, TARGET, 3)
         self.assertEqual(command[command.index("--profile") + 1], "release")
         self.assertEqual(command[command.index("--features") + 1], "release-dist")
@@ -44,10 +47,12 @@ class MacosBuildTests(unittest.TestCase):
             "profile.release.package.xai-grok-shell.opt-level=1",
             "profile.release.package.xai-grok-shell.codegen-units=16",
         })
-        self.assertNotEqual(
+        self.assertEqual(
             macos_build.build_config(False)["cache_key"],
-            macos_build.build_config(True)["cache_key"],
+            "preview-release-lto0-debug0-cgu16-shellopt1-shellcgu16-v1",
         )
+        self.assertIn("--frozen", command)
+        self.assertIn("--timings", command)
 
     def test_only_trusted_preview_events_can_save_cache(self):
         cases = [
@@ -61,6 +66,7 @@ class MacosBuildTests(unittest.TestCase):
             (False, "workflow_run", "refs/heads/zh-dev", False),
             (True, "workflow_dispatch", "refs/heads/zh-dev", False),
             (True, "workflow_dispatch", "refs/heads/sync/upstream-1.0.24", False),
+            (True, "push", "refs/tags/release-v1.0.24", False),
         ]
         for release, event, ref, expected in cases:
             with self.subTest(release=release, event=event, ref=ref):
@@ -73,7 +79,7 @@ class MacosBuildTests(unittest.TestCase):
                 "GITHUB_REF": "refs/heads/sync/upstream-1.0.24",
                 "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_TEMP": folder,
             }
-            for mode, profile, writable in (("true", "release-dist", "false"), ("false", "release", "true")):
+            for mode, profile, writable in (("true", "release", "false"), ("false", "release", "true")):
                 with self.subTest(mode=mode):
                     result = subprocess.run(
                         [sys.executable, str(SCRIPT), "configure", "--release-build", mode],

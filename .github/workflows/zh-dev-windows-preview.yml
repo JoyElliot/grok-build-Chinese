@@ -84,6 +84,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & .\.github\scripts\tests\Test-Write-ReleaseNotes.ps1
+          python .github/scripts/tests/test_release_workflow.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release 并行验证与发布门禁测试失败。' }
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { throw "cargo fmt 失败：$LASTEXITCODE" }
 
