@@ -132,6 +132,7 @@ function Get-OnlineReleaseContract {
     return [pscustomobject]@{
         Version = $version; Tag = $tag; Legacy = $legacy; Archive = $verified[$name]
         PackageRoot = $name.Substring(0, $name.Length - 4)
+        ReleaseNotes = [string](Get-OnlineProperty $Release 'body')
     }
 }
 
@@ -326,7 +327,7 @@ function Remove-OnlineOwnedTree {
     param([string]$Path, [string]$Parent, [string]$Prefix)
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
     $base = [IO.Path]::GetFullPath($Parent).TrimEnd('\', '/')
-    if ((Split-Path -Parent $full).TrimEnd('\', '/') -ine $base -or !(Split-Path -Leaf $full).StartsWith($Prefix, [StringComparison]::Ordinal)) {
+    if ((Split-Path -Parent $full).TrimEnd('\', '/') -ine $base -or !(Split-Path -Leaf $full).StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw '临时目录清理边界检查失败。'
     }
     Assert-OnlinePathChain $full
@@ -577,6 +578,72 @@ function Assert-OnlinePortableRoot {
         throw '便携目录包含额外文件，请先移出个人文件后再更新。'
     }
     foreach ($child in $children) { Assert-OnlinePathChain $child.FullName }
+    if (!(Test-Path -LiteralPath (Join-Path $Root '启动.cmd') -PathType Leaf) -or
+        !(Test-Path -LiteralPath (Join-Path $Root '使用说明.md') -PathType Leaf) -or
+        !(Test-Path -LiteralPath (Join-Path $Root 'app') -PathType Container)) { throw '便携目录的入口、说明或程序目录类型不正确。' }
+}
+
+function Show-OnlineReleaseNotes {
+    param($Release)
+    $body = [string](Get-OnlineProperty $Release 'ReleaseNotes')
+    # Release Markdown is displayed as text, never evaluated as PowerShell.
+    $body = [regex]::Replace($body.Replace("`r`n", "`n"), '[\x00-\x08\x0B-\x1F\x7F-\x9F]', '').Trim()
+    if ($body.Length -gt 131072) {
+        $body = $body.Substring(0, 131072) + "`n（正文较长，完整内容见下方 Release 链接。）"
+    }
+    Write-Host "`n更新日志 · v$($Release.Version.Text)`n" -ForegroundColor Cyan
+    if ($body) { Write-Host $body }
+    else { Write-Host '此版本未提供更新日志，详情见 Release 页面。' }
+    Write-Host "`nRelease：https://github.com/$script:OnlineRepo/releases/tag/$($Release.Tag)`n"
+}
+
+function Remove-OnlinePreviousPortable {
+    param([string]$Backup, [string]$Root, [int]$Depth = 0)
+    if (!$Backup -or !(Test-Path -LiteralPath $Backup)) { return $null }
+    if ($Depth -ge 32) { return $Backup }
+    try {
+        $resolved = Resolve-OnlinePath $Backup
+        $current = Resolve-OnlinePath $Root
+        $parent = Split-Path -Parent $current
+        $leaf = Split-Path -Leaf $current
+        if ((Split-Path -Parent $resolved) -ine $parent -or
+            (Split-Path -Leaf $resolved) -notmatch ('^' + [regex]::Escape($leaf) + '\.previous\.\d{8}-\d{6}-[a-f0-9]{8}$')) { return $Backup }
+        Assert-OnlinePathChain $resolved
+        $children = @(Get-ChildItem -LiteralPath $resolved -Force)
+        if ($children.Count -ne 3 -or @($children | Where-Object { $_.Name -cnotin @('启动.cmd', '使用说明.md', 'app') }).Count -gt 0) { return $Backup }
+        if (!(Test-Path -LiteralPath (Join-Path $resolved '启动.cmd') -PathType Leaf) -or
+            !(Test-Path -LiteralPath (Join-Path $resolved '使用说明.md') -PathType Leaf) -or
+            !(Test-Path -LiteralPath (Join-Path $resolved 'app') -PathType Container)) { return $Backup }
+        $app = Join-Path $resolved 'app'
+        $markerPath = Join-Path $app '.grok-zh-install.json'
+        Assert-OnlinePathChain $markerPath
+        $oldMarker = [IO.File]::ReadAllText($markerPath) | ConvertFrom-Json
+        if ((Get-OnlineProperty $oldMarker 'product') -cne 'grok-build-zh' -or
+            (Get-OnlineProperty $oldMarker 'portable_layout') -ne 1 -or
+            (Get-OnlineProperty $oldMarker 'portable_root') -ine $current -or
+            (Get-OnlineProperty $oldMarker 'install_dir') -ine (Join-Path $current 'app')) { return $Backup }
+        $known = @('.grok-zh-install.json', '.grok-zh-update-result.json', 'grok-zh.exe.update.lock', 'SHA256SUMS.txt', 'grok.cmd', 'agent.cmd', 'BUILD-INFO.txt', 'LICENSE-grok-build.txt',
+            'licenses\ripgrep\COPYING', 'licenses\ripgrep\LICENSE-MIT', 'licenses\ripgrep\UNLICENSE',
+            'licenses\project\THIRD-PARTY-NOTICES', 'licenses\project\THIRD_PARTY_NOTICES.md', 'licenses\project\NOTICE')
+        foreach ($line in Get-Content -LiteralPath (Join-Path $app 'SHA256SUMS.txt') -Encoding UTF8) {
+            if ($line -match '^[a-fA-F0-9]{64}  (.+)$') { $known += $matches[1].Replace('/', '\') }
+        }
+        foreach ($item in Get-ChildItem -LiteralPath $resolved -Recurse -Force) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $Backup }
+            if ($item.PSIsContainer) { continue }
+            if ($item.FullName.StartsWith("$app\", [StringComparison]::OrdinalIgnoreCase)) {
+                $relative = $item.FullName.Substring($app.Length + 1)
+                # Never remove historical official-command backups or extra data.
+                if ($relative -notin $known -and $relative -cnotmatch '^grok-zh\.exe\.old(?:\.\d+-\d+\.old)?$') { return $Backup }
+            }
+            $handle = [IO.File]::Open($item.FullName, 'Open', 'Read', 'None')
+            $handle.Dispose()
+        }
+        $older = Get-OnlineProperty $oldMarker 'previous_portable_backup'
+        $pendingOlder = if ($older) { Remove-OnlinePreviousPortable -Backup $older -Root $current -Depth ($Depth + 1) } else { $null }
+        Remove-OnlineOwnedTree -Path $resolved -Parent $parent -Prefix "$leaf.previous."
+        return $pendingOlder
+    } catch { return $Backup }
 }
 
 function Install-OnlinePortable {
@@ -607,7 +674,7 @@ function Install-OnlinePortable {
         [IO.File]::WriteAllText($markerPath, ($marker | ConvertTo-Json -Depth 6), $script:OnlineUtf8)
         $launcher = "@echo off`r`n`"%~dp0app\grok-zh.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
         [IO.File]::WriteAllText((Join-Path $stage '启动.cmd'), $launcher, [Text.Encoding]::ASCII)
-        $guide = "# Grok Build 中文社区版 $Version`r`n`r`n双击 启动.cmd；在终端中也可运行 .\启动.cmd 并传入原有参数。`r`n代理入口：.\app\agent-zh.cmd stdio。`r`n`r`n程序位于 app，本便携版不修改 PATH。账号、会话和配置仍与官方版共用 ~/.grok（或 GROK_HOME）。`r`n请勿把个人文件存入 app。更新完整便携版时重新运行在线安装命令并选择此目录；旧目录会保留在同级 previous 备份中。`r`n"
+        $guide = "# Grok Build 中文社区版 $Version`r`n`r`n双击 启动.cmd；在终端中也可运行 .\启动.cmd 并传入原有参数。`r`n代理入口：.\app\agent-zh.cmd stdio。`r`n`r`n程序位于 app，本便携版不修改 PATH。账号、会话和配置仍与官方版共用 ~/.grok（或 GROK_HOME）。`r`n请勿把个人文件存入 app。更新完整便携版时重新运行在线安装命令并选择此目录；成功后自动清理旧版本，失败时回滚。`r`n"
         [IO.File]::WriteAllText((Join-Path $stage '使用说明.md'), $guide, $script:OnlineUtf8)
         # Recheck paths and ownership immediately before the two directory moves.
         Assert-OnlinePathChain $Root; Assert-OnlinePortableRoot $Root
@@ -622,7 +689,12 @@ function Install-OnlinePortable {
             throw '便携程序激活后的版本未通过核对。'
         }
         $committed = $true
-        if ($backup) { Write-Host "旧便携版已保留：$backup" }
+        if ($backup) {
+            $pendingBackup = Remove-OnlinePreviousPortable -Backup $backup -Root $Root
+            $marker.previous_portable_backup = $pendingBackup
+            [IO.File]::WriteAllText((Join-Path $Root 'app\.grok-zh-install.json'), ($marker | ConvertTo-Json -Depth 6), $script:OnlineUtf8)
+            if ($pendingBackup) { Write-Warning "旧便携目录暂未清理（文件占用或含需保留的内容），下次更新将重试：$pendingBackup" }
+        }
     } finally {
         # .NET moves also run during pipeline cancellation. Keep every owned
         # directory intact if recovery itself fails; never delete the old backup.
@@ -731,6 +803,7 @@ function Invoke-GrokZhOnline {
         $actual = Get-OnlineExecutableVersion (Join-Path $programDirectory 'grok-zh.exe')
         if ($actual.Text -cne $candidate.Text) { throw '安装后的程序版本未通过核对，请保留旧安装备份并检查上方输出。' }
         Write-Host "`n安装完成：$($actual.Text)`n位置：$target" -ForegroundColor Green
+        Show-OnlineReleaseNotes -Release $release
         if ($Mode -eq 'Portable') { Write-Host '双击目录中的 启动.cmd，或在终端中运行该入口；未修改 PATH。' }
         elseif ($NoPathUpdate) { Write-Host '未修改 PATH，请通过上述目录中的 grok-zh.exe 启动。' }
         else { Write-Host '请重新打开终端，输入 grok-zh 启动。' }

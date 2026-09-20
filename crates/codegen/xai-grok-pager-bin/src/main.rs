@@ -2480,6 +2480,9 @@ async fn async_main(
         && args.single.is_none()
         && args.prompt_json.is_none()
         && args.prompt_file.is_none();
+    if is_interactive {
+        auto_update::cleanup_community_update_backups().await;
+    }
     xai_grok_shell::http::set_client_name(if is_interactive {
         xai_grok_workspace::permission::ClientType::GrokPager
     } else {
@@ -2902,12 +2905,18 @@ async fn async_main(
                     "更新已安装。运行 `{}` 或 `{}` 启动。",
                     commands.grok, commands.agent
                 );
+                xai_grok_update::community_update_notes::print_pending(None);
             } else {
                 eprintln!("更新未完成。运行 `{} update` 重试。", commands.grok);
             }
             Ok(())
         }
-        Ok(false) => Ok(()),
+        Ok(false) => {
+            // Background updates suppress child output. Show their receipt only
+            // after the interactive terminal is restored, never in model input.
+            xai_grok_update::community_update_notes::print_pending(None);
+            Ok(())
+        }
         Err(e) => Err(e),
     }
 }

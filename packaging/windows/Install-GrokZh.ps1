@@ -62,6 +62,52 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Remove-PreviousCommunityInstall {
+    param([string]$Backup, [string]$Current, [int]$Depth = 0)
+    if (!$Backup -or !(Test-Path -LiteralPath $Backup)) { return $null }
+    if ($Depth -ge 32) { return $Backup }
+    try {
+        $resolved = Resolve-FullPath $Backup
+        $currentPath = Resolve-FullPath $Current
+        $parent = Split-Path -Parent $currentPath
+        $leaf = Split-Path -Leaf $currentPath
+        if ((Split-Path -Parent $resolved) -ine $parent -or
+            (Split-Path -Leaf $resolved) -notmatch ('^' + [regex]::Escape($leaf) + '\.previous\.\d{8}-\d{6}-[a-f0-9]{8}$')) { return $Backup }
+        Assert-NoReparsePointInPath -Path $resolved -Label '旧版本目录'
+        Assert-NoReparsePointTree -Path $resolved -Label '旧版本目录'
+        $markerPath = Join-Path $resolved '.grok-zh-install.json'
+        $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($marker.product -cne 'grok-build-zh' -or !(Test-SamePath $marker.install_dir $currentPath)) { return $Backup }
+        # A marker alone does not authorize removing personal files. Only the
+        # old manifest and known generated launch/update files are disposable.
+        $known = @('.grok-zh-install.json', '.grok-zh-update-result.json', 'grok-zh.exe.update.lock', 'SHA256SUMS.txt', 'grok.cmd', 'agent.cmd', 'BUILD-INFO.txt', 'LICENSE-grok-build.txt',
+            'licenses\ripgrep\COPYING', 'licenses\ripgrep\LICENSE-MIT', 'licenses\ripgrep\UNLICENSE',
+            'licenses\project\THIRD-PARTY-NOTICES', 'licenses\project\THIRD_PARTY_NOTICES.md', 'licenses\project\NOTICE')
+        foreach ($line in Get-Content -LiteralPath (Join-Path $resolved 'SHA256SUMS.txt') -Encoding UTF8) {
+            if ($line -match '^[a-fA-F0-9]{64}  (.+)$') { $known += $matches[1].Replace('/', '\') }
+        }
+        foreach ($file in Get-ChildItem -LiteralPath $resolved -File -Recurse -Force) {
+            $relative = $file.FullName.Substring($resolved.Length + 1)
+            if ($relative.StartsWith('official-backup\', [StringComparison]::OrdinalIgnoreCase)) {
+                $preserved = Join-Path $currentPath $relative
+                if (!(Test-Path -LiteralPath $preserved -PathType Leaf) -or
+                    (Get-FileHash -LiteralPath $preserved).Hash -cne (Get-FileHash -LiteralPath $file.FullName).Hash) { return $Backup }
+            } elseif ($relative -notin $known -and $relative -cnotmatch '^grok-zh\.exe\.old(?:\.\d+-\d+\.old)?$') { return $Backup }
+            # Avoid partially deleting a backup still held by a running process.
+            $handle = [IO.File]::Open($file.FullName, 'Open', 'Read', 'None')
+            $handle.Dispose()
+        }
+        $previousProperty = $marker.PSObject.Properties['previous_install_backup']
+        $pendingOlder = if ($previousProperty -and $previousProperty.Value) {
+            Remove-PreviousCommunityInstall -Backup $previousProperty.Value -Current $currentPath -Depth ($Depth + 1)
+        } else { $null }
+        # Resolved sibling, strict name, ownership, full tree and preserved
+        # official backup have all been checked before this recursive deletion.
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+        return $pendingOlder
+    } catch { return $Backup }
+}
+
 function Resolve-FullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1041,6 +1087,15 @@ if ($requestedUninstallOfficial) {
 }
 
 Write-Host ''
+if ($previous) {
+    # The new files were hash-verified in staging and activated successfully.
+    # A failed activation above restores the old directory before reaching here.
+    $pendingBackup = Remove-PreviousCommunityInstall -Backup $previous -Current $InstallDir
+    $installedMarker = Get-Content -LiteralPath $installMarker -Raw -Encoding UTF8 | ConvertFrom-Json
+    $installedMarker.previous_install_backup = $pendingBackup
+    $installedMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $installMarker -Encoding UTF8
+    if ($pendingBackup) { Write-Warning "旧版本目录暂未清理（文件占用或含需保留的内容），下次更新将重试：$pendingBackup" }
+}
 Write-Host "安装完成：$InstallDir"
 if ($provideOfficialNames) {
     Write-Host '主启动命令：grok、agent'

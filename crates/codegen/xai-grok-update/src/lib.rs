@@ -6,6 +6,8 @@ pub mod auto_update;
 mod cleanup_downloads;
 #[cfg(feature = "community-build")]
 mod community_release;
+#[cfg(feature = "community-build")]
+pub mod community_update_notes;
 pub mod version;
 mod version_policy;
 

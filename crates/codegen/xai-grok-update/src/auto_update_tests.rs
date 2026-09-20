@@ -2720,9 +2720,15 @@ async fn test_windows_replace_exe_locked_file_renames_aside() {
     assert_eq!(std::fs::read_to_string(&dest).unwrap(), "updated binary");
 
     let old = dir.path().join("grok.exe.old");
-    assert!(old.exists(), ".old must exist after rename fallback");
+    // This handle permits deletion; cleanup leaves its old file data readable.
+    let mut old_bytes = String::new();
+    std::io::Read::read_to_string(&mut &_lock, &mut old_bytes).unwrap();
+    assert_eq!(old_bytes, "running binary");
     drop(_lock);
-    assert_eq!(std::fs::read_to_string(&old).unwrap(), "running binary");
+    assert!(
+        !old.exists(),
+        "successful replacement must clean a deletable aside"
+    );
 }
 
 #[cfg(windows)]
@@ -2844,21 +2850,96 @@ async fn test_windows_replace_exe_locked_stale_old_does_not_block_update() {
                 .is_some_and(|n| n.starts_with("grok.exe.old.") && n.ends_with(".old"))
         })
         .collect();
-    assert_eq!(
-        asides.len(),
-        1,
-        "dest must be renamed to a unique aside: {asides:?}"
+    assert!(
+        asides.is_empty(),
+        "deletable unique asides must be cleaned after success: {asides:?}"
     );
-    assert_eq!(
-        std::fs::read_to_string({
-            let Some(aside) = asides.first() else {
-                panic!("aside path: {asides:?}");
-            };
-            aside
-        })
-        .unwrap(),
-        "running binary"
-    );
+    let mut running_bytes = String::new();
+    std::io::Read::read_to_string(&mut &_dest_lock, &mut running_bytes).unwrap();
+    assert_eq!(running_bytes, "running binary");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_update_lock_protects_concurrent_activation_and_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("grok-zh.exe");
+    let source = dir.path().join("new.exe");
+    std::fs::write(&destination, "original").unwrap();
+    std::fs::write(&source, "new").unwrap();
+    let lock = acquire_windows_update_lock(&destination).unwrap();
+    assert!(windows_replace_exe(&source, &destination).await.is_err());
+    assert!(acquire_windows_update_lock(&destination).is_err());
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
+    drop(lock);
+    windows_replace_exe(&source, &destination).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new");
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn community_cleanup_recognizes_only_owned_installed_target_names() {
+    for valid in [
+        "grok-zh-1.0.35-linux-x86_64-gnu.42-1.installed",
+        "grok-zh-1.0.35-rc.2-macos-aarch64.Ab12Cd.installed",
+    ] {
+        assert!(is_community_installed_target(valid));
+    }
+    for invalid in [
+        "grok-1.0.35-linux-x86_64-gnu.42-1.installed",
+        "grok-zh-config.installed",
+        "grok-zh-1.0.35-linux-x86_64-gnu..installed",
+        "grok-zh-1.0.35-linux-x86_64-gnu.42-1.candidate",
+        "grok-zh-1.0.35+custom-linux-x86_64-gnu.42-1.installed",
+    ] {
+        assert!(!is_community_installed_target(invalid), "{invalid}");
+    }
+}
+
+#[cfg(all(unix, feature = "community-build"))]
+#[tokio::test]
+async fn community_cleanup_keeps_live_aliases_processes_fresh_files_and_unmanaged_data() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    let downloads = dir.path().join("grok-zh-downloads");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::create_dir(&downloads).unwrap();
+    let names = [
+        "grok-zh-1.0.36-linux-x86_64-gnu.1-1.installed",
+        "grok-zh-1.0.35-linux-x86_64-gnu.1-2.installed",
+        "grok-zh-1.0.34-linux-x86_64-gnu.1-3.installed",
+        "grok-zh-1.0.33-linux-x86_64-gnu.1-4.installed",
+        "grok-zh-1.0.32-linux-x86_64-gnu.1-5.installed",
+        "personal.txt",
+    ];
+    let paths: Vec<_> = names.iter().map(|name| downloads.join(name)).collect();
+    for path in &paths {
+        std::fs::write(path, "binary").unwrap();
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::now() - STALE_TMP_AGE * 2),
+            )
+            .unwrap();
+    }
+    let [active, stale, in_use, fresh, alias, personal] = paths.as_slice() else {
+        unreachable!()
+    };
+    std::fs::File::open(fresh)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+        .unwrap();
+    symlink(active, bin.join("grok-zh")).unwrap();
+    symlink(alias, bin.join("agent-zh")).unwrap();
+    cleanup_community_targets_with(&downloads, &bin, |path| path == in_use).await;
+    assert!(!stale.exists());
+    for kept in [active, in_use, fresh, alias, personal] {
+        assert!(kept.exists(), "{}", kept.display());
+    }
+    cleanup_community_targets_with(&downloads, &bin, |_| true).await;
+    assert!(in_use.exists());
 }
 
 #[cfg(windows)]
@@ -2938,6 +3019,8 @@ async fn test_windows_replace_exe_sweeps_accumulated_asides() {
     std::fs::write(&aside_b, "aside-b").unwrap();
     let agent_old = dir.path().join("agent.exe.old");
     std::fs::write(&agent_old, "agent-old").unwrap();
+    let personal_old = dir.path().join("grok.exe.old.personal.old");
+    std::fs::write(&personal_old, "personal").unwrap();
 
     windows_replace_exe(&src, &dest).await.unwrap();
 
@@ -2945,6 +3028,10 @@ async fn test_windows_replace_exe_sweeps_accumulated_asides() {
     assert!(!old.exists(), "legacy .old must be swept");
     assert!(!aside_a.exists(), "aside must be swept");
     assert!(!aside_b.exists(), "aside must be swept");
+    assert!(
+        personal_old.exists(),
+        "only generated pid-sequence asides may be removed"
+    );
     assert!(
         agent_old.exists(),
         "other executables' leftovers must be untouched"

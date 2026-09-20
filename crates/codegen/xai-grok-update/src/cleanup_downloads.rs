@@ -122,6 +122,11 @@ pub(crate) fn executable_is_in_use(path: &Path) -> bool {
     }
 }
 
+#[cfg(all(unix, feature = "community-build"))]
+pub(crate) fn executable_is_in_use_conservative(path: &Path) -> bool {
+    any_process_executing(path).unwrap_or(true)
+}
+
 fn any_process_executing(path: &Path) -> std::io::Result<bool> {
     let target = match ExecutableId::from_path(path) {
         Ok(id) => id,

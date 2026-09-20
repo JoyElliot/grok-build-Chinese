@@ -122,6 +122,8 @@ fn release_by_tag_api(version: &str) -> Result<String> {
 #[derive(Debug, Clone, Deserialize)]
 struct ApiRelease {
     tag_name: String,
+    #[serde(default)]
+    body: Option<String>,
     draft: bool,
     prerelease: bool,
     #[serde(default)]
@@ -145,6 +147,7 @@ struct ApiAsset {
 pub(crate) struct VerifiedAsset {
     pub version: String,
     pub name: String,
+    pub release_notes: Option<String>,
     download_url: String,
     size: u64,
     sha256: String,
@@ -425,6 +428,7 @@ fn select_asset_for_platform(
         .ok_or_else(|| anyhow::anyhow!("release asset is missing its GitHub SHA-256 digest"))?;
     Ok(VerifiedAsset {
         version: version.to_string(),
+        release_notes: release.body.clone(),
         name,
         download_url: expected_url,
         size: asset.size,
@@ -1868,6 +1872,7 @@ mod tests {
     fn release(tag: &str, prerelease: bool, immutable: bool) -> ApiRelease {
         ApiRelease {
             tag_name: tag.to_string(),
+            body: None,
             draft: false,
             prerelease,
             immutable,
@@ -1905,6 +1910,7 @@ mod tests {
         let tag = release_tag_for_version(&canonical_release_version(version).unwrap());
         VerifiedAsset {
             version: version.to_string(),
+            release_notes: None,
             download_url: format!(
                 "https://github.com/{}/releases/download/{tag}/{name}",
                 release_repo(),
@@ -2210,6 +2216,31 @@ mod tests {
         }
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap();
+    }
+
+    #[test]
+    fn selected_asset_carries_the_exact_release_body() {
+        let mut selected: ApiRelease = serde_json::from_value(serde_json::json!({
+            "tag_name": "release-v1.0.35", "draft": false, "prerelease": false,
+            "immutable": true, "body": "- 中文重点\n\n## 上游更新\n\n- 跨版本更新"
+        }))
+        .unwrap();
+        selected.assets = uploaded_package_assets("1.0.35");
+        let asset =
+            select_asset_for_platform(&selected, "1.0.35", CommunityPlatform::WindowsX86_64Gnu)
+                .unwrap();
+        assert_eq!(asset.release_notes, selected.body);
+        assert!(
+            select_asset_for_platform(&selected, "1.0.36", CommunityPlatform::WindowsX86_64Gnu)
+                .is_err()
+        );
+        selected.body = None;
+        assert!(
+            select_asset_for_platform(&selected, "1.0.35", CommunityPlatform::WindowsX86_64Gnu)
+                .unwrap()
+                .release_notes
+                .is_none()
+        );
     }
 
     #[test]

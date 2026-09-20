@@ -114,7 +114,8 @@ function New-TestRelease {
             digest = 'sha256:' + (Get-TestDigest $body)
             browser_download_url = "https://github.com/JoyElliot/grok-build-Chinese/releases/download/$tag/$name" }
     }
-    return [pscustomobject]@{ tag_name = $tag; immutable = $true; draft = $false; prerelease = $false; assets = @($assets) }
+    return [pscustomobject]@{ tag_name = $tag; immutable = $true; draft = $false; prerelease = $false; assets = @($assets)
+        body = "- 本次中文更新`n`n## 上游更新`n`n- 来自目标 Release 的内容" }
 }
 
 function New-TestTransport {
@@ -191,6 +192,13 @@ class Program {
     $api = 'https://api.github.com/repos/JoyElliot/grok-build-Chinese/releases?per_page=100&page=1'
 
     Assert-True ($contract.Version.Text -ceq '1.0.13' -and !$contract.Legacy) '现代正式版合同'
+    $noteContract = Get-OnlineReleaseContract $release
+    $noteContract.ReleaseNotes = "中文$([char]27)[2J$([char]7)`r`n下一行"
+    $noteOutput = @(Show-OnlineReleaseNotes $noteContract 6>&1) -join "`n"
+    Assert-True (!$noteOutput.Contains([string][char]27) -and !$noteOutput.Contains([string][char]7)) '远端正文不输出终端控制字符'
+    $noteContract.ReleaseNotes = $null
+    $emptyNotes = @(Show-OnlineReleaseNotes $noteContract 6>&1) -join "`n"
+    Assert-True ($emptyNotes.Contains('未提供更新日志') -and $emptyNotes.Contains('/tag/release-v1.0.13')) '空正文保留目标版本链接'
     $roundTrip = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject @($release) -Depth 8)
     Assert-True ((Get-OnlineReleaseContract @($roundTrip)[0]).Version.Text -ceq '1.0.13') 'PS5/7 JSON 数组兼容'
     foreach ($mutation in @(
@@ -348,7 +356,9 @@ class Program {
     function New-OnlineHttpClient { return [Net.Http.HttpClient]::new($script:TestTransport) }
     $normal = Join-Path $testRoot '中文 空格安装\bin'
     $script:TestTransport = New-TestTransport -Release $release -ZipBytes $zipBytes
-    Invoke-GrokZhOnline -Mode Install -InstallDir $normal -GrokHome $shared -NoPathUpdate -NonInteractive
+    $installOutput = @(Invoke-GrokZhOnline -Mode Install -InstallDir $normal -GrokHome $shared -NoPathUpdate -NonInteractive 6>&1) -join "`n"
+    Assert-True ($installOutput.Contains($release.body)) '安装成功展示实际 Release 原正文'
+    Assert-True ($installOutput.Contains('/releases/tag/release-v1.0.13')) '正文链接绑定实际版本'
     Assert-True (@($script:TestTransport.Requests | Where-Object { $_.EndsWith('.sha256') }).Count -eq 0) '在线安装不请求独立 sha256 文件'
     $declaredRelease = New-TestRelease -ZipBytes $declaredZipBytes
     $declaredRelease.assets = @($declaredRelease.assets | Where-Object { !$_.name.EndsWith('.sha256') })
@@ -360,7 +370,8 @@ class Program {
     Assert-True (!(Test-Path -LiteralPath (Join-Path $normal 'Install-GrokZh.ps1'))) '安装脚本不进入运行目录'
     $firstMarker = [IO.File]::ReadAllText((Join-Path $normal '.grok-zh-install.json'))
     $script:TestTransport = New-TestTransport -Release $release -ZipBytes $zipBytes
-    Invoke-GrokZhOnline -Mode Install -InstallDir $normal -GrokHome $shared -NoPathUpdate -NonInteractive
+    $skipOutput = @(Invoke-GrokZhOnline -Mode Install -InstallDir $normal -GrokHome $shared -NoPathUpdate -NonInteractive 6>&1) -join "`n"
+    Assert-True (!$skipOutput.Contains('更新日志 ·')) '同版本未安装不展示更新成功日志'
     Assert-True ([IO.File]::ReadAllText((Join-Path $normal '.grok-zh-install.json')) -ceq $firstMarker) '同版本默认不重装'
     Assert-True ($script:TestTransport.Requests.Count -eq 1) '同版本退出不下载 ZIP'
     $script:TestTransport = New-TestTransport -Release $release -ZipBytes $zipBytes
@@ -375,6 +386,8 @@ class Program {
     $script:TestTransport = New-TestTransport -Release $release -ZipBytes $zipBytes
     Invoke-GrokZhOnline -Mode Install -InstallDir $normal -GrokHome $shared -NoPathUpdate -NonInteractive
     Assert-True ((Get-OnlineExecutableVersion (Join-Path $normal 'grok-zh.exe')).Text -ceq '1.0.13') '较旧的安装升级为最新正式版'
+    Assert-True (!(Get-OnlineInstallMarker $normal).previous_install_backup) '普通升级成功清除备份引用'
+    Assert-True (@(Get-ChildItem -LiteralPath (Split-Path -Parent $normal) -Directory -Filter 'bin.previous.*').Count -eq 0) '普通升级不累积旧目录'
     $older = New-TestRelease -Version '1.0.9' -ZipBytes $zipBytes
     $script:TestTransport = New-TestTransport -Release $older -ZipBytes $zipBytes
     Assert-Throws { Invoke-GrokZhOnline -Mode Install -InstallDir $normal -GrokHome $shared -NoPathUpdate -NonInteractive } '较新已安装版本禁止降级'
@@ -390,7 +403,22 @@ class Program {
     Invoke-GrokZhOnline -Mode Portable -PortableDir $portable -GrokHome $shared -NonInteractive -Repair
     Assert-True (@(Get-ChildItem -LiteralPath $portable -Force).Count -eq 3) '更新后顶层仍为三项'
     $portableMarker = Get-OnlineInstallMarker (Join-Path $portable 'app')
-    Assert-True (Test-Path -LiteralPath $portableMarker.previous_portable_backup -PathType Container) '旧便携目录完整保留在同级'
+    Assert-True (!$portableMarker.previous_portable_backup) '便携升级成功清除备份引用'
+    Assert-True (@(Get-ChildItem -LiteralPath $testRoot -Directory -Filter '便携版 空格.previous.*').Count -eq 0) '便携升级成功删除旧目录'
+    # A lock left by the built-in updater is managed data, not a personal file.
+    [IO.File]::WriteAllText((Join-Path $portable 'app\grok-zh.exe.update.lock'), '', $utf8)
+    Install-OnlinePortable -Package $package -Root ($portable.ToUpperInvariant()) -SharedHome $shared -Version '1.0.13'
+    Assert-True (!(Get-OnlineInstallMarker (Join-Path $portable 'app')).previous_portable_backup) '便携升级可清理更新锁文件并接受路径大小写变化'
+    $guidePath = Join-Path $portable '使用说明.md'
+    $savedGuide = [IO.File]::ReadAllText($guidePath)
+    [IO.File]::Delete($guidePath)
+    $null = [IO.Directory]::CreateDirectory($guidePath)
+    [IO.File]::WriteAllText((Join-Path $guidePath '个人文件.txt'), 'keep-me', $utf8)
+    Assert-Throws { Assert-OnlinePortableRoot $portable } '同名说明目录不能绕过个人文件保护'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $guidePath '个人文件.txt')) -ceq 'keep-me') '拒绝无效便携结构时个人文件保持原样'
+    [IO.File]::Delete((Join-Path $guidePath '个人文件.txt'))
+    [IO.Directory]::Delete($guidePath)
+    [IO.File]::WriteAllText($guidePath, $savedGuide, $utf8)
     $cwdFixture = Join-Path $testRoot '调用目录'
     $null = [IO.Directory]::CreateDirectory($cwdFixture)
     foreach ($launchCase in @(@((Join-Path $portable '启动.cmd'), 'args=参数 空格|literal&value'), @((Join-Path $portable 'app\agent-zh.cmd'), 'args=agent|参数 空格|literal&value'))) {

@@ -975,6 +975,8 @@ async fn run_update_subcommand(
             Ok(None)
         }
         UpdateRunMode::NonBlocking => {
+            #[cfg(feature = "community-build")]
+            cmd.env("GROK_ZH_DEFER_UPDATE_NOTES", "1");
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -1212,9 +1214,15 @@ async fn install_community_release(
             );
         }
 
-        let replace_result = windows_replace_exe(&candidate, &destination).await;
+        // Keep activation and its completion receipt in the same transaction.
+        let install_lock = acquire_windows_update_lock(&destination);
+        let replace_result = match &install_lock {
+            Ok(_) => windows_replace_exe_locked(&candidate, &destination).await,
+            Err(error) => Err(anyhow::anyhow!("{error:#}")),
+        };
         let _ = tokio::fs::remove_file(&candidate).await;
         replace_result?;
+        crate::community_update_notes::record_success(&version, asset.release_notes.as_deref());
         eprintln!(
             "  已从 {}/releases 安装 {} v{}。",
             xai_grok_product::COMMUNITY_RELEASE_REPO,
@@ -1613,9 +1621,8 @@ async fn install_community_unix_release(
         );
     }
 
-    // Every install gets a fresh immutable target. Atomic link replacement
-    // changes only the two canonical entry points and deliberately keeps old
-    // targets so a still-running process retains its executable inode.
+    // Every install gets a fresh immutable target. Prune only after both
+    // entry points are active, retaining targets still used by live processes.
     if let Err(error) = swap_community_bin_links(&installed, &bin_dir).await {
         // Do not delete `installed`: a rollback failure may have left one link
         // pointing at it, and preserving a harmless orphan is safer than a
@@ -1628,6 +1635,9 @@ async fn install_community_unix_release(
             "community Unix entry points are active but directory sync failed: {error:#}"
         );
     }
+
+    cleanup_community_targets(&download_dir, &bin_dir).await;
+    crate::community_update_notes::record_success(version, asset.release_notes.as_deref());
 
     let _ = config::update_config(|state| {
         state.cli.installer = Some(crate::community_release::COMMUNITY_INSTALLER.to_string());
@@ -2834,6 +2844,12 @@ async fn sweep_stale_tmp_links(link_path: &std::path::Path, max_age: Duration) {
 /// ones survive until a later update runs after those processes exit.
 #[cfg(windows)]
 async fn windows_replace_exe(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let _install_lock = acquire_windows_update_lock(dest)?;
+    windows_replace_exe_locked(src, dest).await
+}
+
+#[cfg(windows)]
+async fn windows_replace_exe_locked(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
     let file_name = dest
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("destination has no filename: {}", dest.display()))?
@@ -2894,10 +2910,18 @@ async fn windows_replace_exe(src: &std::path::Path, dest: &std::path::Path) -> R
         )
     })?;
     match tokio::fs::copy(src, dest).await {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            sweep_old_exe_backups(&old).await;
+            Ok(())
+        }
         Err(e) => {
             // Rollback: restore the old binary so the install isn't broken.
-            let _ = tokio::fs::rename(&aside, dest).await;
+            if let Err(rollback) = tokio::fs::rename(&aside, dest).await {
+                anyhow::bail!(
+                    "install failed: {e}; rollback failed: {rollback}; previous executable retained at {}",
+                    aside.display()
+                );
+            }
             Err(e.into())
         }
     }
@@ -2922,7 +2946,17 @@ async fn sweep_old_exe_backups(old: &std::path::Path) {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if name.starts_with(&prefix) && name.ends_with(".old") {
+        let is_owned_aside = name
+            .strip_prefix(&prefix)
+            .and_then(|suffix| suffix.strip_suffix(".old"))
+            .and_then(|nonce| nonce.split_once('-'))
+            .is_some_and(|(pid, sequence)| {
+                !pid.is_empty()
+                    && !sequence.is_empty()
+                    && pid.bytes().all(|byte| byte.is_ascii_digit())
+                    && sequence.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        if is_owned_aside {
             let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
@@ -3483,6 +3517,9 @@ pub async fn run_update(
             let commands = crate::community_command_names();
             eprintln!("  ✓ grok-zh v{version} 安装成功！");
             eprintln!("  请重新启动 `{}` 或 `{}`。", commands.grok, commands.agent);
+            if std::env::var_os("GROK_ZH_DEFER_UPDATE_NOTES").is_none() {
+                crate::community_update_notes::print_pending(Some(version));
+            }
         }
         #[cfg(not(feature = "community-build"))]
         {
@@ -3676,7 +3713,152 @@ pub async fn run_update(
             eprintln!("  Please restart Grok.");
         }
     }
+    #[cfg(feature = "community-build")]
+    if std::env::var_os("GROK_ZH_DEFER_UPDATE_NOTES").is_none() {
+        crate::community_update_notes::print_pending(Some(target_version));
+    }
     Ok(Some(target_version.to_string()))
+}
+
+#[cfg(windows)]
+fn acquire_windows_update_lock(exe: &std::path::Path) -> Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let name = exe
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("executable has no filename"))?;
+    let lock = exe.with_file_name(format!("{}.update.lock", name.to_string_lossy()));
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(&lock)
+        .context(
+            "another updater or backup cleanup is using this installation; retry after it finishes",
+        )
+}
+
+/// Best-effort retry for files that were locked when activation completed.
+/// This never touches shared conversation data or official-command backups.
+#[cfg(feature = "community-build")]
+pub async fn cleanup_community_update_backups() {
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe()
+        && exe
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("grok-zh.exe"))
+        && let Ok(_lock) = acquire_windows_update_lock(&exe)
+    {
+        sweep_old_exe_backups(&exe.with_file_name("grok-zh.exe.old")).await;
+    }
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    ))]
+    if let Some(home) = xai_dirs::resolve_grok_home() {
+        let bin = home.join("bin");
+        let downloads = home.join("grok-zh-downloads");
+        if validate_community_home_path(&bin).is_ok()
+            && validate_community_home_path(&downloads).is_ok()
+            && bin.is_dir()
+            && downloads.is_dir()
+            && let Ok(_lock) = acquire_community_install_lock(&bin)
+        {
+            cleanup_community_targets(&downloads, &bin).await;
+        }
+    }
+}
+
+#[cfg(all(unix, feature = "community-build"))]
+async fn cleanup_community_targets(downloads: &std::path::Path, bin: &std::path::Path) {
+    cleanup_community_targets_with(
+        downloads,
+        bin,
+        crate::cleanup_downloads::executable_is_in_use_conservative,
+    )
+    .await;
+}
+
+#[cfg(all(unix, feature = "community-build"))]
+async fn cleanup_community_targets_with(
+    downloads: &std::path::Path,
+    bin: &std::path::Path,
+    is_in_use: impl Fn(&std::path::Path) -> bool,
+) {
+    use std::os::unix::fs::MetadataExt;
+    // Refuse redirected directories. Only plain files with our exact installed
+    // naming contract are eligible; all live launch aliases retain their target.
+    for directory in [downloads, bin] {
+        if !std::fs::symlink_metadata(directory).is_ok_and(|metadata| {
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == unsafe { libc::geteuid() }
+        }) {
+            return;
+        }
+    }
+    let Ok(active) = std::fs::canonicalize(bin.join("grok-zh")) else {
+        return;
+    };
+    let Ok(root) = std::fs::canonicalize(downloads) else {
+        return;
+    };
+    if active.parent() != Some(root.as_path()) {
+        return;
+    }
+    let protected: Vec<_> = ["grok-zh", "agent-zh", "grok", "agent"]
+        .iter()
+        .filter_map(|name| std::fs::canonicalize(bin.join(name)).ok())
+        .collect();
+    let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(is_community_installed_target)
+            || protected.contains(&path)
+            || !entry.file_type().await.is_ok_and(|kind| kind.is_file())
+        {
+            continue;
+        }
+        // A standalone installer may still be publishing a fresh immutable
+        // target. Leave those for a subsequent startup instead of racing it.
+        let stale = entry
+            .metadata()
+            .await
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_TMP_AGE);
+        if stale && !is_in_use(&path) {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+}
+
+#[cfg(all(feature = "community-build", any(unix, test)))]
+fn is_community_installed_target(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix("grok-zh-")
+        .and_then(|rest| rest.strip_suffix(".installed"))
+    else {
+        return false;
+    };
+    ["-linux-x86_64-gnu.", "-macos-aarch64."]
+        .iter()
+        .any(|platform| {
+            let Some((version, nonce)) = rest.rsplit_once(platform) else {
+                return false;
+            };
+            semver::Version::parse(version)
+                .is_ok_and(|parsed| parsed.to_string() == version && parsed.build.is_empty())
+                && !nonce.is_empty()
+                && nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 /// Refresh managed config post-update (best-effort, staleness-gated), for deployment-key and team principals alike.

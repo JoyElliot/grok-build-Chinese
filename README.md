@@ -100,6 +100,8 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 - 默认使用 `stable` 通道，只接受本仓库非 Draft、非 prerelease 的 Immutable Release；如需预览版，可显式运行 `grok-zh update --alpha`。
 - 更新器验证当前平台完整 ZIP 的固定下载地址、大小、GitHub SHA-256、包内协议/清单和候选程序版本；新版不依赖独立 `.sha256` 或其他平台附件。
 - 后台自动更新默认关闭。按 `Ctrl+U` 才会下载并安装本次更新；也可以在设置中显式开启后台更新。
+- `grok-zh update`、`Ctrl+U` 和 Windows 在线安装完成后显示实际安装版本的 Release 正文；后台更新的正文在返回终端时显示一次，不进入模型对话。
+- 更新成功后清理受管旧版本备份；Windows 被运行进程占用的旧 EXE 在后续启动重试，完整安装器的旧目录在后续更新重试。失败回滚、个人文件和历史官方程序恢复数据仍受保护。
 - 激活失败时保留当前版本；需要同步 `agent-zh.cmd`、`rg.exe`、安装器或文档时，重新运行新 ZIP 中的安装器。
 
 旧版迁移、高级参数和恢复方式见 [Windows 自动安装说明](packaging/windows/INSTALL-WINDOWS.md)。正式 Release 同时提供 SHA-256 与 GitHub Artifact Attestation，用于核对文件完整性和云端构建来源；它们不等同于 Windows Authenticode 签名。
