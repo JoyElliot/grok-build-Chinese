@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "tag": "release-v1.0.12-rc.1",
+  "prerelease": true,
   "previous_tag": "v1.0.8",
   "community": [],
   "upstream": [
@@ -37,8 +38,5 @@
         }
       ]
     }
-  ],
-  "notices": [
-    "本版本为预发布，提供 Windows、macOS 和 Linux 包；日常使用建议选择最新正式版。"
   ]
 }

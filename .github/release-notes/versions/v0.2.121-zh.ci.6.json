@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "tag": "v0.2.121-zh.ci.6",
+  "prerelease": true,
   "previous_tag": null,
   "community": [
     {

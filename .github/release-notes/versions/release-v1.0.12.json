@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "tag": "release-v1.0.12",
+  "prerelease": true,
   "previous_tag": "release-v1.0.12-rc.1",
   "community": [
     {
@@ -18,8 +19,7 @@
     }
   ],
   "upstream": [],
-  "notices": [
-    "此版本仍为 1.0.12-rc.2 预发布；标签 release-v1.0.12 不代表已转为正式版。",
+  "known_issues": [
     "该版 Linux 归档超过旧更新器解包限制，Linux 用户请使用 1.0.13 或更新正式版。"
   ]
 }

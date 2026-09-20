@@ -1,8 +1,22 @@
 {
   "schema": 1,
   "tag": "release-v1.0.13",
-  "previous_tag": "release-v1.0.12",
+  "prerelease": false,
+  "previous_tag": "v1.0.8",
   "community": [
+    {
+      "text": "补全命令提示、登录错误及扩展目录元数据的中文显示。",
+      "commits": [
+        "44de1794c4f45798430db2e28467d9c55022926e",
+        "471f9c82506d78ec2b4022fda9e6867dcde3f82e"
+      ]
+    },
+    {
+      "text": "修复插件市场官方来源识别，保持原有排序。",
+      "commits": [
+        "4e600496f4a74f734393a27d6fbb319cf9249811"
+      ]
+    },
     {
       "text": "修复 Linux 归档过大导致的自动更新问题，提供可正常升级的三平台统一正式版。",
       "commits": [
@@ -10,7 +24,41 @@
       ]
     }
   ],
-  "upstream": [],
+  "upstream": [
+    {
+      "base": "07b2f7144fd5c5c9d3dd1966937a87852d2dbdb8",
+      "tip": "bc7f02eddd3d84085849dc19ed216f11c23b0571",
+      "label": "上游 1.0.9–1.0.12",
+      "highlights": [
+        {
+          "text": "改善启动与会话恢复速度，并完善运行中命令和子智能体跟进消息的处理。",
+          "commits": [
+            "c2ad97f87aea4303b6000a2c22128bc91ee76c9b",
+            "9684fa3cdbf2995e30ea8b9b637f1db008f144fc"
+          ]
+        },
+        {
+          "text": "新增无界面会话恢复支持，完善上下文压缩与权限交互。",
+          "commits": [
+            "77cd7eb675ba911c225c3aaeeece3a20cbccc426",
+            "9684fa3cdbf2995e30ea8b9b637f1db008f144fc"
+          ]
+        },
+        {
+          "text": "改进定时任务完成状态、瞬态请求重试和错误提示。",
+          "commits": [
+            "bc7f02eddd3d84085849dc19ed216f11c23b0571"
+          ]
+        },
+        {
+          "text": "调整 MCP OAuth 初始化流程，改善工作树恢复和图片尺寸处理。",
+          "commits": [
+            "bc7f02eddd3d84085849dc19ed216f11c23b0571"
+          ]
+        }
+      ]
+    }
+  ],
   "notices": [
     "从 1.0.12 预发布升级的 Linux 用户，建议使用本版或更新正式版的完整安装包。"
   ]

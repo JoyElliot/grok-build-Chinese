@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "tag": "v1.0.8",
+  "prerelease": false,
   "previous_tag": "v1.0.5",
   "community": [
     {

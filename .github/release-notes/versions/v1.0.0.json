@@ -1,23 +1,86 @@
 {
   "schema": 1,
   "tag": "v1.0.0",
-  "previous_tag": "v1.0.0-zh.preview.10",
+  "prerelease": false,
+  "previous_tag": null,
   "community": [
     {
-      "text": "修复中文文档弹窗中宽字符和 Windows 换行导致的显示错位。",
+      "text": "提供简体中文界面、教程和用户文档，覆盖认证、配置、MCP、插件及会话管理。",
       "commits": [
-        "cdac9308bd5256ac5d05a4dd9a815d3deb214409",
-        "8308d3fe9d84b28eee1a405cfb15ab9ba73bf401"
+        "c109130cdd42becb1f04f98735c5333752cb5e24",
+        "c61f27606d8b0abc6f80dee2f342e293d0ba0be1",
+        "4072da692c799c4fa9eaa469b89af6aec9dcc56d"
       ]
     },
     {
-      "text": "完善应用内更新日志的中文显示。",
+      "text": "社区更新使用完整 ZIP，支持正式与预览通道，由 Ctrl+U 确认；安装前核对文件大小、SHA-256 和版本，失败时保留原程序。",
       "commits": [
+        "4693d1a8b8d49e3daeef67c27d1d30cfad6afb66",
+        "9f8a1850a56a35ae8983c3ee7bf6f60782abb016"
+      ]
+    },
+    {
+      "text": "Windows 安装器采用中文提示，支持独立目录、用户 PATH 和可选兼容命令，保留共享用户数据及官方命令备份。",
+      "commits": [
+        "10a45874a147f72f93d48bbaab79b407ca548704"
+      ]
+    },
+    {
+      "text": "补全终端标题、通知、输入、媒体工具和任务提示的中文显示，完善中文会话标题生成。",
+      "commits": [
+        "27da7c7bdda2df568df56eb45e9c9fce9855faa9",
+        "20286037bd4cbb5fc6efb8e380133ecdd5f7184e"
+      ]
+    },
+    {
+      "text": "修复中文文档弹窗的宽字符及 Windows 换行错位，完善应用内更新日志的中文显示。",
+      "commits": [
+        "cdac9308bd5256ac5d05a4dd9a815d3deb214409",
+        "8308d3fe9d84b28eee1a405cfb15ab9ba73bf401",
         "e64f0189c29b1f00e4575ad79020e64703e7c70c"
       ]
     }
   ],
-  "upstream": [],
+  "upstream": [
+    {
+      "base": "e5478eff1e4050558e12e1328b85e6616632efb6",
+      "tip": "8a14c91d88875a831a38b3a066b1683116bcb31c",
+      "label": "截至上游 1.0.0",
+      "highlights": [
+        {
+          "text": "完善会话恢复与计划审批，加快大型会话恢复，支持批准计划时切换模型。",
+          "commits": [
+            "ed6d543643628663873c5de28298e022ed634238",
+            "8a14c91d88875a831a38b3a066b1683116bcb31c"
+          ]
+        },
+        {
+          "text": "修复会话搜索遗漏、队列交互和中文宽字符复制问题。",
+          "commits": [
+            "a5589e958437d79e13db026eedcb1720bffd4063"
+          ]
+        },
+        {
+          "text": "新增 grok du 磁盘占用查看，完善回退确认和任务并发控制。",
+          "commits": [
+            "393430ee4934bc791b0d538f304a21691c517433"
+          ]
+        },
+        {
+          "text": "减少 Git 状态输出刷屏，完善会话信息查看及回顾的语言跟随。",
+          "commits": [
+            "afbc0fb710320c7add294c2106d447ecc3e3af2e"
+          ]
+        },
+        {
+          "text": "改进工作树识别、运行中立即发送消息及退出流程，完善 MCP 与工具服务的内存保护。",
+          "commits": [
+            "8a14c91d88875a831a38b3a066b1683116bcb31c"
+          ]
+        }
+      ]
+    }
+  ],
   "notices": [
     "本版本仅提供 Windows x64 安装包；安装其他平台请使用后续支持该平台的版本。",
     "此版本尚无双击安装入口，请完整解压 ZIP 后按包内说明运行 Install-GrokZh.ps1。"

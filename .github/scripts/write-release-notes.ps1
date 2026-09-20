@@ -15,7 +15,7 @@ param(
     [string] $UpstreamRepository = 'xai-org/grok-build',
 
     [AllowEmptyCollection()]
-    [string[]] $PublishedReleaseTags
+    [object[]] $PublishedReleases
 )
 
 Set-StrictMode -Version Latest
@@ -101,8 +101,8 @@ function Test-Ancestor([string] $Ancestor, [string] $Descendant) {
     if ($result.ExitCode -gt 1) { throw "无法核验提交祖先关系：$Ancestor -> $Descendant" }
     return $result.ExitCode -eq 0
 }
-function Get-PublishedReleaseTags {
-    if (!$GitHubToken) { throw '必须提供 GitHub token 或 PublishedReleaseTags 以核对已发布基线。' }
+function Get-PublishedReleases {
+    if (!$GitHubToken) { throw '必须提供 GitHub token 或 PublishedReleases 以核对已发布基线。' }
     $headers = @{
         Accept = 'application/vnd.github+json'
         Authorization = "Bearer $GitHubToken"
@@ -115,30 +115,22 @@ function Get-PublishedReleaseTags {
         $pageResult = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/releases?per_page=100&page=$page" -Headers $headers
         $items = @($pageResult)
         foreach ($release in $items) {
-            # Historical releases may have a prerelease display name but a stable
-            # tag. Notes editing must preserve that metadata, not reinterpret it.
-            if (!$release.draft -and $release.immutable -and (Test-ReleaseTag $release.tag_name)) {
-                $releases.Add($release)
-            }
+            $releases.Add($release)
         }
         if ($items.Count -lt 100) { break }
     }
-    $current = @($releases | Where-Object { $_.tag_name -ceq $CurrentTag })
-    $eligible = @($releases)
-    if ($current.Count -eq 1) {
-        $eligible = @($eligible | Where-Object { [datetime]$_.published_at -lt [datetime]$current[0].published_at })
-    }
-    return @($eligible | Sort-Object { [datetime]$_.published_at } -Descending | ForEach-Object { $_.tag_name })
+    return $releases.ToArray()
 }
 
 $document = Get-Content -LiteralPath $NotesPath -Raw | ConvertFrom-Json
-foreach ($field in @('schema', 'tag', 'previous_tag', 'community', 'upstream')) {
+foreach ($field in @('schema', 'tag', 'prerelease', 'previous_tag', 'community', 'upstream')) {
     if (!$document.PSObject.Properties[$field]) { throw "发布说明缺少字段：$field" }
 }
 if (($document.schema -isnot [int] -and $document.schema -isnot [long]) -or $document.schema -ne 1) {
     throw '发布说明 schema 必须为整数 1。'
 }
 if ($document.tag -isnot [string] -or $document.tag -cne $CurrentTag) { throw '发布说明 tag 与当前标签不一致。' }
+if ($document.prerelease -isnot [bool]) { throw '发布说明 prerelease 必须为布尔值。' }
 if ($null -ne $document.previous_tag -and ($document.previous_tag -isnot [string] -or !(Test-ReleaseTag $document.previous_tag))) {
     throw 'previous_tag 必须为有效 Release 标签或 null。'
 }
@@ -146,15 +138,42 @@ if ($document.community -isnot [System.Collections.IList]) { throw 'community �
 if ($document.upstream -isnot [System.Collections.IList]) { throw 'upstream 必须为数组。' }
 if ($document.community.Count -eq 0 -and $document.upstream.Count -eq 0) { throw '发布说明至少需要一条社区或上游重点。' }
 $currentCommit = Resolve-Commit $CurrentTag
-if ($PSBoundParameters.ContainsKey('PublishedReleaseTags')) {
-    $publishedTags = @($PublishedReleaseTags)
+if ($PSBoundParameters.ContainsKey('PublishedReleases')) {
+    $releaseMetadata = @($PublishedReleases)
 } else {
-    $publishedTags = @(Get-PublishedReleaseTags)
+    $releaseMetadata = @(Get-PublishedReleases)
 }
+$published = [Collections.Generic.List[object]]::new()
+foreach ($release in $releaseMetadata) {
+    foreach ($field in @('tag_name', 'prerelease', 'draft', 'immutable', 'published_at')) {
+        if (!$release.PSObject.Properties[$field]) { throw "Release 元数据缺少字段：$field" }
+    }
+    foreach ($field in @('prerelease', 'draft', 'immutable')) {
+        if ($release.$field -isnot [bool]) { throw "Release 元数据 $field 必须为布尔值。" }
+    }
+    if ($release.draft -or !$release.immutable -or !(Test-ReleaseTag $release.tag_name)) { continue }
+    if (!$release.published_at) { throw '已发布 Release 缺少发布时间。' }
+    $null = [datetimeoffset]$release.published_at
+    $published.Add($release)
+}
+$currentRelease = @($published | Where-Object { $_.tag_name -ceq $CurrentTag })
+if ($currentRelease.Count -gt 1) { throw '当前 Release 元数据重复。' }
+if ($currentRelease.Count -eq 1 -and $currentRelease[0].prerelease -ne $document.prerelease) {
+    throw '发布说明 prerelease 与 GitHub Release 状态不一致。'
+}
+if ($currentRelease.Count -eq 0 -and $document.prerelease -ne (Get-ReleaseTagVersion $CurrentTag).Contains('-')) {
+    throw '尚未发布版本的 prerelease 必须与标签版本一致。'
+}
+# Stable releases compare with stable releases; previews can compare with the
+# latest published ancestor. Trust GitHub metadata, not the tag's spelling.
+$eligible = @($published | Where-Object {
+    $_.tag_name -cne $CurrentTag -and
+    ($document.prerelease -or !$_.prerelease) -and
+    ($currentRelease.Count -eq 0 -or [datetimeoffset]$_.published_at -lt [datetimeoffset]$currentRelease[0].published_at)
+} | Sort-Object { [datetimeoffset]$_.published_at } -Descending)
 $publishedByCommit = @{}
-foreach ($tag in $publishedTags) {
-    if (!(Test-ReleaseTag $tag)) { throw "PublishedReleaseTags 包含无效 Tag：$tag" }
-    if ($tag -ceq $CurrentTag) { continue }
+foreach ($release in $eligible) {
+    $tag = $release.tag_name
     $commit = Resolve-Commit $tag
     if (!$publishedByCommit.ContainsKey($commit)) { $publishedByCommit[$commit] = $tag }
 }
@@ -186,10 +205,6 @@ function Get-HighlightText($Entry, [string] $Tip, [string] $Base, [string] $Cont
     return ConvertTo-MarkdownLinkText $Entry.text
 }
 $lines = [System.Collections.Generic.List[string]]::new()
-if ($document.community.Count -gt 0) {
-    $lines.Add('## 社区版重点')
-    $lines.Add('')
-}
 foreach ($entry in $document.community) {
     $text = Get-HighlightText $entry $currentCommit $previousCommit '社区版'
     $lines.Add("- $text")
@@ -232,8 +247,6 @@ if ($document.upstream.Count -gt 0) {
         }
         $label = ConvertTo-MarkdownLinkText $group.label
         $lines.Add('')
-        $lines.Add("$label：")
-        $lines.Add('')
         foreach ($entry in $group.highlights) {
             $text = Get-HighlightText $entry $tip $base '上游'
             $lines.Add("- $text")
@@ -241,13 +254,18 @@ if ($document.upstream.Count -gt 0) {
         $upstreamLinks.Add("[上游完整变更（$label）](https://github.com/$UpstreamRepository/compare/$range)")
     }
 }
-if ($document.PSObject.Properties['notices']) {
-    if ($document.notices -isnot [System.Collections.IList]) { throw 'notices 必须为数组。' }
-    if ($document.notices.Count -gt 0) {
-        $lines.Add(''); $lines.Add('## 安装与兼容性'); $lines.Add('')
-        foreach ($notice in $document.notices) {
+foreach ($section in @(
+    @{ Field = 'notices'; Heading = '安装与兼容性' },
+    @{ Field = 'known_issues'; Heading = '已知问题' }
+)) {
+    $field = $section.Field
+    if (!$document.PSObject.Properties[$field]) { continue }
+    if ($document.$field -isnot [System.Collections.IList]) { throw "$field 必须为数组。" }
+    if ($document.$field.Count -gt 0) {
+        $lines.Add(''); $lines.Add("## $($section.Heading)"); $lines.Add('')
+        foreach ($notice in $document.$field) {
             if ($notice -isnot [string] -or [string]::IsNullOrWhiteSpace($notice) -or
-                $notice -match '[\x00-\x1F\x7F]' -or !(Test-ContainsChinese $notice)) { throw '兼容性说明必须为中文单行文本。' }
+                $notice -match '[\x00-\x1F\x7F]' -or !(Test-ContainsChinese $notice)) { throw "$field 必须为中文单行文本。" }
             $lines.Add("- $(ConvertTo-MarkdownLinkText $notice)")
         }
     }
@@ -265,7 +283,7 @@ if (!$installCommand -or $installCommand.Contains("`n") -or $installCommand.Cont
 $lines.Add('<details>')
 $lines.Add('<summary>下载与安装</summary>')
 $lines.Add('')
-$lines.Add('本版本安装包见下方附件。以下在线命令始终安装最新正式版；安装历史版或预发布版时，请下载对应附件。')
+$lines.Add('本版本安装包见下方附件。以下在线命令始终安装最新正式版；安装本页指定版本时，请下载对应附件。')
 $lines.Add('')
 $lines.Add('```powershell')
 $lines.Add($installCommand)
