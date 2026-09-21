@@ -197,20 +197,6 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  windows-x64-gnu-static-validation:
-    name: Windows 安装器与静态检查
-    needs: release-plan
-    runs-on: windows-2022
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.release-plan.outputs.source_commit }}
-      - name: 验证安装器、协议及工作流门禁
-        shell: pwsh
-        run: ./.github/scripts/check-windows-package.ps1 -Mode release
-
   windows-x64-gnu-rust-validation:
     name: Windows GNU 测试 (${{ matrix.suite }})
     needs: release-plan
@@ -239,6 +225,11 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.release-plan.outputs.source_commit }}
+      - name: 验证安装器、协议及工作流门禁
+        if: matrix.suite == 'core'
+        timeout-minutes: 15
+        shell: pwsh
+        run: ./.github/scripts/check-windows-package.ps1 -Mode release
       - name: 准备 Windows GNU 测试环境
         uses: ./.github/actions/setup-windows-gnu
         with:
@@ -255,7 +246,6 @@ jobs:
     if: always()
     needs:
       - release-plan
-      - windows-x64-gnu-static-validation
       - windows-x64-gnu-rust-validation
     runs-on: ubuntu-latest
     timeout-minutes: 5

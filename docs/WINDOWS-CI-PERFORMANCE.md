@@ -1,11 +1,10 @@
 # Windows CI 并行验证与编译
 
-Windows 预览 CI 和正式 Release 使用四条独立路径：静态检查、核心 Rust 测试、界面 Rust 测试、产物编译。后三者各有自己的 `windows-2022` runner、CPU、内存和临时目录，各自使用 `-j4`；静态检查无需安装 Rust 或下载 Cargo 依赖。
+Windows 预览 CI 和正式 Release 使用三条独立路径：核心验证、界面 Rust 测试、产物编译。各有自己的 `windows-2022` runner、CPU、内存和临时目录，Rust 编译各自使用 `-j4`。安装器与静态检查合并到 core 分片，在准备 Rust 环境前运行一次，保留 15 分钟步骤超时；失败会使 core 和验证聚合门禁失败。
 
 ```mermaid
 flowchart LR
-    P[安装器与静态检查] --> V[Windows GNU 验证]
-    C[核心测试 J4] --> V
+    C[core: 安装器与静态检查 → 核心测试 J4] --> V[Windows GNU 验证]
     U[界面测试 J4] --> V
     V --> G[Windows x64 GNU 预览版]
     B[Windows 编译打包 J4] --> G
@@ -16,15 +15,15 @@ flowchart LR
 
 - 核心分片保留 locale、community-build 更新器与 Shell 筛选；正式发布另含 product、version、config 检查。
 - 界面分片保留完整 pager、minimal 和免费账户选项等筛选。相同 package 的后续过滤命令可复用已编译的测试程序。
-- 静态检查保留 PowerShell 5.1 / 7 安装器、包协议、PE 精简保护、发布策略、发布说明和预览元数据检查；格式检查在核心分片运行。
+- core 内的静态检查保留 PowerShell 5.1 / 7 安装器、包协议、PE 精简保护、发布策略、发布说明和预览元数据检查；格式检查也在核心分片运行。ui 分片不重复执行静态检查。
 - `windows-gnu-validation` 和 `windows-gnu-preview` 保留原 ID 与检查名称作为聚合门禁。任一必需分片失败、取消或跳过都不会通过；矩阵关闭 fail-fast，让另一分片保留完整诊断。
 - 编译制品可能早于测试完成上传；完整验收仍以 Windows 聚合检查和三端汇总为准。
 
-正式 Release 的静态、Rust 矩阵与产物编译都只依赖 `release-plan`，检出同一个 `source_commit`，Rust 与构建显式使用相同发布版本。`windows-x64-gnu-validation` 汇总 release-plan 和全部验证子作业；原有 `release-attestations` 与 `release-publisher` 继续要求验证、编译成功，不能绕过失败、取消或跳过的验证。
+正式 Release 的验证矩阵与产物编译都只依赖 `release-plan`，检出同一个 `source_commit`，Rust 与构建显式使用相同发布版本。core 的静态检查使用该次检出的代码。`windows-x64-gnu-validation` 汇总 release-plan 和全部验证分片；原有 `release-attestations` 与 `release-publisher` 继续要求验证、编译成功，不能绕过失败、取消或跳过的验证。
 
 ## 共用准备与隔离边界
 
-Rust 分片和编译作业调用 `.github/actions/setup-windows-gnu`，统一版本及固定 Rust / MinGW / protoc，恢复 Cargo registry/git，并各自在自己的 runner 获取依赖。静态作业不调用该准备步骤。
+Rust 分片和编译作业调用 `.github/actions/setup-windows-gnu`，统一版本及固定 Rust / MinGW / protoc，恢复 Cargo registry/git，并各自在自己的 runner 获取依赖。core 先完成静态检查，再调用该准备步骤。
 
 `.github/scripts/windows-validation-tests.json` 保存原有预览 12 条、发布 15 条 Cargo 命令的 package、feature 和过滤条件。各分片内部保留相对顺序；跨分片并行运行。不将多个 package 合成一条 Cargo 命令，避免 feature union 改变覆盖。
 

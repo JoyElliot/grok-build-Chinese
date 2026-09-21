@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 from test_release_workflow import dependencies, job_blocks
@@ -49,7 +50,7 @@ class WindowsValidationTests(unittest.TestCase):
         for filename, prefix in [('zh-dev-windows-preview.yml', 'windows-gnu'), ('zh-release-windows.yml', 'windows-x64-gnu')]:
             jobs = job_blocks((ROOT / '.github/workflows' / filename).read_text(encoding='utf-8'))
             gate = jobs[prefix + '-validation']
-            required = {prefix + '-static-validation', prefix + '-rust-validation'}
+            required = {prefix + '-rust-validation'}
             if filename.startswith('zh-release'):
                 required.add('release-plan')
             self.assertEqual(dependencies(gate), required)
@@ -57,6 +58,18 @@ class WindowsValidationTests(unittest.TestCase):
             self.assertIn('${{ toJSON(needs.*.result) }}', gate)
             self.assertIn('all(. == "success")', gate)
             rust = jobs[prefix + '-rust-validation']
+            self.assertNotIn(prefix + '-static-validation', jobs)
+            # Static checks run once on core and must succeed before Rust setup.
+            checks = [step for step in re.split(r'^      - ', rust, flags=re.M)
+                      if 'run: ./.github/scripts/check-windows-package.ps1' in step]
+            self.assertEqual(len(checks), 1)
+            self.assertIn("if: matrix.suite == 'core'", checks[0])
+            self.assertIn('timeout-minutes: 15', checks[0])
+            self.assertNotIn('continue-on-error:', checks[0])
+            mode = 'release' if filename.startswith('zh-release') else 'preview'
+            self.assertIn(f'check-windows-package.ps1 -Mode {mode}', checks[0])
+            self.assertLess(rust.index('check-windows-package.ps1'),
+                            rust.index('uses: ./.github/actions/setup-windows-gnu'))
             self.assertIn('fail-fast: false', rust)
             self.assertIn('suite: [core, ui]', rust)
             self.assertIn('suite: ${{ matrix.suite }}', rust)

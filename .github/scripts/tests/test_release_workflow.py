@@ -12,7 +12,6 @@ WORKFLOW = ROOT / ".github/workflows/zh-release-windows.yml"
 VALIDATION = "windows-x64-gnu-validation"
 BUILD = "windows-x64-gnu"
 RUST = "windows-x64-gnu-rust-validation"
-STATIC = "windows-x64-gnu-static-validation"
 
 
 def job_blocks(text):
@@ -67,9 +66,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn('CARGO_BUILD_JOBS: "4"', block)
                 self.assertNotIn("contents: write", block)
                 self.assertNotIn("id-token: write", block)
-        self.assertEqual(dependencies(self.jobs[STATIC]), {"release-plan"})
-        self.assertIn("ref: ${{ needs.release-plan.outputs.source_commit }}", self.jobs[STATIC])
-        self.assertEqual(dependencies(self.jobs[VALIDATION]), {"release-plan", STATIC, RUST})
+        self.assertEqual(dependencies(self.jobs[VALIDATION]), {"release-plan", RUST})
         self.assertIn("if: always()", self.jobs[VALIDATION])
         self.assertIn('all(. == "success")', self.jobs[VALIDATION])
         self.assertIn("${{ toJSON(needs.*.result) }}", self.jobs[VALIDATION])
