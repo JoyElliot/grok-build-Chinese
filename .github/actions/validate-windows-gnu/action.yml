@@ -1,0 +1,62 @@
+name: Validate Windows GNU shard
+description: Run unchanged Cargo test selections with an isolated target cache and diagnostics.
+inputs:
+  suite:
+    description: Independent core or ui test suite.
+    required: true
+  mode:
+    description: preview or release coverage.
+    required: true
+  save-cache:
+    description: Only trusted preview runs may save their ref-scoped cache.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: 记录原生编译器指纹
+      id: native
+      shell: pwsh
+      run: |
+        $tools = @($env:CC, $env:CXX, $env:AR, (Join-Path (Split-Path $env:CC) 'ld.exe'))
+        $hashes = ($tools | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }) -join ':'
+        $fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($hashes)))
+        "fingerprint=$fingerprint" | Add-Content $env:GITHUB_OUTPUT
+
+    - name: 恢复测试编译缓存
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ runner.temp }}/grok-zh-target/debug
+        key: grok-zh-test-v1-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          grok-zh-test-v1-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
+          grok-zh-test-v1-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
+
+    - name: 验证并记录逐命令耗时与资源
+      shell: pwsh
+      env:
+        VALIDATION_SUITE: ${{ inputs.suite }}
+        VALIDATION_MODE: ${{ inputs.mode }}
+        VALIDATION_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        VALIDATION_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+      run: ./.github/scripts/run-windows-validation.ps1 -Suite $env:VALIDATION_SUITE -Mode $env:VALIDATION_MODE
+
+    - name: 上传测试分片诊断
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: grok-zh-windows-validation-${{ inputs.mode }}-${{ inputs.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/grok-zh-target/cargo-timings
+          ${{ runner.temp }}/grok-zh-windows-validation-${{ inputs.suite }}
+        if-no-files-found: warn
+        retention-days: 14
+
+    # Stable keys bound cache growth. Cargo still checks source fingerprints on
+    # every run; exact hits are not an instruction to skip compilation/tests.
+    - name: 保存测试编译缓存
+      if: ${{ success() && inputs.save-cache == 'true' && steps.cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ runner.temp }}/grok-zh-target/debug
+        key: ${{ steps.cache.outputs.cache-primary-key }}
