@@ -114,6 +114,30 @@ runs:
         & $gcc --version
         & $protoc --version
 
+        # Hosted runners with the same image label can use different hardware.
+        # Record it once alongside Cargo timings without adding sampling load.
+        $hardware = [ordered]@{
+          runner_name = $env:RUNNER_NAME
+          image_os = $env:ImageOS
+          image_version = $env:ImageVersion
+          logical_processors = [Environment]::ProcessorCount
+          processors = $null
+          memory_total_bytes = $null
+          collection_error = $null
+        }
+        try {
+          $hardware.processors = @(Get-CimInstance Win32_Processor |
+            Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed)
+          $hardware.memory_total_bytes = [long](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+        } catch {
+          $hardware.collection_error = $_.Exception.Message
+          Write-Warning "Runner hardware inventory unavailable: $($_.Exception.Message)"
+        }
+        $timings = Join-Path $targetDir 'cargo-timings'
+        New-Item -ItemType Directory -Path $timings -Force | Out-Null
+        $hardware | ConvertTo-Json -Depth 5 |
+          Tee-Object -FilePath (Join-Path $timings 'runner-hardware.json')
+
     - name: 恢复 Cargo 依赖缓存
       id: cargo_home_cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9

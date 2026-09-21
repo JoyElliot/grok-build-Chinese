@@ -56,7 +56,7 @@ runs:
     # every run; exact hits are not an instruction to skip compilation/tests.
     - name: 保存测试编译缓存
       if: ${{ success() && inputs.save-cache == 'true' && steps.cache.outputs.cache-hit != 'true' }}
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      uses: ./.github/actions/save-cargo-cache
       with:
         path: ${{ runner.temp }}/grok-zh-target/debug
         key: ${{ steps.cache.outputs.cache-primary-key }}
