@@ -2453,6 +2453,13 @@ fn main() {
     if let Err(e) = result {
         xai_tty_utils::restore_native_stderr();
         finalize_span_profile();
+        if e.is::<xai_grok_update::community_update_cancel::UpdateCancelled>() {
+            xai_grok_pager::best_effort_stderr::eprint_line(
+                &xai_grok_update::community_update_cancel::UpdateCancelled.to_string(),
+            );
+            drop(_sentry_guard);
+            std::process::exit(xai_grok_update::community_update_cancel::CANCELLED_EXIT_CODE);
+        }
         let report = match e.downcast_ref::<xai_grok_pager::app::StartupFailure>() {
             Some(startup) => startup.user_report(),
             None => format!("Error: {e:#}"),
@@ -3085,13 +3092,13 @@ async fn run_update_command(
             ));
         xai_grok_shell::agent::init::update_telemetry_config(&agent_cfg, &auth_manager);
     }
-    let result = auto_update::run_update(
+    let result = xai_grok_update::community_update_cancel::with_ctrl_c(auto_update::run_update(
         force_reinstall,
         version.as_deref(),
         channel_switch,
         &mut update_config,
         trigger,
-    )
+    ))
     .await;
     if let Ok(Some(installed_version)) = &result {
         signal_leaders_to_relaunch(installed_version).await;

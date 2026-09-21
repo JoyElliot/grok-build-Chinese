@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::redirect::Policy;
@@ -19,6 +19,8 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
+
+use crate::community_update_cancel;
 
 mod package_protocol;
 use package_protocol::{BUILD_INFO, PackageProtocol};
@@ -273,18 +275,15 @@ fn select_latest_release<'a>(
 }
 
 async fn fetch_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T> {
-    let response = api_client()?
-        .get(url)
-        .send()
-        .await
+    let response = community_update_cancel::interruptible(api_client()?.get(url).send())
+        .await?
         .with_context(|| format!("requesting {url}"))?;
     let status = response.status();
     if !status.is_success() {
         anyhow::bail!("GitHub Releases API returned {status} for {url}");
     }
-    response
-        .json::<T>()
-        .await
+    community_update_cancel::interruptible(response.json::<T>())
+        .await?
         .with_context(|| format!("parsing GitHub Releases response from {url}"))
 }
 
@@ -513,13 +512,11 @@ pub(crate) async fn download_verified(asset: &VerifiedAsset, destination: &Path)
             .expect("valid community download progress template"),
     );
     progress.set_position(0);
-    let mut created_destination = false;
     let result = async {
-        let response = asset_client()?
-            .get(&asset.download_url)
-            .send()
-            .await
-            .with_context(|| format!("downloading {}", asset.name))?;
+        let response =
+            community_update_cancel::interruptible(asset_client()?.get(&asset.download_url).send())
+                .await?
+                .with_context(|| format!("downloading {}", asset.name))?;
         if !response.status().is_success() {
             anyhow::bail!(
                 "GitHub release asset download returned {}",
@@ -535,6 +532,32 @@ pub(crate) async fn download_verified(asset: &VerifiedAsset, destination: &Path)
             anyhow::bail!("GitHub release asset Content-Length does not match its metadata");
         }
 
+        write_verified_download(
+            asset,
+            destination,
+            &progress,
+            response
+                .bytes_stream()
+                .map(|chunk| chunk.context("reading GitHub release asset")),
+        )
+        .await
+    }
+    .await;
+    finish_download_progress(&progress, result.is_ok());
+    result
+}
+
+/// Keep file ownership and cleanup inside this future. Only waiting for the
+/// next network chunk may be interrupted; finish file IO before dropping it.
+async fn write_verified_download<B: AsRef<[u8]>>(
+    asset: &VerifiedAsset,
+    destination: &Path,
+    progress: &ProgressBar,
+    stream: impl Stream<Item = Result<B>>,
+) -> Result<()> {
+    let mut created_destination = false;
+    let result = async {
+        community_update_cancel::check()?;
         let mut file = tokio::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -542,24 +565,36 @@ pub(crate) async fn download_verified(asset: &VerifiedAsset, destination: &Path)
             .await
             .with_context(|| format!("creating {}", destination.display()))?;
         created_destination = true;
-        let mut stream = response.bytes_stream();
-        let mut hasher = Sha256::new();
-        let mut written = 0u64;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("reading GitHub release asset")?;
-            written = written
-                .checked_add(chunk.len() as u64)
-                .ok_or_else(|| anyhow::anyhow!("release asset size overflow"))?;
-            if written > asset.size || written > MAX_ASSET_BYTES {
-                anyhow::bail!("release asset exceeded its declared size");
+        futures::pin_mut!(stream);
+        let transfer = async {
+            let mut hasher = Sha256::new();
+            let mut written = 0u64;
+            while let Some(chunk) = community_update_cancel::interruptible(stream.next()).await? {
+                let chunk = chunk?;
+                let chunk = chunk.as_ref();
+                written = written
+                    .checked_add(chunk.len() as u64)
+                    .ok_or_else(|| anyhow::anyhow!("release asset size overflow"))?;
+                if written > asset.size || written > MAX_ASSET_BYTES {
+                    anyhow::bail!("release asset exceeded its declared size");
+                }
+                hasher.update(chunk);
+                file.write_all(chunk).await?;
+                progress.set_position(written);
             }
-            hasher.update(&chunk);
-            file.write_all(&chunk).await?;
-            progress.set_position(written);
+            Ok::<_, anyhow::Error>((written, hasher))
         }
-        file.flush().await?;
-        file.sync_all().await?;
+        .await;
+        // Tokio may still have a buffered filesystem write in flight. Drain it
+        // even on cancellation before closing and removing our partial file.
+        let flushed = file.flush().await;
+        if transfer.is_ok() {
+            file.sync_all().await?;
+        }
         drop(file);
+        let (written, hasher) = transfer?;
+        flushed?;
+        community_update_cancel::check()?;
 
         if written != asset.size {
             anyhow::bail!("release asset was truncated");
@@ -575,7 +610,6 @@ pub(crate) async fn download_verified(asset: &VerifiedAsset, destination: &Path)
         Ok(())
     }
     .await;
-    finish_download_progress(&progress, result.is_ok());
     if result.is_err() && created_destination {
         let _ = tokio::fs::remove_file(destination).await;
     }
@@ -2584,6 +2618,99 @@ mod tests {
             release_by_tag_api("1.0.9").unwrap(),
             "https://api.github.com/repos/JoyElliot/grok-build-Chinese/releases/tags/release-v1.0.9"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_community_download_removes_only_its_partial_archive() {
+        use crate::community_update_cancel::{Cancellation, UpdateCancelled};
+        use indicatif::ProgressDrawTarget;
+
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("update.download.zip");
+        let current = dir.path().join("grok-zh.exe");
+        let other = dir.path().join("other.download.zip");
+        std::fs::write(&current, "current version").unwrap();
+        std::fs::write(&other, "another updater").unwrap();
+        let mut asset = verified_windows_asset("1.0.35");
+        asset.size = 16;
+        let terminal = RecordingTerm::default();
+        let progress = ProgressBar::with_draw_target(
+            Some(asset.size),
+            ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        );
+        progress.set_style(
+            ProgressStyle::default_bar()
+                .template(DOWNLOAD_PROGRESS_TEMPLATE)
+                .unwrap(),
+        );
+        let cancellation = Cancellation::new();
+        let cancel = cancellation.clone();
+        // The second poll happens only after the first chunk was written.
+        let stream =
+            futures::stream::iter([Ok(vec![1u8; 4])]).chain(futures::stream::poll_fn(move |_| {
+                cancel.cancel();
+                std::task::Poll::Pending
+            }));
+        let error = cancellation
+            .scope(write_verified_download(
+                &asset,
+                &destination,
+                &progress,
+                stream,
+            ))
+            .await
+            .unwrap_err();
+        assert!(error.is::<UpdateCancelled>());
+        assert_eq!(progress.position(), 4);
+        finish_download_progress(&progress, false);
+        assert!(terminal.contents().is_empty());
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_to_string(current).unwrap(), "current version");
+        assert_eq!(std::fs::read_to_string(other).unwrap(), "another updater");
+    }
+
+    #[tokio::test]
+    async fn community_download_stream_still_checks_hashes_and_preserves_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("update.download.zip");
+        let payload = b"verified package".to_vec();
+        let mut asset = verified_windows_asset("1.0.35");
+        asset.size = payload.len() as u64;
+        asset.sha256 = format!("{:x}", Sha256::digest(&payload));
+        let progress = ProgressBar::hidden();
+        write_verified_download(
+            &asset,
+            &destination,
+            &progress,
+            futures::stream::iter([Ok(payload.clone())]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), payload);
+        assert!(
+            write_verified_download(
+                &asset,
+                &destination,
+                &progress,
+                futures::stream::iter([Ok(payload.clone())])
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), payload);
+        std::fs::remove_file(&destination).unwrap();
+        asset.sha256 = "0".repeat(64);
+        assert!(
+            write_verified_download(
+                &asset,
+                &destination,
+                &progress,
+                futures::stream::iter([Ok(payload)])
+            )
+            .await
+            .is_err()
+        );
+        assert!(!destination.exists());
     }
 
     #[test]

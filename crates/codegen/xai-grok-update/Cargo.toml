@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde"] }
 tar = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "time"] }
+tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "time", "signal", "sync"] }
 tracing = { workspace = true }
 url = { workspace = true }
 xai-dirs = { workspace = true }

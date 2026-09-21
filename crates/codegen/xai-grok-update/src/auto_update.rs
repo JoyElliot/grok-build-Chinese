@@ -1114,6 +1114,10 @@ pub async fn run_install_script(
         error_kind,
     });
     result.map(|_| ()).map_err(|e| {
+        #[cfg(feature = "community-build")]
+        if e.is::<crate::community_update_cancel::UpdateCancelled>() {
+            return e;
+        }
         if cfg!(feature = "community-build") {
             anyhow::anyhow!(
                 "自动更新失败：{:#}\n\n{}",
@@ -1199,6 +1203,10 @@ async fn install_community_release(
             }
         }
 
+        if let Err(error) = crate::community_update_cancel::check() {
+            let _ = tokio::fs::remove_file(&candidate).await;
+            return Err(error);
+        }
         let version_output = match smoke_test_binary(&candidate).await {
             Ok(output) => output,
             Err(error) => {
@@ -1215,6 +1223,10 @@ async fn install_community_release(
         }
 
         // Keep activation and its completion receipt in the same transaction.
+        if let Err(error) = crate::community_update_cancel::begin_activation() {
+            let _ = tokio::fs::remove_file(&candidate).await;
+            return Err(error);
+        }
         let install_lock = acquire_windows_update_lock(&destination);
         let replace_result = match &install_lock {
             Ok(_) => windows_replace_exe_locked(&candidate, &destination).await,
@@ -1575,6 +1587,10 @@ async fn install_community_unix_release(
         }
     }
 
+    if let Err(error) = crate::community_update_cancel::check() {
+        let _ = tokio::fs::remove_file(&candidate).await;
+        return Err(error);
+    }
     let version_output = match smoke_test_binary(&candidate).await {
         Ok(output) => output,
         Err(error) => {
@@ -1590,6 +1606,10 @@ async fn install_community_unix_release(
         );
     }
 
+    if let Err(error) = crate::community_update_cancel::begin_activation() {
+        let _ = tokio::fs::remove_file(&candidate).await;
+        return Err(error);
+    }
     let _install_lock = match acquire_community_install_lock(&bin_dir) {
         Ok(lock) => lock,
         Err(error) => {
@@ -3540,13 +3560,16 @@ pub async fn run_update(
             .unwrap(),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
-    let plan = fetch_update_plan(installer, update_config, &policy).await?;
+    let plan = fetch_update_plan(installer, update_config, &policy).await;
     pb.finish_and_clear();
+    let plan = plan?;
 
     let (latest_version, install_target) = match plan {
         UpdatePlan::Skip { latest } => {
             // Cache so an explicit `grok update` doesn't re-prompt every run.
             let stable_ptr = try_fetch_stable_pointer().await;
+            #[cfg(feature = "community-build")]
+            crate::community_update_cancel::check()?;
             write_version_cache(&latest, stable_ptr.as_deref()).await;
             if cfg!(feature = "community-build") {
                 eprintln!(
@@ -3609,6 +3632,8 @@ pub async fn run_update(
                     // Fall through to install
                 } else {
                     let stable_ptr = try_fetch_stable_pointer().await;
+                    #[cfg(feature = "community-build")]
+                    crate::community_update_cancel::check()?;
                     write_version_cache(&install_target, stable_ptr.as_deref()).await;
                     if cfg!(feature = "community-build") {
                         eprintln!("已是最新版本（{effective_current}）。");
