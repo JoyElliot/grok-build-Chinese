@@ -28,7 +28,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: zh-dev-multiplatform-${{ github.ref }}${{ inputs.parallel_run && format('-{0}', github.run_id) || '' }}
+  # Keep runs already using the original group alive during this transition.
+  # Later pushes on the same ref still cancel superseded runs normally.
+  group: zh-dev-multiplatform-v2-${{ github.ref }}${{ inputs.parallel_run && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
