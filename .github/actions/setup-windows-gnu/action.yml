@@ -82,7 +82,9 @@ runs:
         $protocArchive = Join-Path $env:RUNNER_TEMP "protoc-$protocVersion-win64.zip"
         $protocRoot = Join-Path $env:RUNNER_TEMP "protoc-$protocVersion"
         $protocUri = "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip"
-        Invoke-WebRequest -Uri $protocUri -OutFile $protocArchive
+        # GitHub release downloads can transiently return 5xx before compilation.
+        Invoke-WebRequest -Uri $protocUri -OutFile $protocArchive `
+          -MaximumRetryCount 3 -RetryIntervalSec 5 -TimeoutSec 120
         $protocHash = (Get-FileHash -LiteralPath $protocArchive -Algorithm SHA256).Hash
         if ($protocHash -ne '57EA59E9F551AD8D71FFAA9B5CFBE0CA1F4E720972A1DB7EC2D12AB44BFF9383') {
           throw "protoc SHA-256 校验值异常：$protocHash"
