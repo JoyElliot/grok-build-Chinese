@@ -7,7 +7,7 @@ macOS 复合 action 由预览和正式 Release 工作流共同调用，两者复
 | 正式 Release（`release_build: 'true'`） | `release` + `release-dist` features；关闭跨 crate LTO 和 debug，codegen-units=16；shell 使用 opt-level=1/codegen-units=16 | 读取与预览相同的已验证配置缓存，不写缓存 |
 | CI 预览（`release_build: 'false'`） | 与正式 Release 相同 | 保留已有 preview 缓存键及 `release` 目录，受信任事件可写缓存 |
 
-此配置与 Windows CI 和 Windows Release 已使用的编译优化等级一致。正式 macOS 包也采用该配置，实际参数和 Release/CI preview 模式写入包内 `BUILD-INFO.txt`；`release-dist` features 不等于同名 Cargo profile。根 Cargo.toml 中的 Thin LTO profile 保持原定义，macOS 工作流通过显式参数选择上述配置。两种模式均保留 ARM64 Mach-O、版本、归档校验及安装器冒烟。
+正式 macOS 包也采用上述配置，实际参数和 Release/CI preview 模式写入包内 `BUILD-INFO.txt`；`release-dist` features 不等于同名 Cargo profile。Windows 产物现已单独采用上游 Thin LTO `release-dist` profile，具体见 [Windows 构建说明](WINDOWS-CI-PERFORMANCE.md)。macOS 工作流仍通过显式参数选择本页配置，根 Cargo.toml 中的 Thin LTO profile 保持原定义；两种 macOS 模式均保留 ARM64 Mach-O、版本、归档校验及安装器冒烟。
 
 ## 缓存与测量
 
