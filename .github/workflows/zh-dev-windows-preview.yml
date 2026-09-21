@@ -18,20 +18,14 @@ on:
         description: 可选的内嵌版本（默认为 CI 构建编号）
         required: false
         type: string
-      parallel_run:
-        description: 保留同分支正在运行的 CI，同时启动本轮
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  # Keep runs already using the original group alive during this transition.
-  # Later pushes on the same ref still cancel superseded runs normally.
-  group: zh-dev-multiplatform-v2-${{ github.ref }}${{ inputs.parallel_run && format('-{0}', github.run_id) || '' }}
-  cancel-in-progress: true
+  # Every push, PR update and manual run can finish independently.
+  group: zh-dev-multiplatform-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   windows-gnu-static-validation:

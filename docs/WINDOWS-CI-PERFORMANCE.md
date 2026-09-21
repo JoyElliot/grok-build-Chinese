@@ -36,7 +36,7 @@ zh-dev 和同仓库、非 Dependabot PR 的预览可以保存缓存；fork PR �
 
 分片会重复部分冷依赖编译，可能增加总 runner 分钟数；缩短验证墙钟时间不代表减少计算量。`-j4`、测试断言、功能组合以及产物 Thin LTO/opt-level=3 保持不变。整个 CI 仍可能受 Windows 产物编译、其他平台或排队限制。
 
-手动触发工作流时可启用 `parallel_run`，保留同分支正在运行的 CI。默认仍沿用同分支取消规则；验收需核对制品运行 ID 与源码提交。
+推送、PR 更新和手动触发的 CI 默认并行运行：每轮以 `github.run_id` 使用独立并发组，并设置 `cancel-in-progress: false`。新一轮不会自动取消同分支旧轮，也无需 `parallel_run` 开关。GitHub runner 配额不足时仍可能排队；验收需核对制品运行 ID 与源码提交。
 
 ## Windows 产物体积与运行性能
 
