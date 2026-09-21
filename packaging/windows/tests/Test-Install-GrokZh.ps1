@@ -292,13 +292,32 @@ try {
     Assert-True ((Get-Content -LiteralPath (Join-Path $historicalOfficial 'grok.exe') -Raw).Contains('official-recovery')) '历史官方程序备份在活动目录保留'
 
     Set-Content -LiteralPath (Join-Path $defaultInstall 'grok-zh.exe.update.lock') -Value ''
-    $heldOld = [IO.File]::Open((Join-Path $defaultInstall 'grok-zh.exe.update.lock'), 'Open', 'Read', [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
-    try {
-        & $installer -PackageDir $package -InstallDir $defaultInstall `
-            -GrokHome (Join-Path $testRoot 'unused-home') -NoPathUpdate -Confirm:$false
-        $pendingMarker = Get-Content -LiteralPath (Join-Path $defaultInstall '.grok-zh-install.json') -Raw | ConvertFrom-Json
-        Assert-True (Test-Path -LiteralPath $pendingMarker.previous_install_backup) '占用旧程序时保留备份待重试'
-    } finally { $heldOld.Dispose() }
+    & {
+        $occupiedBackup = @{ Handle = $null; Path = $null }
+        function Move-Item {
+            param([string]$LiteralPath, [string]$Destination)
+            Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+            if ($LiteralPath -eq $defaultInstall) {
+                # Lock the backup after the directory switch. Windows Server can
+                # refuse to rename a parent with open child files even when the
+                # child handle allows delete; that is not the cleanup under test.
+                $occupiedBackup.Path = $Destination
+                $occupiedBackup.Handle = [IO.File]::Open(
+                    (Join-Path $Destination 'grok-zh.exe.update.lock'), 'Open', 'Read', [IO.FileShare]::ReadWrite)
+            }
+        }
+        try {
+            & $installer -PackageDir $package -InstallDir $defaultInstall `
+                -GrokHome (Join-Path $testRoot 'unused-home') -NoPathUpdate -Confirm:$false
+            Assert-True ($null -ne $occupiedBackup.Handle) '未在目录切换后占用旧备份'
+            Assert-True (Test-Path -LiteralPath (Join-Path $defaultInstall 'grok-zh.exe')) '旧备份被占用时仍应完成新版本安装'
+            $pendingMarker = Get-Content -LiteralPath (Join-Path $defaultInstall '.grok-zh-install.json') -Raw | ConvertFrom-Json
+            Assert-True ($pendingMarker.previous_install_backup -eq $occupiedBackup.Path) '待清理记录未指向被占用的旧备份'
+            Assert-True (Test-Path -LiteralPath (Join-Path $occupiedBackup.Path 'grok-zh.exe')) '占用旧程序时保留备份待重试'
+        } finally {
+            if ($null -ne $occupiedBackup.Handle) { $occupiedBackup.Handle.Dispose() }
+        }
+    }
     & $installer -PackageDir $package -InstallDir ($defaultInstall.ToUpperInvariant()) `
         -GrokHome (Join-Path $testRoot 'unused-home') -NoPathUpdate -Confirm:$false
     Assert-True (@(Get-ChildItem -LiteralPath $testRoot -Directory -Filter 'default-install.previous.*').Count -eq 0) '下一次升级清理已释放的整条旧备份链'

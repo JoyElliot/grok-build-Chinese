@@ -2901,8 +2901,14 @@ fn community_cleanup_recognizes_only_owned_installed_target_names() {
 async fn community_cleanup_keeps_live_aliases_processes_fresh_files_and_unmanaged_data() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
-    let bin = dir.path().join("bin");
-    let downloads = dir.path().join("grok-zh-downloads");
+    // Exercise an aliased parent on every Unix host, like /var -> /private/var
+    // for macOS temporary directories.
+    let real_home = dir.path().join("real-home");
+    std::fs::create_dir(&real_home).unwrap();
+    let home = dir.path().join("linked-home");
+    symlink(&real_home, &home).unwrap();
+    let bin = home.join("bin");
+    let downloads = home.join("grok-zh-downloads");
     std::fs::create_dir(&bin).unwrap();
     std::fs::create_dir(&downloads).unwrap();
     let names = [
@@ -2933,7 +2939,9 @@ async fn community_cleanup_keeps_live_aliases_processes_fresh_files_and_unmanage
         .unwrap();
     symlink(active, bin.join("grok-zh")).unwrap();
     symlink(alias, bin.join("agent-zh")).unwrap();
-    cleanup_community_targets_with(&downloads, &bin, |path| path == in_use).await;
+    // The callback receives entries from the canonical downloads directory.
+    let in_use_canonical = std::fs::canonicalize(in_use).unwrap();
+    cleanup_community_targets_with(&downloads, &bin, |path| path == in_use_canonical).await;
     assert!(!stale.exists());
     for kept in [active, in_use, fresh, alias, personal] {
         assert!(kept.exists(), "{}", kept.display());
