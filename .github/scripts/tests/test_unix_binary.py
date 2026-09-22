@@ -105,6 +105,44 @@ class UnixBinaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symbols remain"):
             MODULE.verify_stripped(before, before, "linux")
 
+    def test_elf_address_array_entry_size_normalization_preserves_runtime_checks(self):
+        def array(symbols, kind, entsize):
+            data = elf(symbols)
+            # Convert the allocated fixture section to an array of two pointers.
+            struct.pack_into("<IIQQQQIIQQ", data, 512 + 64,
+                             1, kind, 3, 0x100100, 256, 16, 0, 0, 8, entsize)
+            struct.pack_into("<QQ", data, 64 + 32, 272, 272)
+            return data
+
+        for kind in (14, 15, 16):
+            with self.subTest(kind=kind):
+                before = self.inspect(array(True, kind, 0), "linux")
+                after = array(False, kind, 8)
+                MODULE.verify_stripped(before, self.inspect(after, "linux"), "linux")
+                for entry_size in (4, 16):
+                    with self.assertRaisesRegex(ValueError, "array size"):
+                        self.inspect(array(False, kind, entry_size), "linux")
+                for offset in (256, 512 + 64 + 8, 512 + 64 + 16, 512 + 64 + 24, 512 + 64 + 32):
+                    changed = bytearray(after)
+                    changed[offset] ^= 8
+                    with self.assertRaisesRegex(ValueError, "runtime image"):
+                        MODULE.verify_stripped(before, self.inspect(changed, "linux"), "linux")
+                changed = bytearray(after)
+                changed[512 + 64 + 32] ^= 1
+                with self.assertRaisesRegex(ValueError, "array size"):
+                    self.inspect(changed, "linux")
+
+    def test_elf_other_entry_sizes_and_error_details_are_preserved(self):
+        before = self.inspect(elf(), "linux")
+        changed = elf(False)
+        struct.pack_into("<Q", changed, 512 + 64 + 56, 8)
+        with self.assertRaisesRegex(ValueError, r"image.sections\[0\]\[9\]"):
+            MODULE.verify_stripped(before, self.inspect(changed, "linux"), "linux")
+        changed = elf(False)
+        changed[24] ^= 1
+        with self.assertRaisesRegex(ValueError, "image.entry"):
+            MODULE.verify_stripped(before, self.inspect(changed, "linux"), "linux")
+
     def test_macho_reindexed_indirect_symbols_and_relocated_linkedit_are_equivalent(self):
         before = self.inspect(macho(), "macos")
         after = self.inspect(macho(False), "macos")

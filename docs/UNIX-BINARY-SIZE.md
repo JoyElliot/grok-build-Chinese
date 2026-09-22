@@ -27,6 +27,8 @@ macOS 只接受当前无特殊权限的 ad-hoc 输入；Developer ID/CMS、entit
 
 Python 测试覆盖程序代码、入口、加载属性、dyld/导出数据、符号名及 UUID 被意外改变时拒绝发布，并覆盖签名权限和截断输入。CLI 检查不等于完整账号、TUI、模型或工具吞吐验收；这些能力的原有测试保持，不通过删功能或降低运行优化换体积。
 
+Rust/LLVM 的原始 ELF 可能将初始化数组 `sh_entsize` 留为 0，GNU strip 会补成 8。对 ELF64 x86_64 的 INIT/FINI/PREINIT 三类函数指针数组，校验按 8 字节表项规范化这两个值，拒绝其它表项大小或非整项长度；数组内容、地址、偏移、flags、大小和完整加载信息仍须一致。该行为符合 [ELF 动态链接规范的函数指针数组定义](https://refspecs.linuxfoundation.org/elf/gabi4%2B/ch5.dynamic.html)。本地 Rust 1.94.0 带调试信息的 PIE 已复现此元数据变化；下载的旧包已经 strip-debug，未覆盖这个输入条件。其它运行信息变化会继续阻断，并在日志输出具体字段及前后值。
+
 ## macOS 编译配置对照
 
 默认预览和正式 Release 仍使用此前已验证的配置。手动 CI 可显式选择 `macos_build_variant=thin-lto`，使用上游 `release-dist` profile、Thin LTO、CGU1、opt-level=3、debug=0 与原有 features。实验配置有独立 target/host 缓存键，缓存只读；正式 Release 拒绝选择未验收实验配置。

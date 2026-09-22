@@ -82,6 +82,12 @@ def elf_image(data):
             symbols += size
         if not attributes & 2:  # SHF_ALLOC
             continue
+        if typ in (14, 15, 16):  # SHT_INIT_ARRAY / FINI_ARRAY / PREINIT_ARRAY
+            # ELF64 x86_64 arrays contain 8-byte function addresses. LLVM may
+            # leave sh_entsize unset; GNU strip fills it without changing data.
+            if entsize not in (0, 8) or size % 8:
+                raise ValueError("invalid ELF64 initialization/finalization array size")
+            entsize = 8
         content = b"" if typ == 8 else region(data, off, size)  # SHT_NOBITS
         linked_name = cstring(names, sections[link][0]) if link else None
         mapped.append((cstring(names, name), typ, attributes, addr, off, size,
@@ -189,9 +195,34 @@ def inspect_image(path, platform):
     return details | {"bytes": len(data), "sha256": digest(data)}
 
 
+def image_differences(before, after, platform):
+    names = (("identity", "type", "machine", "version", "entry", "flags", "programs", "sections")
+             if platform == "linux" else
+             ("header", "commands", "segments", "sections", "payloads", "exports", "undefined", "indirect", "identity"))
+    differences = []
+
+    def compare(left, right, path):
+        if left == right or len(differences) >= 8:
+            return
+        if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
+            if len(left) != len(right):
+                differences.append({"path": path + ".length", "before": len(left), "after": len(right)})
+            for index, (a, b) in enumerate(zip(left, right)):
+                compare(a, b, f"{path}[{index}]")
+                if len(differences) >= 8:
+                    break
+        else:
+            differences.append({"path": path, "before": str(left)[:160], "after": str(right)[:160]})
+
+    for name, left, right in zip(names, before["image"], after["image"]):
+        compare(left, right, "image." + name)
+    return differences
+
+
 def verify_stripped(before, after, platform):
     if before["image"] != after["image"]:
-        raise ValueError("stripping changed the executable runtime image")
+        details = json.dumps(image_differences(before, after, platform))
+        raise ValueError("stripping changed the executable runtime image: " + details)
     if after["bytes"] > before["bytes"]:
         raise ValueError("stripping increased the executable size")
     if platform == "linux" and after["static_symbol_bytes"]:
