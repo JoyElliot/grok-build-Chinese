@@ -1,0 +1,868 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "locale": "zh-CN",
+  "domain": "models",
+  "entries": [
+    {
+      "field": "description",
+      "context": [
+        "grok-4.5"
+      ],
+      "source": "SpaceXAI's latest frontier model",
+      "translation": "SpaceXAI 最新的前沿模型"
+    },
+    {
+      "field": "description",
+      "context": [
+        "grok-4.6"
+      ],
+      "source": "SpaceXAI's latest frontier model",
+      "translation": "SpaceXAI 最新的前沿模型"
+    },
+    {
+      "field": "description",
+      "context": [
+        "grok-4.7"
+      ],
+      "source": "SpaceXAI's latest frontier model",
+      "translation": "SpaceXAI 最新的前沿模型"
+    },
+    {
+      "field": "description",
+      "context": [
+        "grok-4.7-fast"
+      ],
+      "source": "Fast variant. 2x the price.",
+      "translation": "快速版本，价格为两倍。"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "xhigh"
+      ],
+      "source": "Extra High Effort",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "xhigh"
+      ],
+      "source": "Highest effort and reasoning level",
+      "translation": "最高投入与推理强度"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "high"
+      ],
+      "source": "High Effort",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "high"
+      ],
+      "source": "Higher implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "medium"
+      ],
+      "source": "Medium Effort",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "medium"
+      ],
+      "source": "Balanced effort with standard implementation and testing",
+      "translation": "均衡投入，采用标准实现与测试"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "low"
+      ],
+      "source": "Low Effort",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "low"
+      ],
+      "source": "Quick, fast implementations",
+      "translation": "快速、轻量的实现"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "high"
+      ],
+      "source": "Highest implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "none"
+      ],
+      "source": "none",
+      "translation": "无推理"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "none"
+      ],
+      "source": "No reasoning",
+      "translation": "不进行推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "minimal"
+      ],
+      "source": "minimal",
+      "translation": "最低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "minimal"
+      ],
+      "source": "Minimal reasoning",
+      "translation": "最少推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "low"
+      ],
+      "source": "low",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "low"
+      ],
+      "source": "Faster, lighter reasoning",
+      "translation": "更快、更轻量的推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "medium"
+      ],
+      "source": "medium",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "medium"
+      ],
+      "source": "Balanced reasoning",
+      "translation": "均衡推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "high"
+      ],
+      "source": "high",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "high"
+      ],
+      "source": "Heavy reasoning",
+      "translation": "高强度推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "xhigh"
+      ],
+      "source": "xhigh",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "xhigh"
+      ],
+      "source": "Extended reasoning",
+      "translation": "扩展推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.5",
+        "max"
+      ],
+      "source": "max",
+      "translation": "最高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.5",
+        "max"
+      ],
+      "source": "Maximum reasoning",
+      "translation": "最大推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "xhigh"
+      ],
+      "source": "Extra High Effort",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "xhigh"
+      ],
+      "source": "Highest effort and reasoning level",
+      "translation": "最高投入与推理强度"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "high"
+      ],
+      "source": "High Effort",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "high"
+      ],
+      "source": "Higher implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "medium"
+      ],
+      "source": "Medium Effort",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "medium"
+      ],
+      "source": "Balanced effort with standard implementation and testing",
+      "translation": "均衡投入，采用标准实现与测试"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "low"
+      ],
+      "source": "Low Effort",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "low"
+      ],
+      "source": "Quick, fast implementations",
+      "translation": "快速、轻量的实现"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "high"
+      ],
+      "source": "Highest implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "none"
+      ],
+      "source": "none",
+      "translation": "无推理"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "none"
+      ],
+      "source": "No reasoning",
+      "translation": "不进行推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "minimal"
+      ],
+      "source": "minimal",
+      "translation": "最低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "minimal"
+      ],
+      "source": "Minimal reasoning",
+      "translation": "最少推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "low"
+      ],
+      "source": "low",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "low"
+      ],
+      "source": "Faster, lighter reasoning",
+      "translation": "更快、更轻量的推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "medium"
+      ],
+      "source": "medium",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "medium"
+      ],
+      "source": "Balanced reasoning",
+      "translation": "均衡推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "high"
+      ],
+      "source": "high",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "high"
+      ],
+      "source": "Heavy reasoning",
+      "translation": "高强度推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "xhigh"
+      ],
+      "source": "xhigh",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "xhigh"
+      ],
+      "source": "Extended reasoning",
+      "translation": "扩展推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.6",
+        "max"
+      ],
+      "source": "max",
+      "translation": "最高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.6",
+        "max"
+      ],
+      "source": "Maximum reasoning",
+      "translation": "最大推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "xhigh"
+      ],
+      "source": "Extra High Effort",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "xhigh"
+      ],
+      "source": "Highest effort and reasoning level",
+      "translation": "最高投入与推理强度"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "high"
+      ],
+      "source": "High Effort",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "high"
+      ],
+      "source": "Higher implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "medium"
+      ],
+      "source": "Medium Effort",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "medium"
+      ],
+      "source": "Balanced effort with standard implementation and testing",
+      "translation": "均衡投入，采用标准实现与测试"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "low"
+      ],
+      "source": "Low Effort",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "low"
+      ],
+      "source": "Quick, fast implementations",
+      "translation": "快速、轻量的实现"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "high"
+      ],
+      "source": "Highest implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "none"
+      ],
+      "source": "none",
+      "translation": "无推理"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "none"
+      ],
+      "source": "No reasoning",
+      "translation": "不进行推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "minimal"
+      ],
+      "source": "minimal",
+      "translation": "最低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "minimal"
+      ],
+      "source": "Minimal reasoning",
+      "translation": "最少推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "low"
+      ],
+      "source": "low",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "low"
+      ],
+      "source": "Faster, lighter reasoning",
+      "translation": "更快、更轻量的推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "medium"
+      ],
+      "source": "medium",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "medium"
+      ],
+      "source": "Balanced reasoning",
+      "translation": "均衡推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "high"
+      ],
+      "source": "high",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "high"
+      ],
+      "source": "Heavy reasoning",
+      "translation": "高强度推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "xhigh"
+      ],
+      "source": "xhigh",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "xhigh"
+      ],
+      "source": "Extended reasoning",
+      "translation": "扩展推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7",
+        "max"
+      ],
+      "source": "max",
+      "translation": "最高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7",
+        "max"
+      ],
+      "source": "Maximum reasoning",
+      "translation": "最大推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "xhigh"
+      ],
+      "source": "Extra High Effort",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "xhigh"
+      ],
+      "source": "Highest effort and reasoning level",
+      "translation": "最高投入与推理强度"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "high"
+      ],
+      "source": "High Effort",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "high"
+      ],
+      "source": "Higher implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "medium"
+      ],
+      "source": "Medium Effort",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "medium"
+      ],
+      "source": "Balanced effort with standard implementation and testing",
+      "translation": "均衡投入，采用标准实现与测试"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "low"
+      ],
+      "source": "Low Effort",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "low"
+      ],
+      "source": "Quick, fast implementations",
+      "translation": "快速、轻量的实现"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "high"
+      ],
+      "source": "Highest implementation quality with extensive reasoning",
+      "translation": "更高的实现质量，并进行充分推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "none"
+      ],
+      "source": "none",
+      "translation": "无推理"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "none"
+      ],
+      "source": "No reasoning",
+      "translation": "不进行推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "minimal"
+      ],
+      "source": "minimal",
+      "translation": "最低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "minimal"
+      ],
+      "source": "Minimal reasoning",
+      "translation": "最少推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "low"
+      ],
+      "source": "low",
+      "translation": "低强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "low"
+      ],
+      "source": "Faster, lighter reasoning",
+      "translation": "更快、更轻量的推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "medium"
+      ],
+      "source": "medium",
+      "translation": "中等强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "medium"
+      ],
+      "source": "Balanced reasoning",
+      "translation": "均衡推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "high"
+      ],
+      "source": "high",
+      "translation": "高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "high"
+      ],
+      "source": "Heavy reasoning",
+      "translation": "高强度推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "xhigh"
+      ],
+      "source": "xhigh",
+      "translation": "极高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "xhigh"
+      ],
+      "source": "Extended reasoning",
+      "translation": "扩展推理"
+    },
+    {
+      "field": "effort_label",
+      "context": [
+        "grok-4.7-fast",
+        "max"
+      ],
+      "source": "max",
+      "translation": "最高强度"
+    },
+    {
+      "field": "effort_description",
+      "context": [
+        "grok-4.7-fast",
+        "max"
+      ],
+      "source": "Maximum reasoning",
+      "translation": "最大推理"
+    }
+  ]
+}

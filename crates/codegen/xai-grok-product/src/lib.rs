@@ -31,6 +31,8 @@ pub const COMMUNITY_RELEASES_URL: &str = "https://github.com/JoyElliot/grok-buil
 /// Independently versioned display translations; no release API or auth token
 /// is involved. Catalog filenames are derived from a validated numeric version.
 pub const COMMUNITY_ANNOUNCEMENTS_BASE_URL: &str = "https://raw.githubusercontent.com/JoyElliot/grok-build-Chinese/refs/heads/zh-dev/community/announcements";
+/// Domain catalogs follow their corresponding official load events.
+pub const COMMUNITY_DISPLAY_TRANSLATIONS_BASE_URL: &str = "https://raw.githubusercontent.com/JoyElliot/grok-build-Chinese/refs/heads/zh-dev/community/display-translations";
 /// The community updater uses immutable GitHub Releases from the repository
 /// above. Release ZIPs are selected by an exact platform-specific name and
 /// verified against GitHub metadata plus the package's inner hashes before

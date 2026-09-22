@@ -1,0 +1,2756 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "locale": "zh-CN",
+  "domain": "mcp",
+  "entries": [
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "actions_get",
+        "8f30e95f5bd88f80d07321083fc55ed572cb8f52f879946e12f375ed7670d58a"
+      ],
+      "source": "Actions Get",
+      "translation": "获取 Actions 资源详情"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "actions_get",
+        "8f30e95f5bd88f80d07321083fc55ed572cb8f52f879946e12f375ed7670d58a"
+      ],
+      "source_sha256": "8f30e95f5bd88f80d07321083fc55ed572cb8f52f879946e12f375ed7670d58a",
+      "translation": "获取特定 GitHub Actions 资源的详细信息，可按唯一 ID 查询工作流、工作流运行、作业和构件。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "actions_list",
+        "ee3cc552f9dbdd567c4e4187f7f7d726847218593caca5c44fffc54f3be95330"
+      ],
+      "source": "Actions List",
+      "translation": "列出 Actions 资源"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "actions_list",
+        "ee3cc552f9dbdd567c4e4187f7f7d726847218593caca5c44fffc54f3be95330"
+      ],
+      "source_sha256": "ee3cc552f9dbdd567c4e4187f7f7d726847218593caca5c44fffc54f3be95330",
+      "translation": "列出 GitHub Actions 资源，包括仓库工作流，以及指定工作流或运行的运行记录、作业和构件。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "actions_run_trigger",
+        "a505829777123c7abbf251131eb96c6bf08968c183761b3bf2f4664575e9134f"
+      ],
+      "source": "Actions Run Trigger",
+      "translation": "触发 Actions 运行"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "actions_run_trigger",
+        "a505829777123c7abbf251131eb96c6bf08968c183761b3bf2f4664575e9134f"
+      ],
+      "source_sha256": "a505829777123c7abbf251131eb96c6bf08968c183761b3bf2f4664575e9134f",
+      "translation": "触发 GitHub Actions 工作流操作，包括运行、重新运行、取消运行和删除运行日志。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "add_comment_to_pending_review",
+        "c01d9b539761ed349fdefe576e822b51e45119bb65ec58bae048f32d545a4a59"
+      ],
+      "source": "Add Comment To Pending Review",
+      "translation": "添加待处理审查评论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "add_comment_to_pending_review",
+        "c01d9b539761ed349fdefe576e822b51e45119bb65ec58bae048f32d545a4a59"
+      ],
+      "source_sha256": "c01d9b539761ed349fdefe576e822b51e45119bb65ec58bae048f32d545a4a59",
+      "translation": "向请求者最新的待处理 Pull Request 评审添加评审评论；调用前必须已有待处理评审。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "add_issue_comment",
+        "0eab077d2b8286c1e7dd2b70fa715cbed19b5bd4b8606dc369e3fdc04043d823"
+      ],
+      "source": "Add Issue Comment",
+      "translation": "添加 Issue 评论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "add_issue_comment",
+        "0eab077d2b8286c1e7dd2b70fa715cbed19b5bd4b8606dc369e3fdc04043d823"
+      ],
+      "source_sha256": "0eab077d2b8286c1e7dd2b70fa715cbed19b5bd4b8606dc369e3fdc04043d823",
+      "translation": "向 GitHub 仓库中的指定 Issue 或评论添加评论和/或反应；也可用于 Pull Request 的普通评论。正文或反应至少提供一项。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "add_reply_to_pull_request_comment",
+        "bc6c858f67a973e0c6e87c7aab76ee31e81812f0d13e76ea1dc71a8e29c4a802"
+      ],
+      "source": "Add Reply To Pull Request Comment",
+      "translation": "回复 Pull Request 评论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "add_reply_to_pull_request_comment",
+        "bc6c858f67a973e0c6e87c7aab76ee31e81812f0d13e76ea1dc71a8e29c4a802"
+      ],
+      "source_sha256": "bc6c858f67a973e0c6e87c7aab76ee31e81812f0d13e76ea1dc71a8e29c4a802",
+      "translation": "回复现有 Pull Request 评论和/或添加反应；正文或反应至少提供一项。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "check_dependency_vulnerabilities",
+        "caa7daa45dff837151c1839b5bca43ac9a8fafc292678761b08eeaae670cb619"
+      ],
+      "source": "Check Dependency Vulnerabilities",
+      "translation": "检查依赖漏洞"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "check_dependency_vulnerabilities",
+        "caa7daa45dff837151c1839b5bca43ac9a8fafc292678761b08eeaae670cb619"
+      ],
+      "source_sha256": "caa7daa45dff837151c1839b5bca43ac9a8fafc292678761b08eeaae670cb619",
+      "translation": "使用 GitHub Security Advisory Database 检查依赖项的已知漏洞，并在可用时给出升级建议。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "create_branch",
+        "178c4aa2cad9c4dec2d6883eb0913ba5385f367e681e9d97cb751a2eb0983645"
+      ],
+      "source": "Create Branch",
+      "translation": "创建分支"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "create_branch",
+        "178c4aa2cad9c4dec2d6883eb0913ba5385f367e681e9d97cb751a2eb0983645"
+      ],
+      "source_sha256": "178c4aa2cad9c4dec2d6883eb0913ba5385f367e681e9d97cb751a2eb0983645",
+      "translation": "在 GitHub 仓库中创建新分支。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "create_gist",
+        "470ab92c5dfc2582e8f9050a3804d5af2dde70c53d93e575e8c58136012e6c27"
+      ],
+      "source": "Create Gist",
+      "translation": "创建 Gist"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "create_gist",
+        "470ab92c5dfc2582e8f9050a3804d5af2dde70c53d93e575e8c58136012e6c27"
+      ],
+      "source_sha256": "470ab92c5dfc2582e8f9050a3804d5af2dde70c53d93e575e8c58136012e6c27",
+      "translation": "创建新的 Gist"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "create_or_update_file",
+        "493dc7efed597b08144d649a4699e306d2947048d1fa744c81ec824d8ffecacc"
+      ],
+      "source": "Create Or Update File",
+      "translation": "创建或更新文件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "create_or_update_file",
+        "493dc7efed597b08144d649a4699e306d2947048d1fa744c81ec824d8ffecacc"
+      ],
+      "source_sha256": "493dc7efed597b08144d649a4699e306d2947048d1fa744c81ec824d8ffecacc",
+      "translation": "在 GitHub 远程仓库中创建或更新单个文件；更新时必须提供通过 get_file_contents 获取的当前 blob SHA，不用于本地文件操作。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "create_pull_request",
+        "b3ce1a8e1c8396e567b2df7957109ec2298ca873d8084f9a9c033f39657f3572"
+      ],
+      "source": "Create Pull Request",
+      "translation": "创建 Pull Request"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "create_pull_request",
+        "b3ce1a8e1c8396e567b2df7957109ec2298ca873d8084f9a9c033f39657f3572"
+      ],
+      "source_sha256": "b3ce1a8e1c8396e567b2df7957109ec2298ca873d8084f9a9c033f39657f3572",
+      "translation": "在 GitHub 仓库中创建新的 Pull Request。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "create_repository",
+        "4b58d95b681b9e48375400e581666ae89d51cbad25412a2f5de964da9ce8bf80"
+      ],
+      "source": "Create Repository",
+      "translation": "创建仓库"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "create_repository",
+        "4b58d95b681b9e48375400e581666ae89d51cbad25412a2f5de964da9ce8bf80"
+      ],
+      "source_sha256": "4b58d95b681b9e48375400e581666ae89d51cbad25412a2f5de964da9ce8bf80",
+      "translation": "在你的账户或指定组织中创建新的 GitHub 仓库。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "create_repository_ruleset",
+        "beac2184e0df192ded487d8aa470ca4d819ec49b8a54e68bacae32ee63eab795"
+      ],
+      "source": "Create Repository Ruleset",
+      "translation": "创建仓库规则集"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "create_repository_ruleset",
+        "beac2184e0df192ded487d8aa470ca4d819ec49b8a54e68bacae32ee63eab795"
+      ],
+      "source_sha256": "beac2184e0df192ded487d8aa470ca4d819ec49b8a54e68bacae32ee63eab795",
+      "translation": "在仓库、组织或企业级别创建新的规则集。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "custom_properties_read",
+        "cb8645aaa094d7049ad9ebb623d789b9900ee1e1a74effd9363427a6e4b7633c"
+      ],
+      "source": "Custom Properties Read",
+      "translation": "读取自定义属性"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "custom_properties_read",
+        "cb8645aaa094d7049ad9ebb623d789b9900ee1e1a74effd9363427a6e4b7633c"
+      ],
+      "source_sha256": "cb8645aaa094d7049ad9ebb623d789b9900ee1e1a74effd9363427a6e4b7633c",
+      "translation": "读取仓库、组织或企业级别的自定义属性；仓库级返回属性值，组织和企业级返回属性定义。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "custom_properties_write",
+        "9a7b6c66ebfa42f7a113182f32da8c9edcb3ef8b5ed4c3214ee42db8438dd7fd"
+      ],
+      "source": "Custom Properties Write",
+      "translation": "写入自定义属性"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "custom_properties_write",
+        "9a7b6c66ebfa42f7a113182f32da8c9edcb3ef8b5ed4c3214ee42db8438dd7fd"
+      ],
+      "source_sha256": "9a7b6c66ebfa42f7a113182f32da8c9edcb3ef8b5ed4c3214ee42db8438dd7fd",
+      "translation": "创建或更新仓库、组织或企业级别的自定义属性；使用 level 选择级别，并保留省略的可写定义字段。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "delete_file",
+        "a6706184f6656f1e0a1d8b6322d2c1c18bb3672a97cd2ac5bf71b0daf99e8900"
+      ],
+      "source": "Delete File",
+      "translation": "删除文件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "delete_file",
+        "a6706184f6656f1e0a1d8b6322d2c1c18bb3672a97cd2ac5bf71b0daf99e8900"
+      ],
+      "source_sha256": "a6706184f6656f1e0a1d8b6322d2c1c18bb3672a97cd2ac5bf71b0daf99e8900",
+      "translation": "从 GitHub 仓库中删除文件。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "discussion_comment_write",
+        "3fd77ef6033a95215ab02b7029f369890d18ac1480acd610937c8c217229e38c"
+      ],
+      "source": "Discussion Comment Write",
+      "translation": "写入讨论评论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "discussion_comment_write",
+        "3fd77ef6033a95215ab02b7029f369890d18ac1480acd610937c8c217229e38c"
+      ],
+      "source_sha256": "3fd77ef6033a95215ab02b7029f369890d18ac1480acd610937c8c217229e38c",
+      "translation": "添加、回复、更新或删除讨论评论，也可将评论标记为答案或取消答案标记。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "dismiss_notification",
+        "72806460489c61ba45e9f10a43ff5b5f5cf5d43155b64b4d192cffe3979c0305"
+      ],
+      "source": "Dismiss Notification",
+      "translation": "关闭通知"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "dismiss_notification",
+        "72806460489c61ba45e9f10a43ff5b5f5cf5d43155b64b4d192cffe3979c0305"
+      ],
+      "source_sha256": "72806460489c61ba45e9f10a43ff5b5f5cf5d43155b64b4d192cffe3979c0305",
+      "translation": "将通知标记为已读或已完成，从而关闭通知。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "fork_repository",
+        "b9c81712c56e48175df559052b73f7e28646208f961b6b61c3ac3f3545eef86f"
+      ],
+      "source": "Fork Repository",
+      "translation": "Fork 仓库"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "fork_repository",
+        "b9c81712c56e48175df559052b73f7e28646208f961b6b61c3ac3f3545eef86f"
+      ],
+      "source_sha256": "b9c81712c56e48175df559052b73f7e28646208f961b6b61c3ac3f3545eef86f",
+      "translation": "将 GitHub 仓库 Fork 到你的账户或指定组织。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_code_quality_finding",
+        "a2ea34687563cde90b4890df042e53cca9e024912d997d53a9c52824bd645877"
+      ],
+      "source": "Get Code Quality Finding",
+      "translation": "获取代码质量问题"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_code_quality_finding",
+        "a2ea34687563cde90b4890df042e53cca9e024912d997d53a9c52824bd645877"
+      ],
+      "source_sha256": "a2ea34687563cde90b4890df042e53cca9e024912d997d53a9c52824bd645877",
+      "translation": "获取 GitHub 仓库中指定代码质量问题的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_code_scanning_alert",
+        "c9355e6046bba99a24d2d56a7b7ae04bd213029c8921890e6a080b11cf924a17"
+      ],
+      "source": "Get Code Scanning Alert",
+      "translation": "获取代码扫描警报"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_code_scanning_alert",
+        "c9355e6046bba99a24d2d56a7b7ae04bd213029c8921890e6a080b11cf924a17"
+      ],
+      "source_sha256": "c9355e6046bba99a24d2d56a7b7ae04bd213029c8921890e6a080b11cf924a17",
+      "translation": "获取 GitHub 仓库中指定代码扫描警报的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_commit",
+        "a27095bf05dc570a18bf4f6db26662c8dd39f2997f914127c59e8ecf906bf30f"
+      ],
+      "source": "Get Commit",
+      "translation": "获取提交"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_commit",
+        "a27095bf05dc570a18bf4f6db26662c8dd39f2997f914127c59e8ecf906bf30f"
+      ],
+      "source_sha256": "a27095bf05dc570a18bf4f6db26662c8dd39f2997f914127c59e8ecf906bf30f",
+      "translation": "获取 GitHub 仓库中指定提交的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_copilot_space",
+        "9e60bce9aa9e04adb127fcd844fae2beea405cbd765f1f056979453369f03ee8"
+      ],
+      "source": "Get Copilot Space",
+      "translation": "获取 Copilot Space"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_copilot_space",
+        "9e60bce9aa9e04adb127fcd844fae2beea405cbd765f1f056979453369f03ee8"
+      ],
+      "source_sha256": "9e60bce9aa9e04adb127fcd844fae2beea405cbd765f1f056979453369f03ee8",
+      "translation": "从指定 Copilot Space 获取聊天上下文；响应包含文档目录和由文档标记分隔的完整内容。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_dependabot_alert",
+        "de61bf255daddafdd68fb620fa2abc05f2e527c944d8bb4d1424d9e72c06663e"
+      ],
+      "source": "Get Dependabot Alert",
+      "translation": "获取 Dependabot 警报"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_dependabot_alert",
+        "de61bf255daddafdd68fb620fa2abc05f2e527c944d8bb4d1424d9e72c06663e"
+      ],
+      "source_sha256": "de61bf255daddafdd68fb620fa2abc05f2e527c944d8bb4d1424d9e72c06663e",
+      "translation": "获取 GitHub 仓库中指定 Dependabot 警报的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_discussion",
+        "e87e063be57c64bc4e7f333a4e4428d2552f1f09e32045d2b9e89845e8762b82"
+      ],
+      "source": "Get Discussion",
+      "translation": "获取讨论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_discussion",
+        "e87e063be57c64bc4e7f333a4e4428d2552f1f09e32045d2b9e89845e8762b82"
+      ],
+      "source_sha256": "e87e063be57c64bc4e7f333a4e4428d2552f1f09e32045d2b9e89845e8762b82",
+      "translation": "按 ID 获取指定讨论。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_discussion_comments",
+        "e4b8f713aea3d38d19578af518ccbf7c40a75b11d5391e19d4356abe600eb1bd"
+      ],
+      "source": "Get Discussion Comments",
+      "translation": "获取讨论评论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_discussion_comments",
+        "e4b8f713aea3d38d19578af518ccbf7c40a75b11d5391e19d4356abe600eb1bd"
+      ],
+      "source_sha256": "e4b8f713aea3d38d19578af518ccbf7c40a75b11d5391e19d4356abe600eb1bd",
+      "translation": "获取讨论中的评论。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_file_contents",
+        "54de6216aa12cd8da08e335b6955e2261b4241359f184959829407d0e40dcdc0"
+      ],
+      "source": "Get File Contents",
+      "translation": "获取文件内容"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_file_contents",
+        "54de6216aa12cd8da08e335b6955e2261b4241359f184959829407d0e40dcdc0"
+      ],
+      "source_sha256": "54de6216aa12cd8da08e335b6955e2261b4241359f184959829407d0e40dcdc0",
+      "translation": "获取 GitHub 仓库中文件或目录的内容。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_gist",
+        "b13ead29e27dd15ba2168a45cd5935562d0d282cffc79daad6eab8fefeb8232b"
+      ],
+      "source": "Get Gist",
+      "translation": "获取 Gist"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_gist",
+        "b13ead29e27dd15ba2168a45cd5935562d0d282cffc79daad6eab8fefeb8232b"
+      ],
+      "source_sha256": "b13ead29e27dd15ba2168a45cd5935562d0d282cffc79daad6eab8fefeb8232b",
+      "translation": "获取指定 Gist 的内容。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_global_security_advisory",
+        "8e3dc5a5359eee0a5fc561b61ed051d3619d5c4e27aaad598d664bcbd0011901"
+      ],
+      "source": "Get Global Security Advisory",
+      "translation": "获取全局安全公告"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_global_security_advisory",
+        "8e3dc5a5359eee0a5fc561b61ed051d3619d5c4e27aaad598d664bcbd0011901"
+      ],
+      "source_sha256": "8e3dc5a5359eee0a5fc561b61ed051d3619d5c4e27aaad598d664bcbd0011901",
+      "translation": "获取全局安全公告。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_job_logs",
+        "4effcfb9a2d3b9336cfe75149f127cc2eba0fde51b19832212aa81a256e6e732"
+      ],
+      "source": "Get Job Logs",
+      "translation": "获取作业日志"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_job_logs",
+        "4effcfb9a2d3b9336cfe75149f127cc2eba0fde51b19832212aa81a256e6e732"
+      ],
+      "source_sha256": "4effcfb9a2d3b9336cfe75149f127cc2eba0fde51b19832212aa81a256e6e732",
+      "translation": "获取 GitHub Actions 工作流作业日志；可按 job_id 获取单个作业，或按 run_id 获取运行中所有失败作业。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_label",
+        "bc5e986298d736683f2928e24dd080fa0735fbcb3d1529aa2573a84570568b44"
+      ],
+      "source": "Get Label",
+      "translation": "获取标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_label",
+        "bc5e986298d736683f2928e24dd080fa0735fbcb3d1529aa2573a84570568b44"
+      ],
+      "source_sha256": "bc5e986298d736683f2928e24dd080fa0735fbcb3d1529aa2573a84570568b44",
+      "translation": "从仓库获取指定标签。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_latest_release",
+        "57a49eb576b15e088997f3906897973907a872ac7532593fa48826e0b3d0d09a"
+      ],
+      "source": "Get Latest Release",
+      "translation": "获取最新发行版"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_latest_release",
+        "57a49eb576b15e088997f3906897973907a872ac7532593fa48826e0b3d0d09a"
+      ],
+      "source_sha256": "57a49eb576b15e088997f3906897973907a872ac7532593fa48826e0b3d0d09a",
+      "translation": "获取 GitHub 仓库中的最新发行版。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_me",
+        "bc34f566cc782d563dbfb6035ec4b94c7c7d46f34ef84c61cd7b02729ba281ce"
+      ],
+      "source": "Get Me",
+      "translation": "获取我的 GitHub 信息"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_me",
+        "bc34f566cc782d563dbfb6035ec4b94c7c7d46f34ef84c61cd7b02729ba281ce"
+      ],
+      "source_sha256": "bc34f566cc782d563dbfb6035ec4b94c7c7d46f34ef84c61cd7b02729ba281ce",
+      "translation": "获取已认证 GitHub 用户的详细信息；涉及用户自己的 GitHub 资料或其他调用缺少用户信息时使用。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_notification_details",
+        "ec76845152fc49b3d76ac0087fe8752555ea3631b04d04d6a8d0f153cb0e1176"
+      ],
+      "source": "Get Notification Details",
+      "translation": "获取通知详情"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_notification_details",
+        "ec76845152fc49b3d76ac0087fe8752555ea3631b04d04d6a8d0f153cb0e1176"
+      ],
+      "source_sha256": "ec76845152fc49b3d76ac0087fe8752555ea3631b04d04d6a8d0f153cb0e1176",
+      "translation": "获取指定 GitHub 通知的详细信息；不知道 ID 时先列出通知。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_release_by_tag",
+        "370170693dc5177b119f9aadd27bb305c23eec6de6050e5accbee27acd764a7f"
+      ],
+      "source": "Get Release By Tag",
+      "translation": "按标签获取发行版"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_release_by_tag",
+        "370170693dc5177b119f9aadd27bb305c23eec6de6050e5accbee27acd764a7f"
+      ],
+      "source_sha256": "370170693dc5177b119f9aadd27bb305c23eec6de6050e5accbee27acd764a7f",
+      "translation": "按标签名称获取 GitHub 仓库中的指定发行版。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_repository_tree",
+        "4355bf11fa971efb885ebbb66191d5cbdf0f206c2bae54a49b0b2243933b6240"
+      ],
+      "source": "Get Repository Tree",
+      "translation": "获取仓库树"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_repository_tree",
+        "4355bf11fa971efb885ebbb66191d5cbdf0f206c2bae54a49b0b2243933b6240"
+      ],
+      "source_sha256": "4355bf11fa971efb885ebbb66191d5cbdf0f206c2bae54a49b0b2243933b6240",
+      "translation": "按指定引用或 SHA 获取 GitHub 仓库的树结构。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_secret_scanning_alert",
+        "0cc5a272aafe264f496df0317c38e5b24c554afbc136cfe98919d2447663e5c3"
+      ],
+      "source": "Get Secret Scanning Alert",
+      "translation": "获取机密扫描警报"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_secret_scanning_alert",
+        "0cc5a272aafe264f496df0317c38e5b24c554afbc136cfe98919d2447663e5c3"
+      ],
+      "source_sha256": "0cc5a272aafe264f496df0317c38e5b24c554afbc136cfe98919d2447663e5c3",
+      "translation": "获取 GitHub 仓库中指定机密扫描警报的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_tag",
+        "e6d557e07eb01ac88760ac5a62bc68d3b795b61d4d7fa4be36758c0f7ce61eae"
+      ],
+      "source": "Get Tag",
+      "translation": "获取 Git 标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_tag",
+        "e6d557e07eb01ac88760ac5a62bc68d3b795b61d4d7fa4be36758c0f7ce61eae"
+      ],
+      "source_sha256": "e6d557e07eb01ac88760ac5a62bc68d3b795b61d4d7fa4be36758c0f7ce61eae",
+      "translation": "获取指定 Git 标签的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_team_members",
+        "e86ce60eeea8d7fcc9a5e50ae24c13b083aed10d254af864402ec8167502bbc4"
+      ],
+      "source": "Get Team Members",
+      "translation": "获取团队成员"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_team_members",
+        "e86ce60eeea8d7fcc9a5e50ae24c13b083aed10d254af864402ec8167502bbc4"
+      ],
+      "source_sha256": "e86ce60eeea8d7fcc9a5e50ae24c13b083aed10d254af864402ec8167502bbc4",
+      "translation": "获取组织中指定团队的成员用户名，仅限当前凭据可访问的组织。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "get_teams",
+        "99380d708092b4760246658a3e9bc5f7991d7bcecc75c3dea03e13fcff6aa27b"
+      ],
+      "source": "Get Teams",
+      "translation": "获取团队"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "get_teams",
+        "99380d708092b4760246658a3e9bc5f7991d7bcecc75c3dea03e13fcff6aa27b"
+      ],
+      "source_sha256": "99380d708092b4760246658a3e9bc5f7991d7bcecc75c3dea03e13fcff6aa27b",
+      "translation": "获取用户所属团队的详细信息，仅限当前凭据可访问的组织。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "github_support_docs_search",
+        "b1f62ff0baa8fbf1953d442fa443cecdacfb089c5e6692ab6724ec1487da75f2"
+      ],
+      "source": "Github Support Docs Search",
+      "translation": "搜索 GitHub 支持文档"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "github_support_docs_search",
+        "b1f62ff0baa8fbf1953d442fa443cecdacfb089c5e6692ab6724ec1487da75f2"
+      ],
+      "source_sha256": "b1f62ff0baa8fbf1953d442fa443cecdacfb089c5e6692ab6724ec1487da75f2",
+      "translation": "检索 GitHub 产品和支持文档，涵盖 Actions、身份验证、支持咨询、Pull Request、仓库维护、Pages、Packages、Discussions 和 Copilot Spaces。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "issue_read",
+        "e3ccc7984b309935391ec33b448056c6177cd97383005727831d46e8c73213dc"
+      ],
+      "source": "Issue Read",
+      "translation": "读取 Issue"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "issue_read",
+        "e3ccc7984b309935391ec33b448056c6177cd97383005727831d46e8c73213dc"
+      ],
+      "source_sha256": "e3ccc7984b309935391ec33b448056c6177cd97383005727831d46e8c73213dc",
+      "translation": "获取 GitHub 仓库中指定 Issue 的信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "issue_write",
+        "8fe78ac80b6a1295e9149d41aab56393236e2c6155abf09a5b56a23b09ef587c"
+      ],
+      "source": "Issue Write",
+      "translation": "写入 Issue"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "issue_write",
+        "8fe78ac80b6a1295e9149d41aab56393236e2c6155abf09a5b56a23b09ef587c"
+      ],
+      "source_sha256": "8fe78ac80b6a1295e9149d41aab56393236e2c6155abf09a5b56a23b09ef587c",
+      "translation": "在 GitHub 仓库中创建新 Issue 或更新现有 Issue。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "label_write",
+        "396dfa0cc748c53ff193b0f49d60461201a45620c071ed5493baa989d9ed6ba3"
+      ],
+      "source": "Label Write",
+      "translation": "写入标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "label_write",
+        "396dfa0cc748c53ff193b0f49d60461201a45620c071ed5493baa989d9ed6ba3"
+      ],
+      "source_sha256": "396dfa0cc748c53ff193b0f49d60461201a45620c071ed5493baa989d9ed6ba3",
+      "translation": "对仓库标签执行写操作；要设置 Issue 标签，请使用更新 Issue 的工具。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_branches",
+        "8ce903bf8c1572fd527fd93f38d7d2ccb9b8d463ffe947100aeb1b8187363840"
+      ],
+      "source": "List Branches",
+      "translation": "列出分支"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_branches",
+        "8ce903bf8c1572fd527fd93f38d7d2ccb9b8d463ffe947100aeb1b8187363840"
+      ],
+      "source_sha256": "8ce903bf8c1572fd527fd93f38d7d2ccb9b8d463ffe947100aeb1b8187363840",
+      "translation": "列出 GitHub 仓库的分支。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_code_scanning_alerts",
+        "2157c013472c46218c4a0315e1b0ba5e6eb9315cf7065b1f572d0a4c25fd7db7"
+      ],
+      "source": "List Code Scanning Alerts",
+      "translation": "列出代码扫描警报"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_code_scanning_alerts",
+        "2157c013472c46218c4a0315e1b0ba5e6eb9315cf7065b1f572d0a4c25fd7db7"
+      ],
+      "source_sha256": "2157c013472c46218c4a0315e1b0ba5e6eb9315cf7065b1f572d0a4c25fd7db7",
+      "translation": "列出 GitHub 仓库中的代码扫描警报。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_commits",
+        "dd2e7a438ec8ef9f8c31a41ce203325fc971ad1dc601c7647f5a9a39ca372df9"
+      ],
+      "source": "List Commits",
+      "translation": "列出提交"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_commits",
+        "dd2e7a438ec8ef9f8c31a41ce203325fc971ad1dc601c7647f5a9a39ca372df9"
+      ],
+      "source_sha256": "dd2e7a438ec8ef9f8c31a41ce203325fc971ad1dc601c7647f5a9a39ca372df9",
+      "translation": "获取 GitHub 仓库某分支的提交列表；支持分页，每页最多 100 条。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_copilot_spaces",
+        "0929cf92a74637758a676a2b28b9c0979dde04e5a1fa02472e015722d4a5729a"
+      ],
+      "source": "List Copilot Spaces",
+      "translation": "列出 Copilot Spaces"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_copilot_spaces",
+        "0929cf92a74637758a676a2b28b9c0979dde04e5a1fa02472e015722d4a5729a"
+      ],
+      "source_sha256": "0929cf92a74637758a676a2b28b9c0979dde04e5a1fa02472e015722d4a5729a",
+      "translation": "获取用户可访问的 Copilot Spaces 列表，包括名称和所有者。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_dependabot_alerts",
+        "f3d1993f579cbecb1f6bd936f4ef979795480076df67269b29b88b1d511afdb4"
+      ],
+      "source": "List Dependabot Alerts",
+      "translation": "列出 Dependabot 警报"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_dependabot_alerts",
+        "f3d1993f579cbecb1f6bd936f4ef979795480076df67269b29b88b1d511afdb4"
+      ],
+      "source_sha256": "f3d1993f579cbecb1f6bd936f4ef979795480076df67269b29b88b1d511afdb4",
+      "translation": "列出 GitHub 仓库中的 Dependabot 警报。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_discussion_categories",
+        "47fdb72ed8824c792c722f9ca7aea07cfab4a7b42b033335ccf5dbe0a99fb36a"
+      ],
+      "source": "List Discussion Categories",
+      "translation": "列出讨论类别"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_discussion_categories",
+        "47fdb72ed8824c792c722f9ca7aea07cfab4a7b42b033335ccf5dbe0a99fb36a"
+      ],
+      "source_sha256": "47fdb72ed8824c792c722f9ca7aea07cfab4a7b42b033335ccf5dbe0a99fb36a",
+      "translation": "列出仓库或组织的讨论类别及其 ID 和名称。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_discussions",
+        "aa64efa50c1e8214b205eafc506af2baa44dd0db3c5b736ac5e61c59cf30b17a"
+      ],
+      "source": "List Discussions",
+      "translation": "列出讨论"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_discussions",
+        "aa64efa50c1e8214b205eafc506af2baa44dd0db3c5b736ac5e61c59cf30b17a"
+      ],
+      "source_sha256": "aa64efa50c1e8214b205eafc506af2baa44dd0db3c5b736ac5e61c59cf30b17a",
+      "translation": "列出仓库或组织的讨论。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_gists",
+        "edc457069633633897b6a9beb60019ba520577da7e17e35009f03bca55414b89"
+      ],
+      "source": "List Gists",
+      "translation": "列出 Gist"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_gists",
+        "edc457069633633897b6a9beb60019ba520577da7e17e35009f03bca55414b89"
+      ],
+      "source_sha256": "edc457069633633897b6a9beb60019ba520577da7e17e35009f03bca55414b89",
+      "translation": "列出指定用户的 Gist。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_global_security_advisories",
+        "ee29194c45463bf282d5e9fc3185e3839609a22232c82d26183b560155ac1895"
+      ],
+      "source": "List Global Security Advisories",
+      "translation": "列出全局安全公告"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_global_security_advisories",
+        "ee29194c45463bf282d5e9fc3185e3839609a22232c82d26183b560155ac1895"
+      ],
+      "source_sha256": "ee29194c45463bf282d5e9fc3185e3839609a22232c82d26183b560155ac1895",
+      "translation": "列出 GitHub 的全局安全公告。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_issue_fields",
+        "2dd58d0918a55cb41fb3a01020cd25e1a70552019539c3c9fda032cb5bf84148"
+      ],
+      "source": "List Issue Fields",
+      "translation": "列出 Issue 字段"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_issue_fields",
+        "2dd58d0918a55cb41fb3a01020cd25e1a70552019539c3c9fda032cb5bf84148"
+      ],
+      "source_sha256": "2dd58d0918a55cb41fb3a01020cd25e1a70552019539c3c9fda032cb5bf84148",
+      "translation": "列出仓库或组织的 Issue 字段定义；单选字段还返回有效选项。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_issue_types",
+        "044c396ff868d9a6abaf2b91817c1945b557c2e41556424076be9085f444eefc"
+      ],
+      "source": "List Issue Types",
+      "translation": "列出 Issue 类型"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_issue_types",
+        "044c396ff868d9a6abaf2b91817c1945b557c2e41556424076be9085f444eefc"
+      ],
+      "source_sha256": "044c396ff868d9a6abaf2b91817c1945b557c2e41556424076be9085f444eefc",
+      "translation": "列出仓库或所属组织支持的 Issue 类型。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_issues",
+        "c41469eaf78f99580e51ff1bbbadc2922bdec37e47f0e5d142e1e576f3390c87"
+      ],
+      "source": "List Issues",
+      "translation": "列出 Issue"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_issues",
+        "c41469eaf78f99580e51ff1bbbadc2922bdec37e47f0e5d142e1e576f3390c87"
+      ],
+      "source_sha256": "c41469eaf78f99580e51ff1bbbadc2922bdec37e47f0e5d142e1e576f3390c87",
+      "translation": "列出 GitHub 仓库中的 Issue，并支持基于游标的分页。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_label",
+        "7aabe8ae1af6bfeef25ce162b884008b891df44fef9dbeefc4560551814f24ee"
+      ],
+      "source": "List Label",
+      "translation": "列出标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_label",
+        "7aabe8ae1af6bfeef25ce162b884008b891df44fef9dbeefc4560551814f24ee"
+      ],
+      "source_sha256": "7aabe8ae1af6bfeef25ce162b884008b891df44fef9dbeefc4560551814f24ee",
+      "translation": "按使用量优先列出仓库标签。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_notifications",
+        "d10e656b1bf56afd6198d99dfbacab9b89240e71050cb766e6fc4e1952e4cc1c"
+      ],
+      "source": "List Notifications",
+      "translation": "列出通知"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_notifications",
+        "d10e656b1bf56afd6198d99dfbacab9b89240e71050cb766e6fc4e1952e4cc1c"
+      ],
+      "source_sha256": "d10e656b1bf56afd6198d99dfbacab9b89240e71050cb766e6fc4e1952e4cc1c",
+      "translation": "列出已认证用户的 GitHub 通知，包括未读、提及、评审请求、分配以及 Issue 或 Pull Request 更新。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_org_repository_security_advisories",
+        "b955d6ac99e964a73854c319abfd5a5ec2efb69033a2ed20bf06da82b70a6c3b"
+      ],
+      "source": "List Org Repository Security Advisories",
+      "translation": "列出组织仓库安全公告"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_org_repository_security_advisories",
+        "b955d6ac99e964a73854c319abfd5a5ec2efb69033a2ed20bf06da82b70a6c3b"
+      ],
+      "source_sha256": "b955d6ac99e964a73854c319abfd5a5ec2efb69033a2ed20bf06da82b70a6c3b",
+      "translation": "列出 GitHub 组织的仓库安全公告。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_pull_requests",
+        "c249adc3491b598845fda74d1b7f815b368107b47786634fc6e44ef0ea5f1a06"
+      ],
+      "source": "List Pull Requests",
+      "translation": "列出 Pull Request"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_pull_requests",
+        "c249adc3491b598845fda74d1b7f815b368107b47786634fc6e44ef0ea5f1a06"
+      ],
+      "source_sha256": "c249adc3491b598845fda74d1b7f815b368107b47786634fc6e44ef0ea5f1a06",
+      "translation": "列出 GitHub 仓库中的 Pull Request；按作者筛选时应改用搜索工具。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_releases",
+        "16c40a2d80141352b60b845be6bb163ab868e1dc3b7edbdbe14ca7b2d664e411"
+      ],
+      "source": "List Releases",
+      "translation": "列出发行版"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_releases",
+        "16c40a2d80141352b60b845be6bb163ab868e1dc3b7edbdbe14ca7b2d664e411"
+      ],
+      "source_sha256": "16c40a2d80141352b60b845be6bb163ab868e1dc3b7edbdbe14ca7b2d664e411",
+      "translation": "列出 GitHub 仓库的发行版。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_repository_collaborators",
+        "adbe2ab4be9b09cf09ea46cfb15b658ce43ff32bb16e327d3081b5ea51ff9302"
+      ],
+      "source": "List Repository Collaborators",
+      "translation": "列出仓库协作者"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_repository_collaborators",
+        "adbe2ab4be9b09cf09ea46cfb15b658ce43ff32bb16e327d3081b5ea51ff9302"
+      ],
+      "source_sha256": "adbe2ab4be9b09cf09ea46cfb15b658ce43ff32bb16e327d3081b5ea51ff9302",
+      "translation": "列出 GitHub 仓库协作者，并返回分页导航信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_repository_security_advisories",
+        "d7b752d7baa2ddc100118971ce5e4de114e09cf1ec628ac3c41fb0e531529310"
+      ],
+      "source": "List Repository Security Advisories",
+      "translation": "列出仓库安全公告"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_repository_security_advisories",
+        "d7b752d7baa2ddc100118971ce5e4de114e09cf1ec628ac3c41fb0e531529310"
+      ],
+      "source_sha256": "d7b752d7baa2ddc100118971ce5e4de114e09cf1ec628ac3c41fb0e531529310",
+      "translation": "列出 GitHub 仓库的安全公告。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_secret_scanning_alerts",
+        "3894671d369d1afd5626bc7a85fd304dc23c40e42ac99eab42ef7472f50cf231"
+      ],
+      "source": "List Secret Scanning Alerts",
+      "translation": "列出机密扫描警报"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_secret_scanning_alerts",
+        "3894671d369d1afd5626bc7a85fd304dc23c40e42ac99eab42ef7472f50cf231"
+      ],
+      "source_sha256": "3894671d369d1afd5626bc7a85fd304dc23c40e42ac99eab42ef7472f50cf231",
+      "translation": "列出 GitHub 仓库中的机密扫描警报。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_starred_repositories",
+        "d852730315dcbc1456dc6bd0c56f02668779ce0e02cf3be75ee9b49b8edda8ca"
+      ],
+      "source": "List Starred Repositories",
+      "translation": "列出已加星标仓库"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_starred_repositories",
+        "d852730315dcbc1456dc6bd0c56f02668779ce0e02cf3be75ee9b49b8edda8ca"
+      ],
+      "source_sha256": "d852730315dcbc1456dc6bd0c56f02668779ce0e02cf3be75ee9b49b8edda8ca",
+      "translation": "列出已加星标的仓库。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "list_tags",
+        "b45b57651e9a56b5d03befc9edb790d1c1d92742cc6e1cd9d56f6b41fc3dca92"
+      ],
+      "source": "List Tags",
+      "translation": "列出 Git 标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "list_tags",
+        "b45b57651e9a56b5d03befc9edb790d1c1d92742cc6e1cd9d56f6b41fc3dca92"
+      ],
+      "source_sha256": "b45b57651e9a56b5d03befc9edb790d1c1d92742cc6e1cd9d56f6b41fc3dca92",
+      "translation": "列出 GitHub 仓库的 Git 标签。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "manage_notification_subscription",
+        "be32b04a7ce2d90c4cf1ba0bfe8674b5eeed86fdac39522df6afe856d12b0a06"
+      ],
+      "source": "Manage Notification Subscription",
+      "translation": "管理通知订阅"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "manage_notification_subscription",
+        "be32b04a7ce2d90c4cf1ba0bfe8674b5eeed86fdac39522df6afe856d12b0a06"
+      ],
+      "source_sha256": "be32b04a7ce2d90c4cf1ba0bfe8674b5eeed86fdac39522df6afe856d12b0a06",
+      "translation": "管理通知线程订阅：忽略、关注或删除订阅。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "manage_repository_notification_subscription",
+        "97e8f7279d5f6b8b031b73e5ecc55d093571b3eb9d4e244a65bc9acd31e907a1"
+      ],
+      "source": "Manage Repository Notification Subscription",
+      "translation": "管理仓库通知订阅"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "manage_repository_notification_subscription",
+        "97e8f7279d5f6b8b031b73e5ecc55d093571b3eb9d4e244a65bc9acd31e907a1"
+      ],
+      "source_sha256": "97e8f7279d5f6b8b031b73e5ecc55d093571b3eb9d4e244a65bc9acd31e907a1",
+      "translation": "管理指定仓库的通知订阅：忽略、关注或删除订阅。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "mark_all_notifications_read",
+        "87e6c2a922e258ce8d6383d847f1cb480037d95d9baa6d366cf10fbca63a4c0b"
+      ],
+      "source": "Mark All Notifications Read",
+      "translation": "将所有通知标记为已读"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "mark_all_notifications_read",
+        "87e6c2a922e258ce8d6383d847f1cb480037d95d9baa6d366cf10fbca63a4c0b"
+      ],
+      "source_sha256": "87e6c2a922e258ce8d6383d847f1cb480037d95d9baa6d366cf10fbca63a4c0b",
+      "translation": "将所有通知标记为已读。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "merge_pull_request",
+        "124cd641ce348386107609b1831084962d2198fa82fe58f7a040dd7e1cebb6b4"
+      ],
+      "source": "Merge Pull Request",
+      "translation": "合并 Pull Request"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "merge_pull_request",
+        "124cd641ce348386107609b1831084962d2198fa82fe58f7a040dd7e1cebb6b4"
+      ],
+      "source_sha256": "124cd641ce348386107609b1831084962d2198fa82fe58f7a040dd7e1cebb6b4",
+      "translation": "合并 GitHub 仓库中的 Pull Request。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "projects_get",
+        "6cdcd09c32ebb14ba7f1c379599cd2032893706a61d96891cc542edc7b2e32b9"
+      ],
+      "source": "Projects Get",
+      "translation": "获取 Projects 详情"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "projects_get",
+        "6cdcd09c32ebb14ba7f1c379599cd2032893706a61d96891cc542edc7b2e32b9"
+      ],
+      "source_sha256": "6cdcd09c32ebb14ba7f1c379599cd2032893706a61d96891cc542edc7b2e32b9",
+      "translation": "按唯一 ID 获取 GitHub Projects 中项目、字段、条目或视图的详细信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "projects_list",
+        "67993147da2048576a2e40ccbf2fa1335123e7b8d9b9bcf579addd2df0d6866c"
+      ],
+      "source": "Projects List",
+      "translation": "列出 Projects"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "projects_list",
+        "67993147da2048576a2e40ccbf2fa1335123e7b8d9b9bcf579addd2df0d6866c"
+      ],
+      "source_sha256": "67993147da2048576a2e40ccbf2fa1335123e7b8d9b9bcf579addd2df0d6866c",
+      "translation": "列出用户或组织的 GitHub Projects，或列出指定项目的字段、条目、视图和状态更新。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "projects_write",
+        "fda4533debc6e51d63ab3b9d573f35a8be2891d56a151a5ff6cc983132818869"
+      ],
+      "source": "Projects Write",
+      "translation": "管理 Projects"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "projects_write",
+        "fda4533debc6e51d63ab3b9d573f35a8be2891d56a151a5ff6cc983132818869"
+      ],
+      "source_sha256": "fda4533debc6e51d63ab3b9d573f35a8be2891d56a151a5ff6cc983132818869",
+      "translation": "创建和管理 GitHub Projects，包括项目、条目、视图、状态更新和迭代字段。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "pull_request_read",
+        "2d2b3f1fbb088bc1a5eef4fd77b7c8abdfd2753e2356abce8401dba5236cae5b"
+      ],
+      "source": "Pull Request Read",
+      "translation": "读取 Pull Request"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "pull_request_read",
+        "2d2b3f1fbb088bc1a5eef4fd77b7c8abdfd2753e2356abce8401dba5236cae5b"
+      ],
+      "source_sha256": "2d2b3f1fbb088bc1a5eef4fd77b7c8abdfd2753e2356abce8401dba5236cae5b",
+      "translation": "获取 GitHub 仓库中指定 Pull Request 的信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "pull_request_review_write",
+        "6f34129d431b032f859853d8dcf48a9523a5ad6fa66079f2126c625f97f38505"
+      ],
+      "source": "Pull Request Review Write",
+      "translation": "写入 Pull Request 评审"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "pull_request_review_write",
+        "6f34129d431b032f859853d8dcf48a9523a5ad6fa66079f2126c625f97f38505"
+      ],
+      "source_sha256": "6f34129d431b032f859853d8dcf48a9523a5ad6fa66079f2126c625f97f38505",
+      "translation": "创建、提交或删除 Pull Request 评审，并可解决或取消解决评审线程。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "push_files",
+        "0ea99ad23e44e739ed503658bdaab5ee2dc239246cb00e715d8fff3d80fe544f"
+      ],
+      "source": "Push Files",
+      "translation": "推送文件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "push_files",
+        "0ea99ad23e44e739ed503658bdaab5ee2dc239246cb00e715d8fff3d80fe544f"
+      ],
+      "source_sha256": "0ea99ad23e44e739ed503658bdaab5ee2dc239246cb00e715d8fff3d80fe544f",
+      "translation": "在一次提交中向 GitHub 仓库推送多个文件。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "repository_ruleset_read",
+        "a7407bc1e7b60ea3e2202f0d80f1b79aa2afe94e998a101b373d65934697f8f0"
+      ],
+      "source": "Repository Ruleset Read",
+      "translation": "读取仓库规则集"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "repository_ruleset_read",
+        "a7407bc1e7b60ea3e2202f0d80f1b79aa2afe94e998a101b373d65934697f8f0"
+      ],
+      "source_sha256": "a7407bc1e7b60ea3e2202f0d80f1b79aa2afe94e998a101b373d65934697f8f0",
+      "translation": "读取仓库、组织或企业级规则集，以及仓库或组织级规则套件。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "request_copilot_review",
+        "0a31c498daefdb4310ae1335e16496ed8d238d01ebf12c04d45a1b215e4c7de3"
+      ],
+      "source": "Request Copilot Review",
+      "translation": "请求 Copilot 评审"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "request_copilot_review",
+        "0a31c498daefdb4310ae1335e16496ed8d238d01ebf12c04d45a1b215e4c7de3"
+      ],
+      "source_sha256": "0a31c498daefdb4310ae1335e16496ed8d238d01ebf12c04d45a1b215e4c7de3",
+      "translation": "请求 GitHub Copilot 对 Pull Request 进行代码评审。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "run_secret_scanning",
+        "dd3b32257b64f6b2b4a4c07056fd0dce39426c1ab5779b48eea8b52ad420e484"
+      ],
+      "source": "Run Secret Scanning",
+      "translation": "运行机密扫描"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "run_secret_scanning",
+        "dd3b32257b64f6b2b4a4c07056fd0dce39426c1ab5779b48eea8b52ad420e484"
+      ],
+      "source_sha256": "dd3b32257b64f6b2b4a4c07056fd0dce39426c1ab5779b48eea8b52ad420e484",
+      "translation": "扫描代码库内提供的文件内容或近期变更，查找 API 密钥、密码、令牌和凭据等机密。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_code",
+        "80d70342e3a3eb8b9ad5df5eb159840c6a363b7ef54bc757e541990984e2b2ad"
+      ],
+      "source": "Search Code",
+      "translation": "搜索代码"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_code",
+        "80d70342e3a3eb8b9ad5df5eb159840c6a363b7ef54bc757e541990984e2b2ad"
+      ],
+      "source_sha256": "80d70342e3a3eb8b9ad5df5eb159840c6a363b7ef54bc757e541990984e2b2ad",
+      "translation": "使用 GitHub 原生搜索引擎跨仓库搜索代码，适合查找确切符号、函数、类或代码模式。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_commits",
+        "2daaa82a55c91ba3ddcec7d0fb2c16da11e46647600ca111e00ad857ac49efe0"
+      ],
+      "source": "Search Commits",
+      "translation": "搜索提交"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_commits",
+        "2daaa82a55c91ba3ddcec7d0fb2c16da11e46647600ca111e00ad857ac49efe0"
+      ],
+      "source_sha256": "2daaa82a55c91ba3ddcec7d0fb2c16da11e46647600ca111e00ad857ac49efe0",
+      "translation": "使用 GitHub 提交搜索语法跨仓库搜索默认分支中的提交。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_issues",
+        "54ee7223ca0f61d33f3f4aa67dc97e6f0c704a18fc3218000eb39abc92c42484"
+      ],
+      "source": "Search Issues",
+      "translation": "搜索 Issue"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_issues",
+        "54ee7223ca0f61d33f3f4aa67dc97e6f0c704a18fc3218000eb39abc92c42484"
+      ],
+      "source_sha256": "54ee7223ca0f61d33f3f4aa67dc97e6f0c704a18fc3218000eb39abc92c42484",
+      "translation": "使用自然语言语义匹配搜索 Issue，适合概念性或改述查询。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_orgs",
+        "47cc29324a4a0f10b4d80043fd9bfc38b2d6c197f73c07ef7febdc172e0daad0"
+      ],
+      "source": "Search Orgs",
+      "translation": "搜索组织"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_orgs",
+        "47cc29324a4a0f10b4d80043fd9bfc38b2d6c197f73c07ef7febdc172e0daad0"
+      ],
+      "source_sha256": "47cc29324a4a0f10b4d80043fd9bfc38b2d6c197f73c07ef7febdc172e0daad0",
+      "translation": "按名称、位置或其他组织元数据搜索 GitHub 组织。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_pull_requests",
+        "d8a220faae6baa7cd5dfad6e2acd46e0949ef79854cd1d98baa8c6a5e15b1cea"
+      ],
+      "source": "Search Pull Requests",
+      "translation": "搜索 Pull Request"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_pull_requests",
+        "d8a220faae6baa7cd5dfad6e2acd46e0949ef79854cd1d98baa8c6a5e15b1cea"
+      ],
+      "source_sha256": "d8a220faae6baa7cd5dfad6e2acd46e0949ef79854cd1d98baa8c6a5e15b1cea",
+      "translation": "使用 Issue 搜索语法搜索 GitHub 仓库中的 Pull Request。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_repositories",
+        "7b9c5ffba195b04b1c4d835eca98ea84c999b254239740dd5a38e89d6f46ab02"
+      ],
+      "source": "Search Repositories",
+      "translation": "搜索仓库"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_repositories",
+        "7b9c5ffba195b04b1c4d835eca98ea84c999b254239740dd5a38e89d6f46ab02"
+      ],
+      "source_sha256": "7b9c5ffba195b04b1c4d835eca98ea84c999b254239740dd5a38e89d6f46ab02",
+      "translation": "按名称、描述、README、主题或其他元数据搜索 GitHub 仓库。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "search_users",
+        "e2c14890a74e50c883b5ba65dd1ae521152ef8e7ffe67aab5336091fcefe0807"
+      ],
+      "source": "Search Users",
+      "translation": "搜索用户"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "search_users",
+        "e2c14890a74e50c883b5ba65dd1ae521152ef8e7ffe67aab5336091fcefe0807"
+      ],
+      "source_sha256": "e2c14890a74e50c883b5ba65dd1ae521152ef8e7ffe67aab5336091fcefe0807",
+      "translation": "按用户名、真实姓名或其他资料信息搜索 GitHub 用户。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "semantic_issue_similarity_search",
+        "24fcbcb6c3c2b968e0fc72a7376713c757757e2bab0d20e4c89827166536e87b"
+      ],
+      "source": "Semantic Issue Similarity Search",
+      "translation": "语义搜索相似 Issue"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "semantic_issue_similarity_search",
+        "24fcbcb6c3c2b968e0fc72a7376713c757757e2bab0d20e4c89827166536e87b"
+      ],
+      "source_sha256": "24fcbcb6c3c2b968e0fc72a7376713c757757e2bab0d20e4c89827166536e87b",
+      "translation": "使用自然语言理解查找与给定 Issue 语义相似的问题。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "star_repository",
+        "79c19b991156ccefedaabb14aea64256d471ffb34449c90119670b9a2ddaf189"
+      ],
+      "source": "Star Repository",
+      "translation": "为仓库加星标"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "star_repository",
+        "79c19b991156ccefedaabb14aea64256d471ffb34449c90119670b9a2ddaf189"
+      ],
+      "source_sha256": "79c19b991156ccefedaabb14aea64256d471ffb34449c90119670b9a2ddaf189",
+      "translation": "为 GitHub 仓库加星标。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "sub_issue_write",
+        "0e8fa66b77f7ec60fa9ee3a6402d1aa53a8b4ee45621b52dea19a7777b9692c9"
+      ],
+      "source": "Sub Issue Write",
+      "translation": "写入子 Issue"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "sub_issue_write",
+        "0e8fa66b77f7ec60fa9ee3a6402d1aa53a8b4ee45621b52dea19a7777b9692c9"
+      ],
+      "source_sha256": "0e8fa66b77f7ec60fa9ee3a6402d1aa53a8b4ee45621b52dea19a7777b9692c9",
+      "translation": "在 GitHub 仓库中将一个子 Issue 添加到父 Issue。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "unstar_repository",
+        "2c008970d750298bb698d004709a456c8dd27322a7c84a456745cade3c07b49d"
+      ],
+      "source": "Unstar Repository",
+      "translation": "取消仓库星标"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "unstar_repository",
+        "2c008970d750298bb698d004709a456c8dd27322a7c84a456745cade3c07b49d"
+      ],
+      "source_sha256": "2c008970d750298bb698d004709a456c8dd27322a7c84a456745cade3c07b49d",
+      "translation": "取消 GitHub 仓库的星标。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "update_gist",
+        "2064a30fbd0677d3a7e2fd52841e10d1851ea33eae47dd08d1da8fa5ef529bc6"
+      ],
+      "source": "Update Gist",
+      "translation": "更新 Gist"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "update_gist",
+        "2064a30fbd0677d3a7e2fd52841e10d1851ea33eae47dd08d1da8fa5ef529bc6"
+      ],
+      "source_sha256": "2064a30fbd0677d3a7e2fd52841e10d1851ea33eae47dd08d1da8fa5ef529bc6",
+      "translation": "更新现有 Gist。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "update_pull_request",
+        "bed4d74cfd86d23ab02749d6b4fffa5ba43c3290bfa7c9810514cf821e0563eb"
+      ],
+      "source": "Update Pull Request",
+      "translation": "更新 Pull Request"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "update_pull_request",
+        "bed4d74cfd86d23ab02749d6b4fffa5ba43c3290bfa7c9810514cf821e0563eb"
+      ],
+      "source_sha256": "bed4d74cfd86d23ab02749d6b4fffa5ba43c3290bfa7c9810514cf821e0563eb",
+      "translation": "更新 GitHub 仓库中的现有 Pull Request。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "github",
+        "update_pull_request_branch",
+        "bb1dacdad1b56b12c6b26f7833d5b189a7827f66ea3d04917632eed63277d80d"
+      ],
+      "source": "Update Pull Request Branch",
+      "translation": "更新 Pull Request 分支"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "github",
+        "update_pull_request_branch",
+        "bb1dacdad1b56b12c6b26f7833d5b189a7827f66ea3d04917632eed63277d80d"
+      ],
+      "source_sha256": "bb1dacdad1b56b12c6b26f7833d5b189a7827f66ea3d04917632eed63277d80d",
+      "translation": "更新 Pull Request 分支，使其包含基分支的最新变更。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "batch_modify_labels",
+        "deab42f8cce1ebf8918d374d2891466b2bd5e9e3abbf5cd6f5d44a0f1617daeb"
+      ],
+      "source": "Batch Modify Labels",
+      "translation": "Gmail 批量修改标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "batch_modify_labels",
+        "deab42f8cce1ebf8918d374d2891466b2bd5e9e3abbf5cd6f5d44a0f1617daeb"
+      ],
+      "source_sha256": "deab42f8cce1ebf8918d374d2891466b2bd5e9e3abbf5cd6f5d44a0f1617daeb",
+      "translation": "一次为多封 Gmail 邮件批量添加或移除标签；使用搜索结果中的 message_ids，每批最多约 1000 封。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "create_draft",
+        "eb467d4924e0ccad49546b02bc0f769e6f084568c36b75850be0716a122ecbd0"
+      ],
+      "source": "Create Draft",
+      "translation": "Gmail 创建草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "create_draft",
+        "eb467d4924e0ccad49546b02bc0f769e6f084568c36b75850be0716a122ecbd0"
+      ],
+      "source_sha256": "eb467d4924e0ccad49546b02bc0f769e6f084568c36b75850be0716a122ecbd0",
+      "translation": "在 Gmail 中创建并保存邮件草稿而不发送；回复线程时先读取原邮件并设置回复与线程信息。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "create_label",
+        "14ec18e035c8faa1a11887e5ae9402c9909e3065a5726cc287ceefb718072644"
+      ],
+      "source": "Create Label",
+      "translation": "Gmail 创建标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "create_label",
+        "14ec18e035c8faa1a11887e5ae9402c9909e3065a5726cc287ceefb718072644"
+      ],
+      "source_sha256": "14ec18e035c8faa1a11887e5ae9402c9909e3065a5726cc287ceefb718072644",
+      "translation": "创建自定义 Gmail 标签，并返回标签 ID 和名称。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "delete_draft",
+        "12697521b1e5bee23dff1c75ccf375b4b5055a458c43abd9a448fd39e170112b"
+      ],
+      "source": "Delete Draft",
+      "translation": "Gmail 删除草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "delete_draft",
+        "12697521b1e5bee23dff1c75ccf375b4b5055a458c43abd9a448fd39e170112b"
+      ],
+      "source_sha256": "12697521b1e5bee23dff1c75ccf375b4b5055a458c43abd9a448fd39e170112b",
+      "translation": "永久删除 Gmail 草稿且不可撤销；仅在用户明确要求丢弃或删除时使用。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "delete_label",
+        "42ebe7129bd79604dfd57b338b6b21255aa2e6fcdfad93a06ea14e75bf676114"
+      ],
+      "source": "Delete Label",
+      "translation": "Gmail 删除标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "delete_label",
+        "42ebe7129bd79604dfd57b338b6b21255aa2e6fcdfad93a06ea14e75bf676114"
+      ],
+      "source_sha256": "42ebe7129bd79604dfd57b338b6b21255aa2e6fcdfad93a06ea14e75bf676114",
+      "translation": "删除自定义 Gmail 标签；系统标签不能删除，操作不可撤销。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "forward_message",
+        "b594e0eda252bdfb80ca96e168439957e31c572f3941ed8a37ab576376858cbe"
+      ],
+      "source": "Forward Message",
+      "translation": "Gmail 转发邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "forward_message",
+        "b594e0eda252bdfb80ca96e168439957e31c572f3941ed8a37ab576376858cbe"
+      ],
+      "source_sha256": "b594e0eda252bdfb80ca96e168439957e31c572f3941ed8a37ab576376858cbe",
+      "translation": "将 Gmail 邮件转发给新收件人，自动附上原邮件的转发标头，可添加备注。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "get_message",
+        "ec15cd86e777a346021919ff8b8c25b284f6f5b6950aea6d34223157e2495b30"
+      ],
+      "source": "Get Message",
+      "translation": "Gmail 获取邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "get_message",
+        "ec15cd86e777a346021919ff8b8c25b284f6f5b6950aea6d34223157e2495b30"
+      ],
+      "source_sha256": "ec15cd86e777a346021919ff8b8c25b284f6f5b6950aea6d34223157e2495b30",
+      "translation": "按 message_id 获取 Gmail 邮件完整正文、邮件头、标签和附件元数据。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "list_drafts",
+        "b93dd3034323f83e569f4b5607794198a6b975abcd8631eaafd9f31a914fd271"
+      ],
+      "source": "List Drafts",
+      "translation": "Gmail 列出草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "list_drafts",
+        "b93dd3034323f83e569f4b5607794198a6b975abcd8631eaafd9f31a914fd271"
+      ],
+      "source_sha256": "b93dd3034323f83e569f4b5607794198a6b975abcd8631eaafd9f31a914fd271",
+      "translation": "列出用户的 Gmail 草稿，返回 draft_id、主题、收件人和正文预览。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "list_labels",
+        "01fcb91869424d4fd950a55d72279d1d255137b0545021bb5a6e77071135d096"
+      ],
+      "source": "List Labels",
+      "translation": "Gmail 列出标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "list_labels",
+        "01fcb91869424d4fd950a55d72279d1d255137b0545021bb5a6e77071135d096"
+      ],
+      "source_sha256": "01fcb91869424d4fd950a55d72279d1d255137b0545021bb5a6e77071135d096",
+      "translation": "列出 Gmail 系统和自定义标签及其 ID；系统标签名称保持原样。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "modify_labels",
+        "71c544f2f850db00b93531dab6fa6968daed1213ce89ede58213981792d32a6e"
+      ],
+      "source": "Modify Labels",
+      "translation": "Gmail 修改标签"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "modify_labels",
+        "71c544f2f850db00b93531dab6fa6968daed1213ce89ede58213981792d32a6e"
+      ],
+      "source_sha256": "71c544f2f850db00b93531dab6fa6968daed1213ce89ede58213981792d32a6e",
+      "translation": "为 Gmail 邮件添加或移除标签。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "reply_all",
+        "21958d72f7e691c02f6b2286011e08d2b0f913240c5c075198e230d360aa4cb2"
+      ],
+      "source": "Reply All",
+      "translation": "Gmail 回复全部"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "reply_all",
+        "21958d72f7e691c02f6b2286011e08d2b0f913240c5c075198e230d360aa4cb2"
+      ],
+      "source_sha256": "21958d72f7e691c02f6b2286011e08d2b0f913240c5c075198e230d360aa4cb2",
+      "translation": "回复 Gmail 邮件的全部收件人并自动设置线程头；这是不可撤回的群发操作。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "search",
+        "adb1d9b4b27e3c26ccfb9caf769038b1b77a50226dddfecad8f3f94e59421b47"
+      ],
+      "source": "Search",
+      "translation": "Gmail 搜索"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "search",
+        "adb1d9b4b27e3c26ccfb9caf769038b1b77a50226dddfecad8f3f94e59421b47"
+      ],
+      "source_sha256": "adb1d9b4b27e3c26ccfb9caf769038b1b77a50226dddfecad8f3f94e59421b47",
+      "translation": "在已连接的 Gmail 账户中按查询条件搜索邮件，支持 Gmail 搜索运算符；结果应包含发件人、日期和主题。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "send_draft",
+        "01f512fa33af1d072fd2fd5b746d90998c4029a83d11d59ca2d5d86178b46b82"
+      ],
+      "source": "Send Draft",
+      "translation": "Gmail 发送草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "send_draft",
+        "01f512fa33af1d072fd2fd5b746d90998c4029a83d11d59ca2d5d86178b46b82"
+      ],
+      "source_sha256": "01f512fa33af1d072fd2fd5b746d90998c4029a83d11d59ca2d5d86178b46b82",
+      "translation": "发送 Gmail 草稿给全部收件人，操作不可撤回。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "send_message",
+        "c6e18eefda87bf2fac1abaac03a605e880775737e86fcd28094422f02d0c349b"
+      ],
+      "source": "Send Message",
+      "translation": "Gmail 发送邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "send_message",
+        "c6e18eefda87bf2fac1abaac03a605e880775737e86fcd28094422f02d0c349b"
+      ],
+      "source_sha256": "c6e18eefda87bf2fac1abaac03a605e880775737e86fcd28094422f02d0c349b",
+      "translation": "从 Gmail 账户立即发送新邮件且不可撤回；只起草时应创建草稿。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "trash_message",
+        "19eab64eca2f46854252879aa55fbcabadab0ff2ac55387685e7fb01d68ac7d2"
+      ],
+      "source": "Trash Message",
+      "translation": "Gmail 移至垃圾箱"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "trash_message",
+        "19eab64eca2f46854252879aa55fbcabadab0ff2ac55387685e7fb01d68ac7d2"
+      ],
+      "source_sha256": "19eab64eca2f46854252879aa55fbcabadab0ff2ac55387685e7fb01d68ac7d2",
+      "translation": "将 Gmail 邮件移入垃圾箱，邮件可在垃圾箱中恢复 30 天。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "gmail",
+        "update_draft",
+        "89d19110d95dabe443d8e5c842995721213f84874a2a9f4e52b85c6c32befab1"
+      ],
+      "source": "Update Draft",
+      "translation": "Gmail 更新草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "gmail",
+        "update_draft",
+        "89d19110d95dabe443d8e5c842995721213f84874a2a9f4e52b85c6c32befab1"
+      ],
+      "source_sha256": "89d19110d95dabe443d8e5c842995721213f84874a2a9f4e52b85c6c32befab1",
+      "translation": "更新 Gmail 草稿并完全替换收件人、主题和正文；原附件会被移除，需重新附加。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "batch_move",
+        "fdd0d52109d23bf5ca1598e70e9771c90e7fa12881a4b3f0ffa4bcc45c241501"
+      ],
+      "source": "Batch Move",
+      "translation": "Outlook 批量移动邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "batch_move",
+        "fdd0d52109d23bf5ca1598e70e9771c90e7fa12881a4b3f0ffa4bcc45c241501"
+      ],
+      "source_sha256": "fdd0d52109d23bf5ca1598e70e9771c90e7fa12881a4b3f0ffa4bcc45c241501",
+      "translation": "一次将多封 Outlook 邮件移动到指定文件夹，比逐封移动更高效。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "create_draft",
+        "f12fb9720604ba0d7cceaf009a01ed447bf4a0a107b8f687465ce933579e2ce1"
+      ],
+      "source": "Create Draft",
+      "translation": "Outlook 创建草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "create_draft",
+        "f12fb9720604ba0d7cceaf009a01ed447bf4a0a107b8f687465ce933579e2ce1"
+      ],
+      "source_sha256": "f12fb9720604ba0d7cceaf009a01ed447bf4a0a107b8f687465ce933579e2ce1",
+      "translation": "在 Outlook 中创建并保存草稿而不发送；回复线程时需设置原邮件 internet_message_id 和 conversation_id。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "create_folder",
+        "bdb397b2e255e1153c3b594e52660f30e9db0ec33025f65e7afd533da9a950ee"
+      ],
+      "source": "Create Folder",
+      "translation": "Outlook 创建文件夹"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "create_folder",
+        "bdb397b2e255e1153c3b594e52660f30e9db0ec33025f65e7afd533da9a950ee"
+      ],
+      "source_sha256": "bdb397b2e255e1153c3b594e52660f30e9db0ec33025f65e7afd533da9a950ee",
+      "translation": "在 Outlook 中创建新邮件文件夹，可选嵌套到父文件夹。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "delete_draft",
+        "befb6add66d78ba5061d623c3b968aaf7513a43d0a3e51057ce22e401dcd50e7"
+      ],
+      "source": "Delete Draft",
+      "translation": "Outlook 删除草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "delete_draft",
+        "befb6add66d78ba5061d623c3b968aaf7513a43d0a3e51057ce22e401dcd50e7"
+      ],
+      "source_sha256": "befb6add66d78ba5061d623c3b968aaf7513a43d0a3e51057ce22e401dcd50e7",
+      "translation": "永久删除 Outlook 草稿且不可撤销；仅在用户明确要求时使用。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "delete_folder",
+        "0d5a756ce979340a9b343278e0b1a9baecb61a2f0fe1e47f28a23433bda99f2b"
+      ],
+      "source": "Delete Folder",
+      "translation": "Outlook 删除文件夹"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "delete_folder",
+        "0d5a756ce979340a9b343278e0b1a9baecb61a2f0fe1e47f28a23433bda99f2b"
+      ],
+      "source_sha256": "0d5a756ce979340a9b343278e0b1a9baecb61a2f0fe1e47f28a23433bda99f2b",
+      "translation": "永久删除 Outlook 自定义邮件文件夹及其中邮件且不可撤销；系统文件夹不能删除。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "delete_message",
+        "6ae87d659ae62a2fa792ebca25acbbe0a0b268e4a35a1e9df4c612c18a1b1cc0"
+      ],
+      "source": "Delete Message",
+      "translation": "Outlook 永久删除邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "delete_message",
+        "6ae87d659ae62a2fa792ebca25acbbe0a0b268e4a35a1e9df4c612c18a1b1cc0"
+      ],
+      "source_sha256": "6ae87d659ae62a2fa792ebca25acbbe0a0b268e4a35a1e9df4c612c18a1b1cc0",
+      "translation": "永久删除 Outlook 邮件且不可恢复；需要可恢复删除时应移入已删除邮件。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "forward_message",
+        "918ae265ecd92442dbb6bed42662983376fdd9909ef78e49228e5f2ba8231cf5"
+      ],
+      "source": "Forward Message",
+      "translation": "Outlook 转发邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "forward_message",
+        "918ae265ecd92442dbb6bed42662983376fdd9909ef78e49228e5f2ba8231cf5"
+      ],
+      "source_sha256": "918ae265ecd92442dbb6bed42662983376fdd9909ef78e49228e5f2ba8231cf5",
+      "translation": "将 Outlook 邮件转发给新收件人，服务器自动附上原邮件内容和转发标头。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "get_message",
+        "1931984ae1655e2c4f923674d40312117d9deaf23e2efa8e0c15c04f30e454ca"
+      ],
+      "source": "Get Message",
+      "translation": "Outlook 获取邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "get_message",
+        "1931984ae1655e2c4f923674d40312117d9deaf23e2efa8e0c15c04f30e454ca"
+      ],
+      "source_sha256": "1931984ae1655e2c4f923674d40312117d9deaf23e2efa8e0c15c04f30e454ca",
+      "translation": "按 message_id 获取 Outlook 邮件完整正文、全部邮件头、分类和附件元数据。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "list_drafts",
+        "31e4daba84cce1b5ae6d209fda93332d24c64a0d4cb12a863fe5f1cc1efe8e09"
+      ],
+      "source": "List Drafts",
+      "translation": "Outlook 列出草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "list_drafts",
+        "31e4daba84cce1b5ae6d209fda93332d24c64a0d4cb12a863fe5f1cc1efe8e09"
+      ],
+      "source_sha256": "31e4daba84cce1b5ae6d209fda93332d24c64a0d4cb12a863fe5f1cc1efe8e09",
+      "translation": "列出 Outlook 草稿，返回草稿 ID、主题、收件人和预览，并按最近修改时间倒序排列。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "list_folders",
+        "f0badfc613e1063709c1747324041132554554bc646d019abf4a3ce03d12bfa0"
+      ],
+      "source": "List Folders",
+      "translation": "Outlook 列出文件夹"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "list_folders",
+        "f0badfc613e1063709c1747324041132554554bc646d019abf4a3ce03d12bfa0"
+      ],
+      "source_sha256": "f0badfc613e1063709c1747324041132554554bc646d019abf4a3ce03d12bfa0",
+      "translation": "列出 Outlook 系统和自定义邮件文件夹，以及文件夹 ID、显示名、子文件夹数和邮件统计。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "modify_message",
+        "162c2199208cb685c6140f0c79c14618830800d48b466c6415111c77b83b26a9"
+      ],
+      "source": "Modify Message",
+      "translation": "Outlook 修改邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "modify_message",
+        "162c2199208cb685c6140f0c79c14618830800d48b466c6415111c77b83b26a9"
+      ],
+      "source_sha256": "162c2199208cb685c6140f0c79c14618830800d48b466c6415111c77b83b26a9",
+      "translation": "修改 Outlook 邮件的已读状态、重要性和旗标等属性。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "move_message",
+        "639b3f9fe55bc07db8add723a7211c49b4e8372b189b101a6c07e0f4b4831d0b"
+      ],
+      "source": "Move Message",
+      "translation": "Outlook 移动邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "move_message",
+        "639b3f9fe55bc07db8add723a7211c49b4e8372b189b101a6c07e0f4b4831d0b"
+      ],
+      "source_sha256": "639b3f9fe55bc07db8add723a7211c49b4e8372b189b101a6c07e0f4b4831d0b",
+      "translation": "将 Outlook 邮件移动到指定文件夹；可使用文件夹 ID 或内置文件夹名称。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "reply_all",
+        "7540e65516711e38d14743e504547e633c12d5d68d9e69eb8bdf24a0ada5dd04"
+      ],
+      "source": "Reply All",
+      "translation": "Outlook 回复全部"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "reply_all",
+        "7540e65516711e38d14743e504547e633c12d5d68d9e69eb8bdf24a0ada5dd04"
+      ],
+      "source_sha256": "7540e65516711e38d14743e504547e633c12d5d68d9e69eb8bdf24a0ada5dd04",
+      "translation": "回复 Outlook 邮件的全部原收件人，服务器自动确定收件人与抄送。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "search",
+        "103c4a3c48dfd03ecddc68f5773cdfd800c52f5f6a231336eaa921dfc369d80d"
+      ],
+      "source": "Search",
+      "translation": "Outlook 搜索"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "search",
+        "103c4a3c48dfd03ecddc68f5773cdfd800c52f5f6a231336eaa921dfc369d80d"
+      ],
+      "source_sha256": "103c4a3c48dfd03ecddc68f5773cdfd800c52f5f6a231336eaa921dfc369d80d",
+      "translation": "在已连接的 Outlook 主邮箱及可选在线归档中搜索邮件；KQL 查询与 OData 筛选二选一。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "send_draft",
+        "e2be989633d23e7c8921ef8d1fd8289111368ba2e45dd72711daaf092c591451"
+      ],
+      "source": "Send Draft",
+      "translation": "Outlook 发送草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "send_draft",
+        "e2be989633d23e7c8921ef8d1fd8289111368ba2e45dd72711daaf092c591451"
+      ],
+      "source_sha256": "e2be989633d23e7c8921ef8d1fd8289111368ba2e45dd72711daaf092c591451",
+      "translation": "发送 Outlook 草稿给全部收件人，操作不可撤回。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "send_message",
+        "a07df2dbb11e6469365e21bf194b7879712b98480bc352ef9362e97a0ddb51a5"
+      ],
+      "source": "Send Message",
+      "translation": "Outlook 发送邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "send_message",
+        "a07df2dbb11e6469365e21bf194b7879712b98480bc352ef9362e97a0ddb51a5"
+      ],
+      "source_sha256": "a07df2dbb11e6469365e21bf194b7879712b98480bc352ef9362e97a0ddb51a5",
+      "translation": "从 Outlook 账户立即发送邮件且不可撤回；只起草时应创建草稿。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "trash_message",
+        "f7a174dc8f871e7bcf9f774f13245f7fe593eb8dd65e9026754c7b4265219888"
+      ],
+      "source": "Trash Message",
+      "translation": "Outlook 移至已删除邮件"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "trash_message",
+        "f7a174dc8f871e7bcf9f774f13245f7fe593eb8dd65e9026754c7b4265219888"
+      ],
+      "source_sha256": "f7a174dc8f871e7bcf9f774f13245f7fe593eb8dd65e9026754c7b4265219888",
+      "translation": "将 Outlook 邮件移入已删除邮件文件夹，可从该文件夹恢复。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "outlook",
+        "update_draft",
+        "3f746819a5fda95bfe6b7d9e5f824f36a35de3874e1199d2682361cb8ba75185"
+      ],
+      "source": "Update Draft",
+      "translation": "Outlook 更新草稿"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "outlook",
+        "update_draft",
+        "3f746819a5fda95bfe6b7d9e5f824f36a35de3874e1199d2682361cb8ba75185"
+      ],
+      "source_sha256": "3f746819a5fda95bfe6b7d9e5f824f36a35de3874e1199d2682361cb8ba75185",
+      "translation": "更新 Outlook 草稿并完全替换收件人、主题和正文，必须提供所有字段。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "create",
+        "bd70559a0f8696630e9bf97cb571d50a48cbb487f90fc1b75a9e6e32ebb65570"
+      ],
+      "source": "Create",
+      "translation": "创建自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "create",
+        "bd70559a0f8696630e9bf97cb571d50a48cbb487f90fc1b75a9e6e32ebb65570"
+      ],
+      "source_sha256": "bd70559a0f8696630e9bf97cb571d50a48cbb487f90fc1b75a9e6e32ebb65570",
+      "translation": "创建自动化：按日程和/或事件触发执行提示词并可选通知；完整配置应一次提供，创建前可先验证。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "delete",
+        "127ff8c35578884847a40616c03d5bdf3b44785b3927f40859f8cddbb82bcbf2"
+      ],
+      "source": "Delete",
+      "translation": "删除自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "delete",
+        "127ff8c35578884847a40616c03d5bdf3b44785b3927f40859f8cddbb82bcbf2"
+      ],
+      "source_sha256": "127ff8c35578884847a40616c03d5bdf3b44785b3927f40859f8cddbb82bcbf2",
+      "translation": "按 task_id 归档或停用自动化；仅在用户明确要求删除、移除或归档时使用。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "get_results",
+        "fcde7ab85e189428c7507a7cfbfc68e06a869f6c2e9841cd58a8315fce15dfa4"
+      ],
+      "source": "Get Results",
+      "translation": "获取自动化结果"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "get_results",
+        "fcde7ab85e189428c7507a7cfbfc68e06a869f6c2e9841cd58a8315fce15dfa4"
+      ],
+      "source_sha256": "fcde7ab85e189428c7507a7cfbfc68e06a869f6c2e9841cd58a8315fce15dfa4",
+      "translation": "按 task_id 获取自动化最近的执行结果，也可检查立即运行所排队的测试执行。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "list",
+        "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc"
+      ],
+      "source": "List",
+      "translation": "列出自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "list",
+        "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc"
+      ],
+      "source_sha256": "d92bdcbd0f8b0a9b2d010d43e72bf3f29b7044d929dcedac4822d91770a292fc",
+      "translation": "列出用户的活动自动化及其日程、触发器、任务 ID、活动状态和暂停状态。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "list_trigger_catalog",
+        "c5291881d5fba7ee86c831d90105a9e78d5394c7d1a10323d1b91a4bb3dd8a14"
+      ],
+      "source": "List Trigger Catalog",
+      "translation": "列出触发器目录"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "list_trigger_catalog",
+        "c5291881d5fba7ee86c831d90105a9e78d5394c7d1a10323d1b91a4bb3dd8a14"
+      ],
+      "source_sha256": "c5291881d5fba7ee86c831d90105a9e78d5394c7d1a10323d1b91a4bb3dd8a14",
+      "translation": "列出账户可用的事件触发提供商、触发器类型和筛选维度。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "list_trigger_resources",
+        "d5b460c32291fdd8a23c041c40aca4e7e2ba451cccd323940c129047b36276cc"
+      ],
+      "source": "List Trigger Resources",
+      "translation": "列出触发器资源"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "list_trigger_resources",
+        "d5b460c32291fdd8a23c041c40aca4e7e2ba451cccd323940c129047b36276cc"
+      ],
+      "source_sha256": "d5b460c32291fdd8a23c041c40aca4e7e2ba451cccd323940c129047b36276cc",
+      "translation": "列出 GitHub 仓库、Linear 团队等触发器可选资源；应使用返回的资源 ID 而非显示名称。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "pause",
+        "24aa2383616a0ed4f3a8db305fbd5ccf2731f92dab024b038d4f70e920a92940"
+      ],
+      "source": "Pause",
+      "translation": "暂停自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "pause",
+        "24aa2383616a0ed4f3a8db305fbd5ccf2731f92dab024b038d4f70e920a92940"
+      ],
+      "source_sha256": "24aa2383616a0ed4f3a8db305fbd5ccf2731f92dab024b038d4f70e920a92940",
+      "translation": "暂停或恢复自动化；可按 task_id 暂停整个自动化，或按 schedule_id 暂停单个日程。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "run_now",
+        "cb624d3983f786b70574c451502ea4e008f49ec30fb48d45f44288346e7dc4e5"
+      ],
+      "source": "Run Now",
+      "translation": "立即运行自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "run_now",
+        "cb624d3983f786b70574c451502ea4e008f49ec30fb48d45f44288346e7dc4e5"
+      ],
+      "source_sha256": "cb624d3983f786b70574c451502ea4e008f49ec30fb48d45f44288346e7dc4e5",
+      "translation": "立即测试运行自动化一次，不改变日程或触发器；运行异步排队，可随后查询结果。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "update",
+        "49f0dc9572c909d58bcbf64f72f9e00740f606c658251fdc578704b31bba4fae"
+      ],
+      "source": "Update",
+      "translation": "更新自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "update",
+        "49f0dc9572c909d58bcbf64f72f9e00740f606c658251fdc578704b31bba4fae"
+      ],
+      "source_sha256": "49f0dc9572c909d58bcbf64f72f9e00740f606c658251fdc578704b31bba4fae",
+      "translation": "更新现有自动化的名称、提示词、日程、触发器筛选或通知；这是 patch，task_id 必填。"
+    },
+    {
+      "field": "tool_label",
+      "context": [
+        "tasks",
+        "validate",
+        "0f6673236d56ecef82e3bd08901c60a78ecb98b217dd5c3d2c7514d8490c364a"
+      ],
+      "source": "Validate",
+      "translation": "验证自动化"
+    },
+    {
+      "field": "tool_description",
+      "context": [
+        "tasks",
+        "validate",
+        "0f6673236d56ecef82e3bd08901c60a78ecb98b217dd5c3d2c7514d8490c364a"
+      ],
+      "source_sha256": "0f6673236d56ecef82e3bd08901c60a78ecb98b217dd5c3d2c7514d8490c364a",
+      "translation": "预览自动化创建参数而不保存，返回日程解析结果和触发器校验信息。"
+    },
+    {
+      "field": "connector_label",
+      "context": [
+        "tasks"
+      ],
+      "source": "Automations",
+      "translation": "自动化"
+    }
+  ]
+}

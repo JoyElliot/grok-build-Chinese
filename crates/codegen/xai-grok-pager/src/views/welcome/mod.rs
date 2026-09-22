@@ -2023,6 +2023,15 @@ fn render_welcome_done(
         p.locale
             .text(crate::locale::TextKey::WelcomeUpgradeSubscription)
     });
+    let translated_cta = p.gate.and_then(|g| g.label.as_deref()).and_then(|raw| {
+        p.locale.display_translation(
+            xai_grok_locale::dynamic::Domain::Settings,
+            "gate_label",
+            &[],
+            raw,
+        )
+    });
+    let cta = translated_cta.as_deref().unwrap_or(cta);
     let in_vscode_family = welcome_in_vscode_family();
     let (key_g, key_l, key_q) = (
         "ctrl+g",
@@ -2406,6 +2415,20 @@ fn render_welcome_done(
                 )
             },
             |g| {
+                if p.locale
+                    .has_display_catalog(xai_grok_locale::dynamic::Domain::Settings)
+                {
+                    return p
+                        .locale
+                        .display_translation(
+                            xai_grok_locale::dynamic::Domain::Settings,
+                            "gate_message",
+                            &[],
+                            &g.message,
+                        )
+                        .map(std::borrow::Cow::Owned)
+                        .unwrap_or_else(|| std::borrow::Cow::Borrowed(g.message.as_str()));
+                }
                 if g.message == "SuperGrok subscription required" {
                     p.locale
                         .named_text("welcome.subscription.required", g.message.as_str())

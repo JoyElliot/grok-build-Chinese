@@ -1106,6 +1106,7 @@ fn apply_refresh_result_only_updates_etag_on_success() {
 fn make_model_entry(model_id: &str) -> ModelEntry {
     ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         info: config::ModelInfo::fallback(model_id),
         mtls_cert_dir: None,
         api_key: None,

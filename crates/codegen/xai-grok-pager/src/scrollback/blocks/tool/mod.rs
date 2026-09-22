@@ -74,7 +74,7 @@ pub(crate) fn localized_known_search_mcp_tool_name(
     server: &str,
     managed_gateway_tool: Option<&xai_grok_tools::types::resources::ManagedGatewayToolIdentity>,
     locale: &crate::locale::LocaleContext,
-) -> Option<&'static str> {
+) -> Option<String> {
     let expected_server = tool_name.split_once("__")?.0;
     if server != expected_server {
         return None;
@@ -84,7 +84,7 @@ pub(crate) fn localized_known_search_mcp_tool_name(
             tool_name, identity, locale,
         );
     }
-    localized_known_mcp_tool_name(tool_name, locale)
+    localized_known_mcp_tool_name(tool_name, locale).map(str::to_owned)
 }
 
 /// 1-based inclusive line range for display.

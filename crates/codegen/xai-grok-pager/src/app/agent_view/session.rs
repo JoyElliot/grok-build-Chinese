@@ -489,6 +489,18 @@ impl AgentView {
         }
     }
 
+    pub(crate) fn refresh_display_translations_recursive(&mut self) {
+        self.scrollback.invalidate_heights();
+        if let Some(viewer) = self.block_viewer.as_mut()
+            && let Some(entry) = self.scrollback.get_by_id(viewer.entry_id)
+        {
+            viewer.refresh_display_translations(entry);
+        }
+        for child in self.subagent_views.values_mut() {
+            child.refresh_display_translations_recursive();
+        }
+    }
+
     /// Apply plugin UI visibility to this view and every nested child.
     pub(crate) fn set_plugins_visible_recursive(&mut self, visible: bool) {
         self.prompt

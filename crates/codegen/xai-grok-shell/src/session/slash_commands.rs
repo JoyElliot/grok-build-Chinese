@@ -1013,6 +1013,7 @@ pub(crate) async fn product_skill_infos(
             return None;
         }
     };
+    xai_grok_locale::dynamic::Domain::Skills.notify_load();
     if let Some(skills) = product_skills_cache_lookup(&grok_auth) {
         return skills;
     }

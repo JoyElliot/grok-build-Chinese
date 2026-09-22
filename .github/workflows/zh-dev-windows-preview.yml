@@ -7,11 +7,13 @@ on:
       - codex/free-account-localization-macos-smoke
     paths-ignore:
       - community/announcements/**
+      - community/display-translations/**
   pull_request:
     branches:
       - zh-dev
     paths-ignore:
       - community/announcements/**
+      - community/display-translations/**
   workflow_dispatch:
     inputs:
       version:

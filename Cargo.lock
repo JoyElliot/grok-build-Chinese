@@ -13867,7 +13867,10 @@ dependencies = [
 name = "xai-grok-locale"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tokio",
  "windows-sys 0.59.0",
 ]
 
@@ -14730,6 +14733,7 @@ dependencies = [
  "tracing",
  "xai-file-utils",
  "xai-grok-http",
+ "xai-grok-locale",
  "xai-grok-version",
 ]
 
@@ -15015,6 +15019,7 @@ dependencies = [
  "wiremock",
  "xai-dirs",
  "xai-grok-extra-ca",
+ "xai-grok-locale",
  "xai-grok-login",
  "xai-grok-product",
  "xai-grok-shell",

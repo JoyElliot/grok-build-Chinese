@@ -319,6 +319,7 @@ fn model_entry_with_rate_limit(
     crate::agent::config::ModelEntry {
         info,
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         mtls_cert_dir: None,
         api_key: None,
         env_key: None,

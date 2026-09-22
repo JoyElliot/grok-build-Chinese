@@ -1056,6 +1056,7 @@ pub(crate) fn apply_turn_start_shim(
         agent.session.in_flight_prompt = None;
     }
     if let Some(commands) = agent.session.tracker.take_pending_acp_commands() {
+        xai_grok_locale::dynamic::Domain::Skills.notify_load();
         agent
             .session
             .replace_available_commands(commands, CommandCatalogSource::QueueDrain);

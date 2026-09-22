@@ -85,8 +85,8 @@ def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.PIPE)
 
 
-def validate(root, base=None):
-    folder = root / PREFIX
+def validate(root, base=None, prefix=PREFIX, validate_catalog=catalog):
+    folder = root / prefix
     current = manifest((folder / "manifest.json").read_bytes())
     versions = []
     for path in (folder / "catalogs").iterdir():
@@ -94,7 +94,7 @@ def validate(root, base=None):
                 f"invalid catalog filename: {path.name}")
         number = version(int(path.stem))
         raw = path.read_bytes()
-        catalog(raw, number)
+        validate_catalog(raw, number)
         versions.append(number)
     require(versions and max(versions) == current["version"],
             "manifest must select the highest catalog version")
@@ -105,15 +105,15 @@ def validate(root, base=None):
     if base:
         # Resolve first: a missing/invalid base must not silently skip immutability.
         revision = git(root, "rev-parse", "--verify", f"{base}^{{commit}}").decode().strip()
-        paths = git(root, "ls-tree", "-r", "--name-only", revision, "--", PREFIX)
+        paths = git(root, "ls-tree", "-r", "--name-only", revision, "--", prefix)
         old_paths = paths.decode().splitlines()
         for path in old_paths:
-            if re.fullmatch(re.escape(PREFIX) + r"catalogs/[1-9][0-9]*\.json", path):
+            if re.fullmatch(re.escape(prefix) + r"catalogs/[1-9][0-9]*\.json", path):
                 local = root / path
                 require(local.is_file() and local.read_bytes() == git(root, "show", f"{revision}:{path}"),
                         f"published catalog is immutable: {path}")
-        if PREFIX + "manifest.json" in old_paths:
-            previous = manifest(git(root, "show", f"{revision}:{PREFIX}manifest.json"))
+        if prefix + "manifest.json" in old_paths:
+            previous = manifest(git(root, "show", f"{revision}:{prefix}manifest.json"))
             require(current["version"] >= previous["version"], "catalog version cannot go backwards")
             if current["version"] == previous["version"]:
                 require(current == previous, "changed translations require a higher version")

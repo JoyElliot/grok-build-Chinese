@@ -10,6 +10,8 @@ mod community_release;
 pub mod community_update_cancel;
 #[cfg(feature = "community-build")]
 pub mod community_update_notes;
+#[cfg(feature = "community-build")]
+pub mod display_translations;
 pub mod version;
 mod version_policy;
 

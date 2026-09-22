@@ -2473,6 +2473,7 @@ async fn startup_admission_timeout_is_failed_not_cancelled() {
 fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
     crate::agent::config::ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         info: crate::agent::config::ModelInfo {
             model: model_id.to_string(),
             context_window: std::num::NonZeroU64::new(256_000).unwrap(),
@@ -2488,6 +2489,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
 fn byok_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
     crate::agent::config::ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
 api_key: Some("byok-key".to_string()),
         ..test_model_entry(model_id)
     }

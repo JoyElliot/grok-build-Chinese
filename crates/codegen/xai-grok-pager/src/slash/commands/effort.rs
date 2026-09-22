@@ -28,12 +28,16 @@ impl SlashCommand for EffortCommand {
         if options.is_empty() {
             return None;
         }
-        Some(build_effort_arg_items(
-            &options,
-            ctx.models.reasoning_effort,
-            true,
-            |option| option.id.clone(),
-        ))
+        let mut items =
+            build_effort_arg_items(&options, ctx.models.reasoning_effort, true, |option| {
+                option.id.clone()
+            });
+        if let Some(id) = ctx.models.current.as_ref()
+            && let Some(info) = ctx.models.available.get(id)
+        {
+            super::effort_levels::stamp_effort_presentations(&mut items, &options, id, info);
+        }
+        Some(items)
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {

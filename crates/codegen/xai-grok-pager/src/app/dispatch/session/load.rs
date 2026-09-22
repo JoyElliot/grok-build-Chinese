@@ -1288,6 +1288,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         }
         if let Some(m) = new_models {
             app.models = Some(m).into();
+            app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
         if agent.apply_session_modes(modes) {

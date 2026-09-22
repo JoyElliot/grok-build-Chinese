@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "locale": "zh-CN",
+  "domain": "marketplace",
+  "entries": [
+    {
+      "field": "description",
+      "context": [
+        "vercel",
+        "vercel"
+      ],
+      "source": "Vercel deployment platform integration. Manage deployments, check build status, access logs, configure domains, and control your frontend infrastructure directly from Grok.",
+      "translation": "Vercel 部署平台集成。可管理部署、查看构建状态、访问日志、配置域名，并直接从 Grok 控制前端基础设施。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "sentry",
+        "sentry"
+      ],
+      "source": "Sentry error monitoring integration. Access error reports, analyze stack traces, search issues by fingerprint, and debug production errors directly from your development environment.",
+      "translation": "Sentry 错误监控集成。可访问错误报告、分析堆栈跟踪、按指纹搜索问题，并直接在开发环境调试生产错误。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "chrome-devtools",
+        "chrome-devtools"
+      ],
+      "source": "Chrome DevTools integration. Control and inspect a live Chrome browser. Record performance traces, analyze network requests, check console messages with source-mapped stack traces, and automate browser actions.",
+      "translation": "Chrome DevTools 集成。控制并检查实时 Chrome；记录性能跟踪、分析网络请求、查看带源码映射的控制台堆栈消息，并自动化浏览器操作。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "cloudflare",
+        "cloudflare"
+      ],
+      "source": "Skills for the Cloudflare developer platform: Workers, Durable Objects, Agents SDK, MCP servers, Wrangler CLI, and web performance.",
+      "translation": "Cloudflare 开发者平台技能：Workers、Durable Objects、Agents SDK、MCP 服务器、Wrangler CLI 和 Web 性能。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "superpowers",
+        "superpowers"
+      ],
+      "source": "Core skills library for software development: test-driven development, systematic debugging, collaboration patterns, and proven engineering workflows and techniques.",
+      "translation": "软件开发核心技能库：测试驱动开发、系统化调试、协作模式，以及经过验证的工程工作流与技术。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "base44",
+        "base44"
+      ],
+      "source": "Build and deploy Base44 full-stack apps with CLI project management and JavaScript/TypeScript SDK development skills.",
+      "translation": "构建并部署 Base44 全栈应用，提供 CLI 项目管理和 JavaScript/TypeScript SDK 开发技能。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "mongodb",
+        "mongodb"
+      ],
+      "source": "Official plugin for MongoDB (Self-Managed MCP Server + Skills). Connect to any MongoDB deployment (Community, Enterprise Advanced, local dev container via Atlas CLI, or Atlas clusters) through a self-managed MongoDB MCP Server using your connection string. Explore data, manage collections, optimize queries, and generate reliable code with MongoDB best practices.",
+      "translation": "MongoDB 官方插件（自托管 MCP 服务器 + 技能）。通过连接字符串连接任意 MongoDB 部署（社区版、Enterprise Advanced、Atlas CLI 本地开发容器或 Atlas 集群）；探索数据、管理集合、优化查询，并按最佳实践生成可靠代码。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "mongodb-atlas",
+        "mongodb-atlas"
+      ],
+      "source": "Official plugin for MongoDB Atlas (Managed MCP Server + Skills). Sign in with your Atlas account to explore data, manage collections, optimize queries, generate reliable code with MongoDB best practices, and manage Atlas resources such as clusters, projects, database users, and network access.",
+      "translation": "MongoDB Atlas 官方插件（托管 MCP 服务器 + 技能）。登录 Atlas 账户以探索数据、管理集合、优化查询、按最佳实践生成可靠代码，并管理集群、项目、数据库用户和网络访问等 Atlas 资源。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "axiom",
+        "axiom"
+      ],
+      "source": "Official Axiom observability integration (MCP Server + Skills). Query logs and metrics with APL, run hypothesis-driven SRE investigations, build dashboards, manage monitors and alerts, translate Splunk SPL queries, and analyze and optimize costs.",
+      "translation": "Axiom 官方可观测性集成（MCP 服务器 + 技能）。使用 APL 查询日志和指标，开展假设驱动的 SRE 调查，构建仪表板，管理监视器和告警，转换 Splunk SPL 查询并分析、优化成本。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "neon",
+        "external_plugins/neon"
+      ],
+      "source": "Neon Serverless Postgres integration (MCP Server + Skills). Get started with Neon, manage projects and databases, pick connection methods, and create branches for migration testing and isolated development.",
+      "translation": "Neon 无服务器 Postgres 集成（MCP 服务器 + 技能）。开始使用 Neon，管理项目和数据库，选择连接方式，并创建用于迁移测试和隔离开发的分支。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "wix",
+        "wix"
+      ],
+      "source": "Build, manage, and deploy Wix sites and apps (MCP Server + Skills). Includes CLI development skills and Wix MCP server for site management, eCommerce, CMS, dashboard extensions, and more.",
+      "translation": "构建、管理和部署 Wix 网站与应用（MCP 服务器 + 技能）。包含 CLI 开发技能及用于站点管理、电商、CMS、仪表盘扩展等的 Wix MCP 服务器。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "netlify",
+        "netlify"
+      ],
+      "source": "Skills for the Netlify platform: serverless and edge functions, Blobs storage, managed Postgres, Image CDN, forms, identity, caching, AI Gateway, framework adapters, and the Netlify CLI and deploys.",
+      "translation": "Netlify 平台技能：无服务器与边缘函数、Blobs 存储、托管 Postgres、图像 CDN、表单、身份、缓存、AI Gateway、框架适配器，以及 Netlify CLI 和部署。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "firecrawl",
+        "firecrawl"
+      ],
+      "source": "Turn any website into clean, LLM-ready markdown or structured data. Search, scrape, map, crawl, and extract live web data via the bundled hosted Firecrawl MCP server — keyless on eligible networks (1,000 free credits/month, no signup), with an optional free API key for more usage. Automatic JS rendering, anti-bot handling, and proxy rotation; CLI skills available as a fallback.",
+      "translation": "将任意网站转换为干净、适合 LLM 的 Markdown 或结构化数据。通过内置托管 Firecrawl MCP 服务器搜索、抓取、映射、爬取并提取实时网页数据——符合条件的网络无需密钥（每月 1,000 个免费额度、无需注册），也可选用免费 API 密钥增加用量。支持自动 JS 渲染、反爬处理和代理轮换；CLI 技能可作后备。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "figma",
+        "figma"
+      ],
+      "source": "Official Figma MCP server and skills for design-to-code workflows. Read design context from Figma files, implement designs, use Code Connect, write to the canvas, and generate Figma designs from web pages.",
+      "translation": "Figma 官方 MCP 服务器和设计转代码技能。读取 Figma 文件设计上下文、实现设计、使用 Code Connect、写入画布，并从网页生成 Figma 设计。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "exa",
+        "exa"
+      ],
+      "source": "Exa is the fastest and most accurate web search for AI. It searches the web in real time, reads relevant pages, and answers with up-to-date sources. Use it to find the latest code docs, news, company information, and much more. Use the exa-search skill for deep research, and sign up for Exa to get free credits.",
+      "translation": "Exa 是快速且准确的 AI 网络搜索。实时搜索网络、读取相关页面并提供最新来源；可查找最新代码文档、新闻、公司信息等。使用 exa-search 技能开展深入研究，并注册 Exa 获取免费额度。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "tavily",
+        "tavily"
+      ],
+      "source": "Web search, content extraction, website crawling, URL discovery, and deep research via Tavily's hosted MCP server and official skills. Connect with OAuth to access current, source-grounded web information directly from Grok Build.",
+      "translation": "通过 Tavily 托管 MCP 服务器和官方技能进行网页搜索、内容提取、网站爬取、URL 发现和深度研究。通过 OAuth 连接，直接从 Grok Build 获取当前且有来源依据的网络信息。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "railway",
+        "railway"
+      ],
+      "source": "Railway deployment platform integration (MCP server + skill). Create projects, provision services and databases, deploy code, manage environments, variables, volumes, object storage buckets, and feature flags, configure domains, troubleshoot build failures, and check status and metrics directly from Grok.",
+      "translation": "Railway 部署平台集成（MCP 服务器 + 技能）。创建项目、配置服务和数据库、部署代码，管理环境、变量、卷、对象存储桶和功能开关，配置域名，排查构建失败，并直接从 Grok 查看状态和指标。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "stripe",
+        "stripe"
+      ],
+      "source": "Stripe development plugin for Grok Build: best practices, API/SDK upgrade guidance, and the Stripe MCP server.",
+      "translation": "Stripe 的 Grok Build 开发插件：最佳实践、API/SDK 升级指导及 Stripe MCP 服务器。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "tinyfish",
+        "tinyfish"
+      ],
+      "source": "Web search, content extraction, and goal-driven browser automation via TinyFish's hosted MCP server. Search and fetch pages for free, then drive real multi-step workflows on live sites — including authenticated ones, using saved Browser Context Profiles and password-manager credentials. Sign in with your TinyFish account on first connection; no API key needed.",
+      "translation": "通过 TinyFish 托管 MCP 服务器进行网页搜索、内容提取和目标驱动的浏览器自动化。可免费搜索和抓取页面，并驱动真实网站上的多步骤流程——包括使用保存的浏览器上下文配置和密码管理器凭据访问需认证页面。首次连接需登录 TinyFish 账户；无需 API 密钥。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "pstack",
+        "pstack"
+      ],
+      "source": "pstack (poteto-mode): rigorous agent playbooks and principles for writing less, higher-quality code. Investigation, design, review, verification, and parallel subagent workflows.",
+      "translation": "pstack（poteto-mode）：严谨的智能体工作手册和原则，帮助少写但产出更高质量代码。涵盖调查、设计、审查、验证及并行子智能体工作流。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "browser-use",
+        "browser-use"
+      ],
+      "source": "Give Grok a real browser — the user's own Chrome, with their logins, or an isolated Browser Use Cloud browser. Use it whenever a task involves a website or web app: browsing, scraping and data extraction, filling forms, testing sites, taking screenshots, automating web workflows. Runs locally via uvx; no API key needed for local Chrome.",
+      "translation": "为 Grok 提供真实浏览器——用户自己的 Chrome（含其登录状态），或隔离的 Browser Use Cloud 浏览器。凡涉及网站或 Web 应用均可使用：浏览、抓取和提取数据、填写表单、测试站点、截图及自动化 Web 工作流。通过 uvx 在本地运行；本地 Chrome 无需 API 密钥。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "quo",
+        "quo"
+      ],
+      "source": "Official Quo MCP for Grok Build. Send individual, group, or bulk SMS; manage contacts and tasks; review message history and call transcripts; and follow up on missed calls through Quo's hosted OAuth MCP server.",
+      "translation": "Grok Build 的 Quo 官方 MCP。发送单人、群组或批量短信；管理联系人和任务；查看消息历史与通话转录；并通过 Quo 托管的 OAuth MCP 服务器跟进未接来电。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "neon",
+        "external_plugins/neon"
+      ],
+      "source": "Manage your Neon Serverless Postgres projects, databases, and branches with the Neon agent skills and the Neon MCP Server.",
+      "translation": "使用 Neon Agent 技能和 Neon MCP 服务器管理 Neon Serverless Postgres 项目、数据库和分支。"
+    },
+    {
+      "field": "category",
+      "context": [
+        "axiom",
+        "axiom"
+      ],
+      "source": "observability",
+      "translation": "可观测性"
+    },
+    {
+      "field": "category",
+      "context": [
+        "base44",
+        "base44"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "browser-use",
+        "browser-use"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "chrome-devtools",
+        "chrome-devtools"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "cloudflare",
+        "cloudflare"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "exa",
+        "exa"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "figma",
+        "figma"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "firecrawl",
+        "firecrawl"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "mongodb",
+        "mongodb"
+      ],
+      "source": "database",
+      "translation": "数据库"
+    },
+    {
+      "field": "category",
+      "context": [
+        "mongodb-atlas",
+        "mongodb-atlas"
+      ],
+      "source": "database",
+      "translation": "数据库"
+    },
+    {
+      "field": "category",
+      "context": [
+        "neon",
+        "external_plugins/neon"
+      ],
+      "source": "database",
+      "translation": "数据库"
+    },
+    {
+      "field": "category",
+      "context": [
+        "netlify",
+        "netlify"
+      ],
+      "source": "deployment",
+      "translation": "部署"
+    },
+    {
+      "field": "category",
+      "context": [
+        "pstack",
+        "pstack"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "quo",
+        "quo"
+      ],
+      "source": "productivity",
+      "translation": "生产力"
+    },
+    {
+      "field": "category",
+      "context": [
+        "railway",
+        "railway"
+      ],
+      "source": "deployment",
+      "translation": "部署"
+    },
+    {
+      "field": "category",
+      "context": [
+        "sentry",
+        "sentry"
+      ],
+      "source": "monitoring",
+      "translation": "监控"
+    },
+    {
+      "field": "category",
+      "context": [
+        "stripe",
+        "stripe"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "superpowers",
+        "superpowers"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "tavily",
+        "tavily"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "tinyfish",
+        "tinyfish"
+      ],
+      "source": "development",
+      "translation": "开发"
+    },
+    {
+      "field": "category",
+      "context": [
+        "vercel",
+        "vercel"
+      ],
+      "source": "deployment",
+      "translation": "部署"
+    },
+    {
+      "field": "category",
+      "context": [
+        "wix",
+        "wix"
+      ],
+      "source": "development",
+      "translation": "开发"
+    }
+  ]
+}

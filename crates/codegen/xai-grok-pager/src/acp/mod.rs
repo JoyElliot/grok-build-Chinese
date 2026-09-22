@@ -515,6 +515,12 @@ async fn initialize(tx: &AcpAgentTx, flags: &ConnectFlags) -> Result<Initialized
         .and_then(|v| serde_json::from_value::<acp::SessionModelState>(v.clone()).ok())
         .into();
     let available_commands = parse_available_commands(resp.meta.as_ref());
+    if is_grok_shell {
+        if models.has_official_catalog() {
+            xai_grok_locale::dynamic::Domain::Models.notify_load();
+        }
+        xai_grok_locale::dynamic::Domain::Skills.notify_load();
+    }
     let cancel_rewind_enabled = resp
         .meta
         .as_ref()

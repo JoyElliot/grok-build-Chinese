@@ -77,6 +77,7 @@ impl SettingsCacheManager {
         Option<SettingsCacheWrite>,
     ) {
         xai_grok_announcements::load_events::notify_started();
+        xai_grok_locale::dynamic::Domain::Settings.notify_load();
         if settings_cache_disabled() {
             return (fetch(), None);
         }

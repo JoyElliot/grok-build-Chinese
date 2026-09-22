@@ -151,7 +151,12 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
             match_text: info.name.clone(),
             insert_text,
             description: info.description.clone().unwrap_or_default(),
-            presentation: Some(
+            presentation: Some(if super::effort_levels::is_official_model(info) {
+                crate::slash::command::ArgPresentation::OfficialModel {
+                    model_id: id.0.to_string(),
+                    is_current,
+                }
+            } else {
                 info.meta
                     .as_ref()
                     .and_then(|meta| {
@@ -166,8 +171,8 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
                         }),
                         _ => None,
                     })
-                    .unwrap_or(crate::slash::command::ArgPresentation::DynamicModel { is_current }),
-            ),
+                    .unwrap_or(crate::slash::command::ArgPresentation::DynamicModel { is_current })
+            }),
         });
     }
     items
@@ -183,12 +188,14 @@ fn build_effort_items(models: &ModelState, model_id: &acp::ModelId) -> Vec<ArgIt
     let model_name = info.name.clone();
     let is_current_model = models.current.as_ref() == Some(model_id);
     let options = models.reasoning_effort_options_for(model_id);
-    build_effort_arg_items(
+    let mut items = build_effort_arg_items(
         &options,
         models.reasoning_effort,
         is_current_model,
         |option| format!("{model_name} {}", option.id),
-    )
+    );
+    super::effort_levels::stamp_effort_presentations(&mut items, &options, model_id, info);
+    items
 }
 
 #[cfg(test)]

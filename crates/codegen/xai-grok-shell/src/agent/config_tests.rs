@@ -3,6 +3,35 @@ use serial_test::serial;
 use xai_grok_test_support::EnvGuard;
 
 #[test]
+fn dynamic_official_model_provenance_is_recomputed_for_new_ids_and_cleared_for_credentials() {
+    let mut cfg = Config::default();
+    cfg.endpoints.cli_chat_proxy_base_url = None;
+    cfg.endpoints.xai_api_base_url = XAI_API_BASE_URL_DEFAULT.into();
+    cfg.endpoints.models_base_url = None;
+    cfg.endpoints.models_list_url = None;
+    let mut model = default_model_entries(&cfg.endpoints)["grok-4.6"].clone();
+    model.info.base_url = CLI_CHAT_PROXY_BASE_URL_DEFAULT.into();
+    model.info.id = Some("grok-future".into());
+    model.info.model = "grok-future".into();
+    model.info.description = Some("Future official copy".into());
+    let serialized = serde_json::to_string(&model).unwrap();
+    assert!(!serialized.contains("official_catalog_entry"));
+    let mut cached: ModelEntry = serde_json::from_str(&serialized).unwrap();
+    assert!(!cached.official_catalog_entry);
+    let resolve = |entry: ModelEntry| {
+        resolve_model_list(&cfg, Some(IndexMap::from([("grok-future".into(), entry)])))
+    };
+    let resolved = resolve(cached.clone());
+    assert!(resolved["grok-future"].official_catalog_entry);
+    assert_eq!(
+        resolved["grok-future"].info.description.as_deref(),
+        Some("Future official copy")
+    );
+    cached.api_key = Some("user-owned-key".into());
+    assert!(!resolve(cached)["grok-future"].official_catalog_entry);
+}
+
+#[test]
 fn bundled_model_provenance_survives_acp_but_config_override_clears_it() {
     let mut cfg = Config::default();
     cfg.endpoints.cli_chat_proxy_base_url = None;
@@ -19,6 +48,7 @@ fn bundled_model_provenance_survives_acp_but_config_override_clears_it() {
         .as_ref()
         .expect("bundled model meta");
     assert_eq!(bundled_meta[BUNDLED_MODEL_META_KEY], true);
+    assert_eq!(bundled_meta[OFFICIAL_MODEL_META_KEY], true);
 
     let raw_config: toml::Value = toml::from_str(
         r#"
@@ -40,6 +70,7 @@ fn bundled_model_provenance_survives_acp_but_config_override_clears_it() {
         .as_ref()
         .expect("standard model meta");
     assert!(overridden_meta.get(BUNDLED_MODEL_META_KEY).is_none());
+    assert!(overridden_meta.get(OFFICIAL_MODEL_META_KEY).is_none());
 
     let mut official_cached = bundled.clone();
     official_cached.bundled_catalog_entry = false;
@@ -62,6 +93,7 @@ fn bundled_model_provenance_survives_acp_but_config_override_clears_it() {
         .as_ref()
         .expect("official model meta");
     assert_eq!(official_meta[BUNDLED_MODEL_META_KEY], true);
+    assert_eq!(official_meta[OFFICIAL_MODEL_META_KEY], true);
 
     let mut official_api_cached = official_cached.clone();
     official_api_cached.api_base_url = Some(XAI_API_BASE_URL_DEFAULT.to_string());
@@ -85,6 +117,7 @@ fn bundled_model_provenance_survives_acp_but_config_override_clears_it() {
         &custom_cfg,
         Some(IndexMap::from([("grok-4.6".to_string(), spoofed_custom)])),
     );
+    assert!(!custom_resolved["grok-4.6"].official_catalog_entry);
     assert!(
         !custom_resolved["grok-4.6"].bundled_catalog_entry,
         "a custom endpoint must clear even a cached/spoofed provenance marker"
@@ -1264,6 +1297,7 @@ fn test_model_entry(
 ) -> ModelEntry {
     ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         info: ModelInfo {
             model: model.to_string(),
             base_url: base_url.to_string(),
@@ -7569,6 +7603,7 @@ fn slug_propagation_noop_when_no_donor() {
 fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend) -> ModelEntry {
     ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         info: ModelInfo {
             model: slug.to_owned(),
             base_url: "https://test.example.com/v1".to_owned(),

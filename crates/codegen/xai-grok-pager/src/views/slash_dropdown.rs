@@ -43,6 +43,23 @@ pub fn localized_snapshot(
 
     for row in &mut snap.matches {
         match row.command_canonical.as_deref() {
+            Some(_)
+                if matches!(
+                    row.presentation,
+                    Some(ArgPresentation::OfficialSkill { .. })
+                ) && locale.has_display_catalog(xai_grok_locale::dynamic::Domain::Skills) =>
+            {
+                if let Some(ArgPresentation::OfficialSkill { skill_id }) = &row.presentation {
+                    row.description = locale
+                        .display_translation(
+                            xai_grok_locale::dynamic::Domain::Skills,
+                            "description",
+                            &[skill_id],
+                            &row.description,
+                        )
+                        .unwrap_or_else(|| row.description.clone());
+                }
+            }
             Some(canonical) if row.localize_description => {
                 row.description = locale
                     .named_text(
@@ -61,24 +78,32 @@ pub fn localized_snapshot(
                     locale,
                     &row.display,
                     &row.description,
-                    row.presentation,
+                    row.presentation.clone(),
                 );
                 row.description = localized_argument_description_with_presentation(
                     locale,
                     &row.description,
-                    row.presentation,
+                    row.presentation.clone(),
                 );
             }
         }
 
         if let Some(tag) = row.tag.as_mut() {
-            let catalog_id = match tag.as_str() {
-                "new" => Some("slash.tag.new"),
-                "beta" => Some("slash.tag.beta"),
-                _ => None,
-            };
-            if let Some(catalog_id) = catalog_id {
-                *tag = locale.named_text(catalog_id, tag).into_owned();
+            if locale.has_display_catalog(xai_grok_locale::dynamic::Domain::Settings) {
+                if let Some(canonical) = &row.command_canonical {
+                    *tag = locale
+                        .remote_settings_translation("command_tag", &[canonical], tag)
+                        .unwrap_or_else(|| tag.clone());
+                }
+            } else {
+                let catalog_id = match tag.as_str() {
+                    "new" => Some("slash.tag.new"),
+                    "beta" => Some("slash.tag.beta"),
+                    _ => None,
+                };
+                if let Some(catalog_id) = catalog_id {
+                    *tag = locale.named_text(catalog_id, tag).into_owned();
+                }
             }
         }
 
@@ -112,7 +137,7 @@ pub(crate) fn localized_arg_item_display(
         locale,
         &item.display,
         &item.description,
-        item.presentation,
+        item.presentation.clone(),
     )
 }
 
@@ -122,6 +147,51 @@ fn localized_argument_display_with_presentation(
     description: &str,
     presentation: Option<ArgPresentation>,
 ) -> String {
+    if let Some(ArgPresentation::OfficialModel { is_current, .. }) = &presentation {
+        return if *is_current && locale.locale() == crate::locale::UiLocale::ZhCn {
+            text.strip_suffix(" (current)")
+                .map(|base| {
+                    format!(
+                        "{base}（{}）",
+                        locale.named_text("slash.marker.current", "current")
+                    )
+                })
+                .unwrap_or_else(|| text.to_owned())
+        } else {
+            text.to_owned()
+        };
+    }
+    if let Some(ArgPresentation::OfficialEffort {
+        model_id,
+        option_id,
+        is_current,
+    }) = &presentation
+    {
+        if locale.locale() != crate::locale::UiLocale::ZhCn {
+            return text.to_owned();
+        }
+        let base = if *is_current {
+            text.strip_suffix(" (active)").unwrap_or(text)
+        } else {
+            text
+        };
+        let translated = locale
+            .display_translation(
+                xai_grok_locale::dynamic::Domain::Models,
+                "effort_label",
+                &[model_id, option_id],
+                base,
+            )
+            .unwrap_or_else(|| base.to_owned());
+        return if *is_current {
+            format!(
+                "{translated}（{}）",
+                locale.named_text("slash.marker.active", "active")
+            )
+        } else {
+            translated
+        };
+    }
     if matches!(presentation, Some(ArgPresentation::Opaque)) {
         return text.to_string();
     }
@@ -177,7 +247,12 @@ fn localized_argument_display_with_presentation(
         Some(ArgPresentation::BundledModel { .. }) | Some(ArgPresentation::DynamicModel { .. }) => {
             None
         }
-        Some(ArgPresentation::Opaque) => unreachable!("opaque text returns above"),
+        Some(ArgPresentation::OfficialSkill { .. }) => None,
+        Some(
+            ArgPresentation::Opaque
+            | ArgPresentation::OfficialModel { .. }
+            | ArgPresentation::OfficialEffort { .. },
+        ) => unreachable!("handled above"),
         None => match (base, description) {
             ("how-to", "Browse in-TUI How-to Guides") => {
                 Some("slash.command.docs.arg.how-to.label")
@@ -238,7 +313,11 @@ pub(crate) fn localized_arg_item_description(
     locale: &crate::locale::LocaleContext,
     item: &ArgItem,
 ) -> String {
-    localized_argument_description_with_presentation(locale, &item.description, item.presentation)
+    localized_argument_description_with_presentation(
+        locale,
+        &item.description,
+        item.presentation.clone(),
+    )
 }
 
 fn localized_argument_description_with_presentation(
@@ -246,6 +325,43 @@ fn localized_argument_description_with_presentation(
     english: &str,
     presentation: Option<ArgPresentation>,
 ) -> String {
+    match &presentation {
+        Some(ArgPresentation::OfficialSkill { skill_id }) => {
+            return locale
+                .display_translation(
+                    xai_grok_locale::dynamic::Domain::Skills,
+                    "description",
+                    &[skill_id],
+                    english,
+                )
+                .unwrap_or_else(|| english.to_owned());
+        }
+        Some(ArgPresentation::OfficialModel { model_id, .. }) => {
+            return locale
+                .display_translation(
+                    xai_grok_locale::dynamic::Domain::Models,
+                    "description",
+                    &[model_id],
+                    english,
+                )
+                .unwrap_or_else(|| english.to_owned());
+        }
+        Some(ArgPresentation::OfficialEffort {
+            model_id,
+            option_id,
+            ..
+        }) => {
+            return locale
+                .display_translation(
+                    xai_grok_locale::dynamic::Domain::Models,
+                    "effort_description",
+                    &[model_id, option_id],
+                    english,
+                )
+                .unwrap_or_else(|| english.to_owned());
+        }
+        _ => {}
+    }
     if matches!(presentation, Some(ArgPresentation::Opaque)) {
         return english.to_string();
     }
@@ -841,6 +957,98 @@ fn simple_word_wrap(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::slash::CommandProvenance;
+
+    #[test]
+    fn zh_localization_dynamic_tag_requires_remote_winner_and_preserves_insert_text() {
+        use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain};
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let entry = DisplayEntry {
+            field: "command_tag".into(),
+            context: vec!["model".into()],
+            source: Some("preview".into()),
+            source_sha256: None,
+            translation: "预览".into(),
+        };
+        locale.install_display_catalog(std::sync::Arc::new(
+            DisplayCatalog::from_entries(Domain::Settings, vec![entry]).unwrap(),
+        ));
+        let mut command = row("/model", "Switch the active model");
+        command.command_canonical = Some("model".into());
+        command.tag = Some("preview".into());
+        let snapshot = SlashSnapshot {
+            open: true,
+            matches: vec![command],
+            ..Default::default()
+        };
+        locale.set_remote_command_tags([("model".into(), "preview".into())].into());
+        let translated = localized_snapshot(snapshot.clone(), Some(&locale));
+        assert_eq!(translated.matches[0].tag.as_deref(), Some("预览"));
+        assert_eq!(
+            translated.matches[0].insert_text,
+            snapshot.matches[0].insert_text
+        );
+        locale.set_remote_command_tags(Default::default());
+        assert_eq!(
+            localized_snapshot(snapshot, Some(&locale)).matches[0]
+                .tag
+                .as_deref(),
+            Some("preview")
+        );
+    }
+
+    #[test]
+    fn zh_localization_dynamic_model_snapshot_changes_only_display_and_matches_exact_source() {
+        use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain};
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let entry = DisplayEntry {
+            field: "description".into(),
+            context: vec!["future-model".into()],
+            source: Some("A new official model".into()),
+            source_sha256: None,
+            translation: "官方新模型".into(),
+        };
+        locale.install_display_catalog(std::sync::Arc::new(
+            DisplayCatalog::from_entries(Domain::Models, vec![entry]).unwrap(),
+        ));
+        let item = ArgItem {
+            display: "Future Model".into(),
+            insert_text: "future-model ".into(),
+            match_text: "Future Model".into(),
+            description: "A new official model".into(),
+            presentation: Some(ArgPresentation::OfficialModel {
+                model_id: "future-model".into(),
+                is_current: false,
+            }),
+        };
+        assert_eq!(localized_arg_item_description(&locale, &item), "官方新模型");
+        assert_eq!(localized_arg_item_display(&locale, &item), "Future Model");
+        assert_eq!(item.insert_text, "future-model ");
+        let mut custom = item.clone();
+        custom.presentation = Some(ArgPresentation::DynamicModel { is_current: false });
+        assert_eq!(
+            localized_arg_item_description(&locale, &custom),
+            item.description
+        );
+        custom.presentation = item.presentation.clone();
+        custom.description.push('!');
+        assert_eq!(
+            localized_arg_item_description(&locale, &custom),
+            custom.description
+        );
+        locale.install_display_catalog(std::sync::Arc::new(
+            DisplayCatalog::from_entries(Domain::Models, vec![]).unwrap(),
+        ));
+        assert_eq!(
+            localized_arg_item_description(&locale, &item),
+            item.description
+        );
+    }
 
     #[test]
     fn desired_item_rows_caps_many_short_items() {

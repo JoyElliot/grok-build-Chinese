@@ -5,3 +5,4 @@ packaging/linux/*.sh text eol=lf
 # GitHub serves repository bytes; catalog digests must match on Windows too.
 community/announcements/**/*.json text eol=lf
 community/announcements/manifest.json text eol=lf
+community/display-translations/**/*.json text eol=lf

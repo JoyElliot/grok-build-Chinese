@@ -1123,9 +1123,13 @@ pub(crate) async fn run(
     mut announcement_translation_updates: Option<
         xai_grok_update::announcement_translations::TranslationUpdates,
     >,
+    mut display_translation_updates: Option<
+        xai_grok_update::display_translations::DisplayTranslationUpdates,
+    >,
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     reader_thread: &mut ReaderThread,
 ) -> anyhow::Result<RunResult> {
+    let display_translation_locale = std::sync::Arc::clone(&locale);
     crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
     let resolved_locale = locale.resolved();
@@ -1135,6 +1139,7 @@ pub(crate) async fn run(
         "UI locale resolved"
     );
     xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::AppInit);
+    let is_grok_shell = connection.is_grok_shell;
     let mut app = {
         let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.app_view_new");
         AppView::new_with_locale(
@@ -1145,6 +1150,8 @@ pub(crate) async fn run(
             locale,
         )
     };
+    app.is_grok_shell = is_grok_shell;
+    app.models.retain_shell_presentation(is_grok_shell);
     if let Some(updates) = &announcement_translation_updates {
         app.announcement_translations = updates.current();
     }
@@ -1500,7 +1507,7 @@ pub(crate) async fn run(
     }
     {
         use xai_grok_shell::util::config::{
-            resolve_announcements, resolve_slash_command_tags, resolve_tips,
+            resolve_announcements, resolve_slash_command_tags, resolve_tips_with_origins,
         };
         let remote_announcements = remote_settings
             .as_ref()
@@ -1519,22 +1526,25 @@ pub(crate) async fn run(
         }
         app.sync_session_announcement_slash_gate();
         let remote_tips = remote_settings.as_ref().and_then(|s| s.tips.as_deref());
-        app.tips = resolve_tips(
+        app.tips = resolve_tips_with_origins(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
             remote_tips,
         );
-        if !app.tips.is_empty() {
-            let grok_home = xai_grok_tools::util::grok_home::grok_home();
-            app.tip = xai_grok_shell::util::tips::pick_and_advance(&app.tips, &grok_home);
-        }
+        app.pick_next_tip();
         let remote_slash_tags = remote_settings
             .as_ref()
             .and_then(|s| s.slash_command_tags.as_ref());
         let empty_toml = toml::Value::Table(Default::default());
         let tags_config = effective_config.as_ref().unwrap_or(&empty_toml);
         *app.command_tags.borrow_mut() = resolve_slash_command_tags(tags_config, remote_slash_tags);
+        app.locale.set_remote_command_tags(
+            xai_grok_shell::util::config::resolve_remote_slash_command_tags(
+                tags_config,
+                remote_slash_tags,
+            ),
+        );
     }
     let hints = xai_grok_shell::util::config::resolve_hints(
         effective_config.as_ref(),
@@ -2396,6 +2406,21 @@ pub(crate) async fn run(
                 } else {
                     announcement_translation_updates = None;
                 }
+            }
+
+            changed = async {
+                match display_translation_updates.as_mut() {
+                    Some(updates) => updates.changed(display_translation_locale.as_ref()).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if changed {
+                    for agent in app.agents.values_mut() {
+                        agent.refresh_display_translations_recursive();
+                    }
+                    presenter.request(false);
+                }
+                else { display_translation_updates = None; }
             }
 
             // Background update check completed.

@@ -3493,7 +3493,9 @@ pub fn render_extensions_modal_with_locale(
                                 continue;
                             };
                             let source = localized_source_display(locale, &skill_source_str(skill));
-                            entry_labels.push(skill.label().to_string());
+                            entry_labels.push(
+                                metadata_localization::localized_product_skill_label(skill, locale),
+                            );
                             let right = match &skill.author {
                                 Some(a) if !a.is_empty() => format!("({} · {})", source, a),
                                 _ => format!("({})", source),

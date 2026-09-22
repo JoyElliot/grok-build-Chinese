@@ -7,6 +7,9 @@ description = "Embedded UI locale catalogs for Grok Build"
 
 [dependencies]
 serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

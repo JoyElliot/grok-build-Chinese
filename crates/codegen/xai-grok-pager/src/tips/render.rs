@@ -49,6 +49,12 @@ fn localized_tip_body<'a>(
     let Some(locale) = locale else {
         return std::borrow::Cow::Borrowed(tip);
     };
+    if locale.has_display_catalog(xai_grok_locale::dynamic::Domain::Settings) {
+        return locale
+            .remote_settings_translation("tip", &[], tip)
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or(std::borrow::Cow::Borrowed(tip));
+    }
     let catalog_id = match tip {
         "Use @ to attach files like @src/main.rs." => Some("tips.attach_files"),
         "Use @! for hidden or ignored files: @!.github/workflows." => Some("tips.hidden_files"),
@@ -308,6 +314,30 @@ pub fn render_ephemeral_tip_with_locale(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zh_localization_dynamic_tip_keeps_local_occurrence_and_shortcuts_unchanged() {
+        use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain};
+        let locale = zh_cn_locale();
+        let raw = "Try /new for a new session.";
+        let entry = DisplayEntry {
+            field: "tip".into(),
+            context: vec![],
+            source: Some(raw.into()),
+            source_sha256: None,
+            translation: "使用 /new 开始新会话。".into(),
+        };
+        locale.install_display_catalog(std::sync::Arc::new(
+            DisplayCatalog::from_entries(Domain::Settings, vec![entry]).unwrap(),
+        ));
+        locale.set_remote_tip(Some(raw.into()));
+        assert_eq!(
+            localized_tip_body(raw, Some(&locale)),
+            "使用 /new 开始新会话。"
+        );
+        locale.set_remote_tip(None);
+        assert_eq!(localized_tip_body(raw, Some(&locale)), raw);
+    }
 
     fn zh_cn_locale() -> crate::locale::LocaleContext {
         crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {

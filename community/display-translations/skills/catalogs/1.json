@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "locale": "zh-CN",
+  "domain": "skills",
+  "entries": [
+    {
+      "field": "description",
+      "context": [
+        "build-with-ai"
+      ],
+      "source": "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
+      "translation": "在 SpaceXAI 上构建 AI 应用（XAI_API_KEY + api.x.ai）"
+    },
+    {
+      "field": "description",
+      "context": [
+        "code-review"
+      ],
+      "source": "Run an extremely strict maintainability review for abstraction quality, giant files, and spaghetti-condition growth. Use for a deep code quality audit or an especially harsh maintainability review.",
+      "translation": "执行极其严格的可维护性审查，重点检查抽象质量、巨型文件和意大利面式条件膨胀。适用于深度代码质量审计或特别严苛的可维护性评审。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "create-skill"
+      ],
+      "source": "Create a new Grok skill",
+      "translation": "创建新的 Grok 技能"
+    },
+    {
+      "field": "description",
+      "context": [
+        "create-workflow"
+      ],
+      "source": "Author a new multi-agent workflow",
+      "translation": "编写新的多智能体工作流"
+    },
+    {
+      "field": "description",
+      "context": [
+        "design"
+      ],
+      "source": "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan.",
+      "translation": "运行完整的设计文档编写与审阅循环，直到达成共识；产出完善的设计文档和 PR 计划。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "docx"
+      ],
+      "source": "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx or .dotx files). Triggers include any mention of 'Word doc', 'word document', '.docx', '.dotx', 'Word template', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx/.dotx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', 'ticket', 'card', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation.",
+      "translation": "处理 Word 文档（.docx/.dotx）的创建、读取、编辑与转换，包括专业格式、内容整理、图像、查找替换、修订和批注；不用于 PDF、电子表格、Google 文档或无关编程任务。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "execute-plan"
+      ],
+      "source": "Execute a PR Plan DAG from a design document. Parses the plan, topologically sorts it, implements PRs in parallel using worktree-isolated subagents, runs mandatory orchestrator-level review, and assembles either a Graphite PR stack or a plain-git branch stack depending on tool availability.",
+      "translation": "从设计文档执行 PR 计划 DAG：解析并拓扑排序计划，使用隔离工作树的子代理并行实现 PR，执行强制编排器级审查，并按工具可用性组装 Graphite 或普通 Git 分支栈。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "game-animation-frames"
+      ],
+      "source": "Video-first animation frames that actually cycle",
+      "translation": "视频优先、能够真正循环的动画帧"
+    },
+    {
+      "field": "description",
+      "context": [
+        "game-asset-core"
+      ],
+      "source": "Core rules + engine-ready defaults for game assets",
+      "translation": "游戏资产的核心规范与引擎就绪默认值"
+    },
+    {
+      "field": "description",
+      "context": [
+        "game-character-consistency"
+      ],
+      "source": "Same character, every image",
+      "translation": "在每张图像中保持同一角色"
+    },
+    {
+      "field": "description",
+      "context": [
+        "game-tilesets"
+      ],
+      "source": "Seamless tiles and transition sets that actually tile",
+      "translation": "可真正无缝平铺的瓦片与过渡集"
+    },
+    {
+      "field": "description",
+      "context": [
+        "game-ui-icons"
+      ],
+      "source": "Game UI kits and icon sets",
+      "translation": "游戏 UI 套件与图标集"
+    },
+    {
+      "field": "description",
+      "context": [
+        "imagine"
+      ],
+      "source": "Prompting and workflow guidance for Imagine image tools",
+      "translation": "Imagine 图像工具的提示词与工作流指南"
+    },
+    {
+      "field": "description",
+      "context": [
+        "implement"
+      ],
+      "source": "Run the full implement-review-fix loop using implementer and reviewer personas. Supports effort-based multi-reviewer scaling (1-5 reviewers) with automatic specialization selection. Includes memory-based feedback loop that learns from past review patterns. Loops until all reviewers find 0 issues of any severity.",
+      "translation": "使用实现者和审阅者角色运行完整的实现、审查与修复循环；支持按 effort 扩展 1–5 名审阅者并自动选择专长；基于记忆学习过往审查模式，直到所有审阅者都找不到任何严重度的问题。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "pdf"
+      ],
+      "source": "Read, create, and transform PDF files. Covers pulling text and tables out of PDFs, generating new PDFs, merging and splitting documents, rotating pages, watermarking, encrypting or removing passwords, extracting embedded images, running OCR on scanned documents, and filling out PDF forms including official tax forms. Apply this skill whenever a task involves a .pdf file as input or deliverable.",
+      "translation": "读取、创建和转换 PDF，包括提取文本与表格、生成、合并与拆分、旋转、水印、加密或移除密码、提取嵌入图像、扫描件 OCR 以及填写 PDF 表单。任务涉及 .pdf 输入或交付物时使用。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "pptx"
+      ],
+      "source": "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions 'deck', 'slides', 'presentation', or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill.",
+      "translation": "只要任务以任何方式涉及 .pptx（输入、输出或两者）就使用，包括创建、读取和提取幻灯片内容，编辑更新，合并拆分，以及处理模板、布局、演讲者备注和批注。凡需打开、创建或处理 .pptx 文件，均应使用此技能。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "pr-babysit"
+      ],
+      "source": "Monitor PRs, fix CI failures, address review comments, resolve merge conflicts, and restack stacks. Supports independent PRs, Graphite stacks, and GitHub stacked PRs (gh-stack).",
+      "translation": "监视 PR、修复 CI 失败、处理审查意见、解决合并冲突并重排栈；支持独立 PR、Graphite 栈和 GitHub 堆叠 PR（gh-stack）。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "resume-claude"
+      ],
+      "source": "Continue from a recent Claude Code session",
+      "translation": "从最近的 Claude Code 会话继续"
+    },
+    {
+      "field": "description",
+      "context": [
+        "resume-codex"
+      ],
+      "source": "Continue from a recent Codex session",
+      "translation": "从最近的 Codex 会话继续"
+    },
+    {
+      "field": "description",
+      "context": [
+        "resume-cursor"
+      ],
+      "source": "Continue from a recent Cursor session",
+      "translation": "从最近的 Cursor 会话继续"
+    },
+    {
+      "field": "description",
+      "context": [
+        "review"
+      ],
+      "source": "Run a reviewer subagent against uncommitted local changes, a named branch, or a GitHub PR. Local and branch modes write a review file plus a summary to disk. PR mode posts the findings as a PENDING GitHub review for the user to inspect and submit through the UI.",
+      "translation": "让审阅子代理检查未提交的本地改动、指定分支或 GitHub PR；本地和分支模式会写入审查文件及摘要，PR 模式会发布待提交的 GitHub 审查，供你在界面中检查后提交。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "skill-design-principles"
+      ],
+      "source": "Concise, high-signal principles for writing and editing skills well. Use whenever authoring or editing a skill.",
+      "translation": "编写和编辑技能的简洁高信噪比原则；编写或编辑技能时使用。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "long-running-background-tasks"
+      ],
+      "source": "Required reading before you start, watch, or wait on anything that keeps running after you launch it — background jobs, watchers, scheduled loops, CI, pull requests, training runs, dev servers, long builds. Read it before you launch such work and before you report on its state. Saying where a running job stands counts as working on it. Use when: about to launch, supervise, inspect, diagnose, or report on work that keeps running after it is started.",
+      "translation": "在启动、监看或等待任何启动后仍会持续运行的工作前必须阅读——包括后台任务、监视器、定时循环、CI、拉取请求、训练任务、开发服务器和长时间构建。启动此类工作前以及汇报其状态前都应阅读；说明运行中任务的进度也属于处理该任务。适用于即将启动、监督、检查、诊断或汇报启动后持续运行的工作。"
+    },
+    {
+      "field": "description",
+      "context": [
+        "statusline"
+      ],
+      "source": "Configure the Grok Build status line.",
+      "translation": "配置 Grok Build 状态栏。"
+    }
+  ]
+}

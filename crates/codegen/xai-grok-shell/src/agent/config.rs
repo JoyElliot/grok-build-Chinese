@@ -29,6 +29,8 @@ use xai_grok_tools::types::compat::{
 /// provenance to avoid translating user-configured or custom-server models
 /// that reuse a built-in id/text. Routing never reads this marker.
 pub const BUNDLED_MODEL_META_KEY: &str = "x.ai/bundledModel";
+/// Display-only origin, recomputed locally; never trusted from model JSON/cache.
+pub const OFFICIAL_MODEL_META_KEY: &str = "x.ai/officialModelCatalog";
 
 /// The mode in which the agent is running.
 /// Determines behavior like relay sync enablement.
@@ -3302,6 +3304,13 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     xai_grok_workspace::permission::resolution::json_env_flag(json.get("env"), key)
 }
+/// Only public first-party routes may supply official model display metadata.
+pub(crate) fn official_model_catalog_source(endpoints: &EndpointsConfig) -> bool {
+    !endpoints.has_custom_endpoint()
+        && base_url_matches(&endpoints.proxy_url(), CLI_CHAT_PROXY_BASE_URL_DEFAULT)
+        && base_url_matches(&endpoints.xai_api_base_url, XAI_API_BASE_URL_DEFAULT)
+}
+
 /// Assemble the final model map. Priority (highest wins):
 /// config.toml `[model.*]` > prefetched (remote) > hardcoded defaults.
 pub(crate) fn resolve_model_list(
@@ -3309,9 +3318,7 @@ pub(crate) fn resolve_model_list(
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
     let mut resolved: IndexMap<String, ModelEntry> = IndexMap::new();
-    let public_catalog_endpoints = !cfg.endpoints.has_custom_endpoint()
-        && base_url_matches(&cfg.endpoints.proxy_url(), CLI_CHAT_PROXY_BASE_URL_DEFAULT)
-        && base_url_matches(&cfg.endpoints.xai_api_base_url, XAI_API_BASE_URL_DEFAULT);
+    let public_catalog_endpoints = official_model_catalog_source(&cfg.endpoints);
     if cfg.endpoints.has_custom_endpoint() {
         tracing::info!(
             models_base_url = ?cfg.endpoints.models_base_url,
@@ -3323,6 +3330,7 @@ pub(crate) fn resolve_model_list(
         if !public_catalog_endpoints {
             for entry in defaults.values_mut() {
                 entry.bundled_catalog_entry = false;
+                entry.official_catalog_entry = false;
             }
         }
         tracing::debug!(count = defaults.len(), "loaded default models");
@@ -3338,6 +3346,15 @@ pub(crate) fn resolve_model_list(
             // upgrades legacy first-party caches while clearing stale/spoofed
             // markers after switching to a custom endpoint.
             entry.bundled_catalog_entry = false;
+            entry.official_catalog_entry = public_catalog_endpoints
+                && base_url_matches(&entry.info.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT)
+                && entry
+                    .api_base_url
+                    .as_deref()
+                    .is_none_or(|url| base_url_matches(url, XAI_API_BASE_URL_DEFAULT))
+                && entry.auth_provider.is_none()
+                && entry.api_key.is_none()
+                && entry.env_key.is_none();
             let donor = resolved.get(key);
             if let Some(donor) = donor {
                 if entry.info.context_window.get() == default_cw
@@ -3574,6 +3591,7 @@ pub(crate) fn default_model_entries(endpoints: &EndpointsConfig) -> IndexMap<Str
         .map(|(key, entry)| {
             let mut model = ModelEntry::from_config_entry(&entry);
             model.bundled_catalog_entry = true;
+            model.official_catalog_entry = true;
             (key, model)
         })
         .collect()
@@ -3960,6 +3978,7 @@ impl ConfigModelOverride {
         // Any explicit `[model.<id>]` entry is user-owned presentation, even
         // when it overrides a bundled id with identical text.
         entry.bundled_catalog_entry = false;
+        entry.official_catalog_entry = false;
         if let Some(ref v) = self.model {
             entry.info.model = v.clone();
         }
@@ -4312,6 +4331,10 @@ pub struct ModelEntry {
     /// first-party catalog. Routing never reads this field.
     #[serde(default, skip_serializing_if = "is_false")]
     pub bundled_catalog_entry: bool,
+    /// Origin of remote display data, independent of the frozen bundled list.
+    /// The unsigned cache cannot mint this flag; resolve_model_list recomputes it.
+    #[serde(skip)]
+    pub official_catalog_entry: bool,
     /// Local mTLS client identity directory selected with an explicit model-level `base_url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtls_cert_dir: Option<PathBuf>,
@@ -4332,6 +4355,7 @@ impl ModelEntry {
         Self {
             info,
             bundled_catalog_entry: false,
+            official_catalog_entry: false,
             mtls_cert_dir: None,
             api_key: None,
             env_key: None,
@@ -4346,6 +4370,7 @@ impl ModelEntry {
         Self {
             info: ModelInfo::from_config(entry),
             bundled_catalog_entry: false,
+            official_catalog_entry: false,
             mtls_cert_dir: None,
             api_key: entry.api_key.clone(),
             env_key: entry.env_key.clone(),
@@ -4917,6 +4942,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
     if let Some(bearer) = xai_bearer {
         let entry = ModelEntry {
             bundled_catalog_entry: false,
+            official_catalog_entry: false,
             info: ModelInfo {
                 user_selectable: false,
                 id: None,
@@ -5147,6 +5173,7 @@ fn resolve_hidden_default_web_search_sampling_config(
 ) -> SamplerConfig {
     let entry = ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         info: ModelInfo {
             id: None,
             model_family: None,
@@ -5288,6 +5315,12 @@ pub(crate) fn to_acp_model_info(
                 if model.bundled_catalog_entry {
                     map.insert(
                         BUNDLED_MODEL_META_KEY.to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                if model.official_catalog_entry {
+                    map.insert(
+                        OFFICIAL_MODEL_META_KEY.to_string(),
                         serde_json::Value::Bool(true),
                     );
                 }

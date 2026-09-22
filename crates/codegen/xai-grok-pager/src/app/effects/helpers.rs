@@ -278,6 +278,7 @@ pub(super) async fn fetch_plugin_cta_mcps(
             .expect("serialize mcp/list params")
             .into(),
     );
+    xai_grok_locale::dynamic::Domain::Mcp.notify_load();
     let result = match acp_send(req, &tx).await {
         Ok(resp) => {
             let wrapper: serde_json::Value = serde_json::from_str(resp.0.get())

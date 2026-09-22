@@ -65,8 +65,20 @@ pub enum CommandResult {
 }
 
 /// A suggestion item for command argument completion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArgPresentation {
+    OfficialSkill {
+        skill_id: String,
+    },
+    OfficialModel {
+        model_id: String,
+        is_current: bool,
+    },
+    OfficialEffort {
+        model_id: String,
+        option_id: String,
+        is_current: bool,
+    },
     /// Stable reasoning value used only to localize the visible label and
     /// description. The option id in `insert_text` remains untouched.
     ReasoningEffort(ReasoningEffort),
@@ -79,7 +91,9 @@ pub enum ArgPresentation {
     },
     /// A model row without trusted client-owned provenance. Its description
     /// is server/user-owned and must bypass generic exact-phrase localization.
-    DynamicModel { is_current: bool },
+    DynamicModel {
+        is_current: bool,
+    },
     /// A non-model row whose label and description are supplied by the server
     /// or live session state. Preserve both fields byte-for-byte even if they
     /// happen to equal a client-owned picker phrase.

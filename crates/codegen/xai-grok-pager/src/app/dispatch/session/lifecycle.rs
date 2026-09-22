@@ -1592,6 +1592,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
         agent.bind_session_id(session_id);
         if let Some(m) = new_models {
             app.models = Some(m).into();
+            app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
         if agent.apply_session_modes(modes) {
@@ -1728,6 +1729,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         crate::git_info::populate_from_cwd_async(session_cwd.clone());
         if let Some(m) = new_models {
             app.models = Some(m).into();
+            app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
         if agent.apply_session_modes(modes) {

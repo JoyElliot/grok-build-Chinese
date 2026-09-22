@@ -2497,6 +2497,7 @@ pub(crate) fn execute(
                 });
         }
         Effect::FetchMcpsList { agent_id, session_id, cache } => {
+            xai_grok_locale::dynamic::Domain::Mcp.notify_load();
             let tx = acp_tx.clone();
             let locale = session_flags.locale.clone();
             tasks
@@ -2962,6 +2963,7 @@ pub(crate) fn execute(
                 });
         }
         Effect::FetchMarketplaceList { agent_id, session_id } => {
+            xai_grok_locale::dynamic::Domain::Marketplace.notify_load();
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -3003,6 +3005,7 @@ pub(crate) fn execute(
                 });
         }
         Effect::FetchPluginCtaCatalog { agent_id, session_id } => {
+            xai_grok_locale::dynamic::Domain::Marketplace.notify_load();
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -3044,6 +3047,7 @@ pub(crate) fn execute(
                 });
         }
         Effect::FetchSkillsList { agent_id, session_id: _ } => {
+            xai_grok_locale::dynamic::Domain::Skills.notify_load();
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -3183,6 +3187,7 @@ pub(crate) fn execute(
                 tracing::info!("session-start plugin auto-update disabled by managed policy");
                 return (false, meta);
             }
+            xai_grok_locale::dynamic::Domain::Marketplace.notify_load();
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {

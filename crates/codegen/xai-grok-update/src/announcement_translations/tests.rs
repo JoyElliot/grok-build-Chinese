@@ -3,6 +3,153 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+fn display_document(domain: Domain, version: u64, entries: serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "schema_version": 1, "version": version, "locale": "zh-CN",
+        "domain": domain, "entries": entries,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn display_bundles_parse_and_contract_rejects_nulls_crlf_and_mcp_digest_drift() {
+    for domain in Domain::ALL {
+        let bundled = TranslationCatalog::bundled_display(domain);
+        assert_eq!(bundled.version(), 1, "invalid bundle for {domain:?}");
+        assert_eq!(bundled.domain(), Some(domain));
+    }
+    let entry = json!({"field":"description", "context":["grok-future"], "source":"New copy", "translation":"新文案"});
+    let good = display_document(Domain::Models, 2, json!([entry]));
+    let value: serde_json::Value = serde_json::from_slice(&good).unwrap();
+    for (key, invalid) in [
+        ("source_sha256", serde_json::Value::Null),
+        ("source", serde_json::Value::Null),
+    ] {
+        let mut bad = value.clone();
+        bad["entries"][0][key] = invalid;
+        let raw = serde_json::to_vec(&bad).unwrap();
+        assert!(TranslationCatalog::parse(manifest(2, &raw), &raw).is_err());
+    }
+    let mut bad = value.clone();
+    bad["domain"] = serde_json::Value::Null;
+    let raw = serde_json::to_vec(&bad).unwrap();
+    assert!(TranslationCatalog::parse(manifest(2, &raw), &raw).is_err());
+    let raw = serde_json::to_string_pretty(&value)
+        .unwrap()
+        .replace('\n', "\r\n")
+        .into_bytes();
+    assert!(TranslationCatalog::parse(manifest(2, &raw), &raw).is_err());
+    let raw = display_document(
+        Domain::Mcp,
+        2,
+        json!([{
+            "field":"tool_description", "context":["future", "search", "0".repeat(64)],
+            "source":"New copy", "translation":"新文案"
+        }]),
+    );
+    assert!(TranslationCatalog::parse(manifest(2, &raw), &raw).is_err());
+}
+
+#[tokio::test]
+async fn display_domains_reject_foreign_cache_and_download_then_allow_empty_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache_path = directory.path().join("models.json");
+    let bytes = display_document(Domain::Skills, 2, json!([]));
+    let foreign = TranslationCatalog::parse(manifest(2, &bytes), &bytes).unwrap();
+    write_cache(&cache_path, &foreign).await.unwrap();
+    let initial = TranslationCatalog::bundled_display(Domain::Models);
+    let (sender, receiver) = watch::channel(Arc::clone(&initial));
+    let server = MockServer::start().await;
+    run_worker_with(
+        sender,
+        Some(cache_path),
+        false,
+        watch::channel(true).1,
+        Arc::clone(&initial),
+        server.uri(),
+    )
+    .await;
+    assert_eq!(receiver.borrow().domain(), Some(Domain::Models));
+    assert_eq!(receiver.borrow().version(), 1);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    serve_manifest(&server, &foreign.manifest).await;
+    Mock::given(path("/catalogs/2.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(&server)
+        .await;
+    assert!(
+        refresh_catalog(&client(), &server.uri(), &initial)
+            .await
+            .is_err()
+    );
+    server.reset().await;
+    let bytes = display_document(Domain::Models, 2, json!([]));
+    serve_manifest(&server, &manifest(2, &bytes)).await;
+    Mock::given(path("/catalogs/2.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(&server)
+        .await;
+    let empty = refresh_catalog(&client(), &server.uri(), &initial)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(empty.domain(), Some(Domain::Models));
+    assert!(
+        empty
+            .display_catalog()
+            .unwrap()
+            .lookup(
+                "description",
+                &["grok-4.6"],
+                "SpaceXAI's latest frontier model"
+            )
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn display_cache_keeps_newest_snapshot_offline_and_rejects_a_late_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("settings.json");
+    let bytes = display_document(
+        Domain::Settings,
+        3,
+        json!([{
+            "field":"tip", "context":[], "source":"Future tip", "translation":"未来提示"
+        }]),
+    );
+    let newer = TranslationCatalog::parse(manifest(3, &bytes), &bytes).unwrap();
+    let bytes = display_document(Domain::Settings, 2, json!([]));
+    let older = TranslationCatalog::parse(manifest(2, &bytes), &bytes).unwrap();
+    write_cache(&cache, &newer).await.unwrap();
+    write_cache(&cache, &older).await.unwrap();
+    assert_eq!(read_cache(&cache).await.unwrap().version(), 3);
+    let initial = TranslationCatalog::bundled_display(Domain::Settings);
+    let (sender, mut receiver) = watch::channel(Arc::clone(&initial));
+    let server = MockServer::start().await;
+    run_worker_with(
+        sender,
+        Some(cache),
+        false,
+        watch::channel(true).1,
+        initial,
+        server.uri(),
+    )
+    .await;
+    receiver.changed().await.unwrap();
+    assert_eq!(receiver.borrow_and_update().version(), 3);
+    assert_eq!(
+        receiver
+            .borrow()
+            .display_catalog()
+            .unwrap()
+            .lookup("tip", &[], "Future tip"),
+        Some("未来提示")
+    );
+    assert!(receiver.changed().await.is_err());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
 fn document(version: u64, text: &str) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "schema_version": 1,

@@ -344,6 +344,7 @@ pub async fn get_or_fetch_gateway_tool_catalog(
         }
     };
 
+    xai_grok_locale::dynamic::Domain::Mcp.notify_load();
     let result = match auth_key {
         Some(key) => fetch_gateway_tool_catalog(proxy_url, key).await,
         None => Err(ManagedMcpFetchError::NoAuth),

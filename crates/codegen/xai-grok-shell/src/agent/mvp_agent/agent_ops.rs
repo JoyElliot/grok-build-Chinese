@@ -1628,6 +1628,7 @@ impl MvpAgent {
         auth: &xai_grok_login::GrokAuth,
     ) -> Option<crate::util::config::RemoteSettings> {
         xai_grok_announcements::load_events::notify_started();
+        xai_grok_locale::dynamic::Domain::Settings.notify_load();
         let identity = auth.user_id.clone();
         let channel = {
             let proxy_url = self.cfg.borrow().endpoints.proxy_url();
@@ -1909,6 +1910,7 @@ impl MvpAgent {
         };
         if crate::util::config::resolve_remote_fetch_enabled() {
             xai_grok_announcements::load_events::notify_started();
+            xai_grok_locale::dynamic::Domain::Settings.notify_load();
         }
         let pre_fetch = self.cfg.borrow().remote_settings.as_ref().map(polled_fields);
         let Some(settings) = self.fetch_remote_settings(auth).await else {

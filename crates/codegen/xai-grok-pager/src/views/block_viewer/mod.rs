@@ -643,11 +643,14 @@ impl BlockViewerPane {
             lines.push(Line::from(spans));
             copy_overrides.push(Some(copy_text));
             if !tool.description.is_empty() {
+                let translated = tool.managed_gateway_tool.as_ref().and_then(|identity|
+                    crate::views::managed_mcp_localization::localized_verified_managed_mcp_tool_description(
+                        &tool.name, &tool.server, identity, &tool.description, entry.locale()));
                 lines.push(Line::from(Span::styled(
-                    format!("   {}", tool.description),
+                    format!("   {}", translated.as_deref().unwrap_or(&tool.description)),
                     dim,
                 )));
-                copy_overrides.push(None);
+                copy_overrides.push(Some(format!("   {}", tool.description)));
             }
         }
 
@@ -670,6 +673,17 @@ impl BlockViewerPane {
             item.copy_text_override = copy_text_override;
         }
         Some(pane)
+    }
+
+    /// Rebuild the only static body with remote display metadata. Retain the
+    /// user's scroll/selection state and canonical clipboard overrides.
+    pub(crate) fn refresh_display_translations(&mut self, entry: &ScrollbackEntry) {
+        if let Some(refreshed) = Self::for_integration_search(self.entry_id, entry) {
+            self.items = refreshed.items;
+            self.list_state.invalidate_layout();
+            self.rebuild_unified_cache();
+            self.text_drag = None;
+        }
     }
 
     /// Create a viewer for a use_tool block. Preamble renders the styled header ("server action"). Body
@@ -1571,6 +1585,57 @@ mod localization_tests {
     use super::*;
     use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
     use crate::scrollback::blocks::tool::{DiscoveredTool, IntegrationSearchToolCallBlock};
+
+    #[test]
+    fn zh_localization_dynamic_mcp_refreshes_open_viewer_and_preserves_canonical_copy() {
+        use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain, digest};
+        let locale = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let raw = "Future official tool description";
+        let mut search = IntegrationSearchToolCallBlock::new("future search");
+        search.result_count = 1;
+        search.results = vec![DiscoveredTool {
+            name: "future__search".into(),
+            server: "future".into(),
+            description: raw.into(),
+            score: 1.0,
+            managed_gateway_tool: Some(
+                xai_grok_tools::types::resources::ManagedGatewayToolIdentity {
+                    qualified_name: "future__search".into(),
+                    connector_id: "future".into(),
+                    tool_id: "search".into(),
+                    display_name: "Search".into(),
+                    description_sha256: digest(raw),
+                },
+            ),
+        }];
+        let mut entry = ScrollbackEntry::new(RenderBlock::ToolCall(
+            ToolCallBlock::IntegrationSearch(search),
+        ));
+        entry.set_locale(locale.clone());
+        let mut pane = BlockViewerPane::for_integration_search(EntryId::new(1), &entry).unwrap();
+        assert_eq!(pane.items[3].plain_text, format!("   {raw}"));
+        let translated = DisplayEntry {
+            field: "tool_description".into(),
+            context: vec!["future".into(), "search".into(), digest(raw)],
+            source: Some(raw.into()),
+            source_sha256: None,
+            translation: "未来工具说明".into(),
+        };
+        locale.install_display_catalog(std::sync::Arc::new(
+            DisplayCatalog::from_entries(Domain::Mcp, vec![translated]).unwrap(),
+        ));
+        pane.refresh_display_translations(&entry);
+        assert_eq!(pane.items[3].plain_text, "   未来工具说明");
+        assert_eq!(pane.items[3].copy_text(), format!("   {raw}"));
+        locale.install_display_catalog(std::sync::Arc::new(
+            DisplayCatalog::from_entries(Domain::Mcp, vec![]).unwrap(),
+        ));
+        pane.refresh_display_translations(&entry);
+        assert_eq!(pane.items[3].plain_text, format!("   {raw}"));
+    }
 
     #[test]
     fn zh_localization_integration_search_display_preserves_copy_geometry() {

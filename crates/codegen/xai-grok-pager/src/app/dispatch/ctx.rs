@@ -136,8 +136,7 @@ pub(super) fn reseed_tip_for_new_session(app: &mut AppView) {
     if !matches!(app.active_view, ActiveView::Agent(_)) || app.tips.is_empty() {
         return;
     }
-    let grok_home = xai_grok_tools::util::grok_home::grok_home();
-    app.tip = xai_grok_shell::util::tips::pick_and_advance(&app.tips, &grok_home);
+    app.pick_next_tip();
 }
 
 /// Switch to the welcome screen, clearing ephemeral per-visit state.

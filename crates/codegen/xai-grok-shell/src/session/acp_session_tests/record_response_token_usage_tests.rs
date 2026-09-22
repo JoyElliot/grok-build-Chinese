@@ -329,6 +329,7 @@ async fn build_session_info_sources_show_model_fingerprint_from_catalog() {
             // The flag starts off, so the lookup must yield false
             let mut entry = ModelEntry {
                 bundled_catalog_entry: false,
+                official_catalog_entry: false,
                 info: ModelInfo::fallback("test"),
                 mtls_cert_dir: None,
                 api_key: None,

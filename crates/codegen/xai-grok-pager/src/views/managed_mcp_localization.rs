@@ -1173,13 +1173,30 @@ pub(crate) fn localized_verified_managed_mcp_tool_name(
     qualified_name: &str,
     identity: &ManagedGatewayToolIdentity,
     locale: &LocaleContext,
-) -> Option<&'static str> {
+) -> Option<String> {
+    if locale.has_display_catalog(xai_grok_locale::dynamic::Domain::Mcp) {
+        if qualified_name != identity.qualified_name
+            || qualified_name != format!("{}__{}", identity.connector_id, identity.tool_id)
+        {
+            return None;
+        }
+        return locale.display_translation(
+            xai_grok_locale::dynamic::Domain::Mcp,
+            "tool_label",
+            &[
+                &identity.connector_id,
+                &identity.tool_id,
+                &identity.description_sha256,
+            ],
+            &identity.display_name,
+        );
+    }
     let entry = known_managed_mcp_tool_by_name(qualified_name)?;
     if !identity_matches(entry, identity) {
         return None;
     }
     let localized = locale.named_static_text(&label_key(entry), entry.alias_english);
-    (localized != entry.alias_english).then_some(localized)
+    (localized != entry.alias_english).then(|| localized.to_owned())
 }
 
 pub(crate) fn localized_managed_mcp_tool_label(
@@ -1188,6 +1205,38 @@ pub(crate) fn localized_managed_mcp_tool_label(
 ) -> Option<&'static str> {
     let localized = locale.named_static_text(&label_key(entry), entry.alias_english);
     (localized != entry.alias_english).then_some(localized)
+}
+
+pub(crate) fn localized_verified_managed_mcp_tool_description(
+    qualified_name: &str,
+    server: &str,
+    identity: &ManagedGatewayToolIdentity,
+    raw: &str,
+    locale: &LocaleContext,
+) -> Option<String> {
+    if qualified_name != identity.qualified_name
+        || server != identity.connector_id
+        || qualified_name != format!("{}__{}", identity.connector_id, identity.tool_id)
+        || xai_grok_locale::dynamic::digest(raw) != identity.description_sha256
+    {
+        return None;
+    }
+    if locale.has_display_catalog(xai_grok_locale::dynamic::Domain::Mcp) {
+        return locale.display_translation(
+            xai_grok_locale::dynamic::Domain::Mcp,
+            "tool_description",
+            &[
+                &identity.connector_id,
+                &identity.tool_id,
+                &identity.description_sha256,
+            ],
+            raw,
+        );
+    }
+    let entry = known_managed_mcp_tool_by_name(qualified_name)?;
+    identity_matches(entry, identity)
+        .then(|| localized_managed_mcp_tool_description(entry, raw, locale))
+        .flatten()
 }
 
 pub(crate) fn localized_managed_mcp_tool_description(

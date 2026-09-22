@@ -767,6 +767,8 @@ pub async fn run(
     .unwrap_or(None);
     // Subscribe before starting/joining official settings prefetch. The signal
     // also retains a prefetch started by the binary before this TUI was created.
+    let display_translation_updates =
+        xai_grok_update::display_translations::DisplayTranslationUpdates::start(locale.as_ref());
     let announcement_translation_updates =
         (locale.locale() == crate::locale::UiLocale::ZhCn).then(|| {
             let offline = ["GROK_ZH_ANNOUNCEMENTS_OFFLINE", "GROK_CHANGELOG_OFFLINE"]
@@ -1242,6 +1244,7 @@ pub async fn run(
         materialized,
         bg_update_rx,
         announcement_translation_updates,
+        display_translation_updates,
         writer_event_rx,
         &mut reader_thread,
     )

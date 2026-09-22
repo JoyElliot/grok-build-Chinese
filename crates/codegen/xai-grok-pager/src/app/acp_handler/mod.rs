@@ -381,6 +381,9 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         }
 
                         if let Some(commands) = agent.session.tracker.take_pending_acp_commands() {
+                            if !meta.is_replay {
+                                xai_grok_locale::dynamic::Domain::Skills.notify_load();
+                            }
                             let workflows_changed = workflow_commands(&commands)
                                 != workflow_commands(&agent.session.available_commands);
                             agent.session.replace_available_commands(

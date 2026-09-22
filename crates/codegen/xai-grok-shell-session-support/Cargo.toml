@@ -6,6 +6,7 @@ edition.workspace = true
 description = "Session-support modules for the grok shell crate family: managed MCP gateway catalog/call caching and file-access tracking."
 
 [dependencies]
+xai-grok-locale = { path = "../xai-grok-locale" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

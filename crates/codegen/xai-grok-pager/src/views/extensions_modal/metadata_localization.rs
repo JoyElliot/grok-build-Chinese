@@ -12,6 +12,7 @@ use crate::views::managed_mcp_localization::{
     managed_connector_display_name,
 };
 use crate::views::mcps_modal::{McpServerInfo, McpToolDetail, McpWireSource};
+use xai_grok_locale::dynamic::{Domain, digest};
 use xai_grok_tools::implementations::skills::types::{SkillInfo, SkillScope};
 use xai_grok_tools::util::grok_home;
 use xai_hooks_plugins_types::{MarketplacePluginEntry, MarketplaceScanResult};
@@ -350,6 +351,20 @@ pub(super) fn localized_marketplace_description(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = plugin.description.as_deref().unwrap_or("");
+    if let Some(locale) = locale.filter(|locale| locale.has_display_catalog(Domain::Marketplace)) {
+        return if is_trusted_official_marketplace_source(source) {
+            locale
+                .display_translation(
+                    Domain::Marketplace,
+                    "description",
+                    &[&plugin.name, &plugin.relative_path],
+                    raw,
+                )
+                .unwrap_or_else(|| raw.to_owned())
+        } else {
+            raw.to_owned()
+        };
+    }
     trusted_marketplace_entry(source, plugin)
         .map(|entry| extension_text(locale, entry.key, raw))
         .unwrap_or_else(|| raw.to_owned())
@@ -361,6 +376,20 @@ pub(super) fn localized_marketplace_category(
     locale: Option<&LocaleContext>,
 ) -> Option<String> {
     let category = plugin.category.as_deref()?;
+    if let Some(locale) = locale.filter(|locale| locale.has_display_catalog(Domain::Marketplace)) {
+        return Some(if is_trusted_official_marketplace_source(source) {
+            locale
+                .display_translation(
+                    Domain::Marketplace,
+                    "category",
+                    &[&plugin.name, &plugin.relative_path],
+                    category,
+                )
+                .unwrap_or_else(|| category.to_owned())
+        } else {
+            category.to_owned()
+        });
+    }
     if trusted_marketplace_entry(source, plugin).is_none() {
         return Some(category.to_owned());
     }
@@ -376,7 +405,7 @@ pub(super) fn localized_marketplace_category(
     Some(extension_text(locale, key, category))
 }
 
-fn trusted_bundled_skill(skill: &SkillInfo, raw: &str) -> Option<&'static ExactCopy> {
+fn trusted_bundled_skill_source(skill: &SkillInfo) -> bool {
     if skill.scope != SkillScope::Bundled
         || skill.display_name.is_some()
         || skill.plugin_name.is_some()
@@ -386,7 +415,7 @@ fn trusted_bundled_skill(skill: &SkillInfo, raw: &str) -> Option<&'static ExactC
         || skill.config_source.is_some()
         || !skill.has_user_specified_description
     {
-        return None;
+        return false;
     }
     let normalized_path = skill.path.replace('\\', "/");
     let expected_path = grok_home()
@@ -396,10 +425,13 @@ fn trusted_bundled_skill(skill: &SkillInfo, raw: &str) -> Option<&'static ExactC
         .join("SKILL.md")
         .to_string_lossy()
         .replace('\\', "/");
-    if normalized_path != expected_path {
-        return None;
-    }
-    exact_entry(BUNDLED_SKILL_ENTRIES, &skill.name, raw)
+    normalized_path == expected_path
+}
+
+fn trusted_bundled_skill(skill: &SkillInfo, raw: &str) -> Option<&'static ExactCopy> {
+    trusted_bundled_skill_source(skill)
+        .then(|| exact_entry(BUNDLED_SKILL_ENTRIES, &skill.name, raw))
+        .flatten()
 }
 
 pub(super) fn localized_bundled_skill_description(
@@ -410,9 +442,77 @@ pub(super) fn localized_bundled_skill_description(
         .short_description
         .as_deref()
         .unwrap_or(&skill.description);
+    if let Some(locale) = locale.filter(|locale| locale.has_display_catalog(Domain::Skills)) {
+        return if trusted_product_skill(skill) || trusted_bundled_skill_source(skill) {
+            locale
+                .display_translation(Domain::Skills, "description", &[&skill.name], raw)
+                .unwrap_or_else(|| raw.to_owned())
+        } else {
+            raw.to_owned()
+        };
+    }
     trusted_bundled_skill(skill, raw)
         .map(|entry| extension_text(locale, entry.key, raw))
         .unwrap_or_else(|| raw.to_owned())
+}
+
+fn trusted_product_skill(skill: &SkillInfo) -> bool {
+    skill.scope == SkillScope::Server
+        && skill.path == format!("chat-product://{}", skill.name)
+        && skill.plugin_name.is_none()
+        && skill.plugin_root.is_none()
+        && skill.plugin_data.is_none()
+        && skill.config_source.is_none()
+        && skill.plugin_version.is_none()
+        && skill
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("product"))
+            .map(String::as_str)
+            == Some("chat")
+}
+
+pub(super) fn localized_product_skill_label(
+    skill: &SkillInfo,
+    locale: Option<&LocaleContext>,
+) -> String {
+    let raw = skill.label();
+    if trusted_product_skill(skill)
+        && let Some(locale) = locale
+    {
+        return locale
+            .display_translation(Domain::Skills, "label", &[&skill.name], raw)
+            .unwrap_or_else(|| raw.to_owned());
+    }
+    raw.to_owned()
+}
+
+fn dynamic_managed_connector(server: &McpServerInfo) -> Option<&str> {
+    (server.is_managed_gateway
+        && server.wire_source == McpWireSource::Managed
+        && server.source == "managed"
+        && server.plugin_name.is_none())
+    .then(|| server.name.strip_prefix("managed_gateway:"))
+    .flatten()
+    .filter(|id| !id.is_empty())
+}
+
+fn dynamic_managed_tool_translation(
+    server: &McpServerInfo,
+    tool: &McpToolDetail,
+    locale: &LocaleContext,
+    field: &str,
+    source: &str,
+) -> Option<String> {
+    let connector = dynamic_managed_connector(server)?;
+    let tool_id = tool.name.strip_prefix(&format!("{connector}__"))?;
+    let description = tool.description.as_deref()?;
+    locale.display_translation(
+        Domain::Mcp,
+        field,
+        &[connector, tool_id, &digest(description)],
+        source,
+    )
 }
 
 fn trusted_managed_connector(server: &McpServerInfo) -> Option<&'static str> {
@@ -439,6 +539,12 @@ pub(super) fn localized_mcp_server_label(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = server.display_name.as_deref().unwrap_or(&server.name);
+    if let Some(locale) = locale.filter(|locale| locale.has_display_catalog(Domain::Mcp)) {
+        return dynamic_managed_connector(server)
+            .and_then(|id| locale.display_translation(Domain::Mcp, "connector_label", &[id], raw))
+            .map(|translated| format!("{translated}（{raw}）"))
+            .unwrap_or_else(|| raw.to_owned());
+    }
     let Some(connector) = trusted_managed_connector(server) else {
         return raw.to_owned();
     };
@@ -468,6 +574,11 @@ pub(super) fn localized_mcp_tool_label(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = tool.display_name.as_deref().unwrap_or(&tool.name);
+    if let Some(locale) = locale.filter(|locale| locale.has_display_catalog(Domain::Mcp)) {
+        return dynamic_managed_tool_translation(server, tool, locale, "tool_label", raw)
+            .map(|translated| format!("{translated}（{raw}）"))
+            .unwrap_or_else(|| raw.to_owned());
+    }
     let Some(entry) = trusted_managed_tool(server, tool) else {
         return raw.to_owned();
     };
@@ -484,6 +595,10 @@ pub(super) fn localized_mcp_tool_description(
     locale: Option<&LocaleContext>,
 ) -> String {
     let raw = tool.description.as_deref().unwrap_or("");
+    if let Some(locale) = locale.filter(|locale| locale.has_display_catalog(Domain::Mcp)) {
+        return dynamic_managed_tool_translation(server, tool, locale, "tool_description", raw)
+            .unwrap_or_else(|| raw.to_owned());
+    }
     let Some(entry) = trusted_managed_tool(server, tool) else {
         return raw.to_owned();
     };
@@ -505,6 +620,100 @@ mod tests {
             locale: UiLocale::ZhCn,
             source: LocaleSource::Cli,
         })
+    }
+
+    fn install(
+        locale: &LocaleContext,
+        domain: Domain,
+        field: &str,
+        context: &[&str],
+        source: &str,
+    ) {
+        let entry = xai_grok_locale::dynamic::DisplayEntry {
+            field: field.into(),
+            context: context.iter().map(|s| (*s).into()).collect(),
+            source: Some(source.into()),
+            source_sha256: None,
+            translation: "动态中文".into(),
+        };
+        locale.install_display_catalog(std::sync::Arc::new(
+            xai_grok_locale::dynamic::DisplayCatalog::from_entries(domain, vec![entry]).unwrap(),
+        ));
+    }
+
+    #[test]
+    fn zh_localization_dynamic_marketplace_accepts_new_ids_only_from_official_source() {
+        let locale = zh();
+        let mut source = official_source();
+        let mut plugin = marketplace_plugin("future-plugin", "A future plugin", "future-category");
+        install(
+            &locale,
+            Domain::Marketplace,
+            "description",
+            &["future-plugin", "future-plugin"],
+            "A future plugin",
+        );
+        assert_eq!(
+            localized_marketplace_description(&source, &plugin, Some(&locale)),
+            "动态中文"
+        );
+        source.source_url_or_path = "https://example.com/same-named-market.git".into();
+        assert_eq!(
+            localized_marketplace_description(&source, &plugin, Some(&locale)),
+            "A future plugin"
+        );
+        source = official_source();
+        plugin.description = Some("Changed official copy".into());
+        assert_eq!(
+            localized_marketplace_description(&source, &plugin, Some(&locale)),
+            "Changed official copy"
+        );
+        assert_eq!(plugin.name, "future-plugin");
+    }
+
+    #[test]
+    fn zh_localization_dynamic_skills_preserve_uploaded_and_modified_content() {
+        let locale = zh();
+        let mut skill = SkillInfo {
+            name: "future-skill".into(),
+            description: "Future description".into(),
+            path: "chat-product://future-skill".into(),
+            scope: SkillScope::Server,
+            metadata: Some([("product".into(), "chat".into())].into()),
+            ..SkillInfo::default()
+        };
+        install(
+            &locale,
+            Domain::Skills,
+            "description",
+            &["future-skill"],
+            "Future description",
+        );
+        assert_eq!(
+            localized_bundled_skill_description(&skill, Some(&locale)),
+            "动态中文"
+        );
+        skill.scope = SkillScope::User;
+        assert_eq!(
+            localized_bundled_skill_description(&skill, Some(&locale)),
+            "Future description"
+        );
+        skill.scope = SkillScope::Bundled;
+        skill.has_user_specified_description = true;
+        skill.path = grok_home()
+            .join("bundled/skills/future-skill/SKILL.md")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            localized_bundled_skill_description(&skill, Some(&locale)),
+            "动态中文"
+        );
+        skill.short_description = Some("Changed by the user".into());
+        assert_eq!(
+            localized_bundled_skill_description(&skill, Some(&locale)),
+            "Changed by the user"
+        );
+        assert_eq!(skill.description, "Future description");
     }
 
     fn official_source() -> MarketplaceScanResult {

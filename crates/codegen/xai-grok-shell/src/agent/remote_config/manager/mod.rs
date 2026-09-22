@@ -746,6 +746,9 @@ impl ModelsManager {
             tracing::debug!("models cache changed on disk but is not loadable; ignoring");
             return;
         };
+        if crate::agent::config::official_model_catalog_source(&self.inner.cfg.read().endpoints) {
+            xai_grok_locale::dynamic::Domain::Models.notify_load();
+        }
 
         let same_content = {
             let cat = self.inner.catalog.read();

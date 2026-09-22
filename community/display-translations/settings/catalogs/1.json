@@ -1,0 +1,1522 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "locale": "zh-CN",
+  "domain": "settings",
+  "entries": [
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Use @ to attach files like @src/main.rs.",
+      "translation": "可用 @ 附加文件，例如 @src/main.rs。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Use @! for hidden or ignored files: @!.github/workflows.",
+      "translation": "可用 @! 引用隐藏或被忽略的文件：@!.github/workflows。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Press Ctrl+O to toggle auto-approve mode.",
+      "translation": "按 Ctrl+O 切换自动批准模式。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Use Shift+Tab to cycle between modes like Plan mode.",
+      "translation": "使用 Shift+Tab 在不同模式之间循环切换，例如计划模式。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Run /compact [context] when chat gets long.",
+      "translation": "对话过长时，可运行 /compact [context]。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Press Ctrl+B to background a running terminal command.",
+      "translation": "按 Ctrl+B 将正在运行的终端命令发送到后台。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Start Grok in a fresh worktree with `-w`; add `-r <session-id>` to resume an existing session there.",
+      "translation": "使用 `-w` 在全新的工作树中启动 Grok；加上 `-r <session-id>` 可在其中恢复已有会话。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Use Ctrl+Enter to interject messages. Or just Enter to queue messages.",
+      "translation": "使用 Ctrl+Enter 插话；也可以直接按 Enter 将消息排入队列。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Run /dashboard (or Ctrl+\\) to see and manage all your agents in one place.",
+      "translation": "运行 /dashboard（或按 Ctrl+\\）即可集中查看和管理所有智能体。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Try out workflows using /workflows.",
+      "translation": "输入 /workflows 即可体验工作流。"
+    },
+    {
+      "field": "tip",
+      "context": [],
+      "source": "Use Ctrl+O or click [Click here to Upgrade] to subscribe.",
+      "translation": "按 Ctrl+O 或点击[点击此处升级]进行订阅。"
+    },
+    {
+      "field": "gate_message",
+      "context": [],
+      "source": "SuperGrok subscription required",
+      "translation": "需要 SuperGrok 订阅"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "always-approve"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "always-approve"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "announcements"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "announcements"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "auto"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "auto"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "btw"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "btw"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "build-with-ai"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "build-with-ai"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "bundled:imagine"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "bundled:imagine"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "cd"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "cd"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "code-review"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "code-review"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "compact"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "compact"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "compact-mode"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "compact-mode"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "config-agents"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "config-agents"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "context"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "context"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "copy"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "copy"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "create-skill"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "create-skill"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "create-workflow"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "create-workflow"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "dashboard"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "dashboard"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "debug"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "debug"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "deep-research"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "deep-research"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "delete"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "delete"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "design"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "design"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "docs"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "docs"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "doctor"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "doctor"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "dream"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "dream"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "edit-prompt"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "edit-prompt"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "effort"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "effort"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "execute-plan"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "execute-plan"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "expand"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "expand"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "export"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "export"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "feedback"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "feedback"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "find"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "find"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "flush"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "flush"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "fork"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "fork"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "fullscreen"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "fullscreen"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "gboom"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "gboom"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "goal"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "goal"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "help"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "help"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "history"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "history"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "home"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "home"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "hooks"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "hooks"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "imagine"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "imagine"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "imagine-video"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "imagine-video"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "implement"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "implement"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "import-claude"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "import-claude"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "jump"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "jump"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "login"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "login"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "logout"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "logout"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "loop"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "loop"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "marketplace"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "marketplace"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "mcps"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "mcps"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "memory"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "memory"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "minimal"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "minimal"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "model"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "model"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "multiline"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "multiline"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "new"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "new"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "personas"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "personas"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "plan"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "plan"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "plugins"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "plugins"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "pr-babysit"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "pr-babysit"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "privacy"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "privacy"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "queue"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "queue"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "quit"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "quit"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "recap"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "recap"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "release-notes"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "release-notes"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "remember"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "remember"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "rename"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "rename"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume-claude"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume-claude"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume-codex"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume-codex"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume-cursor"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "resume-cursor"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "review"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "review"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "rewind"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "rewind"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "scroll-debug"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "scroll-debug"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "session-info"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "session-info"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "settings"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "settings"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "share"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "share"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "skills"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "skills"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "tasks"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "tasks"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "theme"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "theme"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "timeline"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "timeline"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "timestamps"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "timestamps"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "toggle-mouse-reporting"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "toggle-mouse-reporting"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "transcript"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "transcript"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "tutorial"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "tutorial"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "usage"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "usage"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "view-plan"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "view-plan"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "vim-mode"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "vim-mode"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "voice"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "voice"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "workflow"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "workflow"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "workflows"
+      ],
+      "source": "new",
+      "translation": "新"
+    },
+    {
+      "field": "command_tag",
+      "context": [
+        "workflows"
+      ],
+      "source": "beta",
+      "translation": "测试"
+    },
+    {
+      "field": "gate_label",
+      "context": [],
+      "source": "Upgrade subscription",
+      "translation": "升级订阅"
+    },
+    {
+      "field": "gate_label",
+      "context": [],
+      "source": "Click here to Upgrade",
+      "translation": "点击此处升级"
+    },
+    {
+      "field": "gate_label",
+      "context": [],
+      "source": "Subscribe",
+      "translation": "订阅"
+    }
+  ]
+}

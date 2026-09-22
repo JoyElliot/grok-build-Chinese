@@ -574,6 +574,7 @@ pub struct AppView {
     pub next_agent_id: usize,
     /// Available/selected models (shared across agents).
     pub models: ModelState,
+    pub(crate) is_grok_shell: bool,
     /// Keybinding definitions.
     pub registry: ActionRegistry,
     /// Settings registry: canonical metadata for user-tunable preferences.
@@ -649,7 +650,7 @@ pub struct AppView {
     /// Populated by `FetchChangelog` at startup; empty until the fetch completes.
     pub changelog_bullets: Vec<String>,
     /// Resolved tip list from config layers.
-    pub tips: Vec<String>,
+    pub tips: Vec<(String, bool)>,
     /// Selected tip for the current launch/session.
     pub tip: Option<String>,
     /// Whether to show the resolved model ID in /session-info output.
@@ -1273,6 +1274,21 @@ impl AppView {
             && matches!(self.trust_state, TrustState::Done)
             && matches!(self.consent_state, ConsentState::Done)
     }
+    /// Pick the same official cursor entry, retaining its source at display time.
+    pub(crate) fn pick_next_tip(&mut self) {
+        let selected = xai_grok_shell::util::tips::pick_entry_and_advance(
+            &self.tips,
+            &xai_grok_tools::util::grok_home::grok_home(),
+        );
+        self.locale.set_remote_tip(
+            selected
+                .as_ref()
+                .filter(|(_, remote)| *remote)
+                .map(|(text, _)| text.clone()),
+        );
+        self.tip = selected.map(|(text, _)| text);
+    }
+
     /// Extract `GateInfo` from `RemoteSettings`.
     pub fn gate_from_settings(
         rs: &xai_grok_shell::util::config::RemoteSettings,
@@ -1410,6 +1426,7 @@ impl AppView {
             agents: IndexMap::new(),
             next_agent_id: 0,
             models,
+            is_grok_shell: false,
             registry: ActionRegistry::defaults(),
             settings_registry: Arc::new(crate::settings::SettingsRegistry::defaults()),
             current_ui: xai_grok_shell::agent::config::UiConfig::default(),
@@ -6063,6 +6080,7 @@ pub(crate) mod legacy_tests {
             agents: indexmap::IndexMap::new(),
             next_agent_id: 0,
             models: ModelState::default(),
+            is_grok_shell: false,
             registry: ActionRegistry::defaults(),
             settings_registry: std::sync::Arc::new(crate::settings::SettingsRegistry::defaults()),
             current_ui: xai_grok_shell::agent::config::UiConfig::default(),

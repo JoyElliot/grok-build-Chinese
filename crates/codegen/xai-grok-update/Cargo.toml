@@ -31,6 +31,7 @@ xai-grok-telemetry = { workspace = true }
 xai-grok-tools = { workspace = true }
 xai-grok-version = { workspace = true }
 xai-grok-product = { path = "../xai-grok-product" }
+xai-grok-locale = { path = "../xai-grok-locale" }
 zstd = { workspace = true }
 sha2 = { workspace = true }
 xai-tty-utils = { workspace = true }

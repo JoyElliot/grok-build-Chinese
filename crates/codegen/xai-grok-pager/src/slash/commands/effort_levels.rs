@@ -4,6 +4,38 @@ use xai_grok_shell::sampling::types::{ReasoningEffort, ReasoningEffortOption};
 
 use crate::slash::command::{ArgItem, ArgPresentation};
 
+pub(crate) fn is_official_model(info: &agent_client_protocol::ModelInfo) -> bool {
+    info.meta
+        .as_ref()
+        .and_then(|meta| meta.get(xai_grok_shell::agent::config::OFFICIAL_MODEL_META_KEY))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+pub(crate) fn stamp_effort_presentations(
+    items: &mut [ArgItem],
+    options: &[ReasoningEffortOption],
+    model_id: &agent_client_protocol::ModelId,
+    info: &agent_client_protocol::ModelInfo,
+) {
+    let official = is_official_model(info);
+    let remote_options = info
+        .meta
+        .as_ref()
+        .is_some_and(|meta| meta.contains_key("reasoningEfforts"));
+    for (item, option) in items.iter_mut().zip(options) {
+        if official {
+            item.presentation = Some(ArgPresentation::OfficialEffort {
+                model_id: model_id.0.to_string(),
+                option_id: option.id.clone(),
+                is_current: item.display.ends_with(" (active)"),
+            });
+        } else if remote_options {
+            item.presentation = Some(ArgPresentation::Opaque);
+        }
+    }
+}
+
 /// Effort levels in the built-in fallback menu (strongest first).
 /// `none`/`minimal` are still accepted by `ReasoningEffort::from_str` for power users.
 pub(crate) const EFFORT_LEVELS: &[ReasoningEffort] = &[

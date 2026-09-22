@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::watch;
+use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain};
 
 const SCHEMA_VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: usize = 4096;
@@ -71,7 +72,22 @@ struct CatalogDocument {
     schema_version: u32,
     version: u64,
     locale: String,
-    entries: Vec<TranslationEntry>,
+    #[serde(default, deserialize_with = "present_domain")]
+    domain: Option<Domain>,
+    entries: Vec<CatalogEntry>,
+}
+
+fn present_domain<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Domain>, D::Error> {
+    Domain::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CatalogEntry {
+    Announcement(TranslationEntry),
+    Display(DisplayEntry),
 }
 
 #[derive(Deserialize)]
@@ -96,6 +112,7 @@ pub struct TranslationCatalog {
     manifest: Manifest,
     catalog_json: String,
     entries: BTreeMap<TranslationField, BTreeMap<String, String>>,
+    display: Option<Arc<DisplayCatalog>>,
 }
 
 impl TranslationCatalog {
@@ -120,6 +137,7 @@ impl TranslationCatalog {
                         },
                         catalog_json: String::new(),
                         entries: BTreeMap::new(),
+                        display: None,
                     }
                 });
             Arc::new(catalog)
@@ -128,6 +146,57 @@ impl TranslationCatalog {
 
     pub fn version(&self) -> u64 {
         self.manifest.version
+    }
+
+    pub fn display_catalog(&self) -> Option<Arc<DisplayCatalog>> {
+        self.display.clone()
+    }
+
+    fn domain(&self) -> Option<Domain> {
+        self.display.as_ref().map(|catalog| catalog.domain)
+    }
+
+    fn bundled_display(domain: Domain) -> Arc<Self> {
+        let source = match domain {
+            Domain::Models => {
+                include_str!("../../../../../community/display-translations/models/catalogs/1.json")
+            }
+            Domain::Settings => include_str!(
+                "../../../../../community/display-translations/settings/catalogs/1.json"
+            ),
+            Domain::Mcp => {
+                include_str!("../../../../../community/display-translations/mcp/catalogs/1.json")
+            }
+            Domain::Skills => {
+                include_str!("../../../../../community/display-translations/skills/catalogs/1.json")
+            }
+            Domain::Marketplace => include_str!(
+                "../../../../../community/display-translations/marketplace/catalogs/1.json"
+            ),
+        };
+        let manifest = Manifest {
+            schema_version: SCHEMA_VERSION,
+            version: 1,
+            sha256: digest(source.as_bytes()),
+        };
+        Arc::new(
+            Self::parse(manifest, source.as_bytes()).unwrap_or_else(|error| {
+                tracing::error!(%error, "invalid bundled display translations");
+                Self {
+                    manifest: Manifest {
+                        schema_version: SCHEMA_VERSION,
+                        version: 0,
+                        sha256: String::new(),
+                    },
+                    catalog_json: String::new(),
+                    entries: BTreeMap::new(),
+                    display: Some(Arc::new(
+                        DisplayCatalog::from_entries(domain, vec![])
+                            .expect("empty catalog is valid"),
+                    )),
+                }
+            }),
+        )
     }
 
     /// Exact source text, without case folding, trimming or pattern matching.
@@ -142,6 +211,7 @@ impl TranslationCatalog {
             "catalog exceeds size limit"
         );
         ensure!(digest(bytes) == manifest.sha256, "catalog digest mismatch");
+        ensure!(!bytes.contains(&b'\r'), "catalog must use LF line endings");
         let document: CatalogDocument = serde_json::from_slice(bytes)?;
         ensure!(
             document.schema_version == SCHEMA_VERSION,
@@ -157,7 +227,16 @@ impl TranslationCatalog {
             "too many translations"
         );
         let mut entries = BTreeMap::<TranslationField, BTreeMap<String, String>>::new();
+        let mut display_entries = Vec::new();
         for entry in document.entries {
+            let entry = match (document.domain, entry) {
+                (Some(_), CatalogEntry::Display(entry)) => {
+                    display_entries.push(entry);
+                    continue;
+                }
+                (None, CatalogEntry::Announcement(entry)) => entry,
+                _ => anyhow::bail!("entry does not belong to catalog domain"),
+            };
             validate_text(entry.field, &entry.source)?;
             validate_text(entry.field, &entry.translation)?;
             ensure!(
@@ -173,6 +252,14 @@ impl TranslationCatalog {
             manifest,
             catalog_json: std::str::from_utf8(bytes)?.to_owned(),
             entries,
+            display: document
+                .domain
+                .map(|domain| {
+                    DisplayCatalog::from_entries(domain, display_entries)
+                        .map(Arc::new)
+                        .map_err(anyhow::Error::msg)
+                })
+                .transpose()?,
         })
     }
 
@@ -215,6 +302,34 @@ pub struct TranslationUpdates {
 }
 
 impl TranslationUpdates {
+    /// Reuses the announcement transport and cache policy. Only the source,
+    /// bundled snapshot and official load signal differ between domains.
+    pub fn start_display(domain: Domain, network_enabled: bool) -> Self {
+        let initial = TranslationCatalog::bundled_display(domain);
+        let (sender, receiver) = watch::channel(Arc::clone(&initial));
+        let load_started = domain.subscribe();
+        let task = tokio::spawn(async move {
+            let cache_path = xai_dirs::resolve_grok_home().map(|home| {
+                home.join(format!("cache/grok-zh/{}-translations.json", domain.name()))
+            });
+            let base_url = format!(
+                "{}/{}",
+                xai_grok_product::COMMUNITY_DISPLAY_TRANSLATIONS_BASE_URL,
+                domain.name()
+            );
+            run_worker_with(
+                sender,
+                cache_path,
+                network_enabled,
+                load_started,
+                initial,
+                base_url,
+            )
+            .await;
+        });
+        Self { receiver, task }
+    }
+
     /// Returns immediately; cache reads, TLS setup and HTTP happen off the
     /// caller's path. HTTP waits for an official announcement load signal;
     /// `network_enabled = false` still permits offline cache use.
@@ -252,9 +367,28 @@ async fn run_worker(
     network_enabled: bool,
     load_started: watch::Receiver<bool>,
 ) {
-    let mut current = TranslationCatalog::bundled();
+    run_worker_with(
+        sender,
+        cache_path,
+        network_enabled,
+        load_started,
+        TranslationCatalog::bundled(),
+        xai_grok_product::COMMUNITY_ANNOUNCEMENTS_BASE_URL.to_owned(),
+    )
+    .await;
+}
+
+async fn run_worker_with(
+    sender: watch::Sender<Arc<TranslationCatalog>>,
+    cache_path: Option<PathBuf>,
+    network_enabled: bool,
+    load_started: watch::Receiver<bool>,
+    mut current: Arc<TranslationCatalog>,
+    base_url: String,
+) {
     if let Some(path) = cache_path.as_deref()
         && let Ok(Ok(cached)) = tokio::time::timeout(CACHE_IO_TIMEOUT, read_cache(path)).await
+        && cached.domain() == current.domain()
         && (cached.version() > current.version()
             || (cached.version() == current.version()
                 && cached.manifest.sha256 == current.manifest.sha256))
@@ -271,7 +405,7 @@ async fn run_worker(
         cache_path,
         RefreshSource {
             client: None,
-            base_url: xai_grok_product::COMMUNITY_ANNOUNCEMENTS_BASE_URL.to_owned(),
+            base_url,
             timeout: REFRESH_TIMEOUT,
         },
         load_started,
@@ -402,6 +536,7 @@ async fn refresh_catalog(
         MAX_MANIFEST_BYTES,
     )
     .await?;
+    ensure!(!bytes.contains(&b'\r'), "manifest must use LF line endings");
     let manifest: Manifest = serde_json::from_slice(&bytes)?;
     manifest.validate()?;
     if manifest.version <= current.version() {
@@ -416,7 +551,12 @@ async fn refresh_catalog(
     }
     let url = format!("{base_url}/catalogs/{}.json", manifest.version);
     let bytes = read_response(client, &url, MAX_CATALOG_BYTES).await?;
-    TranslationCatalog::parse(manifest, &bytes).map(Some)
+    let catalog = TranslationCatalog::parse(manifest, &bytes)?;
+    ensure!(
+        catalog.domain() == current.domain(),
+        "catalog domain mismatch"
+    );
+    Ok(Some(catalog))
 }
 
 async fn read_cache(path: &Path) -> Result<TranslationCatalog> {

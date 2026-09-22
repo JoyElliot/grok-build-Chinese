@@ -84,6 +84,24 @@ pub struct ModelState {
 }
 
 impl ModelState {
+    /// Server presentation hints are trusted only on a Grok shell connection.
+    pub(crate) fn retain_shell_presentation(&mut self, is_grok_shell: bool) {
+        if !is_grok_shell {
+            for info in self.available.values_mut() {
+                if let Some(meta) = info.meta.as_mut() {
+                    meta.remove(xai_grok_shell::agent::config::OFFICIAL_MODEL_META_KEY);
+                    meta.remove(xai_grok_shell::agent::config::BUNDLED_MODEL_META_KEY);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn has_official_catalog(&self) -> bool {
+        self.available
+            .values()
+            .any(crate::slash::commands::effort_levels::is_official_model)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.available.is_empty()
     }
@@ -315,6 +333,27 @@ impl From<Option<acp::SessionModelState>> for ModelState {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn zh_localization_external_acp_cannot_mint_official_model_presentation() {
+        let mut state = state_with_meta(Some(serde_json::json!({
+            "x.ai/officialModelCatalog": true, "x.ai/bundledModel": true,
+            "supportsReasoningEffort": true
+        })));
+        state.retain_shell_presentation(true);
+        assert!(state.has_official_catalog());
+        state.retain_shell_presentation(false);
+        assert!(!state.has_official_catalog());
+        let info = state.available.values().next().unwrap();
+        assert_eq!(info.meta.as_ref().unwrap()["supportsReasoningEffort"], true);
+        assert!(
+            !info
+                .meta
+                .as_ref()
+                .unwrap()
+                .contains_key("x.ai/bundledModel")
+        );
+    }
 
     fn sample_models() -> ModelState {
         let mut state = ModelState::default();

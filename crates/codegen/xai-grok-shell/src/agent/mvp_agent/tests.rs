@@ -3545,6 +3545,7 @@ mod parse_json_object_env_tests {
 fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
     let entry = |model: &str| ModelEntry {
         bundled_catalog_entry: false,
+        official_catalog_entry: false,
         info: config::ModelInfo {
             model: model.to_string(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),

@@ -42,6 +42,11 @@ fn save_cursor(grok_home: &Path, cursor: u64) {
 /// Each call returns the tip at `cursor % tips.len()` and increments the cursor in `~/.grok/tip_cursor.json`, so every session sees the next tip in sequence. After all tips have been shown, the cycle repeats.
 /// Returns `None` if `tips` is empty (cursor is not advanced in that case).
 pub fn pick_and_advance(tips: &[String], grok_home: &Path) -> Option<String> {
+    pick_entry_and_advance(tips, grok_home)
+}
+
+/// Preserve display provenance along with the selected tip without changing rotation.
+pub fn pick_entry_and_advance<T: Clone>(tips: &[T], grok_home: &Path) -> Option<T> {
     if tips.is_empty() {
         return None;
     }

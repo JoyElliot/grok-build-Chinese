@@ -26,12 +26,12 @@ pub(crate) fn tips_from_toml(root: &TomlValue) -> Option<TipsOverride> {
 
 /// If any local source sets `exclude_default = true`, remote tips are dropped entirely.
 /// Otherwise remote tips are inserted after requirements and before user/managed config.
-pub(crate) fn merge_tips(
+fn merge_tips_with_origins(
     requirements: Option<TipsOverride>,
     user: Option<TipsOverride>,
     managed: Option<TipsOverride>,
     remote_tips: Option<&[String]>,
-) -> Vec<String> {
+) -> Vec<(String, bool)> {
     let exclude = [&requirements, &user, &managed]
         .into_iter()
         .flatten()
@@ -39,16 +39,16 @@ pub(crate) fn merge_tips(
 
     let mut out = Vec::new();
     if let Some(src) = requirements.as_ref() {
-        out.extend(src.tips.iter().cloned());
+        out.extend(src.tips.iter().cloned().map(|text| (text, false)));
     }
     if !exclude && let Some(remote) = remote_tips {
-        out.extend(remote.iter().cloned());
+        out.extend(remote.iter().cloned().map(|text| (text, true)));
     }
     if let Some(src) = user.as_ref() {
-        out.extend(src.tips.iter().cloned());
+        out.extend(src.tips.iter().cloned().map(|text| (text, false)));
     }
     if let Some(src) = managed.as_ref() {
-        out.extend(src.tips.iter().cloned());
+        out.extend(src.tips.iter().cloned().map(|text| (text, false)));
     }
     out
 }
@@ -62,6 +62,19 @@ pub fn resolve_tips(
     managed: Option<&TomlValue>,
     remote_tips: Option<&[String]>,
 ) -> Vec<String> {
+    resolve_tips_with_origins(requirements, user, managed, remote_tips)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+}
+
+/// Same resolution/order as `resolve_tips`, retaining each occurrence's source.
+pub fn resolve_tips_with_origins(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    managed: Option<&TomlValue>,
+    remote_tips: Option<&[String]>,
+) -> Vec<(String, bool)> {
     if requirements.and_then(show_tips_from_toml_opt) == Some(false) {
         return Vec::new();
     }
@@ -71,14 +84,17 @@ pub fn resolve_tips(
 
     #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("GROK_TIPS_OVERRIDE") {
-        return raw.split('|').map(str::to_string).collect();
+        return raw
+            .split('|')
+            .map(|text| (text.to_string(), false))
+            .collect();
     }
 
     let req = requirements.and_then(tips_from_toml);
     let usr = user.and_then(tips_from_toml);
     let mgd = managed.and_then(tips_from_toml);
 
-    merge_tips(req, usr, mgd, remote_tips)
+    merge_tips_with_origins(req, usr, mgd, remote_tips)
 }
 
 pub const SLASH_COMMAND_TAGS_CONFIG_PATH: &str = "slash_command_tags";
@@ -151,6 +167,21 @@ pub fn resolve_slash_command_tags(
     resolve_slash_command_tags_with_env(effective_config, remote, slash_command_tags_from_env())
 }
 
+/// Keys overridden locally are user-owned even when the final text is identical.
+pub fn resolve_remote_slash_command_tags(
+    effective_config: &TomlValue,
+    remote: Option<&std::collections::BTreeMap<String, String>>,
+) -> std::collections::BTreeMap<String, String> {
+    let local = slash_command_tags_from_toml(effective_config);
+    let env = slash_command_tags_from_env();
+    remote
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| !local.contains_key(*key) && !env.contains_key(*key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
 /// Returns `None` when absent (falls through to remote settings).
 pub fn channel_from_toml_opt(root: &TomlValue) -> Option<String> {
     if let TomlValue::Table(table) = root
@@ -170,6 +201,36 @@ mod tests {
 
     use super::*;
     use toml::Value as TomlValue;
+
+    #[test]
+    fn tip_origins_follow_occurrences_even_when_local_and_remote_copy_match() {
+        let local = TipsOverride {
+            tips: vec!["same".into()],
+            exclude_default: false,
+        };
+        let result = merge_tips_with_origins(
+            Some(local.clone()),
+            Some(local.clone()),
+            None,
+            Some(&["same".into()]),
+        );
+        assert_eq!(
+            result,
+            vec![
+                ("same".into(), false),
+                ("same".into(), true),
+                ("same".into(), false)
+            ]
+        );
+        let excluded = TipsOverride {
+            exclude_default: true,
+            ..local
+        };
+        assert_eq!(
+            merge_tips_with_origins(None, Some(excluded), None, Some(&["same".into()])),
+            vec![("same".into(), false)]
+        );
+    }
 
     #[test]
     fn show_tips_defaults_to_none() {

@@ -5,7 +5,11 @@ use serde::Deserialize;
 pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     if let Ok(model_state) = serde_json::from_str::<acp::SessionModelState>(notif.params.get()) {
         use crate::acp::model_state::ModelState;
-        let new_models = ModelState::from(Some(model_state));
+        let mut new_models = ModelState::from(Some(model_state));
+        new_models.retain_shell_presentation(app.is_grok_shell);
+        if app.leader_mode && new_models.has_official_catalog() {
+            xai_grok_locale::dynamic::Domain::Models.notify_load();
+        }
         tracing::info!(
             count = new_models.available.len(),
             "models updated via x.ai/models/update"
@@ -49,6 +53,9 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         tracing::warn!("Failed to parse x.ai/settings/update");
         return false;
     };
+    if app.leader_mode {
+        xai_grok_locale::dynamic::Domain::Settings.notify_load();
+    }
 
     // Reseed this process's remote-campaign cache
     // Without this reseed a remote campaign stays invisible to `resolve_dismissable_campaigns`
@@ -312,20 +319,15 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
 
     // Re-resolve tips from config layers and the updated remote tips
     if let Some(remote_tips) = update.tips {
-        use xai_grok_shell::util::config::resolve_tips;
+        use xai_grok_shell::util::config::resolve_tips_with_origins;
 
-        app.tips = resolve_tips(
+        app.tips = resolve_tips_with_origins(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
             Some(&remote_tips),
         );
-        if !app.tips.is_empty() {
-            let grok_home = xai_grok_tools::util::grok_home::grok_home();
-            app.tip = xai_grok_shell::util::tips::pick_and_advance(&app.tips, &grok_home);
-        } else {
-            app.tip = None;
-        }
+        app.pick_next_tip();
     }
 
     // Re-resolve dropdown tags only when the update carries the field
@@ -338,6 +340,12 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         let tags_config = effective_config.as_ref().unwrap_or(&empty_toml);
         *app.command_tags.borrow_mut() =
             resolve_slash_command_tags(tags_config, remote_tags.as_ref());
+        app.locale.set_remote_command_tags(
+            xai_grok_shell::util::config::resolve_remote_slash_command_tags(
+                tags_config,
+                remote_tags.as_ref(),
+            ),
+        );
     }
 
     tracing::info!("settings updated via x.ai/settings/update");
@@ -434,6 +442,7 @@ pub(super) fn handle_announcements_update(notif: &acp::ExtNotification, app: &mu
     // Embedded agents already signal before fetching; do not check twice.
     if app.leader_mode {
         xai_grok_announcements::load_events::notify_started();
+        xai_grok_locale::dynamic::Domain::Settings.notify_load();
     }
 
     // Re-merge config layers like startup does: the push carries the remote list only

@@ -1,10 +1,13 @@
-name: Announcement translations
+name: Dynamic translations
 
 on:
   push:
     branches: [zh-dev]
     paths:
       - community/announcements/**
+      - community/display-translations/**
+      - .github/scripts/validate-display-translations.py
+      - .github/scripts/tests/test_display_translations.py
       - .github/scripts/validate-announcement-translations.py
       - .github/scripts/tests/test_announcement_translations.py
       - .github/workflows/announcement-translations.yml
@@ -13,6 +16,9 @@ on:
     branches: [zh-dev]
     paths:
       - community/announcements/**
+      - community/display-translations/**
+      - .github/scripts/validate-display-translations.py
+      - .github/scripts/tests/test_display_translations.py
       - .github/scripts/validate-announcement-translations.py
       - .github/scripts/tests/test_announcement_translations.py
       - .github/workflows/announcement-translations.yml
@@ -36,8 +42,12 @@ jobs:
         run: |
           if [[ -n "$BASE_SHA" && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
             python3 .github/scripts/validate-announcement-translations.py --base "$BASE_SHA"
+            python3 .github/scripts/validate-display-translations.py --base "$BASE_SHA"
           else
             python3 .github/scripts/validate-announcement-translations.py
+            python3 .github/scripts/validate-display-translations.py
           fi
       - name: Check validator regressions
-        run: python3 -m unittest discover -s .github/scripts/tests -p test_announcement_translations.py
+        run: |
+          python3 -m unittest discover -s .github/scripts/tests -p test_announcement_translations.py
+          python3 -m unittest discover -s .github/scripts/tests -p test_display_translations.py

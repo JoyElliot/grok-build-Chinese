@@ -334,7 +334,19 @@ impl SuggestionRow {
             tag: None,
             provenance: collides_with_builtin_or_skill.then(|| trigger.provenance.clone()),
             provenance_badge: None,
-            presentation: None,
+            presentation: (trigger.product_chat_skill || trigger.bundled_skill).then(|| {
+                ArgPresentation::OfficialSkill {
+                    skill_id: if trigger.bundled_skill {
+                        trigger
+                            .canonical
+                            .strip_prefix("bundled:")
+                            .unwrap_or(&trigger.canonical)
+                            .to_owned()
+                    } else {
+                        trigger.canonical.clone()
+                    },
+                }
+            }),
         }
     }
 
@@ -349,7 +361,7 @@ impl SuggestionRow {
             tag: None,
             provenance: None,
             provenance_badge: None,
-            presentation: item.presentation,
+            presentation: item.presentation.clone(),
         }
     }
 
@@ -1982,6 +1994,40 @@ mod tests {
             locale: crate::locale::UiLocale::ZhCn,
             source: crate::locale::LocaleSource::Requirement,
         })
+    }
+
+    #[test]
+    fn zh_localization_dynamic_bundled_skill_uses_slug_without_changing_qualified_command() {
+        use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain};
+        let raw = "Prompting and workflow guidance for Imagine image tools";
+        let meta =
+            serde_json::json!({"scope":"bundled", "path":"/grok/bundled/skills/imagine/SKILL.md"});
+        let command = acp::AvailableCommand::new("bundled:imagine", raw)
+            .meta(meta.as_object().unwrap().clone());
+        let mut ctrl = SlashController::new(CommandRegistry::new(Vec::new()), ".".into());
+        ctrl.registry_mut().set_acp_commands(&[command]);
+        let state = SlashState::default();
+        ctrl.refresh(&state, "/", 1, &ModelState::default());
+        let locale = zh_locale();
+        let entry = DisplayEntry {
+            field: "description".into(),
+            context: vec!["imagine".into()],
+            source: Some(raw.into()),
+            source_sha256: None,
+            translation: "图像工具指南".into(),
+        };
+        locale.install_display_catalog(Arc::new(
+            DisplayCatalog::from_entries(Domain::Skills, vec![entry]).unwrap(),
+        ));
+        let snapshot =
+            crate::views::slash_dropdown::localized_snapshot(state.snapshot(), Some(&locale));
+        let row = snapshot
+            .matches
+            .iter()
+            .find(|row| row.command_canonical.as_deref() == Some("bundled:imagine"))
+            .unwrap();
+        assert_eq!(row.description, "图像工具指南");
+        assert_eq!(row.insert_text.trim_end(), "/bundled:imagine");
     }
 
     #[test]

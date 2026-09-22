@@ -18,6 +18,7 @@ pub(crate) fn build_prefetched_map(
         let info = config::ModelInfo::from_config(&m);
         let entry = ModelEntry {
             bundled_catalog_entry: false,
+            official_catalog_entry: false,
             info,
             mtls_cert_dir: None,
             api_key: None,
@@ -105,6 +106,9 @@ pub(in crate::agent::remote_config) fn fetch_models_uncommitted(
     let scope = ModelsCacheScope::resolve(endpoints, fetch_auth, auth);
 
     let cache = ModelsCacheManager::new();
+    if crate::agent::config::official_model_catalog_source(endpoints) {
+        xai_grok_locale::dynamic::Domain::Models.notify_load();
+    }
     if let Some(cached) = cache.load_fresh(&scope) {
         return ModelsPrefetch::Cached(cached.models);
     }

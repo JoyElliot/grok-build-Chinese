@@ -85,6 +85,7 @@ use std::time::Instant;
 fn test_app() -> AppView {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     AppView {
+        is_grok_shell: false,
         pending_startup: None,
         active_view: ActiveView::Welcome,
         auth_return_view: None,

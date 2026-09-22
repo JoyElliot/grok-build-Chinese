@@ -128,11 +128,11 @@ impl UseToolCallBlock {
                 locale,
             )
         });
-        if let Some(localized) = managed_localized
-            .or_else(|| super::localized_known_mcp_tool_name(&self.tool_name, locale))
-        {
+        if let Some(localized) = managed_localized.or_else(|| {
+            super::localized_known_mcp_tool_name(&self.tool_name, locale).map(str::to_owned)
+        }) {
             let display = match max_width {
-                Some(w) => truncate_str(localized, w),
+                Some(w) => truncate_str(&localized, w),
                 None => localized.to_string(),
             };
             return Line::from(vec![Span::styled(display, bold_style)]);
