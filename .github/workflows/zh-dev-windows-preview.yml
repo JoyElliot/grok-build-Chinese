@@ -139,22 +139,6 @@ jobs:
             grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
             grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-
 
-      - name: 准备可选 Rust 内容缓存
-        id: rust_content_cache
-        uses: ./.github/actions/setup-windows-rust-cache
-        env:
-          # Daemon-only logging; raw output stays outside every artifact path.
-          SCCACHE_LOG: sccache::compiler::compiler=debug
-          SCCACHE_ERROR_LOG: ${{ runner.temp }}/grok-rust-cache-private-${{ github.run_id }}-${{ github.run_attempt }}.log
-        with:
-          save-cache: ${{ github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
-
-      - name: 记录恢复后的 Rust 内容缓存键
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: python .github/scripts/windows-rust-cache-diagnostics.py snapshot
-
       - name: 构建并监控 Windows 预览版（J${{ env.CARGO_BUILD_JOBS }}）
         id: windows_build
         shell: pwsh
@@ -293,18 +277,6 @@ jobs:
           if ($null -ne $caughtError) {
             throw $caughtError
           }
-
-      - name: 汇总 Rust 内容缓存诊断
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: python .github/scripts/windows-rust-cache.py finish
-
-      - name: 筛选 Rust 缓存键诊断
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: python .github/scripts/windows-rust-cache-diagnostics.py summarize
 
       - name: 汇总并验证构建资源监控
         if: ${{ !cancelled() }}
@@ -561,14 +533,6 @@ jobs:
             ${{ runner.temp }}/grok-zh-cargo/registry
             ${{ runner.temp }}/grok-zh-cargo/git
           key: ${{ steps.windows_setup.outputs.cargo-home-cache-primary-key }}
-
-      - name: 保存有容量上限的 Rust 内容缓存
-        if: ${{ success() && env.GROK_SCCACHE_SAVE_READY == 'true' && steps.rust_content_cache.outputs.enabled == 'true' && steps.rust_content_cache.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
-        continue-on-error: true
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: ${{ runner.temp }}/grok-rust-content-cache
-          key: ${{ steps.rust_content_cache.outputs.cache-primary-key }}
 
   # Keep the existing Windows check as the acceptance gate for both runners.
   windows-gnu-preview:

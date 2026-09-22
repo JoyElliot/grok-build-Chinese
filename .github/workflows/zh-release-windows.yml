@@ -330,21 +330,6 @@ jobs:
           - Host: exact=$env:CARGO_HOST_CACHE_HIT; key=$env:CARGO_HOST_CACHE_KEY
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: 准备只读 Rust 内容缓存
-        uses: ./.github/actions/setup-windows-rust-cache
-        env:
-          # Daemon-only logging; raw output stays outside every artifact path.
-          SCCACHE_LOG: sccache::compiler::compiler=debug
-          SCCACHE_ERROR_LOG: ${{ runner.temp }}/grok-rust-cache-private-${{ github.run_id }}-${{ github.run_attempt }}.log
-        with:
-          save-cache: 'false'
-
-      - name: 记录恢复后的 Rust 内容缓存键
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: python .github/scripts/windows-rust-cache-diagnostics.py snapshot
-
       - name: 构建 grok-zh
         shell: pwsh
         run: |
@@ -358,18 +343,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Cargo Release 构建失败：$LASTEXITCODE"
           }
-
-      - name: 汇总 Rust 内容缓存诊断
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: python .github/scripts/windows-rust-cache.py finish
-
-      - name: 筛选 Rust 缓存键诊断
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        timeout-minutes: 2
-        shell: pwsh
-        run: python .github/scripts/windows-rust-cache-diagnostics.py summarize
 
       - name: 上传 Windows Release 编译诊断
         if: always()
