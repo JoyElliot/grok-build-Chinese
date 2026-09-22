@@ -193,6 +193,17 @@ class Program {
 
     Assert-True ($contract.Version.Text -ceq '1.0.13' -and !$contract.Legacy) '现代正式版合同'
     $noteContract = Get-OnlineReleaseContract $release
+    $noteCases = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../../crates/codegen/xai-grok-update/tests/fixtures/release-notes-display.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($case in $noteCases) {
+        foreach ($body in @($case.body, $case.body.Replace("`n", "`r`n"))) {
+            $noteContract.ReleaseNotes = $body
+            $noteOutput = @(Show-OnlineReleaseNotes $noteContract 6>&1) -join "`n"
+            $expectedBody = [string]$case.expected
+            if (!$expectedBody) { $expectedBody = '此版本未提供更新日志，详情见 Release 页面。' }
+            $expectedOutput = "`n更新日志 · v1.0.13`n`n$expectedBody`n`nRelease：https://github.com/JoyElliot/grok-build-Chinese/releases/tag/release-v1.0.13`n"
+            Assert-True ($noteOutput -ceq $expectedOutput) "更新日志展示共享样例：$($case.name)"
+        }
+    }
     $noteContract.ReleaseNotes = "中文$([char]27)[2J$([char]7)`r`n下一行"
     $noteOutput = @(Show-OnlineReleaseNotes $noteContract 6>&1) -join "`n"
     Assert-True (!$noteOutput.Contains([string][char]27) -and !$noteOutput.Contains([string][char]7)) '远端正文不输出终端控制字符'

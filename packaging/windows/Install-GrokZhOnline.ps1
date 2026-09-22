@@ -583,11 +583,52 @@ function Assert-OnlinePortableRoot {
         !(Test-Path -LiteralPath (Join-Path $Root 'app') -PathType Container)) { throw '便携目录的入口、说明或程序目录类型不正确。' }
 }
 
+function Get-OnlineChangelogBody {
+    param([string]$Body)
+    # Match the generated Release-page footer, not authored links or code examples.
+    $fence = $null
+    $fenceWidth = 0
+    $detailsStart = -1
+    $offset = 0
+    $notes = $Body
+    foreach ($line in $Body.Split([char]10)) {
+        $text = $line.Trim()
+        if ($text -match '^(`{3,}|~{3,})') {
+            $marker = $Matches[1]
+            if ($null -eq $fence) {
+                $fence = $marker[0]
+                $fenceWidth = $marker.Length
+            } elseif ($marker[0] -ceq $fence -and $marker.Length -ge $fenceWidth -and !$text.Substring($marker.Length).Trim()) {
+                $fence = $null
+            }
+        }
+        if ($null -eq $fence) {
+            if ($detailsStart -ge 0 -and $line.TrimEnd() -ceq '<summary>下载与安装</summary>') {
+                $notes = $Body.Substring(0, $detailsStart)
+                break
+            }
+            if ($text) {
+                $detailsStart = -1
+                if ($line.TrimEnd() -ceq '<details>') { $detailsStart = $offset }
+            }
+        }
+        $offset += $line.Length + 1
+    }
+    $notes = $notes.TrimEnd()
+    $lastLine = $notes.LastIndexOf([char]10) + 1
+    $footer = $notes.Substring($lastLine)
+    if ($null -eq $fence -and ($footer.StartsWith('[完整变更](') -or $footer.StartsWith('[上游完整变更（'))) {
+        $notes = $notes.Substring(0, $lastLine).TrimEnd()
+    }
+    return $notes.Trim()
+}
+
 function Show-OnlineReleaseNotes {
     param($Release)
     $body = [string](Get-OnlineProperty $Release 'ReleaseNotes')
     # Release Markdown is displayed as text, never evaluated as PowerShell.
-    $body = [regex]::Replace($body.Replace("`r`n", "`n"), '[\x00-\x08\x0B-\x1F\x7F-\x9F]', '').Trim()
+    $body = Get-OnlineChangelogBody ($body.Replace("`r`n", "`n"))
+    $body = [regex]::Replace($body, '[\x00-\x08\x0B-\x1F\x7F-\x9F]', '').Trim()
     if ($body.Length -gt 131072) {
         $body = $body.Substring(0, 131072) + "`n（正文较长，完整内容见下方 Release 链接。）"
     }

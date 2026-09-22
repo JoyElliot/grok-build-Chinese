@@ -1,0 +1,62 @@
+[
+  {
+    "name": "published-release-v1.0.35",
+    "body": "- 补全智能体面板入口、快捷键提示、相对时间和固定文案的中文显示。\n- 中文用户输入对应生成中文回合摘要，其余情况沿用默认语言规则。\n- 启用消息时间显示时，使用中文日期和 24 小时制，修复普通及置顶消息的时间对齐。\n\n## 上游更新\n\n- 重设计会话头与智能体面板入口，显示定时任务下次运行时间和可点击的工作流状态；改善子智能体插话及取消状态。\n- 支持删除记忆，完善 /memory 搜索、复制及窄终端布局，并修复记忆初始化失败后无法恢复的问题。\n- 完善 MCP 结构化结果和图像内容传递，补齐守护进程模式下的工具调用显示。\n- 支持在消息中途使用 /btw 侧问；Responses API 可按模型配置 reasoning\\_summary。\n- 降低大型文件语法高亮的内存占用，提升处理速度。\n- 修复精简模式复制粘贴产生多余空行、长路径被截断及部分会话恢复问题。\n\n[完整变更](https://github.com/JoyElliot/grok-build-Chinese/compare/release-v1.0.24...release-v1.0.35) · [上游完整变更（上游 1.0.25–1.0.35）](https://github.com/xai-org/grok-build/compare/37949780c144e37df692e3d669051a21fec24f20...a28ee2b2063426e8816e380ccea528b9de95e5da)\n\n<details>\n<summary>下载与安装</summary>\n\n本版本安装包见下方附件。以下在线命令始终安装最新正式版；安装本页指定版本时，请下载对应附件。\n\n```powershell\n$p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1'); $tls=[Net.ServicePointManager]::SecurityProtocol; try { [Net.ServicePointManager]::SecurityProtocol=$tls -bor [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/JoyElliot/grok-build-Chinese/zh-dev/packaging/windows/Install-GrokZhOnline.ps1' -OutFile $p; & \"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -ExecutionPolicy Bypass -File $p; if ($LASTEXITCODE -ne 0) { throw \"安装未完成，退出码：$LASTEXITCODE\" } } finally { [Net.ServicePointManager]::SecurityProtocol=$tls; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }\n```\n\n默认与官方版共存，无需管理员权限。[Windows 安装说明](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/windows/INSTALL-WINDOWS.md) · [macOS 安装说明](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/macos/INSTALL-MACOS.md) · [Linux 安装说明](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/packaging/linux/INSTALL-LINUX.md)\n\n</details>\n",
+    "expected": "- 补全智能体面板入口、快捷键提示、相对时间和固定文案的中文显示。\n- 中文用户输入对应生成中文回合摘要，其余情况沿用默认语言规则。\n- 启用消息时间显示时，使用中文日期和 24 小时制，修复普通及置顶消息的时间对齐。\n\n## 上游更新\n\n- 重设计会话头与智能体面板入口，显示定时任务下次运行时间和可点击的工作流状态；改善子智能体插话及取消状态。\n- 支持删除记忆，完善 /memory 搜索、复制及窄终端布局，并修复记忆初始化失败后无法恢复的问题。\n- 完善 MCP 结构化结果和图像内容传递，补齐守护进程模式下的工具调用显示。\n- 支持在消息中途使用 /btw 侧问；Responses API 可按模型配置 reasoning\\_summary。\n- 降低大型文件语法高亮的内存占用，提升处理速度。\n- 修复精简模式复制粘贴产生多余空行、长路径被截断及部分会话恢复问题。"
+  },
+  {
+    "name": "compatibility-and-known-issues",
+    "body": "- 修复问题\n\n## 安装与兼容性\n\n- 升级前请保存会话。\n\n## 已知问题\n\n- 旧系统需参阅[说明](https://example.com/help)。\n\n[完整变更](https://example.com/compare)\n\n<details>\n<summary>下载与安装</summary>\n\n```powershell\nInvoke-WebRequest ...\n```\n\n</details>\n",
+    "expected": "- 修复问题\n\n## 安装与兼容性\n\n- 升级前请保存会话。\n\n## 已知问题\n\n- 旧系统需参阅[说明](https://example.com/help)。"
+  },
+  {
+    "name": "upstream-only-compare-footer",
+    "body": "## 上游更新\n\n- 修复上游问题。\n\n[上游完整变更（截至上游 1.0.35）](https://example.com/compare)\n",
+    "expected": "## 上游更新\n\n- 修复上游问题。"
+  },
+  {
+    "name": "authored-links-and-commands",
+    "body": "- 使用 [工具说明](https://example.com/tools)。\n\n```powershell\ngrok-zh --help\n```",
+    "expected": "- 使用 [工具说明](https://example.com/tools)。\n\n```powershell\ngrok-zh --help\n```"
+  },
+  {
+    "name": "footer-text-inside-code-fences",
+    "body": "## 格式示例\n\n````markdown\n```html\n<details>\n<summary>下载与安装</summary>\n</details>\n```\n````\n\n~~~html\n<details>\n<summary>下载与安装</summary>\n</details>\n~~~\n\n[完整变更](https://example.com/compare)\n\n<details>\n<summary>下载与安装</summary>\n\n```powershell\nInvoke-WebRequest ...\n```\n\n</details>\n",
+    "expected": "## 格式示例\n\n````markdown\n```html\n<details>\n<summary>下载与安装</summary>\n</details>\n```\n````\n\n~~~html\n<details>\n<summary>下载与安装</summary>\n</details>\n~~~"
+  },
+  {
+    "name": "other-details-are-authored-notes",
+    "body": "- 修复问题\n\n<details>\n<summary>修复说明</summary>\n\n保持此处的说明和[链接](https://example.com/fix)。\n\n</details>\n\n[完整变更](https://example.com/compare)\n\n<details>\n<summary>下载与安装</summary>\n\n```powershell\nInvoke-WebRequest ...\n```\n\n</details>\n",
+    "expected": "- 修复问题\n\n<details>\n<summary>修复说明</summary>\n\n保持此处的说明和[链接](https://example.com/fix)。\n\n</details>"
+  },
+  {
+    "name": "install-only-empty-fallback",
+    "body": "<details>\n\n<summary>下载与安装</summary>\n安装命令\n</details>",
+    "expected": ""
+  },
+  {
+    "name": "truncated-legacy-footer",
+    "body": "- 修复问题\n\n[完整变更](https://example.com/compare)\n\n<details>\n<summary>下载与安装</summary>\n\n```powershell\n",
+    "expected": "- 修复问题"
+  },
+  {
+    "name": "only-trailing-compare-line-removed",
+    "body": "- 正文中的比较链接。\n\n[完整变更](https://example.com/earlier)\n\n- 后续说明。\n\n[完整变更](https://example.com/final)",
+    "expected": "- 正文中的比较链接。\n\n[完整变更](https://example.com/earlier)\n\n- 后续说明。"
+  },
+  {
+    "name": "unclosed-fence-keeps-literal-link",
+    "body": "```markdown\n[完整变更](https://example.com/literal)",
+    "expected": "```markdown\n[完整变更](https://example.com/literal)"
+  },
+  {
+    "name": "empty-body",
+    "body": "",
+    "expected": ""
+  },
+  {
+    "name": "indented-code-is-not-a-footer",
+    "body": "## HTML 示例\n\n    <details>\n    <summary>下载与安装</summary>\n    </details>\n\n    [完整变更](https://example.com/literal)",
+    "expected": "## HTML 示例\n\n    <details>\n    <summary>下载与安装</summary>\n    </details>\n\n    [完整变更](https://example.com/literal)"
+  }
+]

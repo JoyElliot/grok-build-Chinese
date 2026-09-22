@@ -39,11 +39,62 @@ fn temporary_path(path: &Path) -> PathBuf {
     ))
 }
 
-/// Keep Markdown, including links and code fences, but never emit terminal
-/// controls from remote text. Bound the display/cache without splitting UTF-8.
+/// Keep authored notes, including compatibility warnings, links and examples.
+/// The generated web-only footer has a separate Release link in terminal output.
+fn changelog_body(body: &str) -> &str {
+    let mut fence = None;
+    let mut details_start = None;
+    let mut offset = 0;
+    let mut notes = body;
+    for line in body.split_inclusive('\n') {
+        let text = line.trim();
+        let marker = text.as_bytes().first().copied();
+        if matches!(marker, Some(b'`' | b'~')) {
+            let marker = marker.unwrap();
+            let count = text.bytes().take_while(|&byte| byte == marker).count();
+            if count >= 3 {
+                match fence {
+                    None => fence = Some((marker, count)),
+                    Some((open, width))
+                        if marker == open && count >= width && text[count..].trim().is_empty() =>
+                    {
+                        fence = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if fence.is_none() {
+            if let Some(start) = details_start
+                && line.trim_end() == "<summary>下载与安装</summary>"
+            {
+                notes = &body[..start];
+                break;
+            }
+            if !text.is_empty() {
+                details_start = (line.trim_end() == "<details>").then_some(offset);
+            }
+        }
+        offset += line.len();
+    }
+    let notes = notes.trim_end();
+    let last_line = notes.rfind('\n').map_or(0, |index| index + 1);
+    let footer = &notes[last_line..];
+    if fence.is_none()
+        && (footer.starts_with("[完整变更](") || footer.starts_with("[上游完整变更（"))
+    {
+        notes[..last_line].trim_end()
+    } else {
+        notes
+    }
+}
+
+/// Never emit terminal controls from remote text. Bound the display/cache
+/// without splitting UTF-8, including when reading a receipt from an older build.
 fn display_body(body: &str) -> String {
+    let normalized = body.replace("\r\n", "\n");
     let mut output = String::new();
-    for character in body.replace("\r\n", "\n").chars() {
+    for character in changelog_body(&normalized).chars() {
         if character.is_control() && !matches!(character, '\n' | '\t') {
             continue;
         }
@@ -162,10 +213,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn success_receipt_preserves_release_markdown_and_target_version() {
+    fn success_receipt_preserves_changelog_and_target_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(RECEIPT);
-        let body = "- 中文重点\n\n## 上游更新\n\n- 修复问题\n\n<details>\n安装说明\n</details>";
+        let body = "- 中文重点\n\n## 上游更新\n\n- 修复问题";
         save(&path, "1.0.35", Some(body)).unwrap();
         assert!(read(&path, Some("1.0.36")).unwrap().is_none());
         let text = read(&path, Some("1.0.35")).unwrap().unwrap();
@@ -174,6 +225,47 @@ mod tests {
         save(&path, "1.0.36", Some("下一版")).unwrap();
         assert!(!read(&path, None).unwrap().unwrap().contains(body));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn display_keeps_notes_without_the_release_page_footer() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/release-notes-display.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let body = case["body"].as_str().unwrap();
+            let expected = case["expected"].as_str().unwrap();
+            for body in [body.to_string(), body.replace('\n', "\r\n")] {
+                assert_eq!(display_body(&body), expected, "{}", case["name"]);
+                assert_eq!(display_body(&display_body(&body)), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_receipt_filters_the_footer_before_display() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(RECEIPT);
+        let body = "- 修复问题\n\n[完整变更](https://example.com/compare)\n\n<details>\n<summary>下载与安装</summary>\n```powershell\nInvoke-WebRequest ...\n```\n</details>";
+        // Older clients saved the complete Release body. Do not rely on save()
+        // having filtered it when consuming an existing success receipt.
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&CompletedUpdate {
+                version: "1.0.35".to_string(),
+                body: body.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        assert!(display_pending(&path, Some("1.0.35"), &mut output).unwrap());
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(
+            text,
+            "\n更新日志 · v1.0.35\n\n- 修复问题\n\nRelease：https://github.com/JoyElliot/grok-build-Chinese/releases/tag/release-v1.0.35\n"
+        );
+        assert!(!path.exists());
     }
 
     #[test]
