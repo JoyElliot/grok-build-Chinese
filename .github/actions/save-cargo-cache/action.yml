@@ -1,0 +1,28 @@
+name: Save Cargo cache if still missing
+description: Recheck the immutable key after a long build before spending time compressing it.
+inputs:
+  path:
+    description: Exactly the same paths used when restoring this cache.
+    required: true
+  key:
+    description: The primary key returned by the original restore step.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: 检查其他并行运行是否已经保存
+      id: existing
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}
+        lookup-only: true
+
+    # A second writer can still win after this lookup. The cache service owns
+    # that final reservation; an existing exact key needs no compression here.
+    - name: 保存尚不存在的缓存
+      if: ${{ steps.existing.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}

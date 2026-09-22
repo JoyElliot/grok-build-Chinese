@@ -82,7 +82,9 @@ runs:
         $protocArchive = Join-Path $env:RUNNER_TEMP "protoc-$protocVersion-win64.zip"
         $protocRoot = Join-Path $env:RUNNER_TEMP "protoc-$protocVersion"
         $protocUri = "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip"
-        Invoke-WebRequest -Uri $protocUri -OutFile $protocArchive
+        # GitHub release downloads can transiently return 5xx before compilation.
+        Invoke-WebRequest -Uri $protocUri -OutFile $protocArchive `
+          -MaximumRetryCount 3 -RetryIntervalSec 5 -TimeoutSec 120
         $protocHash = (Get-FileHash -LiteralPath $protocArchive -Algorithm SHA256).Hash
         if ($protocHash -ne '57EA59E9F551AD8D71FFAA9B5CFBE0CA1F4E720972A1DB7EC2D12AB44BFF9383') {
           throw "protoc SHA-256 校验值异常：$protocHash"
@@ -111,6 +113,30 @@ runs:
         & $rustc -Vv
         & $gcc --version
         & $protoc --version
+
+        # Hosted runners with the same image label can use different hardware.
+        # Record it once alongside Cargo timings without adding sampling load.
+        $hardware = [ordered]@{
+          runner_name = $env:RUNNER_NAME
+          image_os = $env:ImageOS
+          image_version = $env:ImageVersion
+          logical_processors = [Environment]::ProcessorCount
+          processors = $null
+          memory_total_bytes = $null
+          collection_error = $null
+        }
+        try {
+          $hardware.processors = @(Get-CimInstance Win32_Processor |
+            Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed)
+          $hardware.memory_total_bytes = [long](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+        } catch {
+          $hardware.collection_error = $_.Exception.Message
+          Write-Warning "Runner hardware inventory unavailable: $($_.Exception.Message)"
+        }
+        $timings = Join-Path $targetDir 'cargo-timings'
+        New-Item -ItemType Directory -Path $timings -Force | Out-Null
+        $hardware | ConvertTo-Json -Depth 5 |
+          Tee-Object -FilePath (Join-Path $timings 'runner-hardware.json')
 
     - name: 恢复 Cargo 依赖缓存
       id: cargo_home_cache

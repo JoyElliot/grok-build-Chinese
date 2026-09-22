@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/zh-release-windows.yml"
 VALIDATION = "windows-x64-gnu-validation"
 BUILD = "windows-x64-gnu"
+RUST = "windows-x64-gnu-rust-validation"
 
 
 def job_blocks(text):
@@ -55,7 +56,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         cls.jobs = job_blocks(cls.text)
 
     def test_windows_validation_and_build_run_independently_at_the_same_commit(self):
-        for job in (VALIDATION, BUILD):
+        for job in (RUST, BUILD):
             with self.subTest(job=job):
                 block = self.jobs[job]
                 self.assertEqual(dependencies(block), {"release-plan"})
@@ -65,9 +66,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn('CARGO_BUILD_JOBS: "4"', block)
                 self.assertNotIn("contents: write", block)
                 self.assertNotIn("id-token: write", block)
-        self.assertIn('CARGO_PROFILE_TEST_DEBUG: "0"', self.jobs[VALIDATION])
+        self.assertEqual(dependencies(self.jobs[VALIDATION]), {"release-plan", RUST})
+        self.assertIn("if: always()", self.jobs[VALIDATION])
+        self.assertIn('all(. == "success")', self.jobs[VALIDATION])
+        self.assertIn("${{ toJSON(needs.*.result) }}", self.jobs[VALIDATION])
+        self.assertIn('CARGO_PROFILE_TEST_DEBUG: "0"', self.jobs[RUST])
         self.assertNotIn("CARGO_PROFILE_TEST_DEBUG", self.jobs[BUILD])
-        self.assertNotIn("cargo build ", self.jobs[VALIDATION])
+        self.assertNotIn("cargo build ", self.jobs[RUST])
         self.assertNotIn("cargo test ", self.jobs[BUILD])
 
     def test_publication_requires_every_enabled_platform_and_validation(self):
