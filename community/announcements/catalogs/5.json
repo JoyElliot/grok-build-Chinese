@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "version": 5,
+  "locale": "zh-CN",
+  "entries": [
+    {
+      "field": "title",
+      "source": "Workflows are here!",
+      "translation": "工作流功能现已上线！"
+    },
+    {
+      "field": "message",
+      "source": "Try them out using /workflows.",
+      "translation": "输入 /workflows 即可体验。"
+    },
+    {
+      "field": "title",
+      "source": "Grok 4.5 is here!",
+      "translation": "Grok 4.5 现已上线！"
+    },
+    {
+      "field": "message",
+      "source": "Select 'Grok 4.5' under /model.",
+      "translation": "请在 /model 中选择“Grok 4.5”。"
+    },
+    {
+      "field": "title",
+      "source": "Grok 4.6 is here!",
+      "translation": "Grok 4.6 现已上线！"
+    },
+    {
+      "field": "message",
+      "source": "Select 'Grok 4.6' under /model.",
+      "translation": "请在 /model 中选择“Grok 4.6”。"
+    },
+    {
+      "field": "title",
+      "source": "Grok 4.6 is here, try it out for free for a limited time! Upgrade for more usage.",
+      "translation": "Grok 4.6 现已上线，限时免费体验！升级可获得更多用量。"
+    },
+    {
+      "field": "message",
+      "source": "Grok 4.6 is here, try it out for free for a limited time! Upgrade for more usage.",
+      "translation": "Grok 4.6 现已上线，限时免费体验！升级可获得更多用量。"
+    },
+    {
+      "field": "title",
+      "source": "Degraded performance",
+      "translation": "性能下降"
+    },
+    {
+      "field": "message",
+      "source": "Elevated latency on some requests. Follow status.x.ai for updates.",
+      "translation": "部分请求的延迟升高。请关注 status.x.ai 获取最新信息。"
+    },
+    {
+      "field": "cta_label",
+      "source": "Click here to Upgrade",
+      "translation": "点击此处升级"
+    },
+    {
+      "field": "cta_caption",
+      "source": "or use Ctrl+O",
+      "translation": "或按 Ctrl+O"
+    },
+    {
+      "field": "title",
+      "source": "From the team",
+      "translation": "团队寄语"
+    },
+    {
+      "field": "message",
+      "source": "Hope you are having a wonderful day!",
+      "translation": "祝你今天过得愉快！"
+    },
+    {
+      "field": "title",
+      "source": "New /learn skill!",
+      "translation": "新增 /learn 技能！"
+    },
+    {
+      "field": "message",
+      "source": "Ask Grok to /learn from your past traces and tune Grok Build to how you work.",
+      "translation": "让 Grok 通过 /learn 从你的过往记录中学习，使 Grok Build 更贴合你的工作方式。"
+    },
+    {
+      "field": "title",
+      "source": "Memory",
+      "translation": "记忆"
+    },
+    {
+      "field": "message",
+      "source": "Grok Build now gets better the more you use it. It remembers conventions, decisions, and project facts across sessions. /memory to browse, /dream to organize. Start a new session to pick it up.",
+      "translation": "Grok Build 现在会越用越好。它能跨会话记住约定、决策和项目信息。使用 /memory 浏览，使用 /dream 整理。新建会话即可启用。"
+    },
+    {
+      "field": "title",
+      "source": "Grok 4.7 is here!",
+      "translation": "Grok 4.7 现已上线！"
+    },
+    {
+      "field": "message",
+      "source": "Select 'Grok 4.7' under /model.",
+      "translation": "请在 /model 中选择“Grok 4.7”。"
+    },
+    {
+      "field": "title",
+      "source": "We're currently experiencing issues serving our models",
+      "translation": "当前模型服务出现故障"
+    },
+    {
+      "field": "message",
+      "source": "A datacenter incident is affecting all Grok models. The team is investigating.",
+      "translation": "数据中心事故正在影响所有 Grok 模型，团队正在调查。"
+    }
+  ]
+}
