@@ -81,6 +81,14 @@ def macho(locals_present=True):
     return data
 
 
+def signature_with_extra(slot, blob, flags=2):
+    directory = bytearray(macho()[-44:])
+    struct.pack_into(">I", directory, 12, flags)
+    extra_offset = 28 + len(directory)
+    return (struct.pack(">III4I", 0xFADE0CC0, extra_offset + len(blob), 2,
+                        0, 28, slot, extra_offset) + directory + blob)
+
+
 class UnixBinaryTests(unittest.TestCase):
     def inspect(self, data, platform):
         with tempfile.TemporaryDirectory() as directory:
@@ -168,6 +176,25 @@ class UnixBinaryTests(unittest.TestCase):
                 struct.pack_into(">I", data, len(data) + offset, value)
                 with self.assertRaisesRegex(ValueError, "signature|code directory"):
                     self.inspect(data, "macos")
+
+    def test_adhoc_allows_only_empty_cms_placeholder_and_empty_requirements(self):
+        for slot, blob in ((0x10000, struct.pack(">II", 0xFADE0B01, 8)),
+                           (2, struct.pack(">III", 0xFADE0C01, 12, 0))):
+            with self.subTest(slot=slot):
+                self.assertEqual(MODULE.adhoc_identity(signature_with_extra(slot, blob)), "fixture")
+        empty_cms = struct.pack(">II", 0xFADE0B01, 8)
+        for flags in (0, 0x10002):
+            with self.assertRaisesRegex(ValueError, "code directory"):
+                MODULE.adhoc_identity(signature_with_extra(0x10000, empty_cms, flags))
+
+    def test_adhoc_rejects_cms_payload_permissions_and_unknown_slots_with_details(self):
+        for slot, blob in ((0x10000, struct.pack(">II", 0xFADE0B01, 9) + b"\0"),
+                           (0x10000, struct.pack(">II", 0xFADE0C01, 8)),
+                           (5, struct.pack(">II", 0xFADE0B01, 8)),
+                           (2, struct.pack(">4I", 0xFADE0C01, 16, 1, 0))):
+            with self.subTest(slot=slot, blob=blob):
+                with self.assertRaisesRegex(ValueError, rf"slot={slot:#x}, magic=0x.*length="):
+                    MODULE.adhoc_identity(signature_with_extra(slot, blob))
 
     def test_truncated_or_wrong_architecture_input_is_rejected(self):
         for platform, fixture, machine_offset in (("linux", elf(), 18), ("macos", macho(), 4)):

@@ -55,8 +55,11 @@ def adhoc_identity(signature):
             identities.append(bytes.fromhex(cstring(blob, identifier_offset)).decode("utf-8"))
         elif slot == 2 and blob == struct.pack(">III", 0xFADE0C01, 12, 0):
             pass  # codesign may add an empty requirements set.
+        elif slot == 0x10000 and blob == struct.pack(">II", 0xFADE0B01, 8):
+            pass  # Apple's ad-hoc signer emits a CMS wrapper with no payload.
         else:
-            raise ValueError("signature has entitlements, requirements or CMS that must be preserved")
+            raise ValueError("signature has entitlements, requirements or CMS that must be preserved: "
+                             f"slot={slot:#x}, magic={blob_magic:#x}, length={blob_length}")
     if 0 not in seen or not identities or len(set(identities)) != 1:
         raise ValueError("inconsistent ad-hoc signing identifier")
     return identities[0]

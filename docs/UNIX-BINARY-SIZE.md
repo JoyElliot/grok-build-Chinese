@@ -9,7 +9,7 @@ Linux 和 macOS 只处理发布副本；Cargo 构建输出、程序功能、依�
 
 `.github/scripts/strip-unix-binary.py` 在剥离前后提取上述信息并比较。信息变化、输出变大、工具失败或 CLI 不一致均令打包失败，不自动忽略错误或回退为未验证的安装包。脚本在隔离的 GROK_HOME 中比较原程序与发布副本的 `--version`、`--help`、`agent --help` 和 `update --help`，随后平台 action 继续执行原有包内外哈希、解包、版本、权限、安装与更新协议检查。
 
-macOS 只接受当前无特殊权限的 ad-hoc 输入；Developer ID/CMS、entitlements、非空 requirements 或额外运行限制都会拒绝处理。显式保留签名标识和 metadata，重新签名后执行 `codesign --verify --strict`。它仍不是 Developer ID 签名或 Apple 公证。动态符号不会像局部符号一样裁剪，也不会删除整个 `__LINKEDIT` 或展开表。
+macOS 只接受当前无特殊权限的 ad-hoc 输入；Developer ID/带内容的 CMS、entitlements、非空 requirements 或额外运行限制都会拒绝处理。Apple 的 ad-hoc 签名器会生成只有 8 字节头、没有负载的 CMS 占位记录；仅精确接受该空记录，仍拒绝任何有内容的 CMS。显式保留签名标识和 metadata，重新签名后执行 `codesign --verify --strict`。它仍不是 Developer ID 签名或 Apple 公证。动态符号不会像局部符号一样裁剪，也不会删除整个 `__LINKEDIT` 或展开表。
 
 ## 诊断记录
 
