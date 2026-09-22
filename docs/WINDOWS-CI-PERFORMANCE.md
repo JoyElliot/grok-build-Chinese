@@ -39,6 +39,18 @@ zh-dev 和同仓库、非 Dependabot PR 的预览可以保存缓存；fork PR �
 
 推送、PR 更新和手动触发的 CI 默认并行运行：每轮以 `github.run_id` 使用独立并发组，并设置 `cancel-in-progress: false`。新一轮不会自动取消同分支旧轮，也无需 `parallel_run` 开关。GitHub runner 配额不足时仍可能排队；验收需核对制品运行 ID 与源码提交。
 
+## 可选的 Rust 库内容缓存
+
+Windows 产物编译在原有 Cargo target/host 缓存之外试用固定版本 sccache 0.18.0。`RUSTC_WRAPPER` 指向临时目录中的轻量启动器，只将仓库内 `lib` / `rlib` 编译交给内容缓存；registry 依赖、build script、proc-macro、测试程序与最终 EXE 仍走原编译器。启动器逐项原样传递参数和退出码，不使用会改变 Cargo 产物文件名哈希的 `RUSTC_WORKSPACE_WRAPPER`，也不让 cc-rs 自动将 sccache 用于 C/C++。
+
+缓存目录使用 256 MiB 本地 LRU 上限和固定配置键，不按每个 SHA 或运行 ID 新增归档；只有可信预览可保存，fork / Dependabot / 正式 Release 只读。固定键是一次编译结果快照，后续源码变化仍会产生 miss，并不承诺不断积累所有提交的结果。依赖、工具链、策略变化或缓存淘汰后才重新保存；需要关注整个仓库的缓存容量与其他平台的缓存命中。
+
+sccache 核对 Rust 源码、extern 库、编译参数、编译器和 dep-info 中的环境输入；额外的资源内容指纹用于覆盖过程宏读取的仓库资源。它不会修改源文件时间，也不代替 Cargo 的 build.rs 输入声明。缓存工具下载同时核对固定 SHA-256；准备或启动不可用时保留正常编译路径，缓存服务通信失败允许回退，真实编译失败仍使作业失败。
+
+命中、miss、错误和容量统计写入原有 Cargo timings 诊断制品中的 `sccache-stats.json` / `.txt`，不新增 artifact，不把缓存工具或目录放入安装包。Thin LTO、CGU1、opt-level=3、debug=0、GNU 链接器、包内容与门禁保持不变，macOS 流程也不调整。首次运行负责填充缓存，实际收益需以相同提交和版本的后续复测确认；最终 binary 的代码生成/LTO/链接不会被该缓存跳过。
+
+内嵌 `GROK_VERSION` 变化会使版本库及 shell、pager 等依赖链失效，因此同版本复测不能代表下一次新版本推送的收益。验收还需检查新版本的实际命中和总耗时；如缓存开销、容量压力超过收益，应撤回实验，而不是固定旧版本或降低编译优化来制造提速。
+
 ## Windows 产物体积与运行性能
 
 预览与正式 Release 都使用上游 `release-dist` 编译 profile 和同名 feature。该 profile 启用 Thin LTO、`codegen-units=1`，继承 release 的 `opt-level=3`；不再将 shell 降为 `opt-level=1`。仅覆盖 `profile.release-dist.debug=0`，避免生成不随包发布的调试行号信息。根 Cargo.toml、目标架构、CPU 基线、功能集合和运行协议保持不变。
