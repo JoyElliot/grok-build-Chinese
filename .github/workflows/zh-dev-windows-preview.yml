@@ -18,6 +18,14 @@ on:
         description: 可选的内嵌版本（默认为 CI 构建编号）
         required: false
         type: string
+      macos_build_variant:
+        description: macOS 构建对照；不改变正式发布配置
+        required: false
+        type: choice
+        default: current
+        options:
+          - current
+          - thin-lto
 
 permissions:
   contents: read
@@ -635,6 +643,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
+          build_variant: ${{ inputs.macos_build_variant || 'current' }}
 
   macos-consumer-smoke:
     name: macOS 免费账号真机冒烟

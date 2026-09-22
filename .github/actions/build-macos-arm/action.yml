@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 标记这是统一 Release 工作流调用的正式构建
     required: true
+  build_variant:
+    description: CI 对照配置；正式 Release 只接受 current
+    required: false
+    default: current
 outputs:
   package_name:
     value: ${{ steps.preview.outputs.package_name }}
@@ -78,6 +82,7 @@ runs:
       - name: 选择 macOS 编译配置
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
+          MACOS_BUILD_VARIANT: ${{ inputs.build_variant }}
         shell: bash
         run: |
           set -euo pipefail
@@ -162,6 +167,7 @@ runs:
         run: |
           set -euo pipefail
           python3 .github/scripts/tests/test_macos_build.py
+          python3 .github/scripts/tests/test_unix_binary.py
           python3 packaging/macos/tests/test_install_lock.py
           # protoc 会写入 DOTSLASH_CACHE，必须在缓存恢复完成后再调用。
           "${PROTOC}" --version
@@ -180,17 +186,6 @@ runs:
           python3 .github/scripts/macos-build.py build \
             --release-build "${IS_RELEASE_BUILD}"
 
-      - name: 上传 macOS 构建监控与 Cargo timings
-        if: ${{ always() && env.MACOS_BUILD_REPORT_DIR != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: grok-zh-macos-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.MACOS_BUILD_REPORT_DIR }}
-            ${{ runner.temp }}/grok-zh-target/cargo-timings
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: 打包并验证未签名构建
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
@@ -206,8 +201,9 @@ runs:
             echo "::error::找不到编译产物：${built_bin}"
             exit 1
           fi
-          cp "${built_bin}" "${package}/grok-zh"
-          chmod 0755 "${package}/grok-zh"
+          python3 .github/scripts/strip-unix-binary.py --platform macos \
+            --input "${built_bin}" --output "${package}/grok-zh" \
+            --diagnostics "${MACOS_BUILD_REPORT_DIR}/diagnostics" --version "${GROK_VERSION}"
           cp LICENSE "${package}/LICENSE-grok-build.txt"
           cp SOURCE_REV "${package}/SOURCE_REV"
           cp THIRD-PARTY-NOTICES "${package}/THIRD-PARTY-NOTICES.txt"
@@ -255,7 +251,7 @@ runs:
           Protoc: ${protoc_info}
           Mach-O: ${binary_info}
           Architectures: ${binary_archs}
-          Code signing: unsigned
+          Code signing: ad-hoc (not Developer ID); verified after local-symbol stripping
           Apple notarization: not submitted
           Binary version smoke-tested by CI: true
           Installer and managed links smoke-tested by CI: true
@@ -397,6 +393,17 @@ runs:
           alias_version="$("${bin_dir}/grok" --version | head -n 1)"
           [[ "${alias_version}" == "grok-zh ${GROK_VERSION} ("* ]]
           ls -lh "${archive}" "${archive}.sha256"
+
+      - name: 上传 macOS 构建监控与 Cargo timings
+        if: ${{ always() && env.MACOS_BUILD_REPORT_DIR != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grok-zh-macos-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MACOS_BUILD_REPORT_DIR }}
+            ${{ runner.temp }}/grok-zh-target/cargo-timings
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 上传 macOS ARM64 构建
         id: preview_artifact

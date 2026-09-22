@@ -40,3 +40,9 @@ python .github/scripts/tests/test_package_protocol.py
 ```
 
 macOS 的真实编译、资源采样、Mach-O、权限和安装器验证由 Apple Silicon CI 执行。测试覆盖正式与预览命令及缓存兼容性，并单独验证正式模式仍不可写缓存。流程更新不重发已有 Release，下一次正式标签运行才验证新的正式构建耗时。
+
+## 包体积与显式对照配置
+
+发布副本现在通过局部符号裁剪、运行信息等价检查和 ad-hoc 重签减小体积，诊断映射并入原有 build-monitor artifact。默认编译参数不因符号裁剪而变化。
+
+手动 CI 的 `macos_build_variant=thin-lto` 仅用于构建对照：使用 `release-dist` profile、debug=0、独立且只读的编译缓存；正式 Release 拒绝该实验选项。默认值 `current` 保持上表配置。两种配置均保留原有测试、features、安装包和门禁，也不拆分 macOS 串行作业。验证方法与边界见 [Unix 包体积说明](UNIX-BINARY-SIZE.md)。

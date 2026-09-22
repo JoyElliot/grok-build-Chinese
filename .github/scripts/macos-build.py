@@ -13,7 +13,18 @@ import sys
 import time
 
 
-def build_config(release_build):
+def build_config(release_build, variant="current"):
+    if variant not in ("current", "thin-lto"):
+        raise ValueError("unknown macOS build variant")
+    if variant == "thin-lto":
+        if release_build:
+            raise ValueError("unverified macOS profile is restricted to CI experiments")
+        return {
+            "profile": "release-dist",
+            "cache_key": "trial-release-dist-ltothin-debug0-cgu1-opt3-v1",
+            "description": "release-dist (Thin LTO, debug=0, codegen-units=1, opt-level=3; CI experiment)",
+            "overrides": ["profile.release-dist.debug=0"],
+        }
     build_kind = "Release" if release_build else "CI preview"
     return {
         "profile": "release",
@@ -41,10 +52,10 @@ def cache_writable(release_build, event, ref):
     return event == "workflow_dispatch" and ref.startswith("refs/heads/sync/upstream-")
 
 
-def cargo_command(release_build, target, jobs):
+def cargo_command(release_build, target, jobs, variant="current"):
     if target != "aarch64-apple-darwin" or jobs < 1:
         raise ValueError("expected the macOS ARM64 target and a positive job count")
-    config = build_config(release_build)
+    config = build_config(release_build, variant)
     command = [
         "cargo", "build", "--frozen", "-j", str(jobs), "--target", target,
         "-p", "xai-grok-pager-bin", "--profile", config["profile"],
@@ -217,16 +228,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("configure", "build"))
     parser.add_argument("--release-build", choices=("true", "false"), required=True)
+    parser.add_argument("--variant", choices=("current", "thin-lto"),
+                        default=os.environ.get("MACOS_BUILD_VARIANT", "current"))
     parser.add_argument("--sample-seconds", type=float, default=10)
     args = parser.parse_args()
     release_build = args.release_build == "true"
-    config = build_config(release_build)
+    config = build_config(release_build, args.variant)
     if args.mode == "configure":
         values = {
+            "MACOS_BUILD_VARIANT": args.variant,
             "MACOS_CARGO_PROFILE": config["profile"],
             "MACOS_PROFILE_CACHE_KEY": config["cache_key"],
             "MACOS_PROFILE_DESCRIPTION": config["description"],
-            "MACOS_CACHE_WRITABLE": str(cache_writable(
+            "MACOS_CACHE_WRITABLE": str(args.variant == "current" and cache_writable(
                 release_build, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"],
             )).lower(),
             "MACOS_BUILD_REPORT_DIR": str(Path(os.environ["RUNNER_TEMP"]) / (
@@ -244,7 +258,7 @@ def main():
     if os.environ["MACOS_CARGO_PROFILE"] != config["profile"]:
         raise ValueError("configured cache/package profile does not match the build mode")
     report_dir = Path(os.environ["MACOS_BUILD_REPORT_DIR"])
-    command = cargo_command(release_build, os.environ["TARGET"], int(os.environ["CARGO_BUILD_JOBS"]))
+    command = cargo_command(release_build, os.environ["TARGET"], int(os.environ["CARGO_BUILD_JOBS"]), args.variant)
     hardware_warnings = set()
     hardware = {
         "logical_cpu_count": probe(["sysctl", "-n", "hw.logicalcpu"], hardware_warnings),

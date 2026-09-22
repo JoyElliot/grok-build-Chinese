@@ -23,6 +23,18 @@ TARGET = "aarch64-apple-darwin"
 
 
 class MacosBuildTests(unittest.TestCase):
+    def test_thin_lto_trial_is_explicit_isolated_and_not_a_release_profile_switch(self):
+        command = macos_build.cargo_command(False, TARGET, 3, "thin-lto")
+        self.assertEqual(command[command.index("--profile") + 1], "release-dist")
+        self.assertEqual(command[command.index("--features") + 1], "release-dist")
+        self.assertEqual(command[-2:], ["--config", "profile.release-dist.debug=0"])
+        self.assertNotEqual(macos_build.build_config(False)["cache_key"],
+                            macos_build.build_config(False, "thin-lto")["cache_key"])
+        with self.assertRaisesRegex(ValueError, "restricted"):
+            macos_build.build_config(True, "thin-lto")
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            macos_build.build_config(False, "invalid")
+
     def test_formal_release_reuses_the_verified_preview_command_and_cache(self):
         self.assertEqual(
             macos_build.cargo_command(True, TARGET, 3),
@@ -35,7 +47,7 @@ class MacosBuildTests(unittest.TestCase):
         self.assertIn("; Release)", macos_build.build_config(True)["description"])
         self.assertIn("; CI preview)", macos_build.build_config(False)["description"])
 
-    def test_verified_profile_keeps_windows_preview_optimization_settings(self):
+    def test_default_profile_keeps_current_optimization_settings(self):
         command = macos_build.cargo_command(False, TARGET, 3)
         self.assertEqual(command[command.index("--profile") + 1], "release")
         self.assertEqual(command[command.index("--features") + 1], "release-dist")
@@ -75,6 +87,7 @@ class MacosBuildTests(unittest.TestCase):
     def test_configure_emits_matching_cache_package_and_build_profiles(self):
         with tempfile.TemporaryDirectory() as folder:
             env = os.environ | {
+                "MACOS_BUILD_VARIANT": "current",
                 "GITHUB_EVENT_NAME": "workflow_dispatch",
                 "GITHUB_REF": "refs/heads/sync/upstream-1.0.24",
                 "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_TEMP": folder,
@@ -93,6 +106,27 @@ class MacosBuildTests(unittest.TestCase):
                         Path(folder) / "grok-zh-macos-build-123-2",
                     )
                     self.assertFalse(Path(values["MACOS_BUILD_REPORT_DIR"]).exists())
+
+    def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
+        with tempfile.TemporaryDirectory() as folder:
+            env = os.environ | {
+                "MACOS_BUILD_VARIANT": "thin-lto",
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_REF": "refs/heads/zh-dev",
+                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_TEMP": folder,
+            }
+            command = [sys.executable, str(SCRIPT), "configure", "--release-build"]
+            result = subprocess.run(command + ["false"], env=env, check=True,
+                                    capture_output=True, text=True)
+            values = dict(line.split("=", 1) for line in result.stdout.splitlines())
+            self.assertEqual(values["MACOS_BUILD_VARIANT"], "thin-lto")
+            self.assertEqual(values["MACOS_CARGO_PROFILE"], "release-dist")
+            self.assertEqual(values["MACOS_CACHE_WRITABLE"], "false")
+            self.assertEqual(values["MACOS_PROFILE_CACHE_KEY"],
+                             macos_build.build_config(False, "thin-lto")["cache_key"])
+            result = subprocess.run(command + ["true"], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("restricted to CI experiments", result.stderr)
 
     def test_process_samples_include_descendants_and_exclude_unrelated_compilers(self):
         processes = """

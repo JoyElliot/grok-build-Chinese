@@ -149,6 +149,7 @@ runs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 .github/scripts/tests/test_unix_binary.py
           cargo fmt --all -- --check
           cargo fetch --locked --target "$TARGET"
           cargo test --frozen -j "$CARGO_BUILD_JOBS" -p xai-grok-locale
@@ -180,11 +181,9 @@ runs:
             echo "::error::找不到编译产物：$built_bin"
             exit 1
           fi
-          cp "$built_bin" "$package/grok-zh"
-          chmod 0755 "$package/grok-zh"
-          # release-dist 构建产物保留 DWARF；发布包副本必须在这里移除这些调试段，
-          # 否则单个 ELF 会超过旧版社区更新器的 512 MiB 解包安全上限。
-          strip --strip-debug -- "$package/grok-zh"
+          python3 .github/scripts/strip-unix-binary.py --platform linux \
+            --input "$built_bin" --output "$package/grok-zh" \
+            --diagnostics "$dist/diagnostics/linux" --version "$GROK_VERSION"
           cp LICENSE "$package/LICENSE-grok-build.txt"
           cp SOURCE_REV "$package/SOURCE_REV"
           cp THIRD-PARTY-NOTICES "$package/THIRD-PARTY-NOTICES.txt"
@@ -228,7 +227,7 @@ runs:
             echo "Upstream source revision: $source_rev"
             echo "Repository: $GITHUB_REPOSITORY"
             echo "Target: $TARGET"
-            echo "Profile: release-dist (Thin LTO, codegen-units=1, packaged binary strip --strip-debug)"
+            echo "Profile: release-dist (Thin LTO, codegen-units=1, packaged binary strip --strip-unneeded; runtime image verified)"
             echo "Rust: $rustc_info"
             echo "Cargo: $cargo_info"
             echo "DotSlash: $dotslash_info"
@@ -442,6 +441,7 @@ runs:
           path: |
             dist/${{ steps.package_meta.outputs.archive_name }}
             dist/${{ steps.package_meta.outputs.archive_name }}.sha256
+            dist/diagnostics/linux/
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
