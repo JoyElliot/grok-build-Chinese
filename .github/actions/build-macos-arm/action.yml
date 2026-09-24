@@ -214,8 +214,22 @@ runs:
             echo "::error::找不到编译产物：${built_bin}"
             exit 1
           fi
+          strip_input="${built_bin}"
+          if [[ "${TARGET}" == "x86_64-apple-darwin" ]]; then
+            # Intel linkers can leave the input unsigned. Preserve an existing
+            # signature for the runtime-image checker to inspect and reject if needed.
+            load_commands="$(otool -l "${built_bin}")"
+            if ! printf '%s\n' "${load_commands}" |
+              awk '$1 == "cmd" && $2 == "LC_CODE_SIGNATURE" { found = 1 } END { exit !found }'; then
+              strip_input="${RUNNER_TEMP}/grok-zh-macos-signing-input-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              cp "${built_bin}" "${strip_input}"
+              chmod 0755 "${strip_input}"
+              codesign --sign - --identifier grok-zh "${strip_input}"
+            fi
+            codesign --verify --strict "${strip_input}"
+          fi
           python3 .github/scripts/strip-unix-binary.py --platform macos \
-            --input "${built_bin}" --output "${package}/grok-zh" \
+            --input "${strip_input}" --output "${package}/grok-zh" \
             --diagnostics "${MACOS_BUILD_REPORT_DIR}/diagnostics" --version "${GROK_VERSION}"
           cp LICENSE "${package}/LICENSE-grok-build.txt"
           cp SOURCE_REV "${package}/SOURCE_REV"

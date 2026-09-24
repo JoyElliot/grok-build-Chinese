@@ -156,8 +156,14 @@ def macho_image(data):
             # Entry point, UUID, dependencies, build version, stack size, etc.
             commands.append(raw.hex())
         off += size
-    if off != end or symbols is None or dynamic is None or signature is None:
-        raise ValueError("incomplete Mach-O loader metadata")
+    if off != end:
+        raise ValueError("Mach-O load commands do not fill their declared size")
+    if symbols is None:
+        raise ValueError("Mach-O is missing LC_SYMTAB")
+    if dynamic is None:
+        raise ValueError("Mach-O is missing LC_DYSYMTAB")
+    if signature is None:
+        raise ValueError("Mach-O is missing LC_CODE_SIGNATURE")
     symoff, nsyms, stroff, strsize = symbols
     strings = region(data, stroff, strsize)
     table = []
