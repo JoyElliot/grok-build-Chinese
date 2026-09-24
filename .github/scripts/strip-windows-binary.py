@@ -22,8 +22,8 @@ def inspect_image(path):
         "<HHIIIHH", data, pe + 4,
     )
     optional = pe + 24
-    if machine != 0x8664 or struct.unpack_from("<H", data, optional)[0] != 0x20B:
-        raise ValueError("expected Windows x64 PE32+")
+    if machine not in (0x8664, 0xAA64) or struct.unpack_from("<H", data, optional)[0] != 0x20B:
+        raise ValueError("expected Windows x64 or ARM64 PE32+")
     header = data[optional:optional + optional_size]
     if len(header) != optional_size or optional_size < 112:
         raise ValueError("truncated optional header")

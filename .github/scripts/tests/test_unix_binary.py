@@ -15,12 +15,12 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-def elf(symbols=True):
+def elf(symbols=True, machine=62):
     data = bytearray(512)
     names = b"\0.text\0.shstrtab\0.symtab\0"
     data[256:260] = b"code"
     data[300:300 + len(names)] = names
-    header = (b"\x7fELF\x02\x01\x01" + bytes(9), 3, 62, 1, 0x100100,
+    header = (b"\x7fELF\x02\x01\x01" + bytes(9), 3, machine, 1, 0x100100,
               64, 512, 0, 64, 56, 1, 64, 4 if symbols else 3, 2)
     struct.pack_into("<16sHHIQQQIHHHHHH", data, 0, *header)
     struct.pack_into("<IIQQQQQQ", data, 64, 1, 5, 0, 0x100000, 0x100000, 260, 260, 4096)
@@ -32,7 +32,7 @@ def elf(symbols=True):
     return data
 
 
-def macho(locals_present=True):
+def macho(locals_present=True, cpu=0x100000C):
     def command(cmd, data):
         return struct.pack("<II", cmd, len(data) + 8) + data
 
@@ -72,7 +72,7 @@ def macho(locals_present=True):
     commands.append(command(0x1B, bytes(range(16))))
     commands.append(command(0x80000028, struct.pack("<QQ", 768, 0)))
     commands.append(command(0x1D, struct.pack("<II", sigoff, len(signature))))
-    header = struct.pack("<8I", 0xFEEDFACF, 0x100000C, 0, 2, len(commands),
+    header = struct.pack("<8I", 0xFEEDFACF, cpu, 0, 2, len(commands),
                          sum(map(len, commands)), 0x200085, 0)
     data = bytearray(header + b"".join(commands))
     data.extend(bytes(1024 - len(data)))
@@ -98,6 +98,14 @@ class UnixBinaryTests(unittest.TestCase):
 
     def test_elf_removes_only_nonallocated_static_symbols(self):
         MODULE.verify_stripped(self.inspect(elf(), "linux"), self.inspect(elf(False), "linux"), "linux")
+
+    def test_new_native_architectures_keep_the_same_runtime_image_checks(self):
+        for platform, before, after in (
+            ("linux", elf(machine=183), elf(False, machine=183)),
+            ("macos", macho(cpu=0x1000007), macho(False, cpu=0x1000007)),
+        ):
+            with self.subTest(platform=platform):
+                MODULE.verify_stripped(self.inspect(before, platform), self.inspect(after, platform), platform)
 
     def test_elf_rejects_code_entry_and_loader_changes(self):
         before = self.inspect(elf(), "linux")

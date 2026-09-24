@@ -53,8 +53,8 @@ def cache_writable(release_build, event, ref):
 
 
 def cargo_command(release_build, target, jobs, variant="current"):
-    if target != "aarch64-apple-darwin" or jobs < 1:
-        raise ValueError("expected the macOS ARM64 target and a positive job count")
+    if target not in ("aarch64-apple-darwin", "x86_64-apple-darwin") or jobs < 1:
+        raise ValueError("expected a supported macOS target and a positive job count")
     config = build_config(release_build, variant)
     command = [
         "cargo", "build", "--frozen", "-j", str(jobs), "--target", target,

@@ -1,5 +1,5 @@
-name: Build macOS ARM
-description: 在 GitHub 托管的 Apple Silicon runner 上构建并验证未签名的 macOS ARM64 制品
+name: Build macOS
+description: 在 GitHub 托管的原生 macOS runner 上构建并验证未签名制品
 inputs:
   version:
     description: 正式 Release 使用的严格 SemVer；预览构建留空即可
@@ -55,12 +55,19 @@ runs:
             echo "::error::版本无效：${version}"
             exit 1
           fi
-          package_name="grok-zh-${version}-macos-aarch64"
+          case "${TARGET}" in
+            aarch64-apple-darwin) macos_arch=aarch64; binary_arch=arm64 ;;
+            x86_64-apple-darwin) macos_arch=x86_64; binary_arch=x86_64 ;;
+            *) echo "::error::不支持的 macOS target：${TARGET}"; exit 1 ;;
+          esac
+          package_name="grok-zh-${version}-macos-${macos_arch}"
           archive_name="${package_name}.tar.gz"
           {
             echo "GROK_VERSION=${version}"
             echo "PACKAGE_NAME=${package_name}"
             echo "ARCHIVE_NAME=${archive_name}"
+            echo "MACOS_ARCH=${macos_arch}"
+            echo "MACOS_BINARY_ARCH=${binary_arch}"
           } >> "${GITHUB_ENV}"
           {
             echo "package_name=${package_name}"
@@ -68,14 +75,14 @@ runs:
             echo "artifact_name=${package_name}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: 确认 Apple Silicon runner
+      - name: 确认原生 macOS runner
         shell: bash
         run: |
           set -euo pipefail
           arch="$(uname -m)"
           echo "uname -m = ${arch}"
-          if [[ "${arch}" != "arm64" ]]; then
-            echo "::error::期望 Apple Silicon runner（arm64），实际为 ${arch}。"
+          if [[ "${arch}" != "${MACOS_BINARY_ARCH}" ]]; then
+            echo "::error::期望 ${MACOS_BINARY_ARCH} runner，实际为 ${arch}。"
             exit 1
           fi
 
@@ -104,9 +111,15 @@ runs:
           mkdir -p "${cargo_home}" "${target_dir}" "${dotslash_cache}" "${tools_dir}"
 
           dotslash_version="0.5.9"
-          dotslash_archive="${RUNNER_TEMP}/dotslash-macos-arm64.tar.gz"
-          dotslash_uri="https://github.com/facebook/dotslash/releases/download/v${dotslash_version}/dotslash-macos-arm64.v${dotslash_version}.tar.gz"
-          dotslash_sha256="eef15be1b554de7b1409cb0c69c24f2cd04f19c0f101ad69fcdf9d66d4d51639"
+          if [[ "${MACOS_ARCH}" == "aarch64" ]]; then
+            dotslash_platform=macos-arm64
+            dotslash_sha256="eef15be1b554de7b1409cb0c69c24f2cd04f19c0f101ad69fcdf9d66d4d51639"
+          else
+            dotslash_platform=macos-amd64
+            dotslash_sha256="51446593596ffe4cd22bc43a0fe6d82dd367758eb53cb4ade36d6a684ed08469"
+          fi
+          dotslash_archive="${RUNNER_TEMP}/dotslash-${dotslash_platform}.tar.gz"
+          dotslash_uri="https://github.com/facebook/dotslash/releases/download/v${dotslash_version}/dotslash-${dotslash_platform}.v${dotslash_version}.tar.gz"
           curl --fail --location --retry 5 --retry-all-errors \
             --output "${dotslash_archive}" "${dotslash_uri}"
           printf '%s  %s\n' "${dotslash_sha256}" "${dotslash_archive}" |
@@ -177,7 +190,7 @@ runs:
           cargo test --frozen -j "${CARGO_BUILD_JOBS}" \
             -p xai-grok-update --features community-build --lib
 
-      - name: 构建并监控 macOS ARM64
+      - name: 构建并监控 macOS
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
         shell: bash
@@ -216,8 +229,8 @@ runs:
 
           binary_info="$(file "${package}/grok-zh")"
           binary_archs="$(lipo -archs "${package}/grok-zh")"
-          if [[ "${binary_archs}" != "arm64" ]] || [[ "${binary_info}" != *arm64* ]]; then
-            echo "::error::产物不是纯 ARM64 Mach-O：${binary_info}; archs=${binary_archs}"
+          if [[ "${binary_archs}" != "${MACOS_BINARY_ARCH}" ]] || [[ "${binary_info}" != *"${MACOS_BINARY_ARCH}"* ]]; then
+            echo "::error::产物不是纯 ${MACOS_BINARY_ARCH} Mach-O：${binary_info}; archs=${binary_archs}"
             exit 1
           fi
           version_output="$("${package}/grok-zh" --version | head -n 1)"
@@ -236,7 +249,7 @@ runs:
             build_label="CI 预览版"
           fi
           cat > "${package}/BUILD-INFO.txt" <<EOF
-          Grok Build 简体中文 macOS ARM64 ${build_label}
+          Grok Build 简体中文 macOS ${MACOS_BINARY_ARCH} ${build_label}
           Product: grok-build-zh
           License: Apache-2.0
           Version: ${GROK_VERSION}
@@ -377,7 +390,7 @@ runs:
           GROK_HOME="${install_home}" "${package_root}/Install-GrokZh.sh"
           bin_dir="${install_home}/bin"
           first_target="$(readlink "${bin_dir}/grok-zh")"
-          [[ "${first_target}" == ../grok-zh-downloads/grok-zh-*-macos-aarch64.*.installed ]]
+          [[ "${first_target}" == ../grok-zh-downloads/grok-zh-*-macos-${MACOS_ARCH}.*.installed ]]
           [[ "$(readlink "${bin_dir}/agent-zh")" == "grok-zh" ]]
           [[ ! -e "${bin_dir}/grok" && ! -L "${bin_dir}/grok" ]]
           [[ ! -e "${bin_dir}/agent" && ! -L "${bin_dir}/agent" ]]
@@ -386,7 +399,7 @@ runs:
 
           GROK_HOME="${install_home}" "${package_root}/Install-GrokZh.sh" --with-compat-aliases
           second_target="$(readlink "${bin_dir}/grok-zh")"
-          [[ "${second_target}" == ../grok-zh-downloads/grok-zh-*-macos-aarch64.*.installed ]]
+          [[ "${second_target}" == ../grok-zh-downloads/grok-zh-*-macos-${MACOS_ARCH}.*.installed ]]
           [[ "${second_target}" != "${first_target}" ]]
           [[ -f "${bin_dir}/${first_target}" ]]
           [[ -f "${bin_dir}/${second_target}" ]]
@@ -398,14 +411,14 @@ runs:
         if: ${{ always() && env.MACOS_BUILD_REPORT_DIR != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: grok-zh-macos-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          name: grok-zh-macos-${{ env.MACOS_ARCH }}-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.MACOS_BUILD_REPORT_DIR }}
             ${{ runner.temp }}/grok-zh-target/cargo-timings
           if-no-files-found: warn
           retention-days: 7
 
-      - name: 上传 macOS ARM64 构建
+      - name: 上传 macOS 构建
         id: preview_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -423,10 +436,10 @@ runs:
         shell: bash
         run: |
           if [[ "${IS_RELEASE_BUILD}" == "true" ]]; then
-            summary_title="macOS ARM64 Release 构建"
+            summary_title="macOS ${MACOS_BINARY_ARCH} Release 构建"
             usage_note="未经过 Apple Developer ID 签名或公证；发布时由统一 Release 工作流校验并设为不可变。"
           else
-            summary_title="macOS ARM64 预览版"
+            summary_title="macOS ${MACOS_BINARY_ARCH} 预览版"
             usage_note="未经过 Apple Developer ID 签名或公证，仅用于预览测试。"
           fi
           cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
@@ -440,7 +453,7 @@ runs:
           - 本轮允许保存 Cargo 缓存：\`${MACOS_CACHE_WRITABLE}\`
           - 软件包外层校验：\`${ARCHIVE_NAME}.sha256\`
           - 软件包内层校验：\`SHA256SUMS.txt\`
-          - 已在 Apple Silicon runner 上执行二次安装、入口链接与 \`grok-zh --version\` 验证。
+          - 已在原生 macOS runner 上执行二次安装、入口链接与 \`grok-zh --version\` 验证。
           - ${usage_note}
           EOF
 

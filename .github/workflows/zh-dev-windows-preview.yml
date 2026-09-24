@@ -567,6 +567,35 @@ jobs:
             echo '- 编译、核心测试和界面测试各自使用独立的 Windows runner 与 J4 Cargo 任务。'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+  windows-arm64-msvc-preview:
+    name: Windows ARM64 MSVC 预览版
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 240
+    outputs:
+      package_name: ${{ steps.build.outputs.package_name }}
+      archive_name: ${{ steps.build.outputs.archive_name }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_CACHE_SCHEMA: windows-arm64-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-pc-windows-msvc
+      TARGET: aarch64-pc-windows-msvc
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: 构建并验证 Windows ARM64 MSVC
+        id: build
+        uses: ./.github/actions/build-windows-arm
+        with:
+          version: ${{ inputs.version }}
+          release_build: 'false'
+
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版
     runs-on: ubuntu-24.04
@@ -592,6 +621,37 @@ jobs:
           fetch-depth: 1
 
       - name: 构建并验证 Linux x64 GNU
+        id: build
+        uses: ./.github/actions/build-linux-x64
+        with:
+          version: ${{ inputs.version }}
+          release_build: 'false'
+
+  linux-arm64-gnu-preview:
+    name: Linux ARM64 GNU 预览版
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    outputs:
+      package_name: ${{ steps.build.outputs.package_name }}
+      archive_name: ${{ steps.build.outputs.archive_name }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "3"
+      CARGO_CACHE_SCHEMA: linux-arm64-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      DOTSLASH_VERSION: "0.5.9"
+      DOTSLASH_SHA256: 6e358adfd2125ab3f49967107a60a2683231d4f07f0e136735328fa1f21809b2
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-unknown-linux-gnu
+      TARGET: aarch64-unknown-linux-gnu
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: 构建并验证 Linux ARM64 GNU
         id: build
         uses: ./.github/actions/build-linux-x64
         with:
@@ -627,6 +687,35 @@ jobs:
           version: ${{ inputs.version }}
           release_build: 'false'
           build_variant: ${{ inputs.macos_build_variant || 'current' }}
+
+  macos-intel-preview:
+    name: macOS Intel 预览版
+    runs-on: macos-15-intel
+    timeout-minutes: 240
+    outputs:
+      package_name: ${{ steps.build.outputs.package_name }}
+      archive_name: ${{ steps.build.outputs.archive_name }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "3"
+      CARGO_CACHE_SCHEMA: macos-intel-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-apple-darwin
+      TARGET: x86_64-apple-darwin
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: 构建并验证 macOS Intel
+        id: build
+        uses: ./.github/actions/build-macos-arm
+        with:
+          version: ${{ inputs.version }}
+          release_build: 'false'
 
   macos-consumer-smoke:
     name: macOS 免费账号真机冒烟
@@ -812,41 +901,57 @@ jobs:
           echo 'macOS 免费账号真机冒烟通过：认证、联网请求、中文非空回复与会话字段均正常。'
 
   multiplatform-result:
-    name: 三端构建汇总
+    name: 六目标构建汇总
     if: ${{ always() }}
     needs:
       - windows-gnu-preview
+      - windows-arm64-msvc-preview
       - linux-x64-gnu-preview
+      - linux-arm64-gnu-preview
       - macos-arm-preview
+      - macos-intel-preview
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       WINDOWS_RESULT: ${{ needs.windows-gnu-preview.result }}
+      WINDOWS_ARM_RESULT: ${{ needs.windows-arm64-msvc-preview.result }}
       LINUX_RESULT: ${{ needs.linux-x64-gnu-preview.result }}
+      LINUX_ARM_RESULT: ${{ needs.linux-arm64-gnu-preview.result }}
       MACOS_RESULT: ${{ needs.macos-arm-preview.result }}
+      MACOS_INTEL_RESULT: ${{ needs.macos-intel-preview.result }}
+      WINDOWS_ARM_ARTIFACT: ${{ needs.windows-arm64-msvc-preview.outputs.artifact_name }}
       LINUX_ARTIFACT: ${{ needs.linux-x64-gnu-preview.outputs.artifact_name }}
+      LINUX_ARM_ARTIFACT: ${{ needs.linux-arm64-gnu-preview.outputs.artifact_name }}
       MACOS_ARTIFACT: ${{ needs.macos-arm-preview.outputs.artifact_name }}
+      MACOS_INTEL_ARTIFACT: ${{ needs.macos-intel-preview.outputs.artifact_name }}
     steps:
-      - name: 验证三个目标均成功
+      - name: 验证六个目标均成功
         shell: bash
         run: |
           set -euo pipefail
-          printf 'Windows: %s\nLinux: %s\nmacOS: %s\n' \
-            "${WINDOWS_RESULT}" "${LINUX_RESULT}" "${MACOS_RESULT}"
+          printf 'Windows x64: %s\nWindows ARM64: %s\nLinux x64: %s\nLinux ARM64: %s\nmacOS ARM64: %s\nmacOS Intel: %s\n' \
+            "${WINDOWS_RESULT}" "${WINDOWS_ARM_RESULT}" "${LINUX_RESULT}" "${LINUX_ARM_RESULT}" "${MACOS_RESULT}" "${MACOS_INTEL_RESULT}"
           if [[ "${WINDOWS_RESULT}" != success \
+            || "${WINDOWS_ARM_RESULT}" != success \
             || "${LINUX_RESULT}" != success \
-            || "${MACOS_RESULT}" != success ]]; then
+            || "${LINUX_ARM_RESULT}" != success \
+            || "${MACOS_RESULT}" != success \
+            || "${MACOS_INTEL_RESULT}" != success ]]; then
             echo '::error::至少一个平台构建未成功。'
             exit 1
           fi
-          if [[ -z "${LINUX_ARTIFACT}" || -z "${MACOS_ARTIFACT}" ]]; then
+          if [[ -z "${WINDOWS_ARM_ARTIFACT}" || -z "${LINUX_ARTIFACT}" || -z "${LINUX_ARM_ARTIFACT}" \
+            || -z "${MACOS_ARTIFACT}" || -z "${MACOS_INTEL_ARTIFACT}" ]]; then
             echo '::error::可复用工作流没有返回完整的制品名称。'
             exit 1
           fi
           {
-            echo '## 三端预览构建通过'
+            echo '## 六目标预览构建通过'
             echo
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"
+            echo "- Windows ARM64 MSVC：${WINDOWS_ARM_RESULT}（${WINDOWS_ARM_ARTIFACT}）"
             echo "- Linux x86_64 GNU：${LINUX_RESULT}（${LINUX_ARTIFACT}）"
+            echo "- Linux aarch64 GNU：${LINUX_ARM_RESULT}（${LINUX_ARM_ARTIFACT}）"
             echo "- macOS ARM64：${MACOS_RESULT}（${MACOS_ARTIFACT}）"
+            echo "- macOS Intel：${MACOS_INTEL_RESULT}（${MACOS_INTEL_ARTIFACT}）"
           } >> "${GITHUB_STEP_SUMMARY}"

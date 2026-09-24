@@ -23,6 +23,14 @@ TARGET = "aarch64-apple-darwin"
 
 
 class MacosBuildTests(unittest.TestCase):
+    def test_both_native_macos_targets_use_the_release_command(self):
+        for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+            with self.subTest(target=target):
+                command = macos_build.cargo_command(True, target, 3)
+                self.assertEqual(command[command.index("--target") + 1], target)
+        with self.assertRaisesRegex(ValueError, "supported macOS target"):
+            macos_build.cargo_command(True, "aarch64-unknown-linux-gnu", 3)
+
     def test_thin_lto_trial_is_explicit_isolated_and_not_a_release_profile_switch(self):
         command = macos_build.cargo_command(False, TARGET, 3, "thin-lto")
         self.assertEqual(command[command.index("--profile") + 1], "release-dist")

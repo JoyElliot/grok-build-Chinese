@@ -68,10 +68,10 @@ def adhoc_identity(signature):
 def elf_image(data):
     header = unpack("<16sHHIQQQIHHHHHH", data)
     ident, kind, machine, version, entry, phoff, shoff, flags, ehsize, phsize, phnum, shsize, shnum, names_index = header
-    if (ident[:7] != b"\x7fELF\x02\x01\x01" or kind != 3 or machine != 62
+    if (ident[:7] != b"\x7fELF\x02\x01\x01" or kind != 3 or machine not in (62, 183)
             or version != 1 or ehsize != 64 or phsize != 56 or shsize != 64
             or not phnum or not shnum or names_index >= shnum):
-        raise ValueError("expected ELF64 little-endian x86_64 PIE")
+        raise ValueError("expected ELF64 little-endian x86_64 or aarch64 PIE")
     programs = [unpack("<IIQQQQQQ", data, phoff + i * phsize) for i in range(phnum)]
     for p in programs:
         region(data, p[2], p[5])
@@ -86,7 +86,7 @@ def elf_image(data):
         if not attributes & 2:  # SHF_ALLOC
             continue
         if typ in (14, 15, 16):  # SHT_INIT_ARRAY / FINI_ARRAY / PREINIT_ARRAY
-            # ELF64 x86_64 arrays contain 8-byte function addresses. LLVM may
+            # ELF64 arrays contain 8-byte function addresses. LLVM may
             # leave sh_entsize unset; GNU strip fills it without changing data.
             if entsize not in (0, 8) or size % 8:
                 raise ValueError("invalid ELF64 initialization/finalization array size")
@@ -103,8 +103,8 @@ def elf_image(data):
 
 def macho_image(data):
     magic, cpu, subtype, kind, count, command_bytes, flags, reserved = unpack("<8I", data)
-    if magic != 0xFEEDFACF or cpu != 0x100000C or kind != 2:
-        raise ValueError("expected thin Mach-O arm64 executable")
+    if magic != 0xFEEDFACF or cpu not in (0x1000007, 0x100000C) or kind != 2:
+        raise ValueError("expected thin Mach-O x86_64 or arm64 executable")
     end = 32 + command_bytes
     region(data, 32, command_bytes)
     commands, segments, sections, payloads = [], [], [], []

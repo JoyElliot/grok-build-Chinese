@@ -3,6 +3,19 @@
 {
     "name": "protoc",
     "platforms": {
+        "macos-x86_64": {
+            "arg0": "underlying-executable",
+            "size": 2382243,
+            "hash": "sha256",
+            "digest": "9a788036d8f9854f7b03c305df4777cf0e54e5b081e25bf15252da87e0e90875",
+            "format": "zip",
+            "path": "bin/protoc",
+            "providers": [
+                {
+                    "url": "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-osx-x86_64.zip"
+                }
+            ]
+        },
         "macos-aarch64": {
             "arg0": "underlying-executable",
             "size": 2290929,

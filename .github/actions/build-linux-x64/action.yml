@@ -1,5 +1,5 @@
-name: Build Linux x64 GNU
-description: 在 GitHub 托管的 Ubuntu runner 上构建并验证 Linux x86_64 GNU 制品
+name: Build Linux GNU
+description: 在 GitHub 托管的原生 Ubuntu runner 上构建并验证 Linux GNU 制品
 inputs:
   version:
     description: 正式构建使用的严格 SemVer；预览构建留空即可
@@ -49,12 +49,23 @@ runs:
             echo "::error::版本无效：$version"
             exit 1
           fi
-          package_name="grok-zh-$version-linux-x86_64-gnu"
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu) linux_arch=x86_64; machine='Advanced Micro Devices X86-64' ;;
+            aarch64-unknown-linux-gnu) linux_arch=aarch64; machine='AArch64' ;;
+            *) echo "::error::不支持的 Linux target：$TARGET"; exit 1 ;;
+          esac
+          [[ "$(uname -m)" == "$linux_arch" ]] || {
+            echo "::error::Linux runner 架构与 target 不一致：$(uname -m) / $TARGET"
+            exit 1
+          }
+          package_name="grok-zh-$version-linux-$linux_arch-gnu"
           archive_name="$package_name.tar.gz"
           {
             echo "GROK_VERSION=$version"
             echo "PACKAGE_NAME=$package_name"
             echo "ARCHIVE_NAME=$archive_name"
+            echo "LINUX_ARCH=$linux_arch"
+            echo "LINUX_MACHINE=$machine"
           } >> "$GITHUB_ENV"
           {
             echo "package_name=$package_name"
@@ -133,11 +144,20 @@ runs:
         run: |
           set -euo pipefail
           if [[ ! -x "$TOOLS_DIR/bin/dotslash" ]]; then
-            dotslash_archive="$RUNNER_TEMP/dotslash-ubuntu-22.04.x86_64.tar.gz"
-            dotslash_uri="https://github.com/facebook/dotslash/releases/download/v$DOTSLASH_VERSION/dotslash-ubuntu-22.04.x86_64.tar.gz"
+            if [[ "$LINUX_ARCH" == 'aarch64' ]]; then
+              dotslash_platform='ubuntu-22.04.arm64'
+              dotslash_file="dotslash-${dotslash_platform}.v${DOTSLASH_VERSION}.tar.gz"
+              dotslash_sha256='6e358adfd2125ab3f49967107a60a2683231d4f07f0e136735328fa1f21809b2'
+            else
+              dotslash_platform='ubuntu-22.04.x86_64'
+              dotslash_file="dotslash-${dotslash_platform}.tar.gz"
+              dotslash_sha256="$DOTSLASH_SHA256"
+            fi
+            dotslash_archive="$RUNNER_TEMP/$dotslash_file"
+            dotslash_uri="https://github.com/facebook/dotslash/releases/download/v$DOTSLASH_VERSION/$dotslash_file"
             curl --fail --location --retry 5 --retry-all-errors \
               --output "$dotslash_archive" "$dotslash_uri"
-            printf '%s  %s\n' "$DOTSLASH_SHA256" "$dotslash_archive" |
+            printf '%s  %s\n' "$dotslash_sha256" "$dotslash_archive" |
               sha256sum -c -
             tar -xzf "$dotslash_archive" -C "$TOOLS_DIR/bin" dotslash
           fi
@@ -156,7 +176,7 @@ runs:
           cargo test --frozen -j "$CARGO_BUILD_JOBS" \
             -p xai-grok-update --features community-build --lib
 
-      - name: 构建 Linux x86_64 GNU
+      - name: 构建 Linux GNU
         shell: bash
         run: |
           set -euo pipefail
@@ -196,8 +216,8 @@ runs:
 
           binary_info="$(file "$package/grok-zh")"
           machine_info="$(readelf -h "$package/grok-zh" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
-          if [[ "$binary_info" != *"ELF 64-bit"* ]] || [[ "$machine_info" != "Advanced Micro Devices X86-64" ]]; then
-            echo "::error::产物不是 x86_64 ELF：$binary_info；Machine=$machine_info"
+          if [[ "$binary_info" != *"ELF 64-bit"* ]] || [[ "$machine_info" != "$LINUX_MACHINE" ]]; then
+            echo "::error::产物不是 $LINUX_ARCH ELF：$binary_info；Machine=$machine_info"
             exit 1
           fi
           version_output="$("$package/grok-zh" --version | head -n 1)"
@@ -219,7 +239,7 @@ runs:
             update_support="false (Actions preview artifact only)"
           fi
           {
-            echo "Grok Build 简体中文 Linux x86_64 GNU $build_label"
+            echo "Grok Build 简体中文 Linux $LINUX_ARCH GNU $build_label"
             echo "Product: grok-build-zh"
             echo "License: Apache-2.0"
             echo "Version: $GROK_VERSION"
@@ -433,7 +453,7 @@ runs:
             "$coexist_home/.grok/bin/.grok-zh-install.json"
           ls -lh "$archive" "$archive.sha256"
 
-      - name: 上传 Linux x86_64 GNU 构建
+      - name: 上传 Linux GNU 构建
         id: preview_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -451,9 +471,9 @@ runs:
         run: |
           {
             if [[ "${{ inputs.release_build }}" == "true" ]]; then
-              echo "## Linux x86_64 GNU Release 候选"
+              echo "## Linux $LINUX_ARCH GNU Release 候选"
             else
-              echo "## Linux x86_64 GNU 预览版"
+              echo "## Linux $LINUX_ARCH GNU 预览版"
             fi
             echo
             echo "- 版本：$GROK_VERSION"

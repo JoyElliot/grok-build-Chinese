@@ -550,12 +550,20 @@ pub(crate) fn version_from_community_linux_binary_name(name: &str) -> Option<Str
 pub(crate) fn version_from_current_community_unix_binary_name(name: &str) -> Option<String> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         version_from_community_macos_binary_name(name)
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        version_from_community_binary_name(name, "macos-x86_64")
     } else if cfg!(all(
         target_os = "linux",
         target_arch = "x86_64",
         target_env = "gnu"
     )) {
         version_from_community_linux_binary_name(name)
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "gnu"
+    )) {
+        version_from_community_binary_name(name, "linux-aarch64-gnu")
     } else {
         None
     }
@@ -756,6 +764,13 @@ mod tests {
             .as_deref(),
             Some("1.0.8-linux.x86-alpha.2")
         );
+        for platform in ["macos-x86_64", "linux-aarch64-gnu"] {
+            let name = format!("grok-zh-1.0.36-{platform}.42-0.installed");
+            assert_eq!(
+                version_from_community_binary_name(&name, platform).as_deref(),
+                Some("1.0.36")
+            );
+        }
         for invalid in [
             "grok-zh-1.0.7",
             "grok-zh-1.0.7-macos-aarch64.installed",

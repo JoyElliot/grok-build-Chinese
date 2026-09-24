@@ -16,14 +16,14 @@ sys.dont_write_bytecode = True
 SPEC.loader.exec_module(MODULE)
 
 
-def executable(with_symbols):
+def executable(with_symbols, machine=0x8664):
     # Minimal PE32+ fixture with one mapped executable section and a file-only
     # COFF symbol. The loader metadata and machine code are identical in both.
     data = bytearray(1024)
     data[:2] = b"MZ"
     struct.pack_into("<I", data, 60, 128)
     data[128:132] = b"PE\0\0"
-    struct.pack_into("<HHIIIHH", data, 132, 0x8664, 1, 0,
+    struct.pack_into("<HHIIIHH", data, 132, machine, 1, 0,
                      1024 if with_symbols else 0, 1 if with_symbols else 0, 240, 0x22)
     optional = 152
     struct.pack_into("<H", data, optional, 0x20B)
@@ -69,6 +69,13 @@ class WindowsBinaryTests(unittest.TestCase):
         after = self.inspect(executable(False))
         MODULE.verify_stripped(before, after)
         self.assertGreater(before["bytes"], after["bytes"])
+
+    def test_arm64_pe_is_accepted_and_must_keep_its_machine_type(self):
+        before = self.inspect(executable(True, machine=0xAA64))
+        after = self.inspect(executable(False, machine=0xAA64))
+        MODULE.verify_stripped(before, after)
+        with self.assertRaisesRegex(ValueError, "runtime image"):
+            MODULE.verify_stripped(before, self.inspect(executable(False)))
 
     def test_code_entry_point_imports_and_mitigations_must_not_change(self):
         before = self.inspect(executable(True))

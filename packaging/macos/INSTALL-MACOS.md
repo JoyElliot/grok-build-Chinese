@@ -1,12 +1,12 @@
-# macOS ARM64 安装说明
+# macOS 安装说明
 
-此软件包是 Grok Build 简体中文社区版的 Apple Silicon 构建，仅支持
-`aarch64-apple-darwin`（M1 及后续 Apple Silicon）。它不是 SpaceXAI 官方发行版。
+此软件包是 Grok Build 简体中文社区版的 macOS 构建，按设备选用
+`aarch64-apple-darwin`（Apple Silicon）或 `x86_64-apple-darwin`（Intel）。它不是 SpaceXAI 官方发行版。
 
 ## 安全边界
 
-- 软件包由 GitHub Actions 的 `macos-15` Apple Silicon runner 构建，并在 CI 中检查
-  纯 ARM64 Mach-O 架构、包内文件、二次安装、入口链接和 `grok-zh --version`。
+- Apple Silicon 和 Intel 软件包分别由 GitHub Actions 的 `macos-15` 与 `macos-15-intel` runner 构建，并在 CI 中检查
+  对应的 Mach-O 架构、包内文件、二次安装、入口链接和 `grok-zh --version`。
 - 正式 Release 的归档由 GitHub 提供 SHA-256，包内保留 `SHA256SUMS.txt`。新版内置更新器
   校验本仓库不可变 Release 中当前平台归档的 digest，不依赖独立 `.sha256` 或其他平台附件。
 - 当前构建未使用 Apple Developer ID 签名，也没有经过 Apple 公证。首次运行仍可能被
@@ -21,7 +21,7 @@
 `release-v*` 归档只含一个与归档同名（去掉 `.tar.gz`）的顶层目录：
 
 ```sh
-archive='grok-zh-1.0.13-macos-aarch64.tar.gz'
+archive='grok-zh-<版本>-macos-<aarch64 或 x86_64>.tar.gz'
 package=${archive%.tar.gz}
 test -f "$archive"
 test ! -e "$package"
@@ -60,11 +60,11 @@ shasum -a 256 -c SHA256SUMS.txt
 - 后台自动下载默认关闭；用户可在设置中显式开启，或手动确认单次更新。
 - 自动更新不等于 Apple 签名或公证。没有 Apple Developer ID 时仍能构建、校验、安装和
   更新，但 Gatekeeper 的首次运行提示不会因此消失。
-- `release-v1.0.13` 起，macOS 与 Windows、Linux 共用统一稳定版的三平台六资产契约。
-  `v1.0.8` 仍是旧 Windows 客户端专用的桥接版本，不含 macOS 资产。
+- `release-v1.0.13` 起，macOS Apple Silicon 与 Windows x64、Linux x64 共用统一稳定版。
+  Intel 包从六平台正式版开始提供；历史 Release 不会补加附件。`v1.0.8` 仍是旧 Windows 客户端专用的桥接版本。
 
 每个平台保持一个安装包。独立 `.sha256` 在约两个月兼容期内保留，之后的新 Release
-只公开三个平台归档；旧客户端先升级到永久保留的最后一个六资产过渡版，再升级后续版本。
+只公开各平台归档；旧客户端先升级到永久保留的三平台六附件过渡版，再升级后续版本。
 维护约定见 [单包更新协议](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/docs/COMMUNITY-UPDATE-PROTOCOL.md)。
 
 Actions Artifact 只用于预览测试，不是正式更新源。正式自动更新只消费本仓库统一发布

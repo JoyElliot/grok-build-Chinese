@@ -2,7 +2,7 @@
 .SYNOPSIS
 下载最新正式 Release，以中文菜单安装 Grok Build 中文社区版。
 .DESCRIPTION
-仅从 JoyElliot/grok-build-Chinese 下载并验证完整 Windows x64 包，再调用包内安装器。
+仅从 JoyElliot/grok-build-Chinese 下载并验证当前 Windows 架构的完整包，再调用包内安装器。
 支持 Windows PowerShell 5.1 和 PowerShell 7；不需要管理员权限。
 .PARAMETER Mode
 Menu 显示中文菜单；Install 共存安装；Commands 打开包内命令设置菜单；Portable 创建便携目录。
@@ -42,6 +42,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:OnlineRepo = 'JoyElliot/grok-build-Chinese'
+$script:OnlinePlatformSuffix = 'windows-x86_64-gnu'
+$script:OnlineTargetTriple = 'x86_64-pc-windows-gnu'
 $script:OnlinePackageFiles = @(
     'grok-zh.exe', 'agent-zh.cmd', 'rg.exe', '一键安装.cmd',
     '[可选]替换原始启动方式.cmd', 'Install-GrokZh.ps1', 'INSTALL-WINDOWS.md',
@@ -92,6 +94,36 @@ function Compare-OnlineVersion {
     return 0
 }
 
+function Get-OnlineNativeMachine {
+    if (!('GrokOnlineNativeMachine' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class GrokOnlineNativeMachine {
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+    public static ushort Get() {
+        ushort processMachine, nativeMachine;
+        if (!IsWow64Process2(GetCurrentProcess(), out processMachine, out nativeMachine))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return nativeMachine;
+    }
+}
+'@
+    }
+    try { return [GrokOnlineNativeMachine]::Get() }
+    catch [System.Management.Automation.MethodInvocationException] {
+        if ($_.Exception.InnerException -isnot [EntryPointNotFoundException]) { throw }
+        # IsWow64Process2 is unavailable on Windows older than 10 1709.
+        if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { return 0xAA64 }
+        if ($env:PROCESSOR_ARCHITECTURE -eq 'AMD64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'AMD64') { return 0x8664 }
+        throw '无法确定 Windows 系统架构。'
+    }
+}
+
 function Get-OnlineReleaseContract {
     param($Release)
     foreach ($flag in @('draft', 'prerelease', 'immutable')) {
@@ -105,7 +137,7 @@ function Get-OnlineReleaseContract {
     $version = ConvertTo-OnlineVersion $versionText -StableOnly
     $legacy = (Compare-OnlineVersion $version (ConvertTo-OnlineVersion '1.0.8')) -le 0
     if ($modern -eq $legacy) { throw "发布标签与版本不匹配：$tag" }
-    $name = "grok-zh-$versionText-windows-x86_64-gnu.zip"
+    $name = "grok-zh-$versionText-$script:OnlinePlatformSuffix.zip"
     $assets = @(Get-OnlineProperty $Release 'assets')
     $assets = @($assets | Where-Object { (Get-OnlineProperty $_ 'name') -ceq $name })
     if ($assets.Count -ne 1) { throw 'Release 缺少当前平台安装包，或存在同名重复附件。' }
@@ -377,7 +409,7 @@ function Read-OnlinePackageProtocol {
         } elseif ($value -isnot [string]) { throw "更新协议字段类型无效：$field" }
     }
     if ($protocol.mode -cne 'executable-only' -or $protocol.manifest -cne 'SHA256SUMS.txt') { throw '不支持此更新协议，请更新在线安装入口。' }
-    if ($protocol.version -cne $Version -or $protocol.platform -cne 'x86_64-pc-windows-gnu') { throw '包内更新协议与发布版本或平台不一致。' }
+    if ($protocol.version -cne $Version -or $protocol.platform -cne $script:OnlineTargetTriple) { throw '包内更新协议与发布版本或平台不一致。' }
     Assert-OnlinePackageRelativePath $protocol.executable
     Assert-OnlinePackageRelativePath $protocol.installer
     if ($protocol.executable -in @('BUILD-INFO.txt', 'SHA256SUMS.txt') -or
@@ -758,8 +790,21 @@ function Invoke-GrokZhOnline {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([string]$Mode = 'Menu', [string]$InstallDir, [string]$PortableDir, [string]$GrokHome,
         [switch]$NoPathUpdate, [switch]$Repair, [switch]$NonInteractive, [switch]$VerifyOnly)
-    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or ![Environment]::Is64BitOperatingSystem -or
-        $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { throw '此在线安装入口目前只支持 Windows x64。' }
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or ![Environment]::Is64BitOperatingSystem) {
+        throw '此在线安装入口只支持 Windows x64 或 ARM64。'
+    }
+    $nativeMachine = Get-OnlineNativeMachine
+    if ($nativeMachine -eq 0xAA64) {
+        $script:OnlinePlatformSuffix = 'windows-aarch64-msvc'
+        $script:OnlineTargetTriple = 'aarch64-pc-windows-msvc'
+        $architecture = 'ARM64'
+    } elseif ($nativeMachine -eq 0x8664) {
+        $script:OnlinePlatformSuffix = 'windows-x86_64-gnu'
+        $script:OnlineTargetTriple = 'x86_64-pc-windows-gnu'
+        $architecture = 'x64'
+    } else {
+        throw ('不支持的 Windows 原生架构：0x{0:X4}' -f $nativeMachine)
+    }
     if ($NonInteractive -and $Mode -eq 'Commands') { throw '命令设置需要交互选择，请去掉 -NonInteractive。' }
     if (!$InstallDir) { $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\grok-zh\bin' }
     $explicitHome = $GrokHome
@@ -779,7 +824,7 @@ function Invoke-GrokZhOnline {
         Write-Host '正在检查最新正式版本...'
         $client = New-OnlineHttpClient
         $release = Get-LatestOnlineRelease -Client $client -WorkDirectory $work
-        Write-Host "系统：Windows x64`n最新正式版：$($release.Version.Text)`n默认安装位置：$InstallDir`n"
+        Write-Host "系统：Windows $architecture`n最新正式版：$($release.Version.Text)`n默认安装位置：$InstallDir`n"
         if ($Mode -eq 'Menu' -and !$NonInteractive -and !$VerifyOnly) {
             Write-Host "1. 安装或更新（推荐，与官方版共存）`n2. 安装并设置 grok / agent 启动命令`n3. 自定义安装目录`n4. 创建或更新便携版（不修改 PATH）`n0. 退出"
             do { $choice = Read-Host '请选择 [0-4]' } while ($choice -notmatch '^[0-4]$')

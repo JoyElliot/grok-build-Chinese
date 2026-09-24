@@ -14,7 +14,7 @@
 
 本项目在尽量保持原有功能、命令行参数、配置格式和协议兼容性的前提下，为 Grok Build 的 CLI、TUI、设置、提示信息和用户文档提供简体中文支持。它以独立程序名 `grok-zh` 与官方版并行使用，但有意共用 `~/.grok` 数据目录：会话、登录状态、配置、第三方 API、插件与本地状态在两个入口之间保持一致。
 
-[项目定位](#项目定位) · [当前状态](#当前状态) · [Windows-安装](#windows-安装) · [macOS-arm64-安装](#macos-arm64-安装) · [Linux-x86_64-GNU-安装](#linux-x86_64-gnu-安装) · [从源码构建](#从源码构建) · [共享数据与兼容约定](#共享数据与兼容约定) · [文档](#文档) · [开发](#开发) · [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases) · [上游与发布策略](#上游与发布策略) · [许可证](#许可证)
+[项目定位](#项目定位) · [当前状态](#当前状态) · [Windows-安装](#windows-安装) · [macOS-安装](#macos-安装) · [Linux-GNU-安装](#linux-gnu-安装) · [从源码构建](#从源码构建) · [共享数据与兼容约定](#共享数据与兼容约定) · [文档](#文档) · [开发](#开发) · [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases) · [上游与发布策略](#上游与发布策略) · [许可证](#许可证)
 
 ![grok-zh 中文 TUI 工具链体检](docs/screenshots/grok-zh-toolchain-check.png)
 
@@ -31,21 +31,31 @@
 
 ## 当前状态
 
-统一稳定版见[最新正式 Release](https://github.com/JoyElliot/grok-build-Chinese/releases/latest)，在同一个不可变 Release 中提供 Windows x86_64 GNU、
-Linux x86_64 GNU 与 macOS ARM64 六个归档及校验资产。`release-v1.0.12` 因 Linux
+统一稳定版见[最新正式 Release](https://github.com/JoyElliot/grok-build-Chinese/releases/latest)，以该页面的实际附件为准。新构建工作流覆盖以下六种系统与架构：
+
+| 系统 | 架构 | 社区包目标 |
+| --- | --- | --- |
+| Windows | x64 | `x86_64-pc-windows-gnu` |
+| Windows | ARM64 | `aarch64-pc-windows-msvc` |
+| macOS | Apple Silicon | `aarch64-apple-darwin` |
+| macOS | Intel | `x86_64-apple-darwin` |
+| Linux | x64 | `x86_64-unknown-linux-gnu` |
+| Linux | ARM64 | `aarch64-unknown-linux-gnu` |
+
+新平台的完整包须通过各自的原生 CI 构建和安装验收后，才会随正式版发布。`release-v1.0.12` 因 Linux
 发布二进制未移除调试信息、超过旧版更新器的解包安全上限，已保留为预发布历史记录，
 稳定通道不会再选择它。已发布的 Windows `v1.0.3`、`v1.0.5` 客户端会先自动升级到
-`v1.0.8` 桥接版，再继续升级到当前统一稳定版；`v1.0.8` 可直接升级。更早写死旧仓库
+`v1.0.8` 桥接版；`v1.0.8` 与早期 `release-v*` 客户端会先选择保留六附件的三平台正式版，再升级到六平台新版。更早写死旧仓库
 地址的 `v1.0.0-zh.preview.3` 仍需手工安装一次现代完整包。Windows 产物尚未经过
 Authenticode 签名，首次运行可能触发 SmartScreen；请只从本仓库
 [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases) 下载。
 
 `zh-dev` 的统一 [CI 工作流](https://github.com/JoyElliot/grok-build-Chinese/actions/workflows/zh-dev-windows-preview.yml)
-同时构建 Windows x64 GNU、Linux x86_64 GNU 与 macOS ARM64 预览 Artifact。预览产物只用于
+构建上述六种目标的预览 Artifact。预览产物只用于
 构建和设备验收，不会独立创建 Release；正式 Tag 由统一发布工作流按版本契约汇总、核验并
 证明各平台资产。macOS 产物尚未使用 Apple Developer ID 签名或公证。安装与安全边界见
-[macOS ARM64 安装说明](packaging/macos/INSTALL-MACOS.md)和
-[Linux x86_64 GNU 安装说明](packaging/linux/INSTALL-LINUX.md)。
+[macOS 安装说明](packaging/macos/INSTALL-MACOS.md)和
+[Linux GNU 安装说明](packaging/linux/INSTALL-LINUX.md)。
 
 已建立的产品与数据边界：
 
@@ -66,7 +76,7 @@ Authenticode 签名，首次运行可能触发 SmartScreen；请只从本仓库
 
 ## Windows 安装
 
-推荐在 PowerShell 中粘贴下面一行，按中文菜单安装或更新最新正式版，也可创建便携版。支持 Windows x64、Windows PowerShell 5.1 和 PowerShell 7，无需管理员权限。
+推荐在 PowerShell 中粘贴下面一行，按中文菜单安装或更新最新正式版，也可创建便携版。在线入口按系统架构选择 Windows x64 GNU 或 ARM64 MSVC 完整包，支持 Windows PowerShell 5.1 和 PowerShell 7，无需管理员权限。ARM64 包须先在 Release 发布。
 
 ```powershell
 $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1'); $tls=[Net.ServicePointManager]::SecurityProtocol; try { [Net.ServicePointManager]::SecurityProtocol=$tls -bor [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/JoyElliot/grok-build-Chinese/zh-dev/packaging/windows/Install-GrokZhOnline.ps1' -OutFile $p; & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $p; if ($LASTEXITCODE -ne 0) { throw "安装未完成，退出码：$LASTEXITCODE" } } finally { [Net.ServicePointManager]::SecurityProtocol=$tls; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
@@ -80,8 +90,8 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 
 正式 Tag 工作流会在 [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases)
 中发布完整 Windows ZIP；`CI` 工作流仍会上传短期 Actions Artifact。
-解压完整包后，所有 `release-v*` 包（例如 `release-v1.0.13`）都会得到唯一的
-`grok-zh-<version>-windows-x86_64-gnu` 目录；进入该目录再双击下列入口。
+解压完整包后，`release-v*` 包会得到唯一的
+`grok-zh-<version>-windows-x86_64-gnu` 或 `grok-zh-<version>-windows-aarch64-msvc` 目录；进入该目录再双击下列入口。
 旧版与 `v1.0.8` 桥接包仍是兼容所需的扁平结构，可在解压目录直接双击：
 
 ```text
@@ -108,10 +118,10 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 
 每个平台保持一个安装包。同包通过新旧校验，独立 `.sha256` 在约两个月兼容期内保留，后续停止公开发布；包内 `SHA256SUMS.txt` 继续用于文件校验。迁移与维护约定见 [单包更新协议](docs/COMMUNITY-UPDATE-PROTOCOL.md)。
 
-## macOS ARM64 安装
+## macOS 安装
 
-macOS 包只支持 Apple Silicon（M1 及后续机型）。先在归档旁完成外层 SHA-256 校验；
-`release-v*` 包解压后只会得到唯一的 `grok-zh-<version>-macos-aarch64` 目录，
+macOS 按 CPU 架构选择 `macos-aarch64`（Apple Silicon）或 `macos-x86_64`（Intel）归档。先在归档旁完成外层 SHA-256 校验；
+`release-v*` 包解压后只会得到唯一的 `grok-zh-<version>-macos-<arch>` 目录，
 进入该目录完成包内 SHA-256 校验后运行：
 
 ```sh
@@ -126,12 +136,12 @@ macOS 包只支持 Apple Silicon（M1 及后续机型）。先在归档旁完成
 外层 GitHub SHA-256、严格 USTAR 布局、包内清单和候选程序版本，再把新的不可变目标原子
 切换到 `grok-zh`/`agent-zh`。这不要求本地拥有 Xcode 或 Apple Developer ID，但当前未签名、
 未公证的构建仍可能触发 Gatekeeper。完整步骤与安全边界见
-[macOS ARM64 安装说明](packaging/macos/INSTALL-MACOS.md)。
+[macOS 安装说明](packaging/macos/INSTALL-MACOS.md)。
 
-## Linux x86_64 GNU 安装
+## Linux GNU 安装
 
-Linux 包面向 `x86_64-unknown-linux-gnu`。先在归档旁完成外层 SHA-256 校验；
-`release-v*` 包解压后只会得到唯一的 `grok-zh-<version>-linux-x86_64-gnu` 目录，
+Linux 包面向 `x86_64-unknown-linux-gnu` 和 `aarch64-unknown-linux-gnu`；按 `uname -m` 选择 `linux-x86_64-gnu` 或 `linux-aarch64-gnu` 归档。先在归档旁完成外层 SHA-256 校验；
+`release-v*` 包解压后只会得到唯一的对应平台目录，
 进入该目录完成包内 SHA-256 校验后运行：
 
 ```sh
@@ -149,7 +159,7 @@ Linux 自动更新从 `release-v1.0.13` 起进入统一稳定通道；该版本�
 Linux 资产。更新器会严格校验不可变 Release、GitHub digest、USTAR 结构、权限、包内
 清单和候选版本，再把新的不可变目标原子切换到入口。WSL 应安装到发行版 ext4 的 `$HOME`，
 不要把受管目录放到无法落实所有者或 `0700` 权限的 DrvFS 挂载。完整说明见
-[Linux x86_64 GNU 安装说明](packaging/linux/INSTALL-LINUX.md)。
+[Linux GNU 安装说明](packaging/linux/INSTALL-LINUX.md)。
 
 ### 反馈
 
@@ -170,7 +180,7 @@ Linux 资产。更新器会严格校验不可变 Release、GitHub digest、USTAR
   ```
 
 - `protoc`：构建脚本优先通过 DotSlash 解析仓库内的 `bin/protoc`，也会回退到 `PATH` 或 `PROTOC` 指定的程序。
-- 官方仓库主要支持 macOS 与 Linux；本 Fork 另行建设 Windows 构建和验证流程。
+- 官方安装器发布 macOS、Linux、Windows 的 x64/ARM64 二进制；本 Fork 按上述六种目标独立构建、打包和验证。官方 Windows 安装包的目标架构不决定本 Fork 已发布的旧 Windows x64 GNU 包所用 ABI。
 
 常用检查：
 
@@ -207,8 +217,8 @@ cargo build --frozen --target x86_64-pc-windows-gnu `
 
 绿色测试包还会在 `grok-zh.exe` 同目录携带 `rg.exe`。社区版搜索入口优先使用该旁载工具，缺失时再回退到系统 `PATH`；这只隔离程序安装文件，不改变两个程序共用 `~/.grok` 数据的约定。
 
-当前 Windows 社区包采用 GNU 工具链且未做代码签名，不提供 MSVC 或传统安装器；正式工作流已完成
-完整 ZIP、DLL 闭包、双层哈希、归档布局和候选程序版本校验。社区自动更新链只消费本仓库
+Windows x64 社区包采用 GNU 工具链，ARM64 包采用 MSVC 工具链；二者均未做代码签名，使用完整 ZIP 和包内安装器。正式工作流检查
+归档布局、哈希和候选程序版本。社区自动更新链只消费本仓库
 Releases 中通过这些门禁的平台资产。
 
 ## 动态公告翻译
@@ -235,8 +245,8 @@ Releases 中通过这些门禁的平台资产。
 ## 文档
 
 - Windows 自动安装：[`packaging/windows/INSTALL-WINDOWS.md`](packaging/windows/INSTALL-WINDOWS.md)
-- macOS ARM64 安装与自动更新：[`packaging/macos/INSTALL-MACOS.md`](packaging/macos/INSTALL-MACOS.md)
-- Linux x86_64 GNU 安装与自动更新：[`packaging/linux/INSTALL-LINUX.md`](packaging/linux/INSTALL-LINUX.md)
+- macOS Apple Silicon / Intel 安装与自动更新：[`packaging/macos/INSTALL-MACOS.md`](packaging/macos/INSTALL-MACOS.md)
+- Linux x64 / ARM64 GNU 安装与自动更新：[`packaging/linux/INSTALL-LINUX.md`](packaging/linux/INSTALL-LINUX.md)
 - 中文用户指南：[`crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/README.md`](crates/codegen/xai-grok-pager/docs/user-guide/zh-CN/README.md)
 - 中文入门教程：[`crates/codegen/xai-grok-pager/docs/tutorial/zh-CN/`](crates/codegen/xai-grok-pager/docs/tutorial/zh-CN/)
 - 英文上游用户指南：[`crates/codegen/xai-grok-pager/docs/user-guide/README.md`](crates/codegen/xai-grok-pager/docs/user-guide/README.md)

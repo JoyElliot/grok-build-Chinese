@@ -1245,8 +1245,15 @@ async fn install_community_release(
     }
 
     #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     ))]
     {
         return install_community_unix_release(&version, &asset).await;
@@ -1254,13 +1261,20 @@ async fn install_community_release(
 
     #[cfg(not(any(
         windows,
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )))]
     {
         let _ = asset;
         anyhow::bail!(
-            "community self-update supports only x86_64-pc-windows-gnu, aarch64-apple-darwin, and x86_64-unknown-linux-gnu"
+            "community self-update supports only Windows x86_64 GNU or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
         );
     }
 }
@@ -1268,8 +1282,15 @@ async fn install_community_release(
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 fn ensure_private_community_dir(path: &std::path::Path) -> Result<()> {
@@ -1332,8 +1353,15 @@ fn ensure_private_community_dir(path: &std::path::Path) -> Result<()> {
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 fn validate_community_home_path(path: &std::path::Path) -> Result<()> {
@@ -1398,8 +1426,15 @@ fn validate_community_home_path(path: &std::path::Path) -> Result<()> {
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 async fn sync_directory(path: &std::path::Path) -> Result<()> {
@@ -1414,8 +1449,15 @@ async fn sync_directory(path: &std::path::Path) -> Result<()> {
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 struct CommunityInstallLock {
@@ -1425,8 +1467,15 @@ struct CommunityInstallLock {
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 impl Drop for CommunityInstallLock {
@@ -1444,8 +1493,15 @@ impl Drop for CommunityInstallLock {
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 fn acquire_community_install_lock(bin_dir: &std::path::Path) -> Result<CommunityInstallLock> {
@@ -1489,8 +1545,15 @@ fn acquire_community_install_lock(bin_dir: &std::path::Path) -> Result<Community
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 fn reserve_unique_community_target(base: &std::path::Path) -> Result<std::path::PathBuf> {
@@ -1524,13 +1587,24 @@ fn reserve_unique_community_target(base: &std::path::Path) -> Result<std::path::
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 fn community_unix_platform_suffix() -> &'static str {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "macos-aarch64"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "macos-x86_64"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "linux-aarch64-gnu"
     } else {
         "linux-x86_64-gnu"
     }
@@ -1539,8 +1613,15 @@ fn community_unix_platform_suffix() -> &'static str {
 #[cfg(all(
     feature = "community-build",
     any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     )
 ))]
 async fn install_community_unix_release(
@@ -3005,8 +3086,15 @@ async fn heal_managed_install(installer: &str) {
         #[cfg(feature = "community-build")]
         if installer == crate::community_release::COMMUNITY_INSTALLER {
             #[cfg(any(
-                all(target_os = "macos", target_arch = "aarch64"),
-                all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+                all(
+                    target_os = "macos",
+                    any(target_arch = "aarch64", target_arch = "x86_64")
+                ),
+                all(
+                    target_os = "linux",
+                    any(target_arch = "x86_64", target_arch = "aarch64"),
+                    target_env = "gnu"
+                )
             ))]
             let bin_dir = {
                 let Some(home) = xai_dirs::resolve_grok_home() else {
@@ -3032,8 +3120,15 @@ async fn heal_managed_install(installer: &str) {
             #[cfg(all(
                 unix,
                 not(any(
-                    all(target_os = "macos", target_arch = "aarch64"),
-                    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+                    all(
+                        target_os = "macos",
+                        any(target_arch = "aarch64", target_arch = "x86_64")
+                    ),
+                    all(
+                        target_os = "linux",
+                        any(target_arch = "x86_64", target_arch = "aarch64"),
+                        target_env = "gnu"
+                    )
                 ))
             ))]
             let bin_dir = grok_home().join("bin");
@@ -3778,8 +3873,15 @@ pub async fn cleanup_community_update_backups() {
         sweep_old_exe_backups(&exe.with_file_name("grok-zh.exe.old")).await;
     }
     #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+        all(
+            target_os = "macos",
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )
     ))]
     if let Some(home) = xai_dirs::resolve_grok_home() {
         let bin = home.join("bin");
@@ -3871,19 +3973,24 @@ fn is_community_installed_target(name: &str) -> bool {
     else {
         return false;
     };
-    ["-linux-x86_64-gnu.", "-macos-aarch64."]
-        .iter()
-        .any(|platform| {
-            let Some((version, nonce)) = rest.rsplit_once(platform) else {
-                return false;
-            };
-            semver::Version::parse(version)
-                .is_ok_and(|parsed| parsed.to_string() == version && parsed.build.is_empty())
-                && !nonce.is_empty()
-                && nonce
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
+    [
+        "-linux-x86_64-gnu.",
+        "-linux-aarch64-gnu.",
+        "-macos-aarch64.",
+        "-macos-x86_64.",
+    ]
+    .iter()
+    .any(|platform| {
+        let Some((version, nonce)) = rest.rsplit_once(platform) else {
+            return false;
+        };
+        semver::Version::parse(version)
+            .is_ok_and(|parsed| parsed.to_string() == version && parsed.build.is_empty())
+            && !nonce.is_empty()
+            && nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
 }
 
 /// Refresh managed config post-update (best-effort, staleness-gated), for deployment-key and team principals alike.

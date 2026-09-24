@@ -28,7 +28,7 @@ def dependencies(block):
     return {scalar.strip()} if scalar.strip() else set(re.findall(r"- ([\w-]+)", sequence))
 
 
-def gate_allows(block, results, include_unix=True, cancelled=False):
+def gate_allows(block, results, include_unix=True, include_new_platforms=True, cancelled=False):
     field = re.search(r"^    if: >-\n((?:      .*\n)+)", block, re.M)
     if field is None:
         raise AssertionError("missing explicit publication condition")
@@ -37,8 +37,9 @@ def gate_allows(block, results, include_unix=True, cancelled=False):
         r"needs\.([\w-]+)\.result", lambda match: repr(results[match[1]]), expression,
     )
     expression = re.sub(
-        r"needs\.release-plan\.outputs\.include_(?:macos|linux)",
-        repr(str(include_unix).lower()), expression,
+        r"needs\.release-plan\.outputs\.include_(macos|linux|new_platforms)",
+        lambda match: repr(str(include_new_platforms if match[1] == "new_platforms" else include_unix).lower()),
+        expression,
     )
     expression = expression.replace("!cancelled()", str(not cancelled))
     expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -54,6 +55,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         cls.jobs = job_blocks(cls.text)
+
+    def test_new_platform_release_floor_matches_the_first_six_asset_version(self):
+        plan = self.jobs["release-plan"]
+        self.assertIn("$patch -ge 36", plan)
+        self.assertIn("include_new_platforms = $includeNewPlatforms.ToString().ToLowerInvariant()", plan)
 
     def test_windows_validation_and_build_run_independently_at_the_same_commit(self):
         for job in (RUST, BUILD):
@@ -79,7 +85,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for job in ("release-attestations", "release-publisher"):
             block = self.jobs[job]
             required = dependencies(block)
-            self.assertTrue({"release-plan", VALIDATION, BUILD}.issubset(required))
+            self.assertTrue({
+                "release-plan", VALIDATION, BUILD, "windows-arm64-msvc-release",
+                "macos-arm-release", "macos-intel-release", "linux-x64-gnu-release",
+                "linux-arm64-gnu-release",
+            }.issubset(required))
             baseline = dict.fromkeys(required, "success")
             self.assertTrue(gate_allows(block, baseline))
             self.assertFalse(gate_allows(block, baseline, cancelled=True))
@@ -87,18 +97,35 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 with self.subTest(gate=job, failed_job=failed_job, outcome=outcome):
                     self.assertFalse(gate_allows(block, baseline | {failed_job: outcome}))
 
-    def test_legacy_bridge_only_allows_the_explicitly_disabled_unix_jobs_to_skip(self):
+    def test_legacy_bridge_only_allows_the_explicitly_disabled_platform_jobs_to_skip(self):
         for job in ("release-attestations", "release-publisher"):
             block = self.jobs[job]
             results = dict.fromkeys(dependencies(block), "success")
-            results.update({"macos-arm-release": "skipped", "linux-x64-gnu-release": "skipped"})
-            self.assertTrue(gate_allows(block, results, include_unix=False))
+            results.update({
+                "macos-arm-release": "skipped", "linux-x64-gnu-release": "skipped",
+                "windows-arm64-msvc-release": "skipped", "macos-intel-release": "skipped",
+                "linux-arm64-gnu-release": "skipped",
+            })
+            self.assertTrue(gate_allows(block, results, include_unix=False, include_new_platforms=False))
             for failed_job in (VALIDATION, BUILD):
                 for outcome in ("failure", "cancelled", "skipped"):
                     with self.subTest(gate=job, failed_job=failed_job, outcome=outcome):
                         self.assertFalse(gate_allows(
                             block, results | {failed_job: outcome}, include_unix=False,
+                            include_new_platforms=False,
                         ))
+
+    def test_all_six_assets_are_downloaded_attested_and_published(self):
+        attest = self.jobs["release-attestations"]
+        publish = self.jobs["release-publisher"]
+        for job in ("windows-arm64-msvc-release", "macos-intel-release", "linux-arm64-gnu-release"):
+            self.assertIn(f"needs.{job}.outputs.artifact_name", attest)
+            self.assertIn(f"needs.{job}.outputs.artifact_name", publish)
+            self.assertIn(f"needs.{job}.outputs.archive_name", attest)
+            self.assertIn(f"needs.{job}.outputs.archive_name", publish)
+        for name in ("WINDOWS_ARM_ARCHIVE_NAME", "MAC_INTEL_ARCHIVE_NAME", "LINUX_ARM_ARCHIVE_NAME"):
+            self.assertIn(f"env.{name}", attest)
+            self.assertIn(f"$env:{name}", publish)
 
     def test_formal_macos_keeps_release_identity_and_publisher_owns_release_writes(self):
         macos = self.jobs["macos-arm-release"]

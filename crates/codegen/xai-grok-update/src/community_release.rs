@@ -166,8 +166,24 @@ enum CommunityArchiveKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommunityPlatform {
     WindowsX86_64Gnu,
+    WindowsAarch64Msvc,
+    MacosX86_64,
     MacosAarch64,
     LinuxX86_64Gnu,
+    LinuxAarch64Gnu,
+}
+
+impl CommunityPlatform {
+    fn target_triple(self) -> &'static str {
+        match self {
+            Self::WindowsX86_64Gnu => "x86_64-pc-windows-gnu",
+            Self::WindowsAarch64Msvc => "aarch64-pc-windows-msvc",
+            Self::MacosX86_64 => "x86_64-apple-darwin",
+            Self::MacosAarch64 => "aarch64-apple-darwin",
+            Self::LinuxX86_64Gnu => "x86_64-unknown-linux-gnu",
+            Self::LinuxAarch64Gnu => "aarch64-unknown-linux-gnu",
+        }
+    }
 }
 
 fn current_community_platform() -> Result<CommunityPlatform> {
@@ -177,6 +193,14 @@ fn current_community_platform() -> Result<CommunityPlatform> {
         target_env = "gnu"
     )) {
         Ok(CommunityPlatform::WindowsX86_64Gnu)
+    } else if cfg!(all(
+        target_os = "windows",
+        target_arch = "aarch64",
+        target_env = "msvc"
+    )) {
+        Ok(CommunityPlatform::WindowsAarch64Msvc)
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Ok(CommunityPlatform::MacosX86_64)
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Ok(CommunityPlatform::MacosAarch64)
     } else if cfg!(all(
@@ -185,9 +209,15 @@ fn current_community_platform() -> Result<CommunityPlatform> {
         target_env = "gnu"
     )) {
         Ok(CommunityPlatform::LinuxX86_64Gnu)
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "gnu"
+    )) {
+        Ok(CommunityPlatform::LinuxAarch64Gnu)
     } else {
         anyhow::bail!(
-            "community self-update supports only x86_64-pc-windows-gnu, aarch64-apple-darwin, and x86_64-unknown-linux-gnu"
+            "community self-update supports only Windows x86_64 GNU or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
         )
     }
 }
@@ -330,9 +360,16 @@ fn release_asset_name_for(platform: CommunityPlatform, version: &str) -> Result<
         CommunityPlatform::WindowsX86_64Gnu => {
             Ok(format!("grok-zh-{version}-windows-x86_64-gnu.zip"))
         }
+        CommunityPlatform::WindowsAarch64Msvc => {
+            Ok(format!("grok-zh-{version}-windows-aarch64-msvc.zip"))
+        }
+        CommunityPlatform::MacosX86_64 => Ok(format!("grok-zh-{version}-macos-x86_64.tar.gz")),
         CommunityPlatform::MacosAarch64 => Ok(format!("grok-zh-{version}-macos-aarch64.tar.gz")),
         CommunityPlatform::LinuxX86_64Gnu => {
             Ok(format!("grok-zh-{version}-linux-x86_64-gnu.tar.gz"))
+        }
+        CommunityPlatform::LinuxAarch64Gnu => {
+            Ok(format!("grok-zh-{version}-linux-aarch64-gnu.tar.gz"))
         }
     }
 }
@@ -354,6 +391,10 @@ fn release_includes_linux_assets(version: &Version) -> bool {
     !is_legacy_release_version(version)
 }
 
+fn release_includes_six_platform_assets(version: &Version) -> bool {
+    (version.major, version.minor, version.patch) >= (1, 0, 36)
+}
+
 #[cfg(test)]
 fn expected_release_asset_names(version: &str) -> Result<Vec<String>> {
     let parsed = canonical_release_version(version)?;
@@ -368,6 +409,17 @@ fn expected_release_asset_names(version: &str) -> Result<Vec<String>> {
         let linux = release_asset_name_for(CommunityPlatform::LinuxX86_64Gnu, version)?;
         names.push(linux.clone());
         names.push(format!("{linux}.sha256"));
+    }
+    if release_includes_six_platform_assets(&parsed) {
+        for platform in [
+            CommunityPlatform::WindowsAarch64Msvc,
+            CommunityPlatform::MacosX86_64,
+            CommunityPlatform::LinuxAarch64Gnu,
+        ] {
+            let archive = release_asset_name_for(platform, version)?;
+            names.push(archive.clone());
+            names.push(format!("{archive}.sha256"));
+        }
     }
     names.sort_unstable();
     Ok(names)
@@ -395,10 +447,18 @@ fn select_asset_for_platform(
         anyhow::bail!("release tag and requested version do not match");
     }
     let name = release_asset_name_for(platform, version)?;
-    if platform == CommunityPlatform::MacosAarch64 && !release_includes_macos_assets(&parsed) {
+    if matches!(
+        platform,
+        CommunityPlatform::MacosAarch64 | CommunityPlatform::MacosX86_64
+    ) && !release_includes_macos_assets(&parsed)
+    {
         anyhow::bail!("release {version} predates macOS community self-update support");
     }
-    if platform == CommunityPlatform::LinuxX86_64Gnu && !release_includes_linux_assets(&parsed) {
+    if matches!(
+        platform,
+        CommunityPlatform::LinuxX86_64Gnu | CommunityPlatform::LinuxAarch64Gnu
+    ) && !release_includes_linux_assets(&parsed)
+    {
         anyhow::bail!("release {version} predates Linux community self-update support");
     }
     // Only the selected platform archive participates in trust. GitHub's
@@ -433,9 +493,15 @@ fn select_asset_for_platform(
         size: asset.size,
         sha256: parse_sha256_digest(digest)?,
         archive_kind: match platform {
-            CommunityPlatform::WindowsX86_64Gnu => CommunityArchiveKind::WindowsZip,
-            CommunityPlatform::MacosAarch64 => CommunityArchiveKind::MacosTarGz,
-            CommunityPlatform::LinuxX86_64Gnu => CommunityArchiveKind::LinuxTarGz,
+            CommunityPlatform::WindowsX86_64Gnu | CommunityPlatform::WindowsAarch64Msvc => {
+                CommunityArchiveKind::WindowsZip
+            }
+            CommunityPlatform::MacosX86_64 | CommunityPlatform::MacosAarch64 => {
+                CommunityArchiveKind::MacosTarGz
+            }
+            CommunityPlatform::LinuxX86_64Gnu | CommunityPlatform::LinuxAarch64Gnu => {
+                CommunityArchiveKind::LinuxTarGz
+            }
         },
     })
 }
@@ -955,11 +1021,16 @@ fn extract_verified_windows_executable(
         let mut archive = zip::ZipArchive::new(archive_file)
             .context("opening the downloaded community release as ZIP")?;
         let parsed_version = canonical_release_version(&asset.version)?;
-        let expected_asset_name =
-            release_asset_name_for(CommunityPlatform::WindowsX86_64Gnu, &asset.version)?;
-        if asset.name != expected_asset_name {
-            anyhow::bail!("Windows release asset name does not match its version");
-        }
+        let platform = [
+            CommunityPlatform::WindowsX86_64Gnu,
+            CommunityPlatform::WindowsAarch64Msvc,
+        ]
+        .into_iter()
+        .find(|platform| {
+            release_asset_name_for(*platform, &asset.version)
+                .is_ok_and(|expected| asset.name == expected)
+        })
+        .ok_or_else(|| anyhow::anyhow!("Windows release asset name does not match its version"))?;
         let package_root = if is_legacy_release_version(&parsed_version) {
             None
         } else {
@@ -973,7 +1044,7 @@ fn extract_verified_windows_executable(
         let build_info =
             package_protocol::read_zip_metadata(&mut archive, package_root, BUILD_INFO)?;
         let protocol =
-            PackageProtocol::parse(&build_info, &asset.version, "x86_64-pc-windows-gnu")?;
+            PackageProtocol::parse(&build_info, &asset.version, platform.target_triple())?;
         if let Some(protocol) = protocol {
             let manifest =
                 package_protocol::read_zip_metadata(&mut archive, package_root, INNER_MANIFEST)?;
@@ -1396,10 +1467,20 @@ fn extract_verified_macos_executable(
     archive_path: &Path,
     destination: &Path,
 ) -> Result<()> {
-    let package_root = expected_unix_package_root(asset, CommunityPlatform::MacosAarch64)?;
+    let platform = [
+        CommunityPlatform::MacosX86_64,
+        CommunityPlatform::MacosAarch64,
+    ]
+    .into_iter()
+    .find(|platform| {
+        release_asset_name_for(*platform, &asset.version)
+            .is_ok_and(|expected| asset.name == expected)
+    })
+    .ok_or_else(|| anyhow::anyhow!("macOS release asset name does not match its version"))?;
+    let package_root = expected_unix_package_root(asset, platform)?;
     extract_declared_or_legacy_unix(
         asset,
-        "aarch64-apple-darwin",
+        platform.target_triple(),
         archive_path,
         destination,
         &package_root,
@@ -1413,10 +1494,20 @@ fn extract_verified_linux_executable(
     archive_path: &Path,
     destination: &Path,
 ) -> Result<()> {
-    let package_root = expected_unix_package_root(asset, CommunityPlatform::LinuxX86_64Gnu)?;
+    let platform = [
+        CommunityPlatform::LinuxX86_64Gnu,
+        CommunityPlatform::LinuxAarch64Gnu,
+    ]
+    .into_iter()
+    .find(|platform| {
+        release_asset_name_for(*platform, &asset.version)
+            .is_ok_and(|expected| asset.name == expected)
+    })
+    .ok_or_else(|| anyhow::anyhow!("Linux release asset name does not match its version"))?;
+    let package_root = expected_unix_package_root(asset, platform)?;
     extract_declared_or_legacy_unix(
         asset,
-        "x86_64-unknown-linux-gnu",
+        platform.target_triple(),
         archive_path,
         destination,
         &package_root,
@@ -1953,9 +2044,15 @@ mod tests {
             size: 1,
             sha256: "ab".repeat(32),
             archive_kind: match platform {
-                CommunityPlatform::WindowsX86_64Gnu => CommunityArchiveKind::WindowsZip,
-                CommunityPlatform::MacosAarch64 => CommunityArchiveKind::MacosTarGz,
-                CommunityPlatform::LinuxX86_64Gnu => CommunityArchiveKind::LinuxTarGz,
+                CommunityPlatform::WindowsX86_64Gnu | CommunityPlatform::WindowsAarch64Msvc => {
+                    CommunityArchiveKind::WindowsZip
+                }
+                CommunityPlatform::MacosX86_64 | CommunityPlatform::MacosAarch64 => {
+                    CommunityArchiveKind::MacosTarGz
+                }
+                CommunityPlatform::LinuxX86_64Gnu | CommunityPlatform::LinuxAarch64Gnu => {
+                    CommunityArchiveKind::LinuxTarGz
+                }
             },
         }
     }
@@ -2456,6 +2553,51 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn six_platform_release_keeps_the_historical_bridge_sets_unchanged() {
+        assert_eq!(expected_release_asset_names("1.0.8").unwrap().len(), 2);
+        assert_eq!(expected_release_asset_names("1.0.16").unwrap().len(), 6);
+        let mut modern = release("release-v1.0.36", false, true);
+        modern.assets = uploaded_package_assets("1.0.36");
+        assert_eq!(modern.assets.len(), 12);
+        for (platform, name, kind) in [
+            (
+                CommunityPlatform::WindowsX86_64Gnu,
+                "windows-x86_64-gnu.zip",
+                CommunityArchiveKind::WindowsZip,
+            ),
+            (
+                CommunityPlatform::WindowsAarch64Msvc,
+                "windows-aarch64-msvc.zip",
+                CommunityArchiveKind::WindowsZip,
+            ),
+            (
+                CommunityPlatform::MacosX86_64,
+                "macos-x86_64.tar.gz",
+                CommunityArchiveKind::MacosTarGz,
+            ),
+            (
+                CommunityPlatform::MacosAarch64,
+                "macos-aarch64.tar.gz",
+                CommunityArchiveKind::MacosTarGz,
+            ),
+            (
+                CommunityPlatform::LinuxX86_64Gnu,
+                "linux-x86_64-gnu.tar.gz",
+                CommunityArchiveKind::LinuxTarGz,
+            ),
+            (
+                CommunityPlatform::LinuxAarch64Gnu,
+                "linux-aarch64-gnu.tar.gz",
+                CommunityArchiveKind::LinuxTarGz,
+            ),
+        ] {
+            let selected = select_asset_for_platform(&modern, "1.0.36", platform).unwrap();
+            assert_eq!(selected.name, format!("grok-zh-1.0.36-{name}"));
+            assert_eq!(selected.archive_kind, kind);
+        }
     }
 
     #[test]
