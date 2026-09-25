@@ -44,9 +44,11 @@ def build_config(release_build, variant="current"):
     }
 
 
-def cache_writable(release_build, event, ref):
+def cache_writable(release_build, event, ref, trusted_pr=False):
     if release_build:
         return False
+    if event == "pull_request":
+        return trusted_pr
     if ref == "refs/heads/zh-dev" and event in ("push", "workflow_dispatch"):
         return True
     return event == "workflow_dispatch" and ref.startswith("refs/heads/sync/upstream-")
@@ -242,6 +244,7 @@ def main():
             "MACOS_PROFILE_DESCRIPTION": config["description"],
             "MACOS_CACHE_WRITABLE": str(args.variant == "current" and cache_writable(
                 release_build, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"],
+                trusted_pr=os.environ.get("MACOS_TRUSTED_PR") == "true",
             )).lower(),
             "MACOS_BUILD_REPORT_DIR": str(Path(os.environ["RUNNER_TEMP"]) / (
                 f"grok-zh-macos-build-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"

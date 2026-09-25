@@ -567,6 +567,84 @@ jobs:
             echo '- 编译、核心测试和界面测试各自使用独立的 Windows runner 与 J4 Cargo 任务。'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+  native-rust-validation:
+    name: 原生测试 (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows ARM64 MSVC
+            os: windows-11-vs2026-arm
+            family: windows
+            target: aarch64-pc-windows-msvc
+            schema: windows-arm64-v1
+            jobs: 4
+          - label: Linux x64 GNU
+            os: ubuntu-24.04
+            family: linux
+            target: x86_64-unknown-linux-gnu
+            schema: linux-x64-v1
+            jobs: 3
+            dotslash_sha256: 7400dd0dbdf05d3be4e604b62807eb1bcbaa0d1bced010d30746243759e0ac03
+          - label: Linux ARM64 GNU
+            os: ubuntu-24.04-arm
+            family: linux
+            target: aarch64-unknown-linux-gnu
+            schema: linux-arm64-v1
+            jobs: 3
+            dotslash_sha256: 6e358adfd2125ab3f49967107a60a2683231d4f07f0e136735328fa1f21809b2
+          - label: macOS ARM64
+            os: macos-15
+            family: macos
+            target: aarch64-apple-darwin
+            schema: macos-arm-v1
+            jobs: 3
+          - label: macOS Intel
+            os: macos-15-intel
+            family: macos
+            target: x86_64-apple-darwin
+            schema: macos-intel-v1
+            jobs: 4
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
+      # Keep test assertions/overflow checks; omit line-table debug information.
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_CACHE_SCHEMA: ${{ matrix.schema }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      DOTSLASH_VERSION: "0.5.9"
+      DOTSLASH_SHA256: ${{ matrix.dotslash_sha256 }}
+      RUSTUP_TOOLCHAIN: 1.94.0-${{ matrix.target }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+      - name: Windows ARM64 原生测试
+        if: matrix.family == 'windows'
+        uses: ./.github/actions/build-windows-arm
+        with:
+          version: ${{ inputs.version }}
+          release_build: 'false'
+          phase: test
+      - name: Linux 原生测试
+        if: matrix.family == 'linux'
+        uses: ./.github/actions/build-linux-x64
+        with:
+          version: ${{ inputs.version }}
+          release_build: 'false'
+          phase: test
+      - name: macOS 原生测试
+        if: matrix.family == 'macos'
+        uses: ./.github/actions/build-macos-arm
+        with:
+          version: ${{ inputs.version }}
+          release_build: 'false'
+          phase: test
+
   windows-arm64-msvc-preview:
     name: Windows ARM64 MSVC 预览版
     runs-on: windows-11-vs2026-arm
@@ -595,6 +673,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
+          phase: build
 
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版
@@ -626,6 +705,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
+          phase: build
 
   linux-arm64-gnu-preview:
     name: Linux ARM64 GNU 预览版
@@ -657,6 +737,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
+          phase: build
 
   macos-arm-preview:
     name: macOS ARM64 预览版
@@ -686,6 +767,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
+          phase: build
           build_variant: ${{ inputs.macos_build_variant || 'current' }}
 
   macos-intel-preview:
@@ -697,7 +779,7 @@ jobs:
       archive_name: ${{ steps.build.outputs.archive_name }}
       artifact_name: ${{ steps.build.outputs.artifact_name }}
     env:
-      CARGO_BUILD_JOBS: "3"
+      CARGO_BUILD_JOBS: "4"
       CARGO_CACHE_SCHEMA: macos-intel-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
@@ -716,6 +798,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
+          phase: build
 
   macos-consumer-smoke:
     name: macOS 免费账号真机冒烟
@@ -724,6 +807,7 @@ jobs:
           && github.repository == 'JoyElliot/grok-build-Chinese'
           && github.ref == 'refs/heads/codex/free-account-localization-macos-smoke' }}
     needs:
+      - native-rust-validation
       - macos-arm-preview
     environment: macos-consumer-smoke
     runs-on: macos-15
@@ -904,6 +988,7 @@ jobs:
     name: 六目标构建汇总
     if: ${{ always() }}
     needs:
+      - native-rust-validation
       - windows-gnu-preview
       - windows-arm64-msvc-preview
       - linux-x64-gnu-preview
@@ -913,6 +998,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
+      NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}
       WINDOWS_RESULT: ${{ needs.windows-gnu-preview.result }}
       WINDOWS_ARM_RESULT: ${{ needs.windows-arm64-msvc-preview.result }}
       LINUX_RESULT: ${{ needs.linux-x64-gnu-preview.result }}
@@ -931,7 +1017,7 @@ jobs:
           set -euo pipefail
           printf 'Windows x64: %s\nWindows ARM64: %s\nLinux x64: %s\nLinux ARM64: %s\nmacOS ARM64: %s\nmacOS Intel: %s\n' \
             "${WINDOWS_RESULT}" "${WINDOWS_ARM_RESULT}" "${LINUX_RESULT}" "${LINUX_ARM_RESULT}" "${MACOS_RESULT}" "${MACOS_INTEL_RESULT}"
-          if [[ "${WINDOWS_RESULT}" != success \
+          if [[ "${NATIVE_TEST_RESULT}" != success || "${WINDOWS_RESULT}" != success \
             || "${WINDOWS_ARM_RESULT}" != success \
             || "${LINUX_RESULT}" != success \
             || "${LINUX_ARM_RESULT}" != success \
@@ -948,6 +1034,7 @@ jobs:
           {
             echo '## 六目标预览构建通过'
             echo
+            echo "- 五平台原生测试（与构建并行）：${NATIVE_TEST_RESULT}"
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"
             echo "- Windows ARM64 MSVC：${WINDOWS_ARM_RESULT}（${WINDOWS_ARM_ARTIFACT}）"
             echo "- Linux x86_64 GNU：${LINUX_RESULT}（${LINUX_ARTIFACT}）"

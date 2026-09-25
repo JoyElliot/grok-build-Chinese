@@ -139,5 +139,50 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("release-attestations", dependencies(self.jobs["release-publisher"]))
 
 
+class PreviewNativeValidationTests(unittest.TestCase):
+    def test_all_native_test_jobs_gate_the_six_artifacts(self):
+        jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
+        tests = jobs["native-rust-validation"]
+        self.assertNotIn("needs:", tests)  # Tests start alongside production builds.
+        self.assertIn("fail-fast: false", tests)
+        targets = re.findall(r"^            target: (\S+)$", tests, re.M)
+        self.assertCountEqual(targets, [
+            "aarch64-pc-windows-msvc", "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin",
+        ])
+        self.assertEqual(tests.count("phase: test"), 3)
+        gate = jobs["multiplatform-result"]
+        self.assertIn("native-rust-validation", dependencies(gate))
+        self.assertIn("NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}", gate)
+        self.assertIn('"${NATIVE_TEST_RESULT}" != success ||', gate)
+        self.assertIn("native-rust-validation", dependencies(jobs["macos-consumer-smoke"]))
+        for job in ("windows-arm64-msvc-preview", "linux-x64-gnu-preview",
+                    "linux-arm64-gnu-preview", "macos-arm-preview", "macos-intel-preview"):
+            with self.subTest(job=job):
+                self.assertNotIn("needs:", jobs[job])
+                self.assertIn("phase: build", jobs[job])
+                self.assertIn(job, dependencies(gate))
+
+    def test_formal_release_keeps_full_validation_and_every_preview_phase_fetches(self):
+        release_jobs = job_blocks(WORKFLOW.read_text(encoding="utf-8"))
+        for name in ("build-windows-arm", "build-linux-x64", "build-macos-arm"):
+            with self.subTest(action=name):
+                action = (ROOT / f".github/actions/{name}/action.yml").read_text(encoding="utf-8")
+                self.assertRegex(action, r"(?s)  phase:.*?    default: all")
+                self.assertIn("正式 Release 必须执行完整测试与构建", action)
+                steps = re.split(r"^\s+- name: ", action, flags=re.M)[1:]
+                fetches = [s for s in steps if "cargo fetch --locked" in s]
+                self.assertEqual(len(fetches), 1)
+                self.assertNotIn("if:", fetches[0])
+                tests = [s for s in steps if "cargo test --frozen" in s]
+                self.assertEqual(len(tests), 1)
+                self.assertIn("if: inputs.phase != 'build'", tests[0])
+                self.assertNotIn("cache-hit", tests[0])
+                for job, block in release_jobs.items():
+                    if f"uses: ./.github/actions/{name}" in block:
+                        self.assertNotIn("phase:", block, job)
+                        self.assertIn("release_build: 'true'", block, job)
+
+
 if __name__ == "__main__":
     unittest.main()

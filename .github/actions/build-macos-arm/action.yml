@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 标记这是统一 Release 工作流调用的正式构建
     required: true
+  phase:
+    description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
+    required: false
+    default: all
   build_variant:
     description: CI 对照配置；正式 Release 只接受 current
     required: false
@@ -28,9 +32,15 @@ runs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
+          BUILD_PHASE: ${{ inputs.phase }}
         shell: bash
         run: |
           set -euo pipefail
+          case "$BUILD_PHASE" in all|test|build) ;; *) echo '::error::无效的构建阶段。'; exit 1 ;; esac
+          if [[ "$IS_RELEASE_BUILD" == true && "$BUILD_PHASE" != all ]]; then
+            echo '::error::正式 Release 必须执行完整测试与构建。'
+            exit 1
+          fi
           requested="${REQUESTED_VERSION:-}"
           if [[ "${IS_RELEASE_BUILD}" == "true" && -z "${requested//[[:space:]]/}" ]]; then
             echo "::error::正式构建必须显式提供严格 SemVer 版本。"
@@ -90,6 +100,7 @@ runs:
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
           MACOS_BUILD_VARIANT: ${{ inputs.build_variant }}
+          MACOS_TRUSTED_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -156,6 +167,7 @@ runs:
             grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-
 
       - name: 恢复 Cargo macOS 编译缓存
+        if: inputs.phase != 'test'
         id: cargo_target_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -166,6 +178,7 @@ runs:
             grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ env.MACOS_PROFILE_CACHE_KEY }}-
 
       - name: 恢复 Cargo macOS 宿主构建缓存
+        if: inputs.phase != 'test'
         id: cargo_host_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -175,22 +188,29 @@ runs:
             grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ env.MACOS_PROFILE_CACHE_KEY }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
             grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ env.MACOS_PROFILE_CACHE_KEY }}-
 
+      - name: 获取锁定版本的 Cargo 依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          # protoc 会写入 DOTSLASH_CACHE，必须在缓存恢复完成后再调用。
+          "${PROTOC}" --version
+          cargo fetch --locked --target "${TARGET}"
+
       - name: 验证格式与基础本地化
+        if: inputs.phase != 'build'
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/tests/test_macos_build.py
           python3 .github/scripts/tests/test_unix_binary.py
           python3 packaging/macos/tests/test_install_lock.py
-          # protoc 会写入 DOTSLASH_CACHE，必须在缓存恢复完成后再调用。
-          "${PROTOC}" --version
           cargo fmt --all -- --check
-          cargo fetch --locked --target "${TARGET}"
           cargo test --frozen -j "${CARGO_BUILD_JOBS}" -p xai-grok-locale
           cargo test --frozen -j "${CARGO_BUILD_JOBS}" \
             -p xai-grok-update --features community-build --lib
 
       - name: 构建并监控 macOS
+        if: inputs.phase != 'test'
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
         shell: bash
@@ -200,6 +220,7 @@ runs:
             --release-build "${IS_RELEASE_BUILD}"
 
       - name: 打包并验证未签名构建
+        if: inputs.phase != 'test'
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
         shell: bash
@@ -422,7 +443,7 @@ runs:
           ls -lh "${archive}" "${archive}.sha256"
 
       - name: 上传 macOS 构建监控与 Cargo timings
-        if: ${{ always() && env.MACOS_BUILD_REPORT_DIR != '' }}
+        if: ${{ always() && inputs.phase != 'test' && env.MACOS_BUILD_REPORT_DIR != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: grok-zh-macos-${{ env.MACOS_ARCH }}-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
@@ -433,6 +454,7 @@ runs:
           retention-days: 7
 
       - name: 上传 macOS 构建
+        if: inputs.phase != 'test'
         id: preview_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -445,6 +467,7 @@ runs:
           retention-days: 14
 
       - name: 在摘要中发布制品详情
+        if: inputs.phase != 'test'
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
         shell: bash
@@ -472,22 +495,22 @@ runs:
           EOF
 
       - name: 保存 Cargo macOS 编译缓存
-        if: ${{ success() && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ success() && inputs.phase != 'test' && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-cargo-cache
         with:
           path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/${{ env.MACOS_CARGO_PROFILE }}
           key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo macOS 宿主构建缓存
-        if: ${{ success() && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ success() && inputs.phase != 'test' && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-cargo-cache
         with:
           path: ${{ runner.temp }}/grok-zh-target/${{ env.MACOS_CARGO_PROFILE }}
           key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo 依赖缓存
-        if: ${{ success() && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ success() && inputs.phase != 'test' && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-cargo-cache
         with:
           path: |
             ${{ runner.temp }}/grok-zh-cargo/registry

@@ -115,6 +115,20 @@ class MacosBuildTests(unittest.TestCase):
                     )
                     self.assertFalse(Path(values["MACOS_BUILD_REPORT_DIR"]).exists())
 
+    def test_trusted_pr_cache_flag_cannot_enable_release_or_other_events(self):
+        for release, event, ref, trusted, expected in [
+            (False, "pull_request", "refs/pull/8/merge", True, True),
+            (False, "pull_request", "refs/pull/8/merge", False, False),
+            (True, "pull_request", "refs/pull/8/merge", True, False),
+            (False, "pull_request_target", "refs/heads/zh-dev", True, False),
+            (False, "workflow_run", "refs/heads/zh-dev", True, False),
+        ]:
+            with self.subTest(release=release, event=event, trusted=trusted):
+                self.assertEqual(macos_build.cache_writable(release, event, ref, trusted), expected)
+        action = (SCRIPT.parents[1] / "actions/build-macos-arm/action.yml").read_text(encoding="utf-8")
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", action)
+        self.assertIn("github.actor != 'dependabot[bot]'", action)
+
     def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
         with tempfile.TemporaryDirectory() as folder:
             env = os.environ | {

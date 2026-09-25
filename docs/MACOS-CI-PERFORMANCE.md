@@ -11,9 +11,9 @@ macOS 复合 action 由预览和正式 Release 工作流共同调用，两者复
 
 ## 缓存与测量
 
-- `zh-dev` 的 push/手动预览，以及 `sync/upstream-*` 的手动预览成功后，可保存依赖、目标产物和宿主构建缓存。PR、其他事件/分支和正式 Release 不写入这些缓存。
+- `zh-dev` 的 push/手动预览、`sync/upstream-*` 的手动预览，以及同仓库非 Dependabot PR 成功后，可保存依赖、目标产物和宿主构建缓存。fork PR、其他事件/分支和正式 Release 不写入这些缓存。PR 缓存受 GitHub 的 merge ref 隔离，只供同一 PR 后续运行恢复。
 - 编译缓存继续按工具链、目标、配置、构建输入和 Cargo.lock 区分。沿用现有 `preview-release-lto0-debug0-cgu16-shellopt1-shellcgu16-v1` 键，使正式构建能读取已验证的同配置缓存；键中的 preview 是历史命名。是否实际恢复缓存仍以当次日志为准。
-- 维持 3 路 Cargo 并行和 `CARGO_INCREMENTAL=0`。没有增加整个 debug/test 目录缓存，避免未经测量扩大缓存体积。
+- ARM64 使用 3 路 Cargo 并行；预览 Intel 使用 4 路。保留 `CARGO_INCREMENTAL=0`，没有增加整个 debug/test 目录缓存。
 - `macos-build.py` 添加 `--timings`，以 10 秒为目标间隔记录 Cargo 及其子进程的 RSS 总和、rustc 数量和 runner swap 用量，CSV 保留实际采样时刻。采样 RSS 会重复计算共享页，也可能错过瞬时峰值；不能作为独占内存或精确峰值。
 - 探测失败或进程已消失时保留为 `null` 并记录原因，不记作零。Cargo 的失败退出码直接传回工作流；取消或异常时清理独立进程组，覆盖 Cargo 和编译器后代。
 - 独立的 `grok-zh-macos-build-monitor-<run>-<attempt>` artifact 包含 `runner.json`、`samples.csv`、`summary.json` 和 Cargo timings。诊断文件不加入安装归档。
@@ -45,4 +45,14 @@ macOS 的真实编译、资源采样、Mach-O、权限和安装器验证由 Appl
 
 发布副本现在通过局部符号裁剪、运行信息等价检查和 ad-hoc 重签减小体积，诊断映射并入原有 build-monitor artifact。默认编译参数不因符号裁剪而变化。
 
-手动 CI 的 `macos_build_variant=thin-lto` 仅用于构建对照：使用 `release-dist` profile、debug=0、独立且只读的编译缓存；正式 Release 拒绝该实验选项。默认值 `current` 保持上表配置。两种配置均保留原有测试、features、安装包和门禁，也不拆分 macOS 串行作业。验证方法与边界见 [Unix 包体积说明](UNIX-BINARY-SIZE.md)。
+手动 CI 的 `macos_build_variant=thin-lto` 仅用于构建对照：使用 `release-dist` profile、debug=0、独立且只读的编译缓存；正式 Release 拒绝该实验选项。默认值 `current` 保持上表配置。两种配置均保留原有测试、features、安装包和门禁。验证方法与边界见 [Unix 包体积说明](UNIX-BINARY-SIZE.md)。
+
+## 六平台预览提速（2026-09-26）
+
+基线 [CI 35998975791](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/35998975791) 从创建到完成为 **91 分 30 秒**。Intel 原生 job 为 91 分 13 秒，其中格式与测试 26 分 38 秒、Cargo 编译 62 分 17 秒；三项缓存均未命中，Cargo 1411 个单元全部重新编译。4 核 Intel runner 上 J3 最大采样进程树 RSS 为 6900.91 MiB，swap 为 0；采样没有 CPU 利用率，不能据此保证 J4 的收益。
+
+预览工作流将 Windows ARM64、Linux 两架构及 macOS 两架构的测试放入 `native-rust-validation` 矩阵，与六个产物构建并行。复合 action 的 `phase` 默认为 `all`；预览显式选择 `test` 或 `build`，正式 Release 拒绝分阶段模式。每个阶段都独立获取锁定依赖，测试命令和安装器、架构、签名、归档校验保持完整。预览测试设置 `CARGO_PROFILE_TEST_DEBUG=0`，保留断言与溢出检查。
+
+`multiplatform-result` 必须同时等待原生测试矩阵、Windows GNU 测试门禁和六个平台制品成功。构建 job 成功或先上传制品，不代表整轮验收成功。macOS 真账号冒烟也等待原生测试矩阵。只有构建阶段保存编译与依赖缓存，并在保存前复查精确键，避免并发重复压缩；测试阶段不保存 debug 目录。
+
+验收目标是整轮 CI 从 `created_at` 到所有必需 job 完成（含缓存保存、上传与汇总）不超过 50 分钟。区分冷缓存与命中缓存的结果，不能把拆分后的理论耗时或单独 Cargo 时间当作整轮达标证据。首次 J4、独立测试及 PR 缓存收益待真实 CI 记录。

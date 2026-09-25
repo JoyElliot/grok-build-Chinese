@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 标记是否由正式发布流程调用
     required: true
+  phase:
+    description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
+    required: false
+    default: all
 outputs:
   package_name:
     value: ${{ steps.package_meta.outputs.package_name }}
@@ -24,9 +28,15 @@ runs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
+          BUILD_PHASE: ${{ inputs.phase }}
         shell: bash
         run: |
           set -euo pipefail
+          case "$BUILD_PHASE" in all|test|build) ;; *) echo '::error::无效的构建阶段。'; exit 1 ;; esac
+          if [[ "$IS_RELEASE_BUILD" == true && "$BUILD_PHASE" != all ]]; then
+            echo '::error::正式 Release 必须执行完整测试与构建。'
+            exit 1
+          fi
           requested="$REQUESTED_VERSION"
           if [[ "$IS_RELEASE_BUILD" == "true" \
             && -z "$(printf '%s' "$requested" | tr -d '[:space:]')" ]]; then
@@ -120,6 +130,7 @@ runs:
             grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
 
       - name: 恢复 Cargo Linux release-dist 缓存
+        if: inputs.phase != 'test'
         id: cargo_target_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -130,6 +141,7 @@ runs:
             grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
 
       - name: 恢复 Cargo Linux 宿主构建缓存
+        if: inputs.phase != 'test'
         id: cargo_host_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -165,18 +177,23 @@ runs:
           "$TOOLS_DIR/bin/dotslash" --version
           "$PROTOC" --version
 
+      - name: 获取锁定版本的 Cargo 依赖
+        shell: bash
+        run: cargo fetch --locked --target "$TARGET"
+
       - name: 验证格式与基础本地化
+        if: inputs.phase != 'build'
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/tests/test_unix_binary.py
           cargo fmt --all -- --check
-          cargo fetch --locked --target "$TARGET"
           cargo test --frozen -j "$CARGO_BUILD_JOBS" -p xai-grok-locale
           cargo test --frozen -j "$CARGO_BUILD_JOBS" \
             -p xai-grok-update --features community-build --lib
 
       - name: 构建 Linux GNU
+        if: inputs.phase != 'test'
         shell: bash
         run: |
           set -euo pipefail
@@ -184,9 +201,19 @@ runs:
             --target "$TARGET" \
             -p xai-grok-pager-bin \
             --profile release-dist \
-            --features release-dist
+            --features release-dist --timings
+
+      - name: 上传 Linux Cargo timings
+        if: ${{ !cancelled() && inputs.phase != 'test' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: grok-zh-linux-${{ env.LINUX_ARCH }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 打包并验证 Linux 构建
+        if: inputs.phase != 'test'
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
         shell: bash
@@ -454,6 +481,7 @@ runs:
           ls -lh "$archive" "$archive.sha256"
 
       - name: 上传 Linux GNU 构建
+        if: inputs.phase != 'test'
         id: preview_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -467,6 +495,7 @@ runs:
           retention-days: 14
 
       - name: 在摘要中发布制品详情
+        if: inputs.phase != 'test'
         shell: bash
         run: |
           {
@@ -492,22 +521,22 @@ runs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 保存 Cargo Linux release-dist 缓存
-        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-cargo-cache
         with:
           path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
           key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo Linux 宿主构建缓存
-        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-cargo-cache
         with:
           path: ${{ runner.temp }}/grok-zh-target/release-dist
           key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo 依赖与工具缓存
-        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/save-cargo-cache
         with:
           path: |
             ${{ runner.temp }}/grok-zh-cargo/registry
