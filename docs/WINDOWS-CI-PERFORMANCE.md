@@ -125,3 +125,36 @@ Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target �
 预览 GNU 打包显式启用 `--preserve-mingw-write-permissions`：仅允许从原本 `0xC0000040` 的 `.idata` / `.CRT` 恢复被工具清除的写位；写入前必须证明除此之外完整运行映像、符号与体积约束均满足，且暂存文件 SHA 未变。写入后重算 PE checksum，再次执行原有完整映像比较及四个 CLI 冒烟。其他 section、权限位、代码、加载参数等变化仍失败。正式 Release 不启用此选项。
 
 使用这轮实际 EXE、本机 GNU Binutils 2.47.20260726 的完整脚本验证通过：输入 190,342,249 字节、发布副本 153,997,824 字节，原始 EXE 哈希与制品清单相符，运行映像完全一致，隔离 PATH 下 `--version`、`--help`、`agent --help`、`update --help` 均成功；重算 checksum 与 Windows `CheckSumMappedFile` 一致。修复后的 CI runner 打包结果仍需新一轮验证。
+
+## 首次六平台整轮低于 50 分钟
+
+提交 `1c7a1931` 的 [CI 36186573449](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36186573449)，版本 `1.0.35-zh.ci.136`，从 `2026-09-25T20:34:22Z` 创建至 `21:20:41Z` 工作流完成，共 **46 分 19 秒**。六平台产物、五平台独立原生测试、Windows core/ui、Windows 汇总及六目标最终汇总全部成功；同步资料完整性成功，真实账号 macOS 冒烟按条件跳过。该时长包含排队、准备、缓存保存、上传和最终汇总。
+
+| 产物路径 | 作业耗时 | 原生产物验收 |
+| --- | --- | --- |
+| Windows x64 GNU Linux 交叉编译 | 15 分 44 秒 | Windows 打包 1 分 36 秒；工作流创建后 17 分 27 秒完成 |
+| Windows ARM64 MSVC | 46 分 09 秒 | 同一原生作业完成 |
+| Linux x64 GNU | 26 分 41 秒 | 同一原生作业完成 |
+| Linux ARM64 GNU | 35 分 02 秒 | 同一原生作业完成 |
+| macOS ARM64 | 21 分 02 秒 | 同一原生作业完成 |
+| macOS Intel 交叉编译 | 40 分 17 秒 | Intel 原生验证 32 秒；工作流创建后 41 分 01 秒完成 |
+
+Windows 原生打包日志确认 `.idata` / `.CRT` 原权限已恢复，`runtime_image_unchanged` 和 `cli_smoke_passed` 均为 true。Windows core/ui 分片分别为 32 分 22 秒、24 分 58 秒，Windows 最终验收于 `21:07:00Z` 成功。该轮首次达标，仍需用另一实际新 CI 版本复验，不能仅凭一次成功认定稳定达标。
+
+最长的 Windows ARM64 路径是冷编译：Cargo **42 分 38.5 秒**、1360 Dirty / 0 Fresh。Cargo home 命中并耗时 69.784 秒恢复，但编译产物缓存未命中；本轮结束后保存约 1.357 GB 的编译缓存，耗时 57.697 秒。最慢单元为 shell（864.9 秒，codegen 723.1 秒）和最终 binary（668.1 秒）。这些测量支持进一步验证缓存保留效果，尚不支持量化调整并发度或编译 profile 的收益。
+
+其余平台的 Cargo 缓存条件如下；命中缓存并不意味着跳过工作区编译，内嵌 CI 版本每轮更新。
+
+| 平台 | home / target / host | Fresh / Dirty | Cargo 耗时 |
+| --- | --- | ---: | --- |
+| Windows x64 GNU | home、合并编译缓存命中 | 1253 / 110 | 14 分 11.2 秒 |
+| macOS Intel | 三类均未命中 | 0 / 1411 | 35 分 18.1 秒 |
+| macOS ARM64 | 三类均命中 | 1300 / 110 | 19 分 03.3 秒 |
+| Linux x64 GNU | 三类均命中 | 1342 / 110 | 25 分 10.6 秒 |
+| Linux ARM64 GNU | home、target 命中，host 未命中 | 301 / 1150 | 33 分 24.2 秒 |
+
+### 下一轮：减少 PR 测试缓存占用并复验
+
+完成首轮后，仓库 cache usage API 报告约 10.92 GB；随后列表中 PR #8 的 core/ui debug 缓存分别为 1,710,612,385 和 1,965,748,249 字节，合计约 **3.676 GB**。同时 Intel 三类缓存与 Windows ARM64 编译缓存本轮未命中，并在结束时重新保存。GitHub [缓存规则](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)说明达到仓库配置的存储上限后会按最后访问时间淘汰；本次没有读到该仓库的实际额度，故目前只能把容量竞争视为待验证原因。
+
+下一轮只停止 PR 的 Windows core/ui debug 缓存写入，恢复逻辑、完整测试选择及全部门禁保持不变。`zh-dev` 仍保存这两份缓存，保留其作为后续预览与正式 Release 的恢复来源；正式 Release 原本就不保存测试缓存。仅清理 PR #8 已确认的这两份派生 debug 缓存，让复验能直接观察减少占用后的结果，不清理其他 ref、生产缓存或历史制品。需要核对下一实际 CI 版本的测试冷编译耗时、生产缓存命中/Dirty 数和整轮完成时间；不预设这项调整一定提速。

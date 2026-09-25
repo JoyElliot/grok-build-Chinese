@@ -76,7 +76,7 @@ class WindowsValidationTests(unittest.TestCase):
             if filename.startswith('zh-release'):
                 self.assertIn("save-cache: 'false'", rust)
             else:
-                self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', rust)
+                self.assertIn("save-cache: ${{ github.ref == 'refs/heads/zh-dev' }}", rust)
 
     def test_cache_hit_does_not_skip_tests_and_suites_have_distinct_keys(self):
         action = (ROOT / '.github/actions/validate-windows-gnu/action.yml').read_text(encoding='utf-8')

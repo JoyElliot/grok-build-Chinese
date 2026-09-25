@@ -74,7 +74,9 @@ jobs:
         with:
           suite: ${{ matrix.suite }}
           mode: preview
-          save-cache: ${{ github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+          # Keep PR storage available for the slower production builds. Tests
+          # still run after every restore; zh-dev refreshes the shared fallback.
+          save-cache: ${{ github.ref == 'refs/heads/zh-dev' }}
 
   windows-gnu-validation:
     name: Windows x64 GNU 验证
