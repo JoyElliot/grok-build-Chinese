@@ -1,5 +1,5 @@
 name: Build macOS
-description: 在 GitHub 托管的原生 macOS runner 上构建并验证未签名制品
+description: 在 GitHub 托管的 macOS runner 上构建并验证未签名制品
 inputs:
   version:
     description: 正式 Release 使用的严格 SemVer；预览构建留空即可
@@ -16,7 +16,13 @@ inputs:
     description: CI 对照配置；正式 Release 只接受 current
     required: false
     default: current
+  cross_compile:
+    description: 仅预览 build 阶段允许在 ARM64 宿主交叉编译 x86_64；需独立 Intel 原生验证
+    required: false
+    default: 'false'
 outputs:
+  version:
+    value: ${{ steps.preview.outputs.version }}
   package_name:
     value: ${{ steps.preview.outputs.package_name }}
   archive_name:
@@ -80,21 +86,46 @@ runs:
             echo "MACOS_BINARY_ARCH=${binary_arch}"
           } >> "${GITHUB_ENV}"
           {
+            echo "version=${version}"
             echo "package_name=${package_name}"
             echo "archive_name=${archive_name}"
             echo "artifact_name=${package_name}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: 确认原生 macOS runner
+      - name: 验证 macOS 宿主与目标执行环境
+        env:
+          ALLOW_CROSS: ${{ inputs.cross_compile }}
+          IS_RELEASE_BUILD: ${{ inputs.release_build }}
+          BUILD_PHASE: ${{ inputs.phase }}
         shell: bash
         run: |
           set -euo pipefail
           arch="$(uname -m)"
           echo "uname -m = ${arch}"
-          if [[ "${arch}" != "${MACOS_BINARY_ARCH}" ]]; then
-            echo "::error::期望 ${MACOS_BINARY_ARCH} runner，实际为 ${arch}。"
+          if [[ "${ALLOW_CROSS}" == true ]]; then
+            if [[ "${IS_RELEASE_BUILD}" == true || "${BUILD_PHASE}" != build \
+              || "${arch}" != arm64 || "${TARGET}" != x86_64-apple-darwin \
+              || "${RUSTUP_TOOLCHAIN}" != *-aarch64-apple-darwin ]]; then
+              echo '::error::交叉编译仅允许 ARM64 宿主上的 Intel 预览 build 阶段。'
+              exit 1
+            fi
+            /usr/bin/arch -x86_64 /bin/sh -c 'test "$(/usr/bin/uname -m)" = x86_64'
+            xcrun --sdk macosx --show-sdk-path
+            {
+              echo 'MACOS_VERIFY_MODE=rosetta'
+              echo 'MACOS_EXECUTION_DESCRIPTION=x86_64 via Rosetta on arm64; native Intel validation is a separate required job'
+              echo 'BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_darwin=--target=x86_64-apple-darwin'
+            } >> "${GITHUB_ENV}"
+          elif [[ "${ALLOW_CROSS}" == false && "${arch}" == "${MACOS_BINARY_ARCH}" ]]; then
+            {
+              echo 'MACOS_VERIFY_MODE=native'
+              echo "MACOS_EXECUTION_DESCRIPTION=native ${arch}"
+            } >> "${GITHUB_ENV}"
+          else
+            echo "::error::非预期宿主与目标组合：${arch} / ${TARGET}。"
             exit 1
           fi
+          echo "MACOS_HOST_ARCH=${arch}" >> "${GITHUB_ENV}"
 
       - name: 选择 macOS 编译配置
         env:
@@ -122,7 +153,7 @@ runs:
           mkdir -p "${cargo_home}" "${target_dir}" "${dotslash_cache}" "${tools_dir}"
 
           dotslash_version="0.5.9"
-          if [[ "${MACOS_ARCH}" == "aarch64" ]]; then
+          if [[ "${MACOS_HOST_ARCH}" == "arm64" ]]; then
             dotslash_platform=macos-arm64
             dotslash_sha256="eef15be1b554de7b1409cb0c69c24f2cd04f19c0f101ad69fcdf9d66d4d51639"
           else
@@ -292,6 +323,8 @@ runs:
           Upstream source revision: ${source_rev}
           Repository: ${GITHUB_REPOSITORY}
           Target: ${TARGET}
+          Build host: ${MACOS_HOST_ARCH}
+          CI smoke execution: ${MACOS_EXECUTION_DESCRIPTION}
           Profile: ${MACOS_PROFILE_DESCRIPTION}
           Rust: ${rustc_info}
           Cargo: ${cargo_info}
@@ -348,99 +381,7 @@ runs:
             shasum -a 256 -c "${ARCHIVE_NAME}.sha256"
           )
           tar -tzf "${archive}"
-          verify_root="${RUNNER_TEMP}/grok-zh-macos-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          if [[ -e "${verify_root}" ]]; then
-            echo "::error::验证目录已经存在：${verify_root}"
-            exit 1
-          fi
-          mkdir -p "${verify_root}"
-          COPYFILE_DISABLE=1 tar -xzf "${archive}" -C "${verify_root}"
-          package_root="${verify_root}/${PACKAGE_NAME}"
-          shopt -s nullglob dotglob
-          top_level_entries=("${verify_root}"/*)
-          shopt -u nullglob dotglob
-          only_top_level="${top_level_entries[0]:-}"
-          if (( ${#top_level_entries[@]} != 1 )) || \
-             [[ "${only_top_level}" != "${package_root}" ]] || \
-             [[ ! -d "${package_root}" || -L "${package_root}" ]]; then
-            echo "::error::macOS 软件包必须只含同名顶层目录：${PACKAGE_NAME}"
-            exit 1
-          fi
-          if [[ "$(stat -f '%Lp' "${package_root}")" != "755" ]]; then
-            echo "::error::macOS 软件包顶层目录权限不是 0755。"
-            exit 1
-          fi
-          expected_names="${verify_root}/expected-names.txt"
-          actual_names="${verify_root}/actual-names.txt"
-          printf '%s\n' \
-            BUILD-INFO.txt \
-            INSTALL-MACOS.md \
-            Install-GrokZh.sh \
-            LICENSE-grok-build.txt \
-            NOTICE-third-party.txt \
-            SHA256SUMS.txt \
-            SOURCE_REV \
-            THIRD-PARTY-NOTICES-xai-grok-tools.md \
-            THIRD-PARTY-NOTICES.txt \
-            grok-zh | LC_ALL=C sort > "${expected_names}"
-          shopt -s nullglob dotglob
-          package_entries=("${package_root}"/*)
-          shopt -u nullglob dotglob
-          printf '%s\n' "${package_entries[@]##*/}" | LC_ALL=C sort > "${actual_names}"
-          diff -u "${expected_names}" "${actual_names}"
-          for entry in "${package_entries[@]}"; do
-            if [[ ! -f "${entry}" || -L "${entry}" ]]; then
-              echo "::error::macOS 软件包根目录含有非普通文件：${entry}"
-              exit 1
-            fi
-          done
-          for name in grok-zh Install-GrokZh.sh; do
-            if [[ "$(stat -f '%Lp' "${package_root}/${name}")" != "755" ]]; then
-              echo "::error::${name} 权限不是 0755。"
-              exit 1
-            fi
-          done
-          for name in "${package_entries[@]##*/}"; do
-            case "${name}" in grok-zh|Install-GrokZh.sh) continue ;; esac
-            if [[ "$(stat -f '%Lp' "${package_root}/${name}")" != "644" ]]; then
-              echo "::error::${name} 权限不是 0644。"
-              exit 1
-            fi
-          done
-          (
-            cd "${package_root}"
-            shasum -a 256 -c SHA256SUMS.txt
-          )
-          verify_version_output="$("${package_root}/grok-zh" --version | head -n 1)"
-          if [[ "${verify_version_output}" != "grok-zh ${GROK_VERSION} ("* ]]; then
-            echo "::error::解包后的 grok-zh 版本冒烟失败：${verify_version_output}"
-            exit 1
-          fi
-
-          install_home="${RUNNER_TEMP}/grok-zh-install-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          if [[ -e "${install_home}" ]]; then
-            echo "::error::安装器验证目录已经存在：${install_home}"
-            exit 1
-          fi
-          GROK_HOME="${install_home}" "${package_root}/Install-GrokZh.sh"
-          bin_dir="${install_home}/bin"
-          first_target="$(readlink "${bin_dir}/grok-zh")"
-          [[ "${first_target}" == ../grok-zh-downloads/grok-zh-*-macos-${MACOS_ARCH}.*.installed ]]
-          [[ "$(readlink "${bin_dir}/agent-zh")" == "grok-zh" ]]
-          [[ ! -e "${bin_dir}/grok" && ! -L "${bin_dir}/grok" ]]
-          [[ ! -e "${bin_dir}/agent" && ! -L "${bin_dir}/agent" ]]
-          installed_version="$("${bin_dir}/grok-zh" --version | head -n 1)"
-          [[ "${installed_version}" == "grok-zh ${GROK_VERSION} ("* ]]
-
-          GROK_HOME="${install_home}" "${package_root}/Install-GrokZh.sh" --with-compat-aliases
-          second_target="$(readlink "${bin_dir}/grok-zh")"
-          [[ "${second_target}" == ../grok-zh-downloads/grok-zh-*-macos-${MACOS_ARCH}.*.installed ]]
-          [[ "${second_target}" != "${first_target}" ]]
-          [[ -f "${bin_dir}/${first_target}" ]]
-          [[ -f "${bin_dir}/${second_target}" ]]
-          alias_version="$("${bin_dir}/grok" --version | head -n 1)"
-          [[ "${alias_version}" == "grok-zh ${GROK_VERSION} ("* ]]
-          ls -lh "${archive}" "${archive}.sha256"
+          bash .github/scripts/verify-macos-package.sh "${archive}"
 
       - name: 上传 macOS 构建监控与 Cargo timings
         if: ${{ always() && inputs.phase != 'test' && env.MACOS_BUILD_REPORT_DIR != '' }}
@@ -490,7 +431,7 @@ runs:
           - 本轮允许保存 Cargo 缓存：\`${MACOS_CACHE_WRITABLE}\`
           - 软件包外层校验：\`${ARCHIVE_NAME}.sha256\`
           - 软件包内层校验：\`SHA256SUMS.txt\`
-          - 已在原生 macOS runner 上执行二次安装、入口链接与 \`grok-zh --version\` 验证。
+          - 二次安装、入口链接与 CLI 验证执行环境：${MACOS_EXECUTION_DESCRIPTION}。
           - ${usage_note}
           EOF
 

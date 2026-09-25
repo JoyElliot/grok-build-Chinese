@@ -163,6 +163,27 @@ class PreviewNativeValidationTests(unittest.TestCase):
                 self.assertIn("phase: build", jobs[job])
                 self.assertIn(job, dependencies(gate))
 
+    def test_intel_cross_build_requires_native_artifact_and_test_validation(self):
+        jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
+        build = jobs["macos-intel-preview"]
+        self.assertIn("runs-on: macos-15\n", build)
+        self.assertIn("RUSTUP_TOOLCHAIN: 1.94.0-aarch64-apple-darwin", build)
+        self.assertIn("TARGET: x86_64-apple-darwin", build)
+        self.assertIn("cross_compile: 'true'", build)
+        native = jobs["macos-intel-native-smoke"]
+        self.assertEqual(dependencies(native), {"macos-intel-preview"})
+        self.assertIn("runs-on: macos-15-intel", native)
+        self.assertIn("MACOS_VERIFY_MODE: native", native)
+        self.assertIn("needs.macos-intel-preview.outputs.artifact_name", native)
+        self.assertIn("verify-macos-package.sh", native)
+        self.assertNotIn("continue-on-error", native)
+        gate = jobs["multiplatform-result"]
+        self.assertIn("macos-intel-native-smoke", dependencies(gate))
+        self.assertIn("MACOS_INTEL_NATIVE_RESULT: ${{ needs.macos-intel-native-smoke.result }}", gate)
+        self.assertIn('"${MACOS_INTEL_NATIVE_RESULT}" != success', gate)
+        self.assertRegex(jobs["native-rust-validation"],
+                         r"(?s)label: macOS Intel\n\s+os: macos-15-intel\n.*?target: x86_64-apple-darwin")
+
     def test_formal_release_keeps_full_validation_and_every_preview_phase_fetches(self):
         release_jobs = job_blocks(WORKFLOW.read_text(encoding="utf-8"))
         for name in ("build-windows-arm", "build-linux-x64", "build-macos-arm"):

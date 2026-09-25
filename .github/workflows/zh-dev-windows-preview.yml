@@ -772,19 +772,20 @@ jobs:
 
   macos-intel-preview:
     name: macOS Intel 预览版
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 240
     outputs:
+      version: ${{ steps.build.outputs.version }}
       package_name: ${{ steps.build.outputs.package_name }}
       archive_name: ${{ steps.build.outputs.archive_name }}
       artifact_name: ${{ steps.build.outputs.artifact_name }}
     env:
-      CARGO_BUILD_JOBS: "4"
-      CARGO_CACHE_SCHEMA: macos-intel-v1
+      CARGO_BUILD_JOBS: "3"
+      CARGO_CACHE_SCHEMA: macos-intel-cross-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
       CARGO_HTTP_TIMEOUT: "120"
-      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-apple-darwin
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-apple-darwin
       TARGET: x86_64-apple-darwin
     steps:
       - name: 检出代码
@@ -792,13 +793,45 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 构建并验证 macOS Intel
+      - name: 在 Apple Silicon 上交叉构建并验证 macOS Intel
         id: build
         uses: ./.github/actions/build-macos-arm
         with:
           version: ${{ inputs.version }}
           release_build: 'false'
           phase: build
+          cross_compile: 'true'
+
+  macos-intel-native-smoke:
+    name: macOS Intel 原生产物验证
+    needs:
+      - macos-intel-preview
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    env:
+      GROK_VERSION: ${{ needs.macos-intel-preview.outputs.version }}
+      PACKAGE_NAME: ${{ needs.macos-intel-preview.outputs.package_name }}
+      ARCHIVE_NAME: ${{ needs.macos-intel-preview.outputs.archive_name }}
+      MACOS_ARCH: x86_64
+      MACOS_BINARY_ARCH: x86_64
+      MACOS_VERIFY_MODE: native
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+      - name: 下载本轮 Intel 制品
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.macos-intel-preview.outputs.artifact_name }}
+          path: ${{ runner.temp }}/grok-intel-native-artifact
+      - name: 在 Intel runner 验证签名、CLI、包结构及二次安装
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == x86_64 ]]
+          bash .github/scripts/verify-macos-package.sh \
+            "${RUNNER_TEMP}/grok-intel-native-artifact/${ARCHIVE_NAME}"
+          echo 'macOS Intel 原生签名、CLI、包结构与安装器验证通过。' >> "${GITHUB_STEP_SUMMARY}"
 
   macos-consumer-smoke:
     name: macOS 免费账号真机冒烟
@@ -989,6 +1022,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - native-rust-validation
+      - macos-intel-native-smoke
       - windows-gnu-preview
       - windows-arm64-msvc-preview
       - linux-x64-gnu-preview
@@ -999,6 +1033,7 @@ jobs:
     timeout-minutes: 5
     env:
       NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}
+      MACOS_INTEL_NATIVE_RESULT: ${{ needs.macos-intel-native-smoke.result }}
       WINDOWS_RESULT: ${{ needs.windows-gnu-preview.result }}
       WINDOWS_ARM_RESULT: ${{ needs.windows-arm64-msvc-preview.result }}
       LINUX_RESULT: ${{ needs.linux-x64-gnu-preview.result }}
@@ -1018,6 +1053,7 @@ jobs:
           printf 'Windows x64: %s\nWindows ARM64: %s\nLinux x64: %s\nLinux ARM64: %s\nmacOS ARM64: %s\nmacOS Intel: %s\n' \
             "${WINDOWS_RESULT}" "${WINDOWS_ARM_RESULT}" "${LINUX_RESULT}" "${LINUX_ARM_RESULT}" "${MACOS_RESULT}" "${MACOS_INTEL_RESULT}"
           if [[ "${NATIVE_TEST_RESULT}" != success || "${WINDOWS_RESULT}" != success \
+            || "${MACOS_INTEL_NATIVE_RESULT}" != success \
             || "${WINDOWS_ARM_RESULT}" != success \
             || "${LINUX_RESULT}" != success \
             || "${LINUX_ARM_RESULT}" != success \
@@ -1035,6 +1071,7 @@ jobs:
             echo '## 六目标预览构建通过'
             echo
             echo "- 五平台原生测试（与构建并行）：${NATIVE_TEST_RESULT}"
+            echo "- macOS Intel 原生产物验证：${MACOS_INTEL_NATIVE_RESULT}"
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"
             echo "- Windows ARM64 MSVC：${WINDOWS_ARM_RESULT}（${WINDOWS_ARM_ARTIFACT}）"
             echo "- Linux x86_64 GNU：${LINUX_RESULT}（${LINUX_ARTIFACT}）"
