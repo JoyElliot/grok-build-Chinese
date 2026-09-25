@@ -1,6 +1,7 @@
 """Strip a staged Windows EXE and verify that its runtime image is unchanged."""
 
 import argparse
+import array
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 
 
@@ -112,6 +114,56 @@ def verify_stripped(before, after):
         raise ValueError("stripping increased the executable size")
 
 
+def restore_mingw_write_permissions(path, before, after):
+    """Restore only the two known BFD permission losses, then recheck everything."""
+    sections = []
+    restored = []
+    for section in after["image"][4]:
+        original = [item for item in before["image"][4] if item[0] == section[0]]
+        if (section[0] in (".idata", ".CRT") and len(original) == 1
+                and original[0][4] == 0xC0000040 and section[4] == 0x40000040):
+            # Original READ|WRITE initialized data, with only WRITE lost by BFD.
+            sections.append((*section[:4], original[0][4], section[5]))
+            restored.append(section[0])
+        else:
+            sections.append(section)
+    candidate = after | {"image": (*after["image"][:4], sections)}
+    # Reject changed bytes, addresses, other flags, headers, or residual symbols
+    # before touching the file. The final check also inspects the written result.
+    verify_stripped(before, candidate)
+    if not restored:
+        return []
+    data = bytearray(Path(path).read_bytes())
+    if hashlib.sha256(data).hexdigest() != after["sha256"]:
+        raise ValueError("staged executable changed before permission restoration")
+    pe = struct.unpack_from("<I", data, 60)[0]
+    count = struct.unpack_from("<H", data, pe + 6)[0]
+    optional_size = struct.unpack_from("<H", data, pe + 20)[0]
+    offsets = []
+    for name in restored:
+        matches = [pe + 24 + optional_size + 40 * i for i in range(count)
+                   if data[pe + 24 + optional_size + 40 * i:
+                           pe + 32 + optional_size + 40 * i].rstrip(b"\0") == name.encode("ascii")]
+        if len(matches) != 1:
+            raise ValueError("ambiguous section permission restoration")
+        offsets.append(matches[0] + 36)
+    for offset in offsets:
+        struct.pack_into("<I", data, offset, 0xC0000040)
+    # Keep the PE checksum valid after updating section-table fields.
+    checksum_offset = pe + 24 + 64
+    struct.pack_into("<I", data, checksum_offset, 0)
+    words = array.array("H", data + (b"\0" if len(data) % 2 else b""))
+    if sys.byteorder != "little":
+        words.byteswap()
+    checksum = sum(words)
+    while checksum >> 16:
+        checksum = (checksum & 0xFFFF) + (checksum >> 16)
+    struct.pack_into("<I", data, checksum_offset, checksum + len(data))
+    Path(path).write_bytes(data)
+    verify_stripped(before, inspect_image(path))
+    return restored
+
+
 def smoke_binary(path, version):
     with tempfile.TemporaryDirectory(prefix="grok-zh-binary-smoke-") as home:
         env = os.environ | {"GROK_HOME": home}
@@ -133,6 +185,8 @@ def main():
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--strip", required=True)
+    parser.add_argument("--preserve-mingw-write-permissions", action="store_true",
+                        help="restore only BFD's known .idata/.CRT write-bit loss before strict verification")
     parser.add_argument("--version", required=True, help="expected version for isolated CLI smoke checks")
     parser.add_argument("--symbols-dir", required=True, type=Path,
                         help="diagnostic output directory outside the installation package")
@@ -147,6 +201,10 @@ def main():
     subprocess.run([args.strip, "--only-keep-debug", "-o", str(symbols), str(args.input)], check=True)
     subprocess.run([args.strip, "--strip-all", "-o", str(args.output), str(args.input)], check=True)
     after = inspect_image(args.output)
+    restored = []
+    if args.preserve_mingw_write_permissions:
+        restored = restore_mingw_write_permissions(args.output, before, after)
+        after = inspect_image(args.output)
     verify_stripped(before, after)
     smoke_binary(args.output, args.version)
     report = {
@@ -154,6 +212,7 @@ def main():
         "saved_bytes": before["bytes"] - after["bytes"],
         "input_sha256": before["sha256"],
         "output_sha256": after["sha256"], "runtime_image_unchanged": True,
+        "restored_write_permissions": restored,
         "cli_smoke_passed": True,
         "version": args.version, "source_commit": os.environ.get("GITHUB_SHA"),
         "symbols_file": symbols.name,

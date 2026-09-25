@@ -115,3 +115,13 @@ Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target �
 跨 job 只传递未裁剪 EXE 和构建身份清单，原生 Windows job 核对提交、版本、目标、profile、features 和 SHA-256 后，执行原有 PE 运行节保护、符号分离、CLI 冒烟、打包、文件哈希和更新协议生成。CLI 验证的 PATH 限于 Windows 系统目录，防止 MinGW 工具目录中的运行库掩盖安装包缺少 DLL。完整 core/ui 测试继续在 Windows 原生执行；最终门禁必须同时通过交叉编译、原生产物验收及两组测试。
 
 交叉构建缓存与原生 Windows 缓存隔离，包含实际 MinGW 包版本和编译器文件指纹，只缓存依赖源和 host/target `release-dist`，不新增 debug 缓存。诊断制品保留 Cargo timings、工具链/CPU 信息及 `/usr/bin/time -v`；其 maximum RSS 是工具报告的进程内存指标，与旧 Windows 进程树采样值不可直接等同。首次试验是独立冷缓存，后续仍须用新 CI 版本复验整轮时长。
+
+第三轮初次 `36180568215` 在依赖预取只限定 Windows target 后，冻结构建缺少 `aligned-vec 0.6.4`；修复为完整 `cargo fetch --locked`，保留后续 `--frozen`。修复提交 `dba0c88d` 的 [CI 36180846184](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36180846184) 中，Linux 上的 Windows GNU 编译作业于 `19:37:51Z–19:59:52Z` 成功，耗时 **22 分 01 秒**。但原生打包在 PE 比较时失败，尚不能认定 Windows 产物通过。
+
+对这轮原始 EXE 的本地复现发现，普通 GNU `strip --strip-all` 清除了 `.idata` 和 `.CRT` 的 `IMAGE_SCN_MEM_WRITE`，其他已比较的运行数据保持一致；现有门禁正确拒绝了这一变化。修复必须保留原节权限，并继续使用完整运行映像比较与 Windows 隔离 CLI 验收，不能忽略权限差异。
+
+该轮 Cargo timings 为 **20 分 24 秒**、1363 Dirty / 0 Fresh，两类起始缓存均 miss。宿主为 AMD EPYC 9V45、4 CPU，MinGW GCC 13-posix / GNU ld 2.41.90.20240122；`time -v` 报告 CPU 295%、最大 RSS 7,833,268 kB。依赖和编译缓存首次保存分别约 15.0 秒、19.5 秒。该结果证明这一轮冷编译已低于 50 分钟，但整轮验收因打包失败仍未达标。
+
+预览 GNU 打包显式启用 `--preserve-mingw-write-permissions`：仅允许从原本 `0xC0000040` 的 `.idata` / `.CRT` 恢复被工具清除的写位；写入前必须证明除此之外完整运行映像、符号与体积约束均满足，且暂存文件 SHA 未变。写入后重算 PE checksum，再次执行原有完整映像比较及四个 CLI 冒烟。其他 section、权限位、代码、加载参数等变化仍失败。正式 Release 不启用此选项。
+
+使用这轮实际 EXE、本机 GNU Binutils 2.47.20260726 的完整脚本验证通过：输入 190,342,249 字节、发布副本 153,997,824 字节，原始 EXE 哈希与制品清单相符，运行映像完全一致，隔离 PATH 下 `--version`、`--help`、`agent --help`、`update --help` 均成功；重算 checksum 与 Windows `CheckSumMappedFile` 一致。修复后的 CI runner 打包结果仍需新一轮验证。

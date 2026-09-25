@@ -91,6 +91,91 @@ class WindowsBinaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symbols remain"):
             MODULE.verify_stripped(before, copy.deepcopy(before))
 
+    def test_import_and_crt_write_permissions_must_not_change(self):
+        section = 152 + 240 + 40
+        for name in (b".idata", b".CRT"):
+            with self.subTest(section=name):
+                original = executable_with_dwarf()
+                original[section:section + 8] = name.ljust(8, b"\0")
+                struct.pack_into("<I", original, section + 36, 0xC0000040)
+                stripped = original[:1536]
+                struct.pack_into("<II", stripped, 140, 0, 0)
+                before = self.inspect(original)
+                MODULE.verify_stripped(before, self.inspect(stripped))
+                struct.pack_into("<I", stripped, section + 36, 0x40000040)
+                with self.assertRaisesRegex(ValueError, "runtime image"):
+                    MODULE.verify_stripped(before, self.inspect(stripped))
+
+    def test_known_write_loss_is_restored_and_other_changes_are_rejected(self):
+        section = 152 + 240 + 40
+        for name in (b".idata", b".CRT"):
+            original = executable_with_dwarf()
+            original[section:section + 8] = name.ljust(8, b"\0")
+            struct.pack_into("<I", original, section + 36, 0xC0000040)
+            stripped = original[:1536]
+            struct.pack_into("<II", stripped, 140, 0, 0)
+            struct.pack_into("<I", stripped, section + 36, 0x40000040)
+            before = self.inspect(original)
+            for extra_change in (None, 512, 152 + 16, section + 36):
+                with self.subTest(section=name, extra_change=extra_change), tempfile.TemporaryDirectory() as directory:
+                    candidate = bytearray(stripped)
+                    if extra_change is not None:
+                        candidate[extra_change] ^= 1
+                    path = Path(directory) / "stripped.exe"
+                    path.write_bytes(candidate)
+                    after = MODULE.inspect_image(path)
+                    if extra_change is None:
+                        self.assertEqual(MODULE.restore_mingw_write_permissions(path, before, after),
+                                         [name.decode("ascii")])
+                        MODULE.verify_stripped(before, MODULE.inspect_image(path))
+                    else:
+                        with self.assertRaisesRegex(ValueError, "runtime image"):
+                            MODULE.restore_mingw_write_permissions(path, before, after)
+                        self.assertEqual(path.read_bytes(), candidate)
+
+    def test_permission_restoration_refuses_changed_staged_file(self):
+        original = executable_with_dwarf()
+        section = 152 + 240 + 40
+        original[section:section + 8] = b".idata\0\0"
+        struct.pack_into("<I", original, section + 36, 0xC0000040)
+        stripped = original[:1536]
+        struct.pack_into("<II", stripped, 140, 0, 0)
+        struct.pack_into("<I", stripped, section + 36, 0x40000040)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stripped.exe"
+            path.write_bytes(stripped)
+            after = MODULE.inspect_image(path)
+            stripped[512] ^= 1
+            path.write_bytes(stripped)
+            with self.assertRaisesRegex(ValueError, "changed before"):
+                MODULE.restore_mingw_write_permissions(path, self.inspect(original), after)
+            self.assertEqual(path.read_bytes(), stripped)
+
+    @unittest.skipUnless(sys.platform == "win32", "requires the native Windows PE checksum API")
+    def test_permission_restoration_checksum_matches_windows_for_even_and_odd_lengths(self):
+        import ctypes
+        checksum = ctypes.WinDLL("imagehlp").CheckSumMappedFile
+        checksum.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                             ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+        checksum.restype = ctypes.c_void_p
+        original = executable_with_dwarf()
+        section = 152 + 240 + 40
+        original[section:section + 8] = b".idata\0\0"
+        struct.pack_into("<I", original, section + 36, 0xC0000040)
+        for overlay in (b"", b"\x81", b"\x81\xff\x17"):
+            with self.subTest(overlay=overlay), tempfile.TemporaryDirectory() as directory:
+                stripped = original[:1536] + overlay
+                struct.pack_into("<II", stripped, 140, 0, 0)
+                struct.pack_into("<I", stripped, section + 36, 0x40000040)
+                path = Path(directory) / "stripped.exe"
+                path.write_bytes(stripped)
+                MODULE.restore_mingw_write_permissions(path, self.inspect(original), MODULE.inspect_image(path))
+                data = bytearray(path.read_bytes())
+                buffer = (ctypes.c_ubyte * len(data)).from_buffer(data)
+                header, calculated = ctypes.c_uint32(), ctypes.c_uint32()
+                self.assertTrue(checksum(buffer, len(data), ctypes.byref(header), ctypes.byref(calculated)))
+                self.assertEqual(header.value, calculated.value)
+
     def test_discardable_dwarf_can_shrink_image_capacity(self):
         before = self.inspect(executable_with_dwarf())
         after = self.inspect(executable(False))

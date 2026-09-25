@@ -108,8 +108,8 @@ runs:
       run: |
         set -euo pipefail
         "$PROTOC" --version
-        # Fetch the full lockfile graph: target-only filtering can omit Linux
-        # host dependencies needed by build scripts during the frozen build.
+        # Fetch the full lockfile graph: target-only filtering can omit
+        # platform dependencies required by the subsequent frozen build.
         cargo fetch --locked
         started=$SECONDS
         set +e

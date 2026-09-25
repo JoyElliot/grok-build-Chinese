@@ -198,6 +198,7 @@ jobs:
             $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
             & $python .github/scripts/strip-windows-binary.py `
               --input $builtExe --output $packageExe --strip 'C:\mingw64\bin\strip.exe' `
+              --preserve-mingw-write-permissions `
               --version $env:GROK_VERSION --symbols-dir $symbolsRoot
             if ($LASTEXITCODE -ne 0) {
               throw "EXE 精简及独立运行环境冒烟失败：$LASTEXITCODE"
