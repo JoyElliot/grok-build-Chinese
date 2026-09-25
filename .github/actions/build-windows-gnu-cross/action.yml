@@ -108,7 +108,9 @@ runs:
       run: |
         set -euo pipefail
         "$PROTOC" --version
-        cargo fetch --locked --target "$TARGET"
+        # Fetch the full lockfile graph: target-only filtering can omit Linux
+        # host dependencies needed by build scripts during the frozen build.
+        cargo fetch --locked
         started=$SECONDS
         set +e
         /usr/bin/time -v -o "$CROSS_REPORT/time.txt" \
