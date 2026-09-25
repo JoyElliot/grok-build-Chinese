@@ -91,8 +91,38 @@ jobs:
           echo "$RESULTS"
           jq -e 'length > 0 and all(. == "success")' <<< "$RESULTS"
 
+  windows-gnu-cross-build:
+    name: Windows x64 GNU 交叉编译
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    outputs:
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+      monitor_url: ${{ steps.build.outputs.monitor_url }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu
+      TARGET: x86_64-pc-windows-gnu
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+      CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+      CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
+      AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: 在 Linux 宿主编译 Windows GNU
+        id: build
+        uses: ./.github/actions/build-windows-gnu-cross
+        with:
+          version: ${{ inputs.version }}
+
   windows-gnu-build:
-    name: Windows x64 GNU 编译打包
+    name: Windows x64 GNU 原生打包验证
+    needs:
+      - windows-gnu-cross-build
     runs-on: windows-2022
     timeout-minutes: 180
     env:
@@ -117,205 +147,33 @@ jobs:
         with:
           version: ${{ inputs.version }}
 
-      - name: 恢复 Cargo GNU release-dist 缓存
-        id: cargo_target_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - name: 下载同轮 Linux 交叉编译输入
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-
+          name: ${{ needs.windows-gnu-cross-build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/grok-gnu-cross-input
 
-      # Explicit --target builds keep proc macros and build scripts outside the
-      # target triple directory. Cache them separately to retain old cache hits.
-      - name: 恢复 Cargo GNU 宿主构建缓存
-        id: cargo_host_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release-dist
-          key: grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml') }}-
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-opt3-feature-release-dist-
-
-      - name: 构建并监控 Windows 预览版（J${{ env.CARGO_BUILD_JOBS }}）
-        id: windows_build
+      - name: 验证构建身份和 EXE 哈希
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
-          $monitorRoot = Join-Path $env:RUNNER_TEMP `
-            "grok-resource-monitor-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          New-Item -ItemType Directory -Path $monitorRoot -Force | Out-Null
-          $monitorScript = (Resolve-Path -LiteralPath `
-            '.github\scripts\windows-build-resource-monitor.ps1').Path
-          $csv = Join-Path $monitorRoot 'samples.csv'
-          $stop = Join-Path $monitorRoot 'stop.signal'
-          $ready = Join-Path $monitorRoot 'ready.signal'
-          $metaPath = Join-Path $monitorRoot 'meta.json'
-          $stdout = Join-Path $monitorRoot 'monitor.stdout.log'
-          $stderr = Join-Path $monitorRoot 'monitor.stderr.log'
-          $summary = Join-Path $monitorRoot 'summary.json'
-
-          $pwsh = Join-Path $PSHOME 'pwsh.exe'
-          $arguments = @(
-            '-NoLogo', '-NoProfile', '-NonInteractive',
-            '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $monitorScript),
-            '-Mode', 'Monitor',
-            '-CsvPath', ('"{0}"' -f $csv),
-            '-StopPath', ('"{0}"' -f $stop),
-            '-ReadyPath', ('"{0}"' -f $ready),
-            '-TargetPath', ('"{0}"' -f $env:CARGO_TARGET_DIR),
-            '-IntervalSeconds', $env:RESOURCE_SAMPLE_SECONDS,
-            '-MaxRuntimeSeconds', '10800'
-          )
-          $monitor = Start-Process -FilePath $pwsh -ArgumentList $arguments `
-            -WorkingDirectory $env:GITHUB_WORKSPACE -WindowStyle Hidden `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
-            -PassThru
-          [ordered]@{
-            Root = $monitorRoot
-            MonitorScript = $monitorScript
-            CsvPath = $csv
-            StopPath = $stop
-            ReadyPath = $ready
-            StdoutPath = $stdout
-            StderrPath = $stderr
-            SummaryPath = $summary
-            Pid = [int]$monitor.Id
-            StartedAtUtc = [DateTime]::UtcNow.ToString('o')
-          } | ConvertTo-Json | Set-Content -LiteralPath $metaPath -Encoding utf8
-          @(
-            "RESOURCE_MONITOR_ROOT=$monitorRoot"
-            "RESOURCE_MONITOR_CSV=$csv"
-            "RESOURCE_MONITOR_SUMMARY=$summary"
-          ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          $buildStartedAt = $null
-          $cargoExitCode = $null
-          $caughtError = $null
-          try {
-            $readyDeadline = [DateTime]::UtcNow.AddSeconds(30)
-            while (!(Test-Path -LiteralPath $ready) -and
-              [DateTime]::UtcNow -lt $readyDeadline -and !$monitor.HasExited) {
-              Start-Sleep -Milliseconds 250
-              $monitor.Refresh()
-            }
-            if (!(Test-Path -LiteralPath $ready)) {
-              $monitorError = if (Test-Path -LiteralPath $stderr) {
-                Get-Content -LiteralPath $stderr -Raw
-              } else {
-                '无 stderr。'
-              }
-              throw "资源监控未能采集首个样本：$monitorError"
-            }
-
-            $buildStartedAt = Get-Date
-            "使用 $env:CARGO_BUILD_JOBS 路 Cargo 并行任务。"
-            cargo build --frozen -j $env:CARGO_BUILD_JOBS `
-              --target $env:TARGET `
-              -p xai-grok-pager-bin `
-              --profile release-dist `
-              --features release-dist `
-              --timings `
-              --config profile.release-dist.debug=0
-            $cargoExitCode = if ($null -eq $LASTEXITCODE) {
-              0
-            } else {
-              [int]$LASTEXITCODE
-            }
-          } catch {
-            $caughtError = $_
-            if ($null -eq $cargoExitCode -and $null -ne $LASTEXITCODE) {
-              $cargoExitCode = [int]$LASTEXITCODE
-            }
-          } finally {
-            $buildDurationSeconds = if ($null -eq $buildStartedAt) {
-              0
-            } else {
-              [int][Math]::Ceiling(((Get-Date) - $buildStartedAt).TotalSeconds)
-            }
-            "BUILD_DURATION_SECONDS=$buildDurationSeconds" |
-              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-            try {
-              New-Item -ItemType File -Path $stop -Force | Out-Null
-            } catch {
-              Write-Warning "无法通知资源监控停止：$($_.Exception.Message)"
-            }
-
-            $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
-            $liveMonitor = Get-Process -Id $monitor.Id -ErrorAction SilentlyContinue
-            while ($liveMonitor -and !$liveMonitor.HasExited -and
-              [DateTime]::UtcNow -lt $stopDeadline) {
-              Start-Sleep -Milliseconds 250
-              $liveMonitor = Get-Process -Id $monitor.Id -ErrorAction SilentlyContinue
-            }
-            if ($liveMonitor -and !$liveMonitor.HasExited) {
-              $win32Process = Get-CimInstance Win32_Process `
-                -Filter "ProcessId=$($monitor.Id)" -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-              $sameMonitor = $win32Process -and
-                $win32Process.Name -ieq 'pwsh.exe' -and
-                $win32Process.CommandLine -and
-                $win32Process.CommandLine.IndexOf(
-                  $monitorScript, [StringComparison]::OrdinalIgnoreCase
-                ) -ge 0
-              if ($sameMonitor) {
-                Stop-Process -Id $monitor.Id -Force -ErrorAction SilentlyContinue
-                Write-Warning '资源监控未及时退出，已验证身份后停止。'
-              } else {
-                Write-Warning "PID $($monitor.Id) 身份无法确认，未强制停止。"
-              }
-            }
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'grok-gnu-cross-input'
+          $metadata = Get-Content -LiteralPath (Join-Path $inputRoot 'build-input.json') -Raw | ConvertFrom-Json
+          if ($metadata.commit -cne $env:GITHUB_SHA -or $metadata.version -cne $env:GROK_VERSION -or
+              $metadata.target -cne $env:TARGET -or $metadata.profile -cne 'release-dist' -or
+              $metadata.features -cne 'release-dist' -or $metadata.build_host -cne 'x86_64-unknown-linux-gnu') {
+            throw '交叉编译输入与本轮提交、版本、目标或配置不一致。'
           }
-
-          if ($null -ne $cargoExitCode -and $cargoExitCode -ne 0) {
-            throw "Cargo 构建失败：$cargoExitCode"
+          $sourceExe = Join-Path $inputRoot 'grok-zh.exe'
+          if ($metadata.sha256 -notmatch '^[a-f0-9]{64}$' -or
+              (Get-FileHash -LiteralPath $sourceExe -Algorithm SHA256).Hash -ine $metadata.sha256) {
+            throw '交叉编译 EXE 哈希不一致。'
           }
-          if ($null -ne $caughtError) {
-            throw $caughtError
-          }
-
-      - name: 汇总并验证构建资源监控
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        env:
-          BUILD_OUTCOME: ${{ steps.windows_build.outcome }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:RESOURCE_MONITOR_CSV)) {
-            Write-Warning '构建步骤未生成资源监控路径。'
-            exit 0
-          }
-          $duration = 0
-          if (![int]::TryParse($env:BUILD_DURATION_SECONDS, [ref]$duration)) {
-            $duration = 0
-          }
-          & .\.github\scripts\windows-build-resource-monitor.ps1 `
-            -Mode Summarize `
-            -CsvPath $env:RESOURCE_MONITOR_CSV `
-            -SummaryPath $env:RESOURCE_MONITOR_SUMMARY `
-            -StepSummaryPath $env:GITHUB_STEP_SUMMARY `
-            -BuildOutcome $env:BUILD_OUTCOME `
-            -BuildDurationSeconds $duration `
-            -IntervalSeconds ([int]$env:RESOURCE_SAMPLE_SECONDS)
-
-      - name: 上传构建资源监控与 Cargo timings
-        id: monitor_artifact
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: grok-zh-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/grok-resource-monitor-${{ github.run_id }}-${{ github.run_attempt }}
-            ${{ runner.temp }}/grok-zh-target/cargo-timings
-          if-no-files-found: warn
-          compression-level: 6
-          retention-days: 7
+          $targetRoot = Join-Path $env:CARGO_TARGET_DIR "$env:TARGET\release-dist"
+          New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+          Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $targetRoot 'grok-zh.exe')
+          "BUILD_DURATION_SECONDS=$([int]$metadata.build_duration_seconds)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: 打包未签名绿色预览版
         shell: pwsh
@@ -333,11 +191,19 @@ jobs:
           $packageExe = Join-Path $package 'grok-zh.exe'
           $symbolsRoot = Join-Path $env:RUNNER_TEMP 'grok-zh-windows-symbols'
           $objdump = 'C:\mingw64\bin\objdump.exe'
-          python .github/scripts/strip-windows-binary.py `
-            --input $builtExe --output $packageExe --strip 'C:\mingw64\bin\strip.exe' `
-            --version $env:GROK_VERSION --symbols-dir $symbolsRoot
-          if ($LASTEXITCODE -ne 0) {
-            throw "EXE 精简及冒烟检查失败：$LASTEXITCODE"
+          $python = (Get-Command python -ErrorAction Stop).Source
+          $savedPath = $env:PATH
+          try {
+            # A distributable EXE must run without a compiler runtime on PATH.
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            & $python .github/scripts/strip-windows-binary.py `
+              --input $builtExe --output $packageExe --strip 'C:\mingw64\bin\strip.exe' `
+              --version $env:GROK_VERSION --symbols-dir $symbolsRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "EXE 精简及独立运行环境冒烟失败：$LASTEXITCODE"
+            }
+          } finally {
+            $env:PATH = $savedPath
           }
 
           Copy-Item -LiteralPath 'packaging\windows\agent-zh.cmd' `
@@ -405,6 +271,7 @@ jobs:
           Version: $env:GROK_VERSION
           Commit: $env:GITHUB_SHA
           Target: $env:TARGET
+          Build host: x86_64-unknown-linux-gnu; validated natively on Windows x64
           Profile: release-dist (Thin LTO, opt-level=3, codegen-units=1, debug=0; release-dist features)
           Symbols: stripped; runtime PE sections verified unchanged
           PE: $pe
@@ -472,69 +339,24 @@ jobs:
 
       - name: 在摘要中发布制品详情
         shell: pwsh
+        env:
+          PREVIEW_URL: ${{ steps.preview_artifact.outputs.artifact-url }}
+          PREVIEW_DIGEST: ${{ steps.preview_artifact.outputs.artifact-digest }}
+          MONITOR_URL: ${{ needs.windows-gnu-cross-build.outputs.monitor_url }}
         run: |
-          $artifactUrl = '${{ steps.preview_artifact.outputs.artifact-url }}'
-          $artifactDigest = '${{ steps.preview_artifact.outputs.artifact-digest }}'
-          $monitorArtifactUrl = '${{ steps.monitor_artifact.outputs.artifact-url }}'
-          $cargoHomeCacheHit = '${{ steps.windows_setup.outputs.cargo-home-cache-hit }}'
-          $cargoTargetCacheHit = '${{ steps.cargo_target_cache.outputs.cache-hit }}'
-          $cargoHomeMatchedKey = '${{ steps.windows_setup.outputs.cargo-home-cache-matched-key }}'
-          $cargoTargetMatchedKey = '${{ steps.cargo_target_cache.outputs.cache-matched-key }}'
-          if ($cargoHomeCacheHit -eq 'true') {
-            $cargoHomeCacheStatus = '精确命中'
-          } elseif ($cargoHomeCacheHit -eq 'false') {
-            $cargoHomeCacheStatus = '部分恢复'
-          } else {
-            $cargoHomeCacheStatus = '未命中（首次或缓存已失效）'
-          }
-          if ($cargoTargetCacheHit -eq 'true') {
-            $cargoTargetCacheStatus = '精确命中'
-          } elseif ($cargoTargetCacheHit -eq 'false') {
-            $cargoTargetCacheStatus = '部分恢复'
-          } else {
-            $cargoTargetCacheStatus = '未命中（首次或缓存已失效）'
-          }
           @"
-          ## Windows GNU 编译产物
+          ## Windows GNU 原生产物验收
 
-          - 完整验收结果以“Windows x64 GNU 预览版”检查为准，它同时要求测试与编译成功。
+          - 完整验收同时要求交叉编译、Windows 原生测试和本原生产物验证成功。
           - 版本：``$env:GROK_VERSION``
-          - 制品：[$env:PACKAGE_NAME]($artifactUrl)
-          - 制品 SHA-256：``$artifactDigest``
-          - Cargo 并行任务数：``$env:CARGO_BUILD_JOBS``
-          - Cargo 依赖缓存：$cargoHomeCacheStatus
-          - Cargo 依赖缓存匹配键：``$cargoHomeMatchedKey``
-          - Cargo GNU release-dist 缓存：$cargoTargetCacheStatus
-          - Cargo GNU release-dist 缓存匹配键：``$cargoTargetMatchedKey``
+          - 制品：[$env:PACKAGE_NAME]($env:PREVIEW_URL)
+          - 制品 SHA-256：``$env:PREVIEW_DIGEST``
+          - 编译宿主：Linux x64；目标：``$env:TARGET``
           - Cargo 构建耗时：``$env:BUILD_DURATION_SECONDS`` 秒
-          - 构建资源监控与 Cargo timings：[$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT]($monitorArtifactUrl)
-          - 仅一层压缩：下载的制品解压一次即可安装或运行。
-          - 软件包文件哈希：``SHA256SUMS.txt``
-          - 未签名的 $($env:CARGO_BUILD_JOBS) 路 Thin LTO 预览版；已通过隔离的版本和 CLI 帮助冒烟。
+          - [Cargo timings、工具链及宿主资源记录]($env:MONITOR_URL)
+          - Windows 原生 PE 运行节保护、符号处理及隔离 CLI 冒烟通过。
+          - 安装包布局、哈希与更新协议保持原约定。
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
-      - name: 保存 Cargo GNU release-dist 缓存
-        if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
-
-      - name: 保存 Cargo GNU 宿主构建缓存
-        if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release-dist
-          key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
-
-      - name: 保存 Cargo 依赖缓存
-        if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.windows_setup.outputs.cargo-home-cache-hit != 'true' }}
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: |
-            ${{ runner.temp }}/grok-zh-cargo/registry
-            ${{ runner.temp }}/grok-zh-cargo/git
-          key: ${{ steps.windows_setup.outputs.cargo-home-cache-primary-key }}
 
   # Keep the existing Windows check as the acceptance gate for both runners.
   windows-gnu-preview:
@@ -564,7 +386,7 @@ jobs:
             echo
             echo '- 本地化、安装器与协议验证：成功'
             echo '- 产物编译与打包：成功'
-            echo '- 编译、核心测试和界面测试各自使用独立的 Windows runner 与 J4 Cargo 任务。'
+            echo '- Linux 交叉编译、Windows 原生产物验证、Windows core/ui 原生测试均已通过。'
           } >> "${GITHUB_STEP_SUMMARY}"
 
   native-rust-validation:

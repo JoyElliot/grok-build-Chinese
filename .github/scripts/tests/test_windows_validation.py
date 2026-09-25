@@ -88,6 +88,31 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn('key: ${{ steps.cache.outputs.cache-primary-key }}', action)
         self.assertNotIn('github.sha', action)  # Bound immutable cache count per configuration.
 
+    def test_preview_cross_build_requires_native_packaging_and_all_native_tests(self):
+        jobs = job_blocks((ROOT / '.github/workflows/zh-dev-windows-preview.yml').read_text(encoding='utf-8'))
+        cross = jobs['windows-gnu-cross-build']
+        native = jobs['windows-gnu-build']
+        self.assertIn('runs-on: ubuntu-24.04', cross)
+        self.assertIn('RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu', cross)
+        self.assertIn('TARGET: x86_64-pc-windows-gnu', cross)
+        self.assertIn('runs-on: windows-2022', native)
+        self.assertEqual(dependencies(native), {'windows-gnu-cross-build'})
+        self.assertIn('needs.windows-gnu-cross-build.outputs.artifact_name', native)
+        for identity in ('commit', 'version', 'target', 'profile', 'features', 'build_host', 'sha256'):
+            self.assertIn(f'$metadata.{identity}', native)
+        self.assertIn('strip-windows-binary.py', native)
+        self.assertIn('write-package-protocol.py', native)
+        self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot"', native)
+        self.assertNotIn('continue-on-error:', cross + native)
+        self.assertNotIn('needs:', jobs['windows-gnu-rust-validation'])
+        self.assertEqual(dependencies(jobs['windows-gnu-preview']),
+                         {'windows-gnu-validation', 'windows-gnu-build'})
+        self.assertIn('windows-gnu-preview', dependencies(jobs['multiplatform-result']))
+        action = (ROOT / '.github/actions/build-windows-gnu-cross/action.yml').read_text(encoding='utf-8')
+        self.assertIn('--profile release-dist --features release-dist', action)
+        self.assertIn('--timings --config profile.release-dist.debug=0', action)
+        self.assertNotIn('cargo test ', action)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,23 +1,24 @@
 # Windows CI 并行验证与编译
 
-Windows 预览 CI 和正式 Release 使用三条独立路径：核心验证、界面 Rust 测试、产物编译。各有自己的 `windows-2022` runner、CPU、内存和临时目录，Rust 编译各自使用 `-j4`。安装器与静态检查合并到 core 分片，在准备 Rust 环境前运行一次，保留 15 分钟步骤超时；失败会使 core 和验证聚合门禁失败。
+Windows 预览 CI 使用 Linux 宿主交叉编译 GNU 产物，再交给 `windows-2022` 原生打包验收；core/ui Rust 测试仍在各自独立的 Windows runner 上以 `-j4` 执行。正式 Release 保留 Windows 原生编译。安装器与静态检查合并到 core 分片，在准备 Rust 环境前运行一次，保留 15 分钟步骤超时；失败会使 core 和验证聚合门禁失败。
 
 ```mermaid
 flowchart LR
     C[core: 安装器与静态检查 → 核心测试 J4] --> V[Windows GNU 验证]
     U[界面测试 J4] --> V
     V --> G[Windows x64 GNU 预览版]
-    B[Windows 编译打包 J4] --> G
-    G --> S[三端构建汇总]
-    L[Linux 构建] --> S
-    M[macOS 构建] --> S
+    X[Linux 宿主编译 Windows GNU J4] --> B[Windows 原生打包验收]
+    B --> G
+    G --> S[六平台构建汇总]
+    L[Linux 两架构构建] --> S
+    M[macOS 两架构构建与 Intel 原生验收] --> S
 ```
 
 - 核心分片保留 locale、community-build 更新器与 Shell 筛选；正式发布另含 product、version、config 检查。
 - 界面分片保留完整 pager、minimal 和免费账户选项等筛选。相同 package 的后续过滤命令可复用已编译的测试程序。
 - core 内的静态检查保留 PowerShell 5.1 / 7 安装器、包协议、PE 精简保护、发布策略、发布说明和预览元数据检查；格式检查也在核心分片运行。ui 分片不重复执行静态检查。
 - `windows-gnu-validation` 和 `windows-gnu-preview` 保留原 ID 与检查名称作为聚合门禁。任一必需分片失败、取消或跳过都不会通过；矩阵关闭 fail-fast，让另一分片保留完整诊断。
-- 编译制品可能早于测试完成上传；完整验收仍以 Windows 聚合检查和三端汇总为准。
+- 编译制品可能早于测试完成上传；完整验收仍以 Windows 聚合检查和六平台汇总为准。
 
 正式 Release 的验证矩阵与产物编译都只依赖 `release-plan`，检出同一个 `source_commit`，Rust 与构建显式使用相同发布版本。core 的静态检查使用该次检出的代码。`windows-x64-gnu-validation` 汇总 release-plan 和全部验证分片；原有 `release-attestations` 与 `release-publisher` 继续要求验证、编译成功，不能绕过失败、取消或跳过的验证。
 
@@ -25,7 +26,7 @@ flowchart LR
 
 六平台预览中，Windows ARM64 MSVC 的更新器测试也使用独立原生 ARM64 runner，与产物构建并行；两个阶段均使用 J4，`multiplatform-result` 同时要求原生测试矩阵与 ARM64 制品成功。正式 Release 继续在完整 action 中顺序验证。ARM64 只缓存 registry/git 与 host/target `release-dist`，不保存测试 debug 目录；同仓非 Dependabot PR 和 zh-dev 预览可写，正式 Release 只读。Cargo timings 作为独立诊断制品上传。六平台提速基线与验收口径见 [macOS 构建说明](MACOS-CI-PERFORMANCE.md#六平台预览提速2026-09-26)。
 
-Rust 分片和编译作业调用 `.github/actions/setup-windows-gnu`，统一版本及固定 Rust / MinGW / protoc，恢复 Cargo registry/git，并各自在自己的 runner 获取依赖。core 先完成静态检查，再调用该准备步骤。
+Windows Rust 分片、原生产物验收和正式编译作业调用 `.github/actions/setup-windows-gnu`，统一版本及固定 Rust / MinGW / protoc，恢复 Cargo registry/git，并各自在自己的 runner 获取依赖。core 先完成静态检查，再调用该准备步骤。预览交叉编译使用独立的 Linux host 工具链与缓存，配置见本页第三轮记录。
 
 `.github/scripts/windows-validation-tests.json` 保存原有预览 12 条、发布 15 条 Cargo 命令的 package、feature 和过滤条件。各分片内部保留相对顺序；跨分片并行运行。不将多个 package 合成一条 Cargo 命令，避免 feature union 改变覆盖。
 
@@ -100,3 +101,17 @@ Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target �
 | 整个 Windows 作业 | 81 分 44 秒 |
 
 并行收益须以新 CI 中各个 Windows 作业的开始/结束时间、同阶段日志和最终汇总时间验证；两个作业各自进行准备和依赖恢复，不能直接把基线的两个阶段相减当作实际收益。
+
+## 六平台第三轮：Windows GNU 交叉编译试验
+
+第二轮 [CI 36172021045](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36172021045) 全部成功，但从 `2026-09-25T18:13:13Z` 创建到 `19:12:22Z` 完成为 **59 分 09 秒**；Windows x64 GNU 作业为 **58 分 49 秒**。Intel 交叉编译和原生产物验收已在工作流创建后 43 分 34 秒内完成，Windows GNU 成为本轮最长路径。
+
+第二轮 Windows GNU Cargo 为 **55 分 49.1 秒**，324 Fresh / 1040 Dirty；target 缓存精确命中，但 home/host 缓存未命中，不能将其视为完全暖构建。最慢单元是最终 binary（973.3 秒）与 shell（940.4 秒）。宿主为 AMD EPYC 7763，暴露 2 核/4 逻辑处理器；系统 CPU 平均 75.50%，内存使用峰值 69.67%。外部 `ld` 仅在两个相隔约 14 分钟的样本中出现，没有长时间驻留证据。该轮的缓存和宿主均与前一轮不同，不能把全部差异归因于 CPU 型号。
+
+上一轮 `36164317702` 的 Windows GNU Cargo 为 35 分 56.8 秒，1254 Fresh / 110 Dirty；主要耗时单元为 shell（932.7 秒，其中 codegen 775.7 秒）和最终 binary（895.5 秒），并行单元时间不可相加。外部 `ld` 只出现在两个连续采样点，缺少长时间外部链接的证据。因此第三轮优先实测 Linux 编译宿主，保留 Rust 1.94.0、`x86_64-pc-windows-gnu`、`release-dist`/Thin LTO/opt-level=3/codegen-units=1/debug=0 和全部 features。
+
+新 `.github/actions/build-windows-gnu-cross` 使用 Ubuntu 24.04 的 MinGW POSIX 工具链，只设置 target 专属 CC/CXX/AR/linker；Linux build scripts/proc macros 保留宿主编译器，protoc 仍为经过哈希验证的 29.3 宿主版本。Rust 1.94.0 的[官方 GNU 目标文档](https://github.com/rust-lang/rust/blob/1.94.0/src/doc/rustc/src/platform-support/windows-gnu.md)支持交叉编译；本项目原生 C 依赖的实际兼容性及耗时仍需本轮 CI 验证。
+
+跨 job 只传递未裁剪 EXE 和构建身份清单，原生 Windows job 核对提交、版本、目标、profile、features 和 SHA-256 后，执行原有 PE 运行节保护、符号分离、CLI 冒烟、打包、文件哈希和更新协议生成。CLI 验证的 PATH 限于 Windows 系统目录，防止 MinGW 工具目录中的运行库掩盖安装包缺少 DLL。完整 core/ui 测试继续在 Windows 原生执行；最终门禁必须同时通过交叉编译、原生产物验收及两组测试。
+
+交叉构建缓存与原生 Windows 缓存隔离，包含实际 MinGW 包版本和编译器文件指纹，只缓存依赖源和 host/target `release-dist`，不新增 debug 缓存。诊断制品保留 Cargo timings、工具链/CPU 信息及 `/usr/bin/time -v`；其 maximum RSS 是工具报告的进程内存指标，与旧 Windows 进程树采样值不可直接等同。首次试验是独立冷缓存，后续仍须用新 CI 版本复验整轮时长。

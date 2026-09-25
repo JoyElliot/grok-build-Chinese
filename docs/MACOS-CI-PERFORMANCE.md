@@ -59,10 +59,16 @@ macOS 的真实编译、资源采样、Mach-O、权限和安装器验证由 Appl
 
 ### 第二轮：Intel 交叉编译与原生制品验证
 
-首轮提交 `c5963863` 的 [CI 36164317702](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36164317702) 中，五平台原生测试和 Windows GNU 测试全部通过；Linux x64/ARM64 构建分别为 31 分 36 秒、37 分 06 秒，Windows x64/ARM64 分别为 38 分 58 秒、49 分 07 秒，macOS ARM64 为 14 分 08 秒。Intel 原生 J4 构建的关键路径已超过 58 分钟，仍未满足目标；不能把 J3→J4 的理论并行比例当作测量结果。
+首轮提交 `c5963863` 的 [CI 36164317702](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36164317702) 已全部通过；从 `2026-09-25T16:59:57Z` 创建到 `18:25:31Z` 工作流完成，整轮为 **85 分 34 秒**。五平台原生测试和 Windows GNU 测试全部通过；Linux x64/ARM64 构建分别为 31 分 36 秒、37 分 06 秒，Windows x64/ARM64 分别为 38 分 58 秒、49 分 07 秒，macOS ARM64 为 14 分 08 秒。Intel 原生 J4 构建作业为 **85 分 21 秒**，仍未满足目标；不能把 J3→J4 的理论并行比例当作测量结果。
+
+首轮 Intel Cargo timings 为 **78 分 17.6 秒**，1411 Dirty / 0 Fresh，三项起始缓存均未命中；目标、宿主和依赖缓存首次保存合计约 2 分 10 秒。采样进程树 RSS 最大值为 6920.62 MiB，系统 swap 最大值为 6.5 MiB，最多 4 个 rustc；仍无 CPU 利用率数据。相比基线 J3 的 62 分 14.4 秒，J4 本轮编译更慢，但现有记录不足以将差异归因于并发度、CPU 或内存瓶颈。
 
 第二轮预览把 Intel 产物的编译移到 `macos-15` ARM64 宿主，Rust host 工具链为 `1.94.0-aarch64-apple-darwin`，目标仍是 `x86_64-apple-darwin`。DotSlash/protoc 使用宿主架构；CoreAudio bindgen 的额外 Clang 参数仅设置到 x86_64 target。生产 profile、Rust CPU 基线、features、符号处理和包协议保持原配置，交叉编译缓存使用独立 schema。该试验的耗时与实际原生依赖兼容性由后续 CI 验证。
 
 `cross_compile` 默认为 false，只允许 ARM64 宿主上的 Intel 预览 `phase=build`；正式 Release 保留原生构建。交叉构建阶段的 CLI 和安装器通过 Rosetta 验证，安装器由 `arch -x86_64 /bin/sh` 启动，使架构检测保持真实的 x86_64 执行上下文。包内 `BUILD-INFO.txt` 明确记录宿主架构和 Rosetta 验证方式。
 
 Intel 原生 locale/updater 测试继续在 `macos-15-intel` 运行。新增的 `macos-intel-native-smoke` 下载同轮交叉构建制品，在 Intel runner 原生验证签名、精确架构、包内外 SHA-256、目录/权限、四类 CLI 入口及二次安装；共享 `verify-macos-package.sh` 保留原有安装与入口链接检查。最终汇总同时要求交叉构建、Intel 原生产物验证及全部原生测试成功，Rosetta 的通过不能替代 Intel 原生验收。
+
+第二轮提交 `f3dfb4d5` 的 [CI 36172021045](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36172021045) 中，Intel 交叉构建作业从 `18:13:22Z` 到 `18:56:06Z`，用时 **42 分 44 秒**；随后原生 Intel 制品验证在 `18:56:47Z` 成功完成，距工作流创建为 **43 分 34 秒**。Intel 原生测试也已通过。这只证明本轮 Intel 路径已低于 50 分钟；本轮最终全部通过，整轮为 **59 分 09 秒**，受 Windows x64 GNU 的 58 分 49 秒作业限制，尚未达到六平台目标。
+
+本次 Intel 交叉构建是冷构建：依赖、target 和 host 缓存全部 miss，Cargo 为 1411 Dirty / 0 Fresh，timings 总编译时间 **36 分 56 秒**。J3 最大采样进程树 RSS 为 3850.22 MiB、整机 swap 为 307.94 MiB；原生 Intel 制品检查通过真实 `uname -m == x86_64` 断言。与上一轮的宿主架构不同，因此两轮数据是实测对照，不是仅改变单一参数的实验。
