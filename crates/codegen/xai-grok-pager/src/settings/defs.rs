@@ -1127,11 +1127,11 @@ pub fn default_settings() -> Vec<SettingMeta> {
             key: "coding_data_sharing",
             category: SettingCategory::Privacy,
             owner: SettingOwner::Shell,
-            label: "Coding data, retention, and training",
-            description: "Opt-in to provide SpaceXAI the ability to retain and train on \
-                          coding data, e.g., prompts, traces, & metrics, for training and \
-                          debugging purposes. We may still collect simple user metrics, \
-                          e.g. how many times you use the product or a feature.",
+            label: "Account data retention and training",
+            description: "This is your server-side account preference for data retention and training. \
+                          This community build always disables telemetry, trace, feedback and automatic session uploads, \
+                          regardless of this preference. Model requests still reach your provider. \
+                          Your existing account preference is not changed automatically.",
             keywords: &[
                 "privacy",
                 "data",

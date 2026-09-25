@@ -240,6 +240,10 @@ impl FeedbackClient {
         request: RequestBuilder,
         context: &'static str,
     ) -> Result<T> {
+        anyhow::ensure!(
+            xai_grok_product::FEEDBACK_UPLOADS_ALLOWED,
+            "Feedback uploads are disabled by the community build privacy policy"
+        );
         let request = xai_grok_otel::inject_trace_context_into_request(request);
         let req = request.build().context(context)?;
         let (response, stamp) = xai_grok_auth::execute_with_stamp(&self.client, req)
@@ -274,6 +278,10 @@ impl FeedbackClient {
     }
 
     async fn send_empty(&self, request: RequestBuilder, context: &'static str) -> Result<()> {
+        anyhow::ensure!(
+            xai_grok_product::FEEDBACK_UPLOADS_ALLOWED,
+            "Feedback uploads are disabled by the community build privacy policy"
+        );
         let request = xai_grok_otel::inject_trace_context_into_request(request);
         let req = request.build().context(context)?;
         let (response, stamp) = xai_grok_auth::execute_with_stamp(&self.client, req)

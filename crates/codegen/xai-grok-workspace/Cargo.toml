@@ -6,6 +6,7 @@ edition.workspace = true
 description = "Core host-local workspace library (FS, VCS, execution, discovery) for xai-grok-shell and remote sampler"
 
 [dependencies]
+xai-grok-product = { path = "../xai-grok-product" }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 dunce = { workspace = true }

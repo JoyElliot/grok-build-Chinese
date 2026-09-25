@@ -81,7 +81,9 @@ impl RemoteSync {
         client: BackendClient,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(sync_task(session_id, metadata, client, rx));
+        if xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+            tokio::spawn(sync_task(session_id, metadata, client, rx));
+        }
         Self { tx }
     }
 
@@ -126,6 +128,10 @@ async fn do_flush(
     metadata: &ExportedMetadata,
     pending: &mut Vec<acp::SessionNotification>,
 ) -> bool {
+    if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+        pending.clear();
+        return false;
+    }
     if pending.is_empty() {
         return true;
     }
@@ -166,6 +172,9 @@ async fn sync_task(
     client: BackendClient,
     mut rx: mpsc::UnboundedReceiver<SyncMsg>,
 ) {
+    if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+        return;
+    }
     let mut pending: Vec<acp::SessionNotification> = Vec::new();
 
     while let Some(msg) = rx.recv().await {

@@ -12,6 +12,7 @@ default-bazel = []
 memory-log = []
 
 [dependencies]
+xai-grok-product = { path = "../xai-grok-product" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

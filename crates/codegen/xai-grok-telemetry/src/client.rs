@@ -273,6 +273,9 @@ pub const RESERVED_EVENT_KEYS: &[&str] = &[
 ];
 /// Core telemetry emitter. Routes to product events and Mixpanel.
 pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut metadata: Metadata) {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return;
+    }
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
     let client = {
         let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
@@ -373,6 +376,9 @@ pub fn current_mode() -> Option<TelemetryMode> {
 /// Sync the user's Mixpanel profile once per init. Fire-and-forget. Only runs in [`TelemetryMode::Enabled`].
 /// SessionMetrics mode may emit lifecycle events via [`track`], but must not write Mixpanel people profiles (`engage`).
 pub fn sync_profile() {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return;
+    }
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
     let client = {
         let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
@@ -428,7 +434,7 @@ pub fn init(
 ) {
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().unwrap_or_else(|err| err.into_inner());
-    *guard = if mode.is_disabled() {
+    *guard = if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED || mode.is_disabled() {
         None
     } else {
         Some(TelemetryClient::from_config(
@@ -459,7 +465,7 @@ pub fn init_if_needed(
     subscription_tier: Option<String>,
     http_client: reqwest::Client,
 ) {
-    if mode.is_disabled() {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED || mode.is_disabled() {
         return;
     }
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));

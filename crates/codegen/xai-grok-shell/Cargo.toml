@@ -37,6 +37,7 @@ xai-grok-announcements = { workspace = true }
 xai-prompt-queue = { workspace = true }
 xai-grok-version = { workspace = true }
 xai-grok-locale = { path = "../xai-grok-locale" }
+xai-grok-product = { path = "../xai-grok-product" }
 
 async-openai = { workspace = true }
 async-trait = { workspace = true }

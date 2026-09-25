@@ -283,6 +283,7 @@ impl Feature {
         }
         let spec = self.spec();
         Some(match resolved.source {
+            ConfigSource::BuildPolicy => "the community build privacy policy".to_owned(),
             ConfigSource::Requirement => "a requirements.toml pin or an MDM policy".to_owned(),
             ConfigSource::Env => format!("the {} environment variable", spec.env),
             // The tier is the merged document, but only a file can be opened.

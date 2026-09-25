@@ -18,7 +18,7 @@ pub struct Config {
     pub client: &'static str,
     pub client_version: &'static str,
     pub release: &'static str,
-    /// When `true`, [`init`] returns a no-op guard regardless of `SENTRY_DSN`.
+    /// When `true`, [`init`] returns `None` regardless of `SENTRY_DSN`.
     pub disabled: bool,
 }
 
@@ -28,12 +28,14 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 
 /// Init Sentry and apply the process-wide scope tags.
 /// Call once at process start; the returned guard must outlive the process.
-/// Returns a no-op guard when `config.disabled`.
-pub fn init(config: Config) -> ClientInitGuard {
+/// Returns `None` when disabled by the build policy or host configuration.
+pub fn init(config: Config) -> Option<ClientInitGuard> {
     let config = CONFIG.get_or_init(|| config);
 
-    if config.disabled {
-        return sentry::init(ClientOptions::default());
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED || config.disabled {
+        // Even sentry::init(ClientOptions::default()) reads SENTRY_DSN and can
+        // install a transport. Do not initialize the SDK on the disabled path.
+        return None;
     }
 
     let dsn = std::env::var("SENTRY_DSN")
@@ -64,7 +66,7 @@ pub fn init(config: Config) -> ClientInitGuard {
         scope.set_tag("arch", std::env::consts::ARCH);
     });
 
-    guard
+    Some(guard)
 }
 
 /// Flush in-flight events. Call before `std::process::exit` in signal handlers.

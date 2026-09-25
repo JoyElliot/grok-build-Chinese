@@ -809,6 +809,9 @@ impl StorageMode {
         cli_override: Option<&str>,
         remote: Option<&crate::util::config::RemoteSettings>,
     ) -> Self {
+        if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+            return Self::Local;
+        }
         if let Some(mode) = cli_override {
             match mode {
                 "writeback" => return Self::Writeback,
