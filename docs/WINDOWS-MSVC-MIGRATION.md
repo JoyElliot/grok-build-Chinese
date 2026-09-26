@@ -67,6 +67,18 @@ Cargo 全局保留 ARM64 的 VS 库环境，x64 的 C/C++ 编译器、归档器�
 
 新增预检用真实 MSVC 工具覆盖空格/中文路径、错误宿主 INCLUDE/LIB 的隔离、超过 8191 字符的归档命令、链接 response file、x64 PE 架构及工具失败退出码。在完整锁定依赖下载后，另用产品相同版本 `cc 1.2.43`、`find-msvc-tools 0.1.4` 与 `blake3 1.8.2` 编译小型 Cargo 图，强制断言 MSVC family，验证实际优化汇编的选择。本地 x64 主机的上述检查通过；另将 BLAKE3 已编译 build script 的 HOST/TARGET 设为 ARM64/x64，实际执行其交叉条件分支，生成了 SSE2/SSE4.1/AVX2/AVX512 的 MSVC 汇编对象及库。这项本地检查仍运行 x64 工具，不是 ARM64 宿主验证；仍须 ARM64 runner 完整构建和独立 x64 迁移作业证明交叉路径可用。
 
+### 交叉路径首次完整通过：仍需减少串行开销
+
+提交 `d00c5aea` 的 [CI 36232587731](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36232587731) 从 `2026-09-26T09:22:40Z` 创建至 `10:14:00Z` 完成，全部必需检查成功，整轮 **51 分 20 秒**，仍未达到 50 分钟目标。原六平台产物及其原生验收成功，x64 MSVC 更新器测试和两种 PowerShell 的真实产品迁移均通过；真实账号 macOS 冒烟按条件跳过。
+
+新增 MSVC 交叉编译作业用时 48 分 20 秒（`09:23:12Z–10:11:32Z`），后续原生迁移验收作业用时 2 分 19 秒（`10:11:35Z–10:13:54Z`）。本轮真正的产品 Cargo 为 **40 分 59.3 秒**，1361 Dirty / 0 Fresh；小型 `cc/blake3` dev 预检仅 5.78 秒，不能混作产品计时。宿主为 Cobalt 100、4 个逻辑核，Rust 1.94.0 ARM64、MSVC 14.51.36231、SDK 10.0.26100；shell 单元 821.4 秒（codegen 684.7 秒），最终 binary 单元 630.5 秒，未将其细分为 codegen/link。没有 CPU 利用率采样，不据此断言 CPU 瓶颈。
+
+编译缓存和 Cargo home 均未命中；编译缓存保存 65.606 秒（约 1.366 GB），Cargo home 保存 138.293 秒（约 454 MB）。home 的压缩阶段约两分钟后才开始报告上传进度，支持先减少重复展开源码的压缩量，但实际节省仍须下一轮实测。消费者中不依赖真实产品的启动器/迁移 fixture 用时约 47.72 秒，打包约 11.16 秒，两种 PowerShell 的真实产品迁移合计约 52.3 秒。
+
+下一轮将纯 fixture 测试移到已有独立 MSVC 更新器测试作业，与产品编译并行；保留两种 PowerShell 的全部测试，最终门禁仍必须通过。依赖缓存只保存 Cargo 的 registry/cache、registry/index 和 git/db，展开的 registry/src 与 git/checkouts 由 Cargo 按需从归档和 Git 数据库重新生成；每轮仍执行 `cargo fetch --locked`，随后使用 `cargo build --frozen`。这减少需要压缩和传输的重复源文件，不删除既有远端缓存。迁移产品使用新的隔离版本 `1.0.100`，纯 fixture 保持 `1.0.99`；消费者从 producer 输出取得产品版本，与身份清单核对。启用新的编译缓存命名空间验证冷编译连同保存、上传、原生迁移的完整耗时；不得只用同版本全暖缓存重跑宣称达标。
+
+本地用仅含八个 crate 归档与 sparse index、完全没有 registry/src 的临时 Cargo home，离线执行锁定 fetch 和 frozen 构建，通过相同版本 cc/BLAKE3 小图；另以仅恢复 git/db、没有 git/checkouts 的临时 home 完成锁定 Git 依赖的离线 fetch/frozen 构建。这证明缓存布局可恢复依赖，不替代 ARM64 runner 全仓构建或性能验收。相关工作流、输入身份和迁移打包共 14 项测试及 actionlint 通过。
+
 ## 正式启用前的发布顺序
 
 1. 先完成当前 PR 全部 CI 与性能验收。

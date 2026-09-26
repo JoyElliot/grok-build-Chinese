@@ -534,6 +534,20 @@ jobs:
       TARGET: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: 构建兼容入口并先检查迁移契约
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gcc = 'C:\mingw64\bin\gcc.exe'
+          if (!(Test-Path -LiteralPath $gcc)) { throw 'runner 缺少 MinGW C 编译器。' }
+          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc
+          if ($LASTEXITCODE -ne 0) { throw '迁移启动器构建失败。' }
+          python -B .github/scripts/tests/test_migration_package.py
+          if ($LASTEXITCODE -ne 0) { throw '迁移打包契约失败。' }
+          & ./packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
+          if (!$?) { throw 'PowerShell 7 迁移契约失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 迁移契约失败。' }
       - uses: ./.github/actions/build-windows-msvc-x64
         with:
           version: '1.0.99'
@@ -547,6 +561,7 @@ jobs:
     timeout-minutes: 120
     outputs:
       artifact_name: ${{ steps.build.outputs.artifact_name }}
+      version: ${{ steps.build.outputs.version }}
     env:
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
@@ -560,7 +575,7 @@ jobs:
         id: build
         uses: ./.github/actions/build-windows-msvc-cross
         with:
-          version: '1.0.99'
+          version: '1.0.100'
 
   windows-msvc-migration-experiment:
     name: Windows GNU 到 MSVC 真实产物迁移试验
@@ -577,9 +592,9 @@ jobs:
       CARGO_HTTP_TIMEOUT: "120"
       RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-msvc
       TARGET: x86_64-pc-windows-msvc
-      GROK_VERSION: 1.0.99
-      PACKAGE_NAME: grok-zh-1.0.99-windows-x86_64-msvc
-      ARCHIVE_NAME: grok-zh-1.0.99-windows-x86_64-msvc.zip
+      GROK_VERSION: ${{ needs.windows-msvc-cross-build.outputs.version }}
+      PACKAGE_NAME: grok-zh-${{ needs.windows-msvc-cross-build.outputs.version }}-windows-x86_64-msvc
+      ARCHIVE_NAME: grok-zh-${{ needs.windows-msvc-cross-build.outputs.version }}-windows-x86_64-msvc.zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: 设置原生验收暂存目录
@@ -598,20 +613,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw '交叉输入绑定回归失败。' }
           python -B .github/scripts/msvc-build-input.py verify --directory "$env:RUNNER_TEMP/grok-msvc-cross-input" --executable "$env:CARGO_TARGET_DIR/$env:TARGET/release-dist/grok-zh.exe"
           if ($LASTEXITCODE -ne 0) { throw '同轮交叉输入身份或 SHA-256 不一致。' }
-      - name: 构建兼容入口并先检查迁移契约
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $gcc = 'C:\mingw64\bin\gcc.exe'
-          if (!(Test-Path -LiteralPath $gcc)) { throw 'runner 缺少 MinGW C 编译器。' }
-          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc
-          if ($LASTEXITCODE -ne 0) { throw '迁移启动器构建失败。' }
-          python -B .github/scripts/tests/test_migration_package.py
-          if ($LASTEXITCODE -ne 0) { throw '迁移打包契约失败。' }
-          & ./packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
-          if (!$?) { throw 'PowerShell 7 迁移契约失败。' }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
-          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 迁移契约失败。' }
       - name: 在原生 x64 验证并打包实际 MSVC 产品
         shell: pwsh
         run: |
@@ -620,7 +621,7 @@ jobs:
       - name: 上传迁移试验 MSVC 产品
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: migration-experiment-grok-zh-1.0.99-windows-x86_64-msvc-${{ github.run_id }}-${{ github.run_attempt }}
+          name: migration-experiment-grok-zh-${{ needs.windows-msvc-cross-build.outputs.version }}-windows-x86_64-msvc-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/${{ env.ARCHIVE_NAME }}
             dist/${{ env.ARCHIVE_NAME }}.sha256
@@ -634,7 +635,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $gcc = 'C:\mingw64\bin\gcc.exe'
-          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc --payload-package "dist/$env:PAYLOAD_PACKAGE"
+          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version $env:GROK_VERSION --migration-tag migration-windows-x64-v1 --cc $gcc --payload-package "dist/$env:PAYLOAD_PACKAGE"
           if ($LASTEXITCODE -ne 0) { throw 'GNU 兼容 ZIP 构建失败。' }
           & ./packaging/windows/tests/Test-MigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE" -Gcc $gcc
           if (!$?) { throw 'PowerShell 7 实际产品迁移失败。' }
@@ -646,7 +647,7 @@ jobs:
           - 使用本轮真实 MSVC release-dist 产物；原 GNU 六平台产物和测试保留。
           - 已验证旧版只安装 EXE、纯版本检查、首次按需迁移和四类 CLI；后续启动不重复下载。
           - GitHub 请求使用测试内嵌传输，不需要创建正式 Release；生产入口没有 URL/信任绕过开关。
-          - 1.0.99 仅为迁移协议测试版本。固定 helper 尚未发布，禁止分发此兼容入口给用户。
+          - 本轮版本仅用于隔离迁移协议测试。固定 helper 尚未发布，禁止分发此兼容入口给用户。
           '@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
   linux-x64-gnu-preview:

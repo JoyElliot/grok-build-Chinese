@@ -5,6 +5,8 @@ inputs:
     required: true
     description: 隔离迁移试验版本
 outputs:
+  version:
+    value: ${{ steps.meta.outputs.version }}
   artifact_name:
     value: ${{ steps.meta.outputs.artifact_name }}
 runs:
@@ -17,8 +19,9 @@ runs:
         REQUESTED_VERSION: ${{ inputs.version }}
       run: |
         $ErrorActionPreference = 'Stop'
-        if ($env:REQUESTED_VERSION -cne '1.0.99') { throw '当前仅允许隔离迁移试验版本。' }
+        if ($env:REQUESTED_VERSION -cnotin @('1.0.99', '1.0.100', '1.0.101')) { throw '当前仅允许隔离迁移试验版本。' }
         "GROK_VERSION=$env:REQUESTED_VERSION" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "version=$env:REQUESTED_VERSION" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
         "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'grok-msvc-cross-cargo')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
         "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'grok-msvc-cross-target')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
         "artifact_name=grok-msvc-cross-input-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -48,9 +51,10 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: |
-          ${{ runner.temp }}/grok-msvc-cross-cargo/registry
-          ${{ runner.temp }}/grok-msvc-cross-cargo/git
-        key: grok-msvc-cross-home-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          ${{ runner.temp }}/grok-msvc-cross-cargo/registry/cache
+          ${{ runner.temp }}/grok-msvc-cross-cargo/registry/index
+          ${{ runner.temp }}/grok-msvc-cross-cargo/git/db
+        key: grok-msvc-cross-home-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
 
     - name: 恢复 ARM64 宿主 x64 MSVC 编译缓存
       id: build
@@ -59,7 +63,8 @@ runs:
         path: |
           ${{ runner.temp }}/grok-msvc-cross-target/release-dist
           ${{ runner.temp }}/grok-msvc-cross-target/x86_64-pc-windows-msvc/release-dist
-        key: grok-msvc-cross-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.toolchain_key }}-x64-release-dist-ltothin-debug0-cgu1-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock', '.github/scripts/setup-msvc-cross.ps1', '.github/scripts/build-msvc-tool-wrappers.ps1', '.github/scripts/msvc-tool-wrapper.c') }}
+        # Start the reduced-overhead pipeline with a cold build for performance acceptance.
+        key: grok-msvc-cross-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.toolchain_key }}-x64-release-dist-ltothin-debug0-cgu1-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock', '.github/scripts/setup-msvc-cross.ps1', '.github/scripts/build-msvc-tool-wrappers.ps1', '.github/scripts/msvc-tool-wrapper.c') }}
 
     - name: 获取完整依赖并交叉编译
       shell: pwsh
@@ -107,6 +112,7 @@ runs:
       uses: ./.github/actions/save-cargo-cache
       with:
         path: |
-          ${{ runner.temp }}/grok-msvc-cross-cargo/registry
-          ${{ runner.temp }}/grok-msvc-cross-cargo/git
+          ${{ runner.temp }}/grok-msvc-cross-cargo/registry/cache
+          ${{ runner.temp }}/grok-msvc-cross-cargo/registry/index
+          ${{ runner.temp }}/grok-msvc-cross-cargo/git/db
         key: ${{ steps.home.outputs.cache-primary-key }}
