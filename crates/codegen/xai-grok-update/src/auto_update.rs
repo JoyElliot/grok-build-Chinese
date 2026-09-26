@@ -1274,7 +1274,7 @@ async fn install_community_release(
     {
         let _ = asset;
         anyhow::bail!(
-            "community self-update supports only Windows x86_64 GNU or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
+            "community self-update supports Windows x86_64 GNU/MSVC or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
         );
     }
 }

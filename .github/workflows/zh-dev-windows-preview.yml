@@ -519,6 +519,85 @@ jobs:
           release_build: 'false'
           phase: build
 
+  windows-msvc-migration-test:
+    name: Windows x64 MSVC 更新器原生测试
+    needs: rust-format-preflight
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_CACHE_SCHEMA: windows-x64-msvc-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-msvc
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/build-windows-msvc-x64
+        with:
+          version: '1.0.99'
+          release_build: 'false'
+          phase: test
+
+  windows-msvc-migration-experiment:
+    name: Windows GNU 到 MSVC 真实产物迁移试验
+    needs: rust-format-preflight
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_CACHE_SCHEMA: windows-x64-msvc-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-msvc
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: 构建兼容入口并先检查迁移契约
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gcc = 'C:\mingw64\bin\gcc.exe'
+          if (!(Test-Path -LiteralPath $gcc)) { throw 'runner 缺少 MinGW C 编译器。' }
+          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc
+          if ($LASTEXITCODE -ne 0) { throw '迁移启动器构建失败。' }
+          python -B .github/scripts/tests/test_migration_package.py
+          if ($LASTEXITCODE -ne 0) { throw '迁移打包契约失败。' }
+          & ./packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
+          if (!$?) { throw 'PowerShell 7 迁移契约失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 迁移契约失败。' }
+      - name: 构建原生 x64 MSVC 实际产品（隔离试验版本，不发布）
+        id: build
+        uses: ./.github/actions/build-windows-msvc-x64
+        with:
+          version: '1.0.99'
+          release_build: 'false'
+          phase: build
+      - name: 旧版 EXE 替换边界到实际 MSVC 产品的完整迁移
+        shell: pwsh
+        env:
+          PAYLOAD_PACKAGE: ${{ steps.build.outputs.package_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gcc = 'C:\mingw64\bin\gcc.exe'
+          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc --payload-package "dist/$env:PAYLOAD_PACKAGE"
+          if ($LASTEXITCODE -ne 0) { throw 'GNU 兼容 ZIP 构建失败。' }
+          & ./packaging/windows/tests/Test-MigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE" -Gcc $gcc
+          if (!$?) { throw 'PowerShell 7 实际产品迁移失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-MigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE" -Gcc $gcc
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 实际产品迁移失败。' }
+          @'
+          ## Windows GNU → MSVC 迁移试验通过
+
+          - 使用本轮真实 MSVC release-dist 产物；原 GNU 六平台产物和测试保留。
+          - 已验证旧版只安装 EXE、纯版本检查、首次按需迁移和四类 CLI；后续启动不重复下载。
+          - GitHub 请求使用测试内嵌传输，不需要创建正式 Release；生产入口没有 URL/信任绕过开关。
+          - 1.0.99 仅为迁移协议测试版本。固定 helper 尚未发布，禁止分发此兼容入口给用户。
+          '@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版
     needs: rust-format-preflight
@@ -874,6 +953,8 @@ jobs:
       - macos-intel-native-smoke
       - windows-gnu-preview
       - windows-arm64-msvc-preview
+      - windows-msvc-migration-test
+      - windows-msvc-migration-experiment
       - linux-x64-gnu-preview
       - linux-arm64-gnu-preview
       - macos-arm-preview
@@ -886,6 +967,8 @@ jobs:
       MACOS_INTEL_NATIVE_RESULT: ${{ needs.macos-intel-native-smoke.result }}
       WINDOWS_RESULT: ${{ needs.windows-gnu-preview.result }}
       WINDOWS_ARM_RESULT: ${{ needs.windows-arm64-msvc-preview.result }}
+      MIGRATION_TEST_RESULT: ${{ needs.windows-msvc-migration-test.result }}
+      MIGRATION_PRODUCT_RESULT: ${{ needs.windows-msvc-migration-experiment.result }}
       LINUX_RESULT: ${{ needs.linux-x64-gnu-preview.result }}
       LINUX_ARM_RESULT: ${{ needs.linux-arm64-gnu-preview.result }}
       MACOS_RESULT: ${{ needs.macos-arm-preview.result }}
@@ -906,6 +989,8 @@ jobs:
             || "${FORMAT_RESULT}" != success \
             || "${MACOS_INTEL_NATIVE_RESULT}" != success \
             || "${WINDOWS_ARM_RESULT}" != success \
+            || "${MIGRATION_TEST_RESULT}" != success \
+            || "${MIGRATION_PRODUCT_RESULT}" != success \
             || "${LINUX_RESULT}" != success \
             || "${LINUX_ARM_RESULT}" != success \
             || "${MACOS_RESULT}" != success \
@@ -926,6 +1011,8 @@ jobs:
             echo "- macOS Intel 原生产物验证：${MACOS_INTEL_NATIVE_RESULT}"
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"
             echo "- Windows ARM64 MSVC：${WINDOWS_ARM_RESULT}（${WINDOWS_ARM_ARTIFACT}）"
+            echo "- Windows x64 MSVC 更新器原生测试：${MIGRATION_TEST_RESULT}"
+            echo "- GNU 到 MSVC 实际产品迁移试验：${MIGRATION_PRODUCT_RESULT}"
             echo "- Linux x86_64 GNU：${LINUX_RESULT}（${LINUX_ARTIFACT}）"
             echo "- Linux aarch64 GNU：${LINUX_ARM_RESULT}（${LINUX_ARM_ARTIFACT}）"
             echo "- macOS ARM64：${MACOS_RESULT}（${MACOS_ARTIFACT}）"

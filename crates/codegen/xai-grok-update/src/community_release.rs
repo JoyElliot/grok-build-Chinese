@@ -166,6 +166,7 @@ enum CommunityArchiveKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommunityPlatform {
     WindowsX86_64Gnu,
+    WindowsX86_64Msvc,
     WindowsAarch64Msvc,
     MacosX86_64,
     MacosAarch64,
@@ -177,6 +178,7 @@ impl CommunityPlatform {
     fn target_triple(self) -> &'static str {
         match self {
             Self::WindowsX86_64Gnu => "x86_64-pc-windows-gnu",
+            Self::WindowsX86_64Msvc => "x86_64-pc-windows-msvc",
             Self::WindowsAarch64Msvc => "aarch64-pc-windows-msvc",
             Self::MacosX86_64 => "x86_64-apple-darwin",
             Self::MacosAarch64 => "aarch64-apple-darwin",
@@ -193,6 +195,12 @@ fn current_community_platform() -> Result<CommunityPlatform> {
         target_env = "gnu"
     )) {
         Ok(CommunityPlatform::WindowsX86_64Gnu)
+    } else if cfg!(all(
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc"
+    )) {
+        Ok(CommunityPlatform::WindowsX86_64Msvc)
     } else if cfg!(all(
         target_os = "windows",
         target_arch = "aarch64",
@@ -217,7 +225,7 @@ fn current_community_platform() -> Result<CommunityPlatform> {
         Ok(CommunityPlatform::LinuxAarch64Gnu)
     } else {
         anyhow::bail!(
-            "community self-update supports only Windows x86_64 GNU or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
+            "community self-update supports Windows x86_64 GNU/MSVC or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
         )
     }
 }
@@ -360,6 +368,9 @@ fn release_asset_name_for(platform: CommunityPlatform, version: &str) -> Result<
         CommunityPlatform::WindowsX86_64Gnu => {
             Ok(format!("grok-zh-{version}-windows-x86_64-gnu.zip"))
         }
+        CommunityPlatform::WindowsX86_64Msvc => {
+            Ok(format!("grok-zh-{version}-windows-x86_64-msvc.zip"))
+        }
         CommunityPlatform::WindowsAarch64Msvc => {
             Ok(format!("grok-zh-{version}-windows-aarch64-msvc.zip"))
         }
@@ -492,9 +503,9 @@ fn select_asset_for_platform(
         size: asset.size,
         sha256: parse_sha256_digest(digest)?,
         archive_kind: match platform {
-            CommunityPlatform::WindowsX86_64Gnu | CommunityPlatform::WindowsAarch64Msvc => {
-                CommunityArchiveKind::WindowsZip
-            }
+            CommunityPlatform::WindowsX86_64Gnu
+            | CommunityPlatform::WindowsX86_64Msvc
+            | CommunityPlatform::WindowsAarch64Msvc => CommunityArchiveKind::WindowsZip,
             CommunityPlatform::MacosX86_64 | CommunityPlatform::MacosAarch64 => {
                 CommunityArchiveKind::MacosTarGz
             }
@@ -1022,6 +1033,7 @@ fn extract_verified_windows_executable(
         let parsed_version = canonical_release_version(&asset.version)?;
         let platform = [
             CommunityPlatform::WindowsX86_64Gnu,
+            CommunityPlatform::WindowsX86_64Msvc,
             CommunityPlatform::WindowsAarch64Msvc,
         ]
         .into_iter()
@@ -2043,9 +2055,9 @@ mod tests {
             size: 1,
             sha256: "ab".repeat(32),
             archive_kind: match platform {
-                CommunityPlatform::WindowsX86_64Gnu | CommunityPlatform::WindowsAarch64Msvc => {
-                    CommunityArchiveKind::WindowsZip
-                }
+                CommunityPlatform::WindowsX86_64Gnu
+                | CommunityPlatform::WindowsX86_64Msvc
+                | CommunityPlatform::WindowsAarch64Msvc => CommunityArchiveKind::WindowsZip,
                 CommunityPlatform::MacosX86_64 | CommunityPlatform::MacosAarch64 => {
                     CommunityArchiveKind::MacosTarGz
                 }
@@ -2562,6 +2574,51 @@ mod tests {
         assert_eq!(crate::community_updates_enabled(), supported);
         assert_eq!(crate::updates_enabled(), supported);
         assert_eq!(crate::ensure_selected_updates_enabled().is_ok(), supported);
+    }
+
+    #[test]
+    fn windows_x64_msvc_requires_its_own_asset_and_protocol() {
+        let version = "1.0.99";
+        let platform = CommunityPlatform::WindowsX86_64Msvc;
+        let mut candidate = release("release-v1.0.99", false, true);
+        candidate.assets = uploaded_package_assets(version);
+        assert!(select_asset_for_platform(&candidate, version, platform).is_err());
+        candidate.assets.push(uploaded_asset(
+            version,
+            release_asset_name_for(platform, version).unwrap(),
+            123,
+        ));
+        let asset = select_asset_for_platform(&candidate, version, platform).unwrap();
+        assert_eq!(asset.name, "grok-zh-1.0.99-windows-x86_64-msvc.zip");
+        assert_eq!(asset.archive_kind, CommunityArchiveKind::WindowsZip);
+        let temp = tempfile::tempdir().unwrap();
+        for target in ["x86_64-pc-windows-gnu", "x86_64-pc-windows-msvc"] {
+            let mut entries = package_entries_with_manifest(&WINDOWS_REQUIRED_PACKAGE_FILES);
+            entries
+                .iter_mut()
+                .find(|(name, _)| name == BUILD_INFO)
+                .unwrap()
+                .1 = protocol_info(version, target, "grok-zh.exe", "Install-GrokZh.ps1");
+            rehash_entries(&mut entries);
+            let archive = temp.path().join(format!("{target}.zip"));
+            let root = asset.name.strip_suffix(".zip").unwrap();
+            write_zip(
+                &archive,
+                &entries
+                    .into_iter()
+                    .map(|(name, data)| (format!("{root}/{name}"), data))
+                    .collect::<Vec<_>>(),
+            );
+            let destination = temp.path().join(format!("{target}.exe"));
+            let result = extract_verified_executable(&asset, &archive, &destination);
+            if target == "x86_64-pc-windows-msvc" {
+                result.unwrap();
+                assert_eq!(std::fs::read(destination).unwrap(), b"verified executable");
+            } else {
+                assert!(result.is_err());
+                assert!(!destination.exists());
+            }
+        }
     }
 
     #[test]

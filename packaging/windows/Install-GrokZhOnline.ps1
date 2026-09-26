@@ -20,6 +20,10 @@ Menu 显示中文菜单；Install 共存安装；Commands 打开包内命令设�
 使用参数完成共存或便携安装，不显示菜单。相同版本需另加 -Repair。
 .PARAMETER VerifyOnly
 只下载、校验完整包并检查候选程序版本，不安装。
+.PARAMETER WindowsX64Runtime
+Windows x64 工具链。默认保留 GNU；MSVC 用于显式安装和迁移入口。
+.PARAMETER Version
+安装指定的正式版本。迁移入口用它固定到启动器对应版本，避免下载途中跳到另一版本。
 .EXAMPLE
 & .\Install-GrokZhOnline.ps1
 .EXAMPLE
@@ -36,7 +40,9 @@ param(
     [switch]$NoPathUpdate,
     [switch]$Repair,
     [switch]$NonInteractive,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [ValidateSet('Gnu', 'Msvc')][string]$WindowsX64Runtime = 'Gnu',
+    [string]$Version
 )
 
 Set-StrictMode -Version Latest
@@ -323,6 +329,19 @@ function Get-LatestOnlineRelease {
     throw 'Release 列表超过查询上限，未执行安装。'
 }
 
+function Get-ExactOnlineRelease {
+    param($Client, [string]$Version, [string]$WorkDirectory)
+    $parsed = ConvertTo-OnlineVersion $Version -StableOnly
+    $tag = if ((Compare-OnlineVersion $parsed (ConvertTo-OnlineVersion '1.0.8')) -le 0) { "v$Version" } else { "release-v$Version" }
+    $metadataPath = Join-Path $WorkDirectory 'exact-release.json'
+    Receive-OnlineFile -Client $Client -Uri "https://api.github.com/repos/$script:OnlineRepo/releases/tags/$tag" `
+        -Destination $metadataPath -MaximumBytes 8388608 -Label '正在核对指定正式版本'
+    $release = ConvertFrom-Json -InputObject (ConvertFrom-OnlineUtf8 ([IO.File]::ReadAllBytes($metadataPath)))
+    $contract = Get-OnlineReleaseContract $release
+    if ($contract.Tag -cne $tag -or $contract.Version.Text -cne $Version) { throw '指定 Release 的版本或标签不一致。' }
+    return $contract
+}
+
 function Assert-OnlinePathChain {
     param([string]$Path)
     $cursor = $Path
@@ -565,7 +584,9 @@ function Get-OnlineExecutableVersion {
             $text -cnotmatch '^grok-zh (\S+)(?: \([^()\r\n]{1,128}\))?(?: \[[^\[\]\r\n]{1,32}\])?$') {
             throw '程序没有返回有效的 grok-zh 版本。'
         }
-        return ConvertTo-OnlineVersion $matches[1]
+        $version = ConvertTo-OnlineVersion $matches[1]
+        $version | Add-Member -NotePropertyName DisplayText -NotePropertyValue $text
+        return $version
     } finally { $process.Dispose() }
 }
 
@@ -791,7 +812,8 @@ function Install-OnlinePortable {
 function Invoke-GrokZhOnline {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([string]$Mode = 'Menu', [string]$InstallDir, [string]$PortableDir, [string]$GrokHome,
-        [switch]$NoPathUpdate, [switch]$Repair, [switch]$NonInteractive, [switch]$VerifyOnly)
+        [switch]$NoPathUpdate, [switch]$Repair, [switch]$NonInteractive, [switch]$VerifyOnly,
+        [ValidateSet('Gnu', 'Msvc')][string]$WindowsX64Runtime = 'Gnu', [string]$Version)
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or ![Environment]::Is64BitOperatingSystem) {
         throw '此在线安装入口只支持 Windows x64 或 ARM64。'
     }
@@ -801,8 +823,9 @@ function Invoke-GrokZhOnline {
         $script:OnlineTargetTriple = 'aarch64-pc-windows-msvc'
         $architecture = 'ARM64'
     } elseif ($nativeMachine -eq 0x8664) {
-        $script:OnlinePlatformSuffix = 'windows-x86_64-gnu'
-        $script:OnlineTargetTriple = 'x86_64-pc-windows-gnu'
+        $runtime = $WindowsX64Runtime.ToLowerInvariant()
+        $script:OnlinePlatformSuffix = "windows-x86_64-$runtime"
+        $script:OnlineTargetTriple = "x86_64-pc-windows-$runtime"
         $architecture = 'x64'
     } else {
         throw ('不支持的 Windows 原生架构：0x{0:X4}' -f $nativeMachine)
@@ -825,7 +848,7 @@ function Invoke-GrokZhOnline {
         Write-Host "`nGrok Build 中文社区版安装`n" -ForegroundColor Cyan
         Write-Host '正在检查最新正式版本...'
         $client = New-OnlineHttpClient
-        $release = Get-LatestOnlineRelease -Client $client -WorkDirectory $work
+        $release = if ($Version) { Get-ExactOnlineRelease -Client $client -Version $Version -WorkDirectory $work } else { Get-LatestOnlineRelease -Client $client -WorkDirectory $work }
         Write-Host "系统：Windows $architecture`n最新正式版：$($release.Version.Text)`n默认安装位置：$InstallDir`n"
         if ($Mode -eq 'Menu' -and !$NonInteractive -and !$VerifyOnly) {
             Write-Host "1. 安装或更新（推荐，与官方版共存）`n2. 安装并设置 grok / agent 启动命令`n3. 自定义安装目录`n4. 创建或更新便携版（不修改 PATH）`n0. 退出"

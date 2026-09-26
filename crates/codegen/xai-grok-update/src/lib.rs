@@ -261,7 +261,7 @@ pub const fn community_updates_enabled() -> bool {
         && (cfg!(all(
             target_os = "windows",
             target_arch = "x86_64",
-            target_env = "gnu"
+            any(target_env = "gnu", target_env = "msvc")
         )) || cfg!(all(
             target_os = "windows",
             target_arch = "aarch64",
@@ -323,7 +323,7 @@ mod community_build_tests {
         let supported_target = cfg!(all(
             target_os = "windows",
             target_arch = "x86_64",
-            target_env = "gnu"
+            any(target_env = "gnu", target_env = "msvc")
         )) || cfg!(all(
             target_os = "windows",
             target_arch = "aarch64",

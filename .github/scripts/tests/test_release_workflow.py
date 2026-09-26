@@ -140,6 +140,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
 
 class PreviewNativeValidationTests(unittest.TestCase):
+    def test_msvc_migration_experiment_is_required_without_changing_release_matrix(self):
+        jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
+        gate = jobs["multiplatform-result"]
+        for job, result in (("windows-msvc-migration-test", "MIGRATION_TEST_RESULT"),
+                            ("windows-msvc-migration-experiment", "MIGRATION_PRODUCT_RESULT")):
+            self.assertEqual(dependencies(jobs[job]), {"rust-format-preflight"})
+            self.assertIn(job, dependencies(gate))
+            self.assertIn(f'"${{{result}}}" != success', gate)
+            self.assertIn("runs-on: windows-2022", jobs[job])
+            self.assertNotIn("continue-on-error", jobs[job])
+        experiment = jobs["windows-msvc-migration-experiment"]
+        self.assertEqual(experiment.count("Test-MigrationProduct.ps1"), 2)
+        self.assertEqual(experiment.count("Test-WindowsMigration.ps1"), 2)
+        self.assertIn("--payload-package", experiment)
+        self.assertIn("phase: test", jobs["windows-msvc-migration-test"])
+        self.assertNotIn("build-windows-msvc-x64", WORKFLOW.read_text(encoding="utf-8"))
+
     def test_all_native_test_jobs_gate_the_six_artifacts(self):
         jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
         tests = jobs["native-rust-validation"]
