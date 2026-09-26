@@ -6,7 +6,7 @@
 ## 校验与安装
 
 下载 `tar.gz` 后，先运行 `sha256sum <归档文件名>`，与 GitHub Release 对应附件旁显示的
-SHA-256 核对一致。兼容期内也可下载同名 `.sha256` 并运行 `sha256sum -c <归档文件名>.sha256`。
+SHA-256 核对一致。兼容期内，x86_64 包也可下载同名 `.sha256` 并运行 `sha256sum -c <归档文件名>.sha256`；ARM64 包不提供此附件，使用上述 GitHub digest 校验。
 归档只含一个与归档同名（去掉 `.tar.gz`）的顶层目录。完成外层校验后，在归档
 所在目录运行以下命令（把示例版本替换为实际版本）：
 
@@ -50,7 +50,7 @@ binutils、`file` 与 `sha256sum`；Ubuntu/WSL 可先运行：
   `release-v*` 使用六附件契约；Linux ARM64 从六平台正式版开始提供。
 - 社区版默认不自动下载；可在明确接受相应通道后使用更新命令启用或执行更新。
 
-每个平台保持一个安装包。独立 `.sha256` 在约两个月兼容期内保留，之后的新 Release
+每个平台保持一个安装包。仅原三平台（Windows x64 GNU、macOS ARM64、Linux x64 GNU）的独立 `.sha256` 在约两个月兼容期内保留，新增三平台不公开此附件。兼容期后的新 Release
 只公开各平台归档；旧客户端先升级到永久保留的三平台六附件过渡版，再升级后续版本。
 维护约定见 [单包更新协议](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/docs/COMMUNITY-UPDATE-PROTOCOL.md)。
 

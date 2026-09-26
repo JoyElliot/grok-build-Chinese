@@ -1075,6 +1075,8 @@ jobs:
               (Join-Path $dist "$env:LINUX_ARCHIVE_NAME.sha256")
             )
           }
+          # Only the original platforms have clients that need public sidecars.
+          $legacySidecars = @($assets | Where-Object { $_.EndsWith('.sha256', [StringComparison]::Ordinal) })
           if ($env:INCLUDE_NEW_PLATFORMS -eq 'true') {
             foreach ($name in @($env:WINDOWS_ARM_ARCHIVE_NAME, $env:MAC_INTEL_ARCHIVE_NAME, $env:LINUX_ARM_ARCHIVE_NAME)) {
               $assets += @((Join-Path $dist $name), (Join-Path $dist "$name.sha256"))
@@ -1124,11 +1126,16 @@ jobs:
           if (($expectedLocalNames -join "`n") -cne ($actualLocalNames -join "`n")) {
             throw "发布目录不是精确资产集合：$($actualLocalNames -join ', ')"
           }
-          # Sidecars remain internal build/attestation inputs after retirement.
-          # The public asset list, including all later API checks, uses archives only.
+          # Select public Release assets after all local hashes have been checked.
+          # All sidecars remain internal build/attestation inputs. New platforms
+          # use GitHub asset digests from their first release, with no sidecar.
           if ($env:PUBLISH_LEGACY_SHA256 -eq 'false') {
             $assets = @($assets | Where-Object { !$_.EndsWith('.sha256', [StringComparison]::Ordinal) })
-          } elseif ($env:PUBLISH_LEGACY_SHA256 -ne 'true') {
+          } elseif ($env:PUBLISH_LEGACY_SHA256 -eq 'true') {
+            $assets = @($assets | Where-Object {
+              !$_.EndsWith('.sha256', [StringComparison]::Ordinal) -or $legacySidecars -ccontains $_
+            })
+          } else {
             throw '发布计划未提供明确的独立校验文件策略。'
           }
 

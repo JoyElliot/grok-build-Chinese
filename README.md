@@ -116,7 +116,7 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 
 旧版迁移、高级参数和恢复方式见 [Windows 自动安装说明](packaging/windows/INSTALL-WINDOWS.md)。正式 Release 同时提供 SHA-256 与 GitHub Artifact Attestation，用于核对文件完整性和云端构建来源；它们不等同于 Windows Authenticode 签名。
 
-每个平台保持一个安装包。同包通过新旧校验，独立 `.sha256` 在约两个月兼容期内保留，后续停止公开发布；包内 `SHA256SUMS.txt` 继续用于文件校验。迁移与维护约定见 [单包更新协议](docs/COMMUNITY-UPDATE-PROTOCOL.md)。
+每个平台保持一个安装包。约两个月兼容期内，仅原 Windows x64 GNU、macOS ARM64、Linux x64 GNU 保留三个独立 `.sha256`，后续停止公开发布；新增 Windows ARM64、macOS Intel、Linux ARM64 使用 GitHub Release 的 SHA-256 digest，不公开独立校验附件。所有平台的包内 `SHA256SUMS.txt` 继续用于文件校验。迁移与维护约定见 [单包更新协议](docs/COMMUNITY-UPDATE-PROTOCOL.md)。
 
 ## macOS 安装
 

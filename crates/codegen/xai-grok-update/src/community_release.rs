@@ -417,8 +417,7 @@ fn expected_release_asset_names(version: &str) -> Result<Vec<String>> {
             CommunityPlatform::LinuxAarch64Gnu,
         ] {
             let archive = release_asset_name_for(platform, version)?;
-            names.push(archive.clone());
-            names.push(format!("{archive}.sha256"));
+            names.push(archive);
         }
     }
     names.sort_unstable();
@@ -2556,12 +2555,30 @@ mod tests {
     }
 
     #[test]
+    fn community_update_entry_points_match_the_platform_archive_support() {
+        // The outer CLI/startup gates must agree with the archive selector on
+        // every native CI target, including platforms added after the bridge.
+        let supported = current_community_platform().is_ok();
+        assert_eq!(crate::community_updates_enabled(), supported);
+        assert_eq!(crate::updates_enabled(), supported);
+        assert_eq!(crate::ensure_selected_updates_enabled().is_ok(), supported);
+    }
+
+    #[test]
     fn six_platform_release_keeps_the_historical_bridge_sets_unchanged() {
         assert_eq!(expected_release_asset_names("1.0.8").unwrap().len(), 2);
         assert_eq!(expected_release_asset_names("1.0.16").unwrap().len(), 6);
         let mut modern = release("release-v1.0.36", false, true);
         modern.assets = uploaded_package_assets("1.0.36");
-        assert_eq!(modern.assets.len(), 12);
+        assert_eq!(modern.assets.len(), 9);
+        assert_eq!(
+            modern
+                .assets
+                .iter()
+                .filter(|asset| asset.name.ends_with(".sha256"))
+                .count(),
+            3
+        );
         for (platform, name, kind) in [
             (
                 CommunityPlatform::WindowsX86_64Gnu,
