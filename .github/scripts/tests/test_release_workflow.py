@@ -144,11 +144,16 @@ class PreviewNativeValidationTests(unittest.TestCase):
         jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
         gate = jobs["multiplatform-result"]
         for job, result in (("windows-msvc-migration-test", "MIGRATION_TEST_RESULT"),
+                            ("windows-msvc-cross-build", "MIGRATION_BUILD_RESULT"),
                             ("windows-msvc-migration-experiment", "MIGRATION_PRODUCT_RESULT")):
-            self.assertEqual(dependencies(jobs[job]), {"rust-format-preflight"})
+            expected = {"rust-format-preflight"}
+            if job == "windows-msvc-migration-experiment":
+                expected.add("windows-msvc-cross-build")
+            self.assertEqual(dependencies(jobs[job]), expected)
             self.assertIn(job, dependencies(gate))
             self.assertIn(f'"${{{result}}}" != success', gate)
-            self.assertIn("runs-on: windows-2022", jobs[job])
+            runner = "windows-11-vs2026-arm" if job == "windows-msvc-cross-build" else "windows-2022"
+            self.assertIn(f"runs-on: {runner}", jobs[job])
             self.assertNotIn("continue-on-error", jobs[job])
         experiment = jobs["windows-msvc-migration-experiment"]
         self.assertEqual(experiment.count("Test-MigrationProduct.ps1"), 2)
@@ -156,6 +161,14 @@ class PreviewNativeValidationTests(unittest.TestCase):
         self.assertIn("--payload-package", experiment)
         self.assertIn("phase: test", jobs["windows-msvc-migration-test"])
         self.assertNotIn("build-windows-msvc-x64", WORKFLOW.read_text(encoding="utf-8"))
+        self.assertNotIn("build-windows-msvc-cross", WORKFLOW.read_text(encoding="utf-8"))
+        cross = jobs["windows-msvc-cross-build"]
+        self.assertIn("RUSTUP_TOOLCHAIN: 1.94.0-aarch64-pc-windows-msvc", cross)
+        self.assertIn("TARGET: x86_64-pc-windows-msvc", cross)
+        self.assertIn("needs.windows-msvc-cross-build.outputs.artifact_name", experiment)
+        self.assertIn("msvc-build-input.py verify", experiment)
+        self.assertIn("package-windows-msvc-x64.ps1", experiment)
+        self.assertNotIn("cargo build", experiment)
 
     def test_all_native_test_jobs_gate_the_six_artifacts(self):
         jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))

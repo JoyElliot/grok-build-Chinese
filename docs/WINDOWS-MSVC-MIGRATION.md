@@ -39,6 +39,26 @@ python -B .github/scripts/build-windows-migration-bootstrap.py `
 - `Test-MigrationProduct.ps1`：使用本轮真正编译的 MSVC 产品包和 helper，通过离线 HTTP fixture 验证旧 GNU ZIP 的 EXE-only 边界到完整安装，再执行四类 PATH 隔离的 CLI 检查。它不证明 GitHub 上尚未发布的 helper 可下载。
 - PR CI 新增独立 x64 MSVC 原生更新器测试和实际产品迁移作业，均进入最终汇总；原有六平台产物、五平台原生测试和 Windows core/ui 保留。构建使用原 `release-dist`、features、Thin LTO、opt3、CGU1 和静态 CRT 配置。
 
+## 首轮真实产品 CI 验收（2026-09-26）
+
+提交 `5c05f367` 的 [CI 36225602973](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36225602973) 全部必需作业成功：原六平台产物、五平台原生测试、Windows core/ui、x64 MSVC 更新器原生测试及真实产品迁移试验均通过，同步资料完整性成功，真实账号 macOS 冒烟按条件跳过。
+
+该轮从 `07:03:15Z` 创建至 `08:01:28Z` 完成，共 **58 分 13 秒**，未满足整轮 50 分钟目标。原六平台及其测试于 `07:41:52Z` 完成；新增迁移试验作业为 `07:03:58Z–08:01:20Z`，是本轮最长路径。完整计时包含排队、缓存保存、上传和最终汇总，不扣除这些阶段。
+
+新增 x64 MSVC Cargo 构建为 **52 分 57.8 秒**，1356 Dirty / 0 Fresh，依赖源与编译缓存均未命中。`xai-grok-shell` 用时 906.2 秒，其中 codegen 780.4 秒；最终 `grok-zh` binary 单元用时 974.7 秒。Cargo timings 没有将该 binary 单元细分为 codegen 与外部链接，因此不能把这 974.7 秒直接归因于链接器。本轮缺少 CPU 型号、内存及独立外部链接采样，不能确定具体硬件瓶颈；后续试验补充记录宿主与工具链信息。
+
+打包验证约 12 秒，两个缓存保存合计约 80 秒；实际产品迁移步骤共 58 秒，两种 PowerShell 均输出通过。因此本轮优化优先针对编译路径，保留完整验证。仅对同版本重跑命中缓存不能证明冷编译达标。
+
+首次尝试 `698fffbb` 的 PowerShell 5.1 fixture 曾因宿主输入编码的 BOM 行为失败。`5c05f367` 将测试改为精确原始字节写入及 Base64 比较，覆盖 BOM、中文、换行、NUL 和 `0xff`，保留两种宿主编码组合；生产启动器与 helper 不变。本轮真实产品迁移成功也不等于已发布历史 Rust 客户端的端到端验收：旧 ZIP 校验及仅复制 EXE 边界仍由测试模拟，下载使用测试内嵌传输。
+
+### 下一轮：ARM64 宿主编译，x64 原生验收
+
+预览增加独立 `windows-msvc-cross-build`，采用已有 `windows-11-vs2026-arm` runner 与 Rust 1.94.0 ARM64 宿主，只将应用目标设为 `x86_64-pc-windows-msvc`。MSVC 官方支持 ARM64 宿主到 x64 的工具链；实际组件、依赖和提速仍须本轮 CI 证明，不能从原 ARM64 应用的耗时推算 x64 交叉编译耗时。
+
+Cargo 全局保留 ARM64 的 VS 库环境，x64 的 C/C++ 编译器、归档器和 Rust 链接器通过目标专用包装加载 x64 库环境；环境在准备阶段生成一次，避免每次 C 编译重新初始化 VS。完整编译前分别执行 ARM64/x64 Rust 与 C 链接预检，以及与 cmake-rs 默认选择一致的 x64 CMake 预检。部分 VS CMake 工具可能在 ARM runner 上模拟执行；这不替代 x64 产品的原生验收。
+
+编译输入带本轮提交、run/attempt、版本、host/target、profile/features、大小和 SHA-256。独立 Windows x64 作业严格核对后继续执行原 PE、PATH 隔离 CLI、ZIP/清单/安装器与两种 PowerShell 完整迁移测试；x64 MSVC 更新器 Rust 测试仍独立在原生 x64 上运行。新编译作业也加入最终必需门禁，失败、取消或跳过都不能放行。独立缓存首次冷构建，不读取原生 x64 MSVC 缓存；所有运行时优化、feature 与根 Cargo.toml 保持不变。
+
 ## 正式启用前的发布顺序
 
 1. 先完成当前 PR 全部 CI 与性能验收。

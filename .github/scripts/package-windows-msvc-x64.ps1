@@ -91,7 +91,7 @@ Commit: $env:GITHUB_SHA
 Upstream source revision: $sourceRev
 Repository: $env:GITHUB_REPOSITORY
 Target: $env:TARGET
-Profile: release-dist (Thin LTO, debug=0; native x64 MSVC)
+Profile: release-dist (Thin LTO, debug=0; x64 MSVC, native x64 acceptance)
 PE: x64 PE32+ verified
 Executable smoke-tested by CI: true
 GitHub Immutable Release required: true

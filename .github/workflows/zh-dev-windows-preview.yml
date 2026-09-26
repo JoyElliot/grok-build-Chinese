@@ -540,9 +540,33 @@ jobs:
           release_build: 'false'
           phase: test
 
+  windows-msvc-cross-build:
+    name: Windows x64 MSVC ARM64 宿主交叉编译
+    needs: rust-format-preflight
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 120
+    outputs:
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-pc-windows-msvc
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: 在 ARM64 宿主编译并上传 x64 MSVC 输入
+        id: build
+        uses: ./.github/actions/build-windows-msvc-cross
+        with:
+          version: '1.0.99'
+
   windows-msvc-migration-experiment:
     name: Windows GNU 到 MSVC 真实产物迁移试验
-    needs: rust-format-preflight
+    needs:
+      - rust-format-preflight
+      - windows-msvc-cross-build
     runs-on: windows-2022
     timeout-minutes: 120
     env:
@@ -553,8 +577,27 @@ jobs:
       CARGO_HTTP_TIMEOUT: "120"
       RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-msvc
       TARGET: x86_64-pc-windows-msvc
+      GROK_VERSION: 1.0.99
+      PACKAGE_NAME: grok-zh-1.0.99-windows-x86_64-msvc
+      ARCHIVE_NAME: grok-zh-1.0.99-windows-x86_64-msvc.zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: 设置原生验收暂存目录
+        shell: pwsh
+        run: '"CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP ''grok-msvc-native-acceptance'')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8'
+      - name: 下载同轮 x64 MSVC 输入
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.windows-msvc-cross-build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/grok-msvc-cross-input
+      - name: 核对原生 x64 宿主与输入身份
+        shell: pwsh
+        run: |
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne 'X64') { throw '迁移验收必须使用原生 x64 Windows。' }
+          python -B .github/scripts/tests/test_msvc_build_input.py
+          if ($LASTEXITCODE -ne 0) { throw '交叉输入绑定回归失败。' }
+          python -B .github/scripts/msvc-build-input.py verify --directory "$env:RUNNER_TEMP/grok-msvc-cross-input" --executable "$env:CARGO_TARGET_DIR/$env:TARGET/release-dist/grok-zh.exe"
+          if ($LASTEXITCODE -ne 0) { throw '同轮交叉输入身份或 SHA-256 不一致。' }
       - name: 构建兼容入口并先检查迁移契约
         shell: pwsh
         run: |
@@ -569,17 +612,25 @@ jobs:
           if (!$?) { throw 'PowerShell 7 迁移契约失败。' }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 迁移契约失败。' }
-      - name: 构建原生 x64 MSVC 实际产品（隔离试验版本，不发布）
-        id: build
-        uses: ./.github/actions/build-windows-msvc-x64
+      - name: 在原生 x64 验证并打包实际 MSVC 产品
+        shell: pwsh
+        run: |
+          & ./.github/scripts/package-windows-msvc-x64.ps1
+          if (!$?) { throw 'x64 MSVC 原生打包验证失败。' }
+      - name: 上传迁移试验 MSVC 产品
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          version: '1.0.99'
-          release_build: 'false'
-          phase: build
+          name: migration-experiment-grok-zh-1.0.99-windows-x86_64-msvc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/${{ env.ARCHIVE_NAME }}
+            dist/${{ env.ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
       - name: 旧版 EXE 替换边界到实际 MSVC 产品的完整迁移
         shell: pwsh
         env:
-          PAYLOAD_PACKAGE: ${{ steps.build.outputs.package_name }}
+          PAYLOAD_PACKAGE: ${{ env.PACKAGE_NAME }}
         run: |
           $ErrorActionPreference = 'Stop'
           $gcc = 'C:\mingw64\bin\gcc.exe'
@@ -954,6 +1005,7 @@ jobs:
       - windows-gnu-preview
       - windows-arm64-msvc-preview
       - windows-msvc-migration-test
+      - windows-msvc-cross-build
       - windows-msvc-migration-experiment
       - linux-x64-gnu-preview
       - linux-arm64-gnu-preview
@@ -968,6 +1020,7 @@ jobs:
       WINDOWS_RESULT: ${{ needs.windows-gnu-preview.result }}
       WINDOWS_ARM_RESULT: ${{ needs.windows-arm64-msvc-preview.result }}
       MIGRATION_TEST_RESULT: ${{ needs.windows-msvc-migration-test.result }}
+      MIGRATION_BUILD_RESULT: ${{ needs.windows-msvc-cross-build.result }}
       MIGRATION_PRODUCT_RESULT: ${{ needs.windows-msvc-migration-experiment.result }}
       LINUX_RESULT: ${{ needs.linux-x64-gnu-preview.result }}
       LINUX_ARM_RESULT: ${{ needs.linux-arm64-gnu-preview.result }}
@@ -990,6 +1043,7 @@ jobs:
             || "${MACOS_INTEL_NATIVE_RESULT}" != success \
             || "${WINDOWS_ARM_RESULT}" != success \
             || "${MIGRATION_TEST_RESULT}" != success \
+            || "${MIGRATION_BUILD_RESULT}" != success \
             || "${MIGRATION_PRODUCT_RESULT}" != success \
             || "${LINUX_RESULT}" != success \
             || "${LINUX_ARM_RESULT}" != success \
@@ -1012,6 +1066,7 @@ jobs:
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"
             echo "- Windows ARM64 MSVC：${WINDOWS_ARM_RESULT}（${WINDOWS_ARM_ARTIFACT}）"
             echo "- Windows x64 MSVC 更新器原生测试：${MIGRATION_TEST_RESULT}"
+            echo "- Windows x64 MSVC ARM64 宿主编译：${MIGRATION_BUILD_RESULT}"
             echo "- GNU 到 MSVC 实际产品迁移试验：${MIGRATION_PRODUCT_RESULT}"
             echo "- Linux x86_64 GNU：${LINUX_RESULT}（${LINUX_ARTIFACT}）"
             echo "- Linux aarch64 GNU：${LINUX_ARM_RESULT}（${LINUX_ARM_ARTIFACT}）"

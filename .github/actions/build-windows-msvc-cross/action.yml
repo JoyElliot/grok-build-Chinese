@@ -1,0 +1,111 @@
+name: Cross-build Windows x64 MSVC on ARM64
+description: 仅编译并传递同轮输入，产物必须由 Windows x64 原生作业验收
+inputs:
+  version:
+    required: true
+    description: 隔离迁移试验版本
+outputs:
+  artifact_name:
+    value: ${{ steps.meta.outputs.artifact_name }}
+runs:
+  using: composite
+  steps:
+    - name: 配置 ARM64 Rust 宿主及 x64 目标
+      id: meta
+      shell: pwsh
+      env:
+        REQUESTED_VERSION: ${{ inputs.version }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:REQUESTED_VERSION -cne '1.0.99') { throw '当前仅允许隔离迁移试验版本。' }
+        "GROK_VERSION=$env:REQUESTED_VERSION" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'grok-msvc-cross-cargo')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'grok-msvc-cross-target')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "artifact_name=grok-msvc-cross-input-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+        rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 Rust 安装失败。' }
+        rustup target add --toolchain $env:RUSTUP_TOOLCHAIN $env:TARGET
+        if ($LASTEXITCODE -ne 0) { throw 'MSVC x64 target 安装失败。' }
+
+    - name: 分离宿主和目标工具链并执行 Rust C CMake 预检
+      id: toolchain
+      shell: pwsh
+      run: |
+        & ./.github/scripts/setup-msvc-cross.ps1
+        if (!$?) { throw '交叉工具链预检失败。' }
+        $archive = Join-Path $env:RUNNER_TEMP 'protoc-msvc-cross.zip'
+        $root = Join-Path $env:RUNNER_TEMP 'protoc-msvc-cross'
+        Invoke-WebRequest -Uri 'https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-win64.zip' -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5 -TimeoutSec 120
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -cne '57EA59E9F551AD8D71FFAA9B5CFBE0CA1F4E720972A1DB7EC2D12AB44BFF9383') { throw 'protoc SHA-256 不一致。' }
+        Expand-Archive -LiteralPath $archive -DestinationPath $root
+        $protoc = Join-Path $root 'bin/protoc.exe'
+        & $protoc --version
+        if ($LASTEXITCODE -ne 0) { throw '宿主无法运行 protoc。' }
+        "PROTOC=$protoc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: 恢复 ARM64 宿主 MSVC 依赖缓存
+      id: home
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: |
+          ${{ runner.temp }}/grok-msvc-cross-cargo/registry
+          ${{ runner.temp }}/grok-msvc-cross-cargo/git
+        key: grok-msvc-cross-home-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+
+    - name: 恢复 ARM64 宿主 x64 MSVC 编译缓存
+      id: build
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: |
+          ${{ runner.temp }}/grok-msvc-cross-target/release-dist
+          ${{ runner.temp }}/grok-msvc-cross-target/x86_64-pc-windows-msvc/release-dist
+        key: grok-msvc-cross-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.toolchain_key }}-x64-release-dist-ltothin-debug0-cgu1-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock', '.github/scripts/setup-msvc-cross.ps1') }}
+
+    - name: 获取完整依赖并交叉编译
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        cargo fetch --locked
+        if ($LASTEXITCODE -ne 0) { throw 'Cargo fetch 失败。' }
+        cargo build --frozen --timings -j $env:CARGO_BUILD_JOBS --target $env:TARGET -p xai-grok-pager-bin --profile release-dist --features release-dist --config profile.release-dist.debug=0
+        if ($LASTEXITCODE -ne 0) { throw 'x64 MSVC 交叉编译失败。' }
+        python -B .github/scripts/msvc-build-input.py write --directory "$env:RUNNER_TEMP/grok-msvc-cross-input" --executable "$env:CARGO_TARGET_DIR/$env:TARGET/release-dist/grok-zh.exe"
+        if ($LASTEXITCODE -ne 0) { throw '交叉产物身份清单生成失败。' }
+
+    - name: 上传计时及工具链信息
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-msvc-cross-timings-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/grok-msvc-cross-report
+          ${{ runner.temp }}/grok-msvc-cross-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7
+
+    - name: 上传供 x64 原生验收的同轮输入
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.meta.outputs.artifact_name }}
+        path: ${{ runner.temp }}/grok-msvc-cross-input
+        if-no-files-found: error
+        compression-level: 1
+        retention-days: 7
+
+    - name: 保存交叉编译缓存
+      if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.build.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/save-cargo-cache
+      with:
+        path: |
+          ${{ runner.temp }}/grok-msvc-cross-target/release-dist
+          ${{ runner.temp }}/grok-msvc-cross-target/x86_64-pc-windows-msvc/release-dist
+        key: ${{ steps.build.outputs.cache-primary-key }}
+
+    - name: 保存交叉依赖缓存
+      if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.home.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/save-cargo-cache
+      with:
+        path: |
+          ${{ runner.temp }}/grok-msvc-cross-cargo/registry
+          ${{ runner.temp }}/grok-msvc-cross-cargo/git
+        key: ${{ steps.home.outputs.cache-primary-key }}
