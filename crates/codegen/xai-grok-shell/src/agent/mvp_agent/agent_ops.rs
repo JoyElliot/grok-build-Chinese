@@ -604,7 +604,7 @@ impl MvpAgent {
     fn feedback_credentials(
         &self,
     ) -> Option<(String, Option<String>, Option<String>, Option<String>)> {
-        if !self.has_proxy_credentials() {
+        if !xai_grok_product::FEEDBACK_UPLOADS_ALLOWED || !self.has_proxy_credentials() {
             return None;
         }
         let user_token = self
@@ -670,6 +670,9 @@ impl MvpAgent {
     pub(super) fn build_registry_config(
         &self,
     ) -> Option<crate::session::RegistryConfig> {
+        if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+            return None;
+        }
         let remote = self
             .cfg
             .borrow()
@@ -3656,6 +3659,9 @@ impl MvpAgent {
         &self,
         gcs_prefix: String,
     ) -> Option<crate::session::repo_changes::TraceExportConfig> {
+        if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+            return None;
+        }
         let cached_auth = self.auth_manager.current_or_expired()?;
         if cached_auth.is_zdr_team() {
             return None;

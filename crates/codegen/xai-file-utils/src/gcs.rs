@@ -46,6 +46,9 @@ fn build_proxy_client_with_fallback(
 /// Implement `StorageConfig` for `TraceExportConfig` here so callers can use shared upload helpers.
 /// Refresh-aware callers still get credential wiring via `TraceExportConfigWithAuth` (in shell).
 impl StorageConfig for crate::TraceExportConfig {
+    fn uploads_allowed(&self) -> bool {
+        xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED
+    }
     fn bucket_url(&self) -> &str {
         // For proxy mode, bucket_url may be None (proxy determines it from ACLs).
         // Return a placeholder that won't be used.
@@ -60,6 +63,11 @@ impl StorageConfig for crate::TraceExportConfig {
 /// A trait for storage configuration that provides bucket URL and upload method.
 /// This allows different config types (TraceExportConfig, etc.) to share upload logic.
 pub trait StorageConfig {
+    /// Purpose-specific policy checked before credentials, file reads or network I/O.
+    /// Ordinary user-requested storage operations retain their existing behavior.
+    fn uploads_allowed(&self) -> bool {
+        true
+    }
     fn bucket_url(&self) -> &str;
     fn upload_method(&self) -> &UploadMethod;
     /// Optional refresh-aware credentials for proxy-mode uploads.
@@ -82,6 +90,14 @@ pub trait StorageConfig {
     }
 }
 
+fn ensure_uploads_allowed(config: &impl StorageConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.uploads_allowed(),
+        "Session uploads are disabled by the community build privacy policy"
+    );
+    Ok(())
+}
+
 /// Uploads bytes to cloud storage at the specified path.
 /// Returns the full storage URL on success.
 /// Dispatches to direct, proxy, or S3 backend based on config.
@@ -91,6 +107,7 @@ pub async fn upload_bytes<C: StorageConfig>(
     content: &[u8],
     content_type: &str,
 ) -> anyhow::Result<String> {
+    ensure_uploads_allowed(config)?;
     match config.upload_method() {
         UploadMethod::Direct {
             service_account_key,
@@ -176,6 +193,7 @@ pub async fn upload_bytes_signed<C: StorageConfig>(
     content: &[u8],
     content_type: &str,
 ) -> anyhow::Result<String> {
+    ensure_uploads_allowed(config)?;
     match config.upload_method() {
         UploadMethod::Direct { .. } => {
             // Direct mode already bypasses the proxy — reuse the existing path.
@@ -219,6 +237,7 @@ pub async fn upload_file<C: StorageConfig>(
     file_path: &Path,
     content_type: &str,
 ) -> anyhow::Result<String> {
+    ensure_uploads_allowed(config)?;
     match config.upload_method() {
         UploadMethod::Direct {
             service_account_key,
@@ -297,6 +316,7 @@ pub async fn upload_stream<C: StorageConfig, R>(
 where
     R: tokio::io::AsyncRead + Send + Sync + 'static,
 {
+    ensure_uploads_allowed(config)?;
     match config.upload_method() {
         UploadMethod::Direct {
             service_account_key,

@@ -6,6 +6,8 @@ This file ships with the CLI and is extracted to `~/.grok/docs/user-guide/26-con
 
 ## How to configure
 
+> The community build policy takes precedence over the layers below: telemetry, internal/external OTLP, trace, feedback and automatic cloud session uploads are always disabled. Related keys remain parse-compatible; even requirements pins cannot enable uploads. `/privacy` continues to show the actual server-side account retention preference.
+
 Three files configure Grok Build, and they are written by different people.
 
 | File | Who writes it | Where it lives | Use it to |

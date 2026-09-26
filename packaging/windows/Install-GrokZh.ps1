@@ -86,13 +86,16 @@ function Remove-PreviousCommunityInstall {
         foreach ($line in Get-Content -LiteralPath (Join-Path $resolved 'SHA256SUMS.txt') -Encoding UTF8) {
             if ($line -match '^[a-fA-F0-9]{64}  (.+)$') { $known += $matches[1].Replace('/', '\') }
         }
+        # Match only the updater's exact top-level backup/download/candidate
+        # names; unrelated archives and files in nested directories stay protected.
         foreach ($file in Get-ChildItem -LiteralPath $resolved -File -Recurse -Force) {
             $relative = $file.FullName.Substring($resolved.Length + 1)
             if ($relative.StartsWith('official-backup\', [StringComparison]::OrdinalIgnoreCase)) {
                 $preserved = Join-Path $currentPath $relative
                 if (!(Test-Path -LiteralPath $preserved -PathType Leaf) -or
                     (Get-FileHash -LiteralPath $preserved).Hash -cne (Get-FileHash -LiteralPath $file.FullName).Hash) { return $Backup }
-            } elseif ($relative -notin $known -and $relative -cnotmatch '^grok-zh\.exe\.old(?:\.\d+-\d+\.old)?$') { return $Backup }
+            } elseif ($relative -notin $known -and
+                $relative -cnotmatch '^grok-zh\.exe\.(?:old(?:\.[0-9]+-[0-9]+\.old)?|[0-9]+-[0-9]+\.(?:download\.zip|candidate\.exe))$') { return $Backup }
             # Avoid partially deleting a backup still held by a running process.
             $handle = [IO.File]::Open($file.FullName, 'Open', 'Read', 'None')
             $handle.Dispose()

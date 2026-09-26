@@ -2570,6 +2570,9 @@ fn init_remote_sync(
     storage_mode: StorageMode,
     auth_manager: Option<Arc<xai_grok_login::AuthManager>>,
 ) -> io::Result<Option<RemoteSync>> {
+    if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+        return Ok(None);
+    }
     match storage_mode {
         StorageMode::Local => Ok(None),
         StorageMode::Writeback => {

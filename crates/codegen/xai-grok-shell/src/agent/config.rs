@@ -450,6 +450,9 @@ impl EndpointsConfig {
         &self,
         auth_token: Option<String>,
     ) -> Option<crate::session::repo_changes::UploadMethod> {
+        if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+            return None;
+        }
         if let Some(method) = self.resolve_direct_upload_method() {
             return Some(method);
         }
@@ -2357,6 +2360,9 @@ impl Config {
         self.is_feature_enabled(Feature::TwoPassCompaction)
     }
     pub(crate) fn resolve_telemetry_mode(&self) -> Resolved<TelemetryMode> {
+        if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+            return Resolved::new(TelemetryMode::Disabled, ConfigSource::BuildPolicy);
+        }
         if let Some(mode) = self.requirements.telemetry.pinned() {
             return Resolved::new(mode, ConfigSource::Requirement);
         }
@@ -2382,6 +2388,9 @@ impl Config {
         Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
     }
     pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
+        if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+            return Resolved::new(false, ConfigSource::BuildPolicy);
+        }
         let mode = self.resolve_telemetry_mode();
         let ff = if mode.value.is_disabled() {
             None
@@ -2524,9 +2533,17 @@ impl Config {
         }
     }
     pub fn feature(&self, feature: Feature) -> Resolved<bool> {
+        if !xai_grok_product::FEEDBACK_UPLOADS_ALLOWED
+            && matches!(feature, Feature::Feedback | Feature::FeedbackTraceCard)
+        {
+            return Resolved::new(false, ConfigSource::BuildPolicy);
+        }
         feature.resolve(self.feature_sources(feature))
     }
     pub fn feature_off_reason(&self, feature: Feature) -> Option<String> {
+        if self.feature(feature).source == ConfigSource::BuildPolicy {
+            return Some("the community build privacy policy".to_owned());
+        }
         feature.off_reason(self.feature_sources(feature))
     }
     pub fn is_feature_enabled(&self, feature: Feature) -> bool {
@@ -3079,6 +3096,9 @@ impl SyncBoolFlag {
 /// Sync slice of [`Config::resolve_telemetry_mode`] for use before the tokio runtime (e.g. `init_sentry`).
 /// `true` only when explicitly off.
 pub(crate) fn is_telemetry_disabled_sync() -> bool {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return true;
+    }
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
         .enable_env(grok_telemetry_env_enabled)
@@ -3087,6 +3107,9 @@ pub(crate) fn is_telemetry_disabled_sync() -> bool {
 /// Like [`is_telemetry_disabled_sync`] but only `true` when telemetry is *explicitly* off.
 /// Absence is not disabled (`.default(true)`), so remote-only enablement still builds the OTLP exporter (the runtime gate then governs it).
 pub(crate) fn is_telemetry_explicitly_disabled_sync() -> bool {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return true;
+    }
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
         .disable_env("DISABLE_TELEMETRY")
         .enable_env(grok_telemetry_env_enabled)
@@ -3096,6 +3119,9 @@ pub(crate) fn is_telemetry_explicitly_disabled_sync() -> bool {
 /// Sync sibling of [`is_telemetry_disabled_sync`] scoped to Sentry.
 /// Inherits from telemetry when no Sentry-specific signal is set.
 pub fn is_error_reporting_disabled_sync() -> bool {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return true;
+    }
     !SyncBoolFlag::new(error_reporting_enabled_from_toml)
         .disable_env("DISABLE_ERROR_REPORTING")
         .enable_env(|| env_bool("GROK_ERROR_REPORTING"))
@@ -3218,6 +3244,9 @@ fn telemetry_otel_file_config(
 pub fn resolve_external_otel_config(
     client: xai_grok_telemetry::external::config::ExternalClientInfo,
 ) -> Option<xai_grok_telemetry::external::ExternalOtelConfig> {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return None;
+    }
     let requirements = xai_grok_config::load_merged_requirements();
     resolve_external_otel_config_with(
         crate::config::load_effective_config().ok().as_ref(),

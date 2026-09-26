@@ -49,10 +49,14 @@ pub async fn run(args: TraceArgs, agent_config: &AgentConfig) -> Result<()> {
             "trace_cmd: trace uploads disabled in config"
         );
         if !args.json {
-            eprintln!(
-                "Trace uploads disabled. Set [telemetry] trace_upload = true in {}",
-                crate::util::display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
-            );
+            if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+                eprintln!("Trace uploads are disabled by the community build privacy policy.");
+            } else {
+                eprintln!(
+                    "Trace uploads disabled. Set [telemetry] trace_upload = true in {}",
+                    crate::util::display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
+                );
+            }
             eprintln!("Falling back to local export.");
         }
         return run_export(

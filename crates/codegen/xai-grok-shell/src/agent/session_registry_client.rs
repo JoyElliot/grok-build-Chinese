@@ -249,6 +249,10 @@ impl SessionRegistryClient {
 
     /// POST /v1/sessions/register (idempotent via ON CONFLICT)
     pub async fn register(&self, req: &RegisterRequest) -> Result<()> {
+        anyhow::ensure!(
+            xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED,
+            "Session registration is disabled by the community build privacy policy"
+        );
         let url = format!("{}/sessions/register", self.base_url);
         let (response, stamp) = self
             .send_authed(self.post(&url).json(req), "session register")
@@ -261,6 +265,10 @@ impl SessionRegistryClient {
 
     /// POST /v1/sessions/{id}/replicas/update
     pub async fn update(&self, session_id: &str, req: &UpdateRequest) -> Result<()> {
+        anyhow::ensure!(
+            xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED,
+            "Session registration is disabled by the community build privacy policy"
+        );
         let url = format!("{}/sessions/{}/replicas/update", self.base_url, session_id);
         let (response, stamp) = self
             .send_authed(self.post(&url).json(req), "session update")
@@ -273,6 +281,10 @@ impl SessionRegistryClient {
 
     /// POST /v1/sessions/{id}/replicas/finalize
     pub async fn finalize(&self, session_id: &str) -> Result<()> {
+        anyhow::ensure!(
+            xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED,
+            "Session registration is disabled by the community build privacy policy"
+        );
         let url = format!(
             "{}/sessions/{}/replicas/finalize",
             self.base_url, session_id

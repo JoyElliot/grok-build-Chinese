@@ -2,7 +2,7 @@
 //!
 //! Loads a local session, exports it, uploads the message payload to cloud storage via a signed URL, and asks the backend for a public share URL.
 //! The signed URL lets large sessions bypass the proxy/backend body-size limits.
-//! Best-effort metadata upload is fire-and-forget on the spawned task.
+//! Explicit sharing does not enable background telemetry or session synchronization.
 
 use agent_client_protocol as acp;
 
@@ -13,7 +13,7 @@ use crate::session::export::{ExportedMessage, ExportedSession};
 use crate::session::info::Info as SessionInfo;
 use crate::session::persistence::list_summaries;
 use crate::session::share::{ShareSessionRequest, ShareSessionResponse};
-use crate::upload::trace::{SessionMetadataType, upload_session_metadata};
+use crate::upload::gcs::TraceExportConfigWithAuth;
 use xai_grok_telemetry::id::agent_id;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
@@ -62,9 +62,6 @@ async fn handle_share_session(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
         .find(|s| s.info.id.0.as_ref() == request.session_id.as_str())
         .ok_or_else(|| acp::Error::resource_not_found(Some("Session not found".into())))?;
 
-    // Get turn number from the summary we already loaded
-    let current_turn = summary.next_trace_turn.saturating_sub(1);
-
     let info = SessionInfo {
         id: acp::SessionId::new(request.session_id.clone()),
         cwd: summary.info.cwd.clone(),
@@ -78,19 +75,29 @@ async fn handle_share_session(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
         return Err(acp::Error::invalid_params().data("No messages to share yet"));
     }
 
-    // Obtain trace context once; used for the signed URL upload and then moved into the spawned metadata task
-    let trace_context = agent.get_trace_context(&info, current_turn).await;
-
-    // Upload session data to cloud storage via signed URL so large sessions don't hit the 413 body-size limit on the backend API
-    if let Some(ref ctx) = trace_context {
-        upload_share_data_to_gcs(
-            &request.session_id,
-            &exported.messages,
-            &ctx.gcs_config,
-            Some(agent.auth_manager.clone()),
+    // Sharing is an explicit user action. Use a dedicated proxy storage config;
+    // do not construct a trace context or start its background upload queue.
+    let share_config = {
+        let cfg = agent.cfg.borrow();
+        TraceExportConfigWithAuth::for_session_share(
+            crate::session::repo_changes::TraceExportConfig {
+                bucket_url: None,
+                service_account_key: None,
+                prefix_dir: None,
+                gcs_prefix: None,
+                absolute_paths: false,
+                archive_name_override: None,
+                upload_method: crate::session::repo_changes::UploadMethod::Proxy {
+                    proxy_base_url: cfg.endpoints.resolve_trace_upload_url(),
+                    user_token: auth.key.clone(),
+                    deployment_key: cfg.endpoints.deployment_key.clone(),
+                    alpha_test_key: cfg.endpoints.alpha_test_key.clone(),
+                },
+            },
+            agent.auth_manager.clone(),
         )
-        .await;
-    }
+    };
+    upload_share_data_to_gcs(&request.session_id, &exported.messages, &share_config).await;
 
     // Upload to backend and get share URL.
     // The `save_session_data` call may fail with 413 for very large sessions; that is acceptable because the data is already in cloud storage
@@ -104,14 +111,6 @@ async fn handle_share_session(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
             acp::Error::internal_error().data(format!("Failed to share session: {}", e))
         })?;
 
-    // Upload share metadata to cloud storage (best-effort, fire-and-forget).
-    if let Some(mut ctx) = trace_context {
-        ctx.gcs_config.gcs_prefix = None;
-        tokio::spawn(async move {
-            upload_session_metadata(&ctx, SessionMetadataType::Share).await;
-        });
-    }
-
     let response = ShareSessionResponse { share_url };
     to_raw_response(&response)
 }
@@ -122,8 +121,7 @@ async fn handle_share_session(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
 async fn upload_share_data_to_gcs(
     session_id: &str,
     messages: &[ExportedMessage],
-    gcs_config: &crate::session::repo_changes::TraceExportConfig,
-    auth_manager: Option<std::sync::Arc<xai_grok_login::AuthManager>>,
+    share_config: &TraceExportConfigWithAuth,
 ) {
     let data_json = match serde_json::to_vec(messages) {
         Ok(json) => json,
@@ -140,9 +138,8 @@ async fn upload_share_data_to_gcs(
     let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let gcs_path = format!("share/{}_{}_data.json", session_id, timestamp);
 
-    use crate::upload::gcs::WithAuth as _;
     if let Err(e) = xai_file_utils::gcs::upload_bytes_signed(
-        &gcs_config.with_auth(auth_manager),
+        share_config,
         &gcs_path,
         &data_json,
         "application/json",

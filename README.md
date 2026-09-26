@@ -54,6 +54,7 @@ Authenticode 签名，首次运行可能触发 SmartScreen；请只从本仓库
 - 两个程序共同使用的目录覆盖：`GROK_HOME`
 - 默认界面语言：`zh-CN`，可用 `--locale en-US` 切换英文
 - 内置更新器只读取本仓库的 Immutable GitHub Releases；官方 npm、GitHub、x.ai 和 GCS 更新源始终禁用
+- 构建时关闭遥测、反馈、trace 和自动云端会话上传，配置与远端开关无法重新启用；正常模型请求、主动分享及显式远程控制的边界见[社区版隐私策略](docs/COMMUNITY-PRIVACY.md)
 
 ### 中文标题与计划
 

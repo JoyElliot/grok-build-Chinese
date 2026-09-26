@@ -443,6 +443,9 @@ impl WorkspaceHandle {
         xai_computer_hub_sdk::HubDonatingReporter,
         xai_computer_hub_sdk::TraceDonationPump,
     )> {
+        if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+            return None;
+        }
         self.shared
             .hub_handle
             .lock()
@@ -459,6 +462,9 @@ impl WorkspaceHandle {
         xai_computer_hub_sdk::LogDonationSender,
         xai_computer_hub_sdk::LogDonationPump,
     )> {
+        if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+            return None;
+        }
         self.shared
             .hub_handle
             .lock()
@@ -472,6 +478,9 @@ impl WorkspaceHandle {
         &self,
         service_name: &str,
     ) -> Option<xai_computer_hub_sdk::MetricDonationPump> {
+        if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+            return None;
+        }
         self.shared
             .hub_handle
             .lock()
@@ -504,6 +513,9 @@ impl WorkspaceHandle {
         data_collection_disabled: bool,
         identity: crate::upload::environment::WorkspaceIdentity,
     ) -> WorkspaceResult<Self> {
+        let data_collection_disabled =
+            data_collection_disabled || !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED;
+        let upload_queue = upload_queue.filter(|_| !data_collection_disabled);
         Self::build(
             config,
             workspace_home,
@@ -4282,8 +4294,8 @@ pub(crate) async fn build_local_workspace(
     })?;
     let api_base_url = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL")
         .unwrap_or_else(|_| "https://cli-chat-proxy.grok.com/v1".to_string());
-    let data_collection_disabled =
-        std::env::var("GROK_WORKSPACE_DATA_COLLECTION_DISABLED").as_deref() != Ok("false");
+    let data_collection_disabled = !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED
+        || std::env::var("GROK_WORKSPACE_DATA_COLLECTION_DISABLED").as_deref() != Ok("false");
     let mut factory = host_kind.session_context_factory(auth.clone(), api_base_url.clone());
     if crate::session::tool_config::tool_state_enabled() {
         factory = factory.with_tool_state_home(workspace_home.clone());
@@ -4339,16 +4351,19 @@ pub(crate) async fn build_local_workspace(
             identity.clone(),
         ))
     });
-    let upload_queue = proxy_storage.as_ref().map(|proxy_storage| {
-        let trace_source: Arc<dyn xai_file_utils::queue::TraceExportSource> = Arc::new(
-            crate::upload::WorkspaceTraceExportSource::new(proxy_storage.clone()),
-        );
-        Arc::new(xai_file_utils::queue::UploadQueue::spawn(
-            &workspace_home,
-            trace_source,
-            xai_file_utils::queue::UploadRetryPolicy::default(),
-        ))
-    });
+    let upload_queue = proxy_storage
+        .as_ref()
+        .filter(|_| !data_collection_disabled)
+        .map(|proxy_storage| {
+            let trace_source: Arc<dyn xai_file_utils::queue::TraceExportSource> = Arc::new(
+                crate::upload::WorkspaceTraceExportSource::new(proxy_storage.clone()),
+            );
+            Arc::new(xai_file_utils::queue::UploadQueue::spawn(
+                &workspace_home,
+                trace_source,
+                xai_file_utils::queue::UploadRetryPolicy::default(),
+            ))
+        });
     {
         let recovery_started = std::time::Instant::now();
         match &upload_queue {

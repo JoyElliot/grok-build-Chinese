@@ -332,7 +332,7 @@ async fn run(
         tracing::info!("kernel OOM-kill protection not active");
     }
     let direct_otlp = match std::env::var("GROK_WORKSPACE_OTLP_ENDPOINT") {
-        Ok(endpoint) if !endpoint.is_empty() => {
+        Ok(endpoint) if xai_grok_product::TELEMETRY_UPLOADS_ALLOWED && !endpoint.is_empty() => {
             match xai_tracing::init_fastrace(endpoint.clone(), SERVICE_NAME.to_owned(), None) {
                 Ok(()) => {
                     tracing::info!(%endpoint, "trace export enabled (direct OTLP)");
