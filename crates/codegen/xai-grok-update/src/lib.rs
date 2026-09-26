@@ -269,12 +269,11 @@ pub const fn community_updates_enabled() -> bool {
         )) || cfg!(all(
             target_os = "macos",
             any(target_arch = "x86_64", target_arch = "aarch64")
-        ))
-            || cfg!(all(
-                target_os = "linux",
-                any(target_arch = "x86_64", target_arch = "aarch64"),
-                target_env = "gnu"
-            )))
+        )) || cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        )))
 }
 
 pub(crate) fn ensure_updates_enabled() -> anyhow::Result<()> {
@@ -332,12 +331,11 @@ mod community_build_tests {
         )) || cfg!(all(
             target_os = "macos",
             any(target_arch = "x86_64", target_arch = "aarch64")
-        ))
-            || cfg!(all(
-                target_os = "linux",
-                any(target_arch = "x86_64", target_arch = "aarch64"),
-                target_env = "gnu"
-            ));
+        )) || cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            target_env = "gnu"
+        ));
         assert_eq!(updates_enabled(), supported_target);
         assert!(!default_auto_update_enabled());
         assert_eq!(community_updates_enabled(), supported_target);
