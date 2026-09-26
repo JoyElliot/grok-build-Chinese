@@ -19,7 +19,7 @@ runs:
         REQUESTED_VERSION: ${{ inputs.version }}
       run: |
         $ErrorActionPreference = 'Stop'
-        if ($env:REQUESTED_VERSION -cnotin @('1.0.99', '1.0.100', '1.0.101', '1.0.102')) { throw '当前仅允许隔离迁移试验版本。' }
+        if ($env:REQUESTED_VERSION -cnotin @('1.0.99', '1.0.100', '1.0.101', '1.0.102', '1.0.103')) { throw '当前仅允许隔离迁移试验版本。' }
         "GROK_VERSION=$env:REQUESTED_VERSION" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
         "version=$env:REQUESTED_VERSION" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
         "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'grok-msvc-cross-cargo')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8

@@ -38,7 +38,7 @@ function Set-MigrationReady {
 }
 
 function Test-MigrationRuntime {
-    param([string]$Directory, [string]$MinimumVersion)
+    param([string]$Directory, [string]$MinimumVersion, [switch]$LockHeld)
     if (!(Test-Path -LiteralPath $Directory)) { return $false }
     $marker = Get-OnlineInstallMarker $Directory
     if (!$marker) { return $false }
@@ -47,13 +47,88 @@ function Test-MigrationRuntime {
     $info = ConvertFrom-OnlineUtf8 ([IO.File]::ReadAllBytes($infoPath))
     if ($info -cnotmatch '(?m)^Target:[ \t]*x86_64-pc-windows-msvc[ \t]*\r?$') { throw '迁移运行目录不是 Windows x64 MSVC。' }
     $exe = Join-Path $Directory 'grok-zh.exe'
-    $actual = Get-OnlineExecutableVersion $exe
-    if ($actual.DisplayText.Contains('(GNU migration launcher)')) { throw '运行目录仍然是兼容启动器，拒绝递归。' }
-    if ((Compare-OnlineVersion $actual (ConvertTo-OnlineVersion $MinimumVersion -StableOnly)) -lt 0) { return $false }
-    # The installer marker is committed with the directory. Later MSVC updates
-    # replace this EXE through their own verified update path, so its initial
-    # hash/version is deliberately not frozen in the launcher forever.
-    return $true
+    $lock = $null
+    try {
+        if (!$LockHeld) {
+            Assert-OnlinePathChain "$exe.update.lock"
+            $lock = Enter-MigrationLock "$exe.update.lock"
+        }
+        $actual = Get-OnlineExecutableVersion $exe
+        if ($actual.DisplayText.Contains('(GNU migration launcher)')) { throw '运行目录仍然是兼容启动器，拒绝递归。' }
+        if ((Compare-OnlineVersion $actual (ConvertTo-OnlineVersion $MinimumVersion -StableOnly)) -lt 0) { return $false }
+        # MSVC self-updates replace only the EXE, so its initial hash/version
+        # is deliberately not frozen in the launcher forever.
+        return $true
+    } finally { if ($lock) { $lock.Dispose() } }
+}
+
+function Invoke-MigrationFileReplace {
+    param([string]$Stage, [string]$Executable, [string]$Backup)
+    [IO.File]::Replace($Stage, $Executable, $Backup)
+}
+
+function Update-MigrationRuntime {
+    param([string]$Directory, [string]$Candidate, [string]$Version,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedSha256)
+    # Used only after the pinned helper verifies the full MSVC archive and its
+    # executable-only protocol. Keep support files and user files in place,
+    # just as subsequent Rust MSVC updates do; never swap the whole directory.
+    $exe = Join-Path $Directory 'grok-zh.exe'
+    $lockPath = "$exe.update.lock"
+    Assert-OnlinePathChain $lockPath
+    $lock = Enter-MigrationLock $lockPath
+    $stage = "$exe.$([guid]::NewGuid().ToString('N')).migration-candidate"
+    $backup = "$exe.$([guid]::NewGuid().ToString('N')).migration-backup"
+    $stageCreated = $false
+    $preserveRecovery = $false
+    try {
+        # An MSVC update may have finished while we downloaded or waited.
+        if (Test-MigrationRuntime $Directory $Version -LockHeld) { return }
+        if (!(Test-MigrationRuntime $Directory '0.0.0' -LockHeld)) { throw '现有 MSVC 运行目录无法验证，未替换文件。' }
+        Assert-OnlinePathChain $Candidate
+        Assert-OnlinePathChain $stage
+        Assert-OnlinePathChain $backup
+        if (Test-Path -LiteralPath $backup) { throw '升级备份路径已存在，未替换文件。' }
+        $inputStream = [IO.File]::OpenRead($Candidate)
+        try {
+            $output = [IO.File]::Open($stage, 'CreateNew', 'Write', 'None')
+            $stageCreated = $true
+            try { $inputStream.CopyTo($output); $output.Flush($true) } finally { $output.Dispose() }
+        } finally { $inputStream.Dispose() }
+        if ((Get-FileHash -LiteralPath $stage -Algorithm SHA256).Hash -ine $ExpectedSha256) { throw '升级暂存程序摘要不匹配，未执行或替换原程序。' }
+        $actual = Get-OnlineExecutableVersion $stage
+        if ($actual.Text -cne $Version -or $actual.DisplayText.Contains('(GNU migration launcher)')) { throw '升级暂存程序校验失败，未替换原程序。' }
+        $oldDigest = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+        # ReplaceFile can fail after moving the original to its backup (1177).
+        # Restore that exact old image before deleting our staged candidate.
+        # Never truncate/copy over a live EXE or overwrite a newly present EXE.
+        try { Invoke-MigrationFileReplace $stage $exe $backup }
+        catch {
+            $replaceError = $_
+            if (!(Test-Path -LiteralPath $exe)) {
+                try {
+                    Assert-OnlinePathChain $backup
+                    if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -cne $oldDigest) { throw '旧程序备份摘要不匹配。' }
+                    [IO.File]::Move($backup, $exe)
+                } catch {
+                    $preserveRecovery = $true
+                    throw "升级与恢复均未完成；请保留备份 $backup 和候选 $stage。$($_.Exception.Message)"
+                }
+            }
+            throw $replaceError
+        }
+        $stageCreated = $false
+        if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $ExpectedSha256 -or
+            !(Test-MigrationRuntime $Directory $Version -LockHeld)) { throw "升级后校验失败；旧程序保留在 $backup。" }
+        # Keep rollback files outside the Rust updater's .old cleanup pattern.
+        # A running session may still hold the backup; never stop that session.
+        try { [IO.File]::Delete($backup) }
+        catch [IO.IOException] { [Console]::Error.WriteLine("旧程序仍被占用，备份保留：$backup") }
+        catch [UnauthorizedAccessException] { [Console]::Error.WriteLine("旧程序备份保留：$backup") }
+    } finally {
+        try { if ($stageCreated -and !$preserveRecovery) { [IO.File]::Delete($stage) } }
+        finally { $lock.Dispose() }
+    }
 }
 
 function Get-MigrationAssetContract {
@@ -128,14 +203,18 @@ function Invoke-GrokBootstrap {
     $directory = Split-Path -Parent $launcher
     $runtime = Join-Path $directory '.grok-zh-msvc'
     Assert-OnlinePathChain $runtime
-    # Same exclusion protocol as the Rust updater. Never delete this lock file.
+    # Serialize bootstrap launches and current GNU updates. The sidecar MSVC
+    # updater has a different lock, acquired by Update-MigrationRuntime below.
+    # Published older GNU updaters do not all implement this lock protocol.
     $lockPath = "$launcher.update.lock"
     Assert-OnlinePathChain $lockPath
     $lock = Enter-MigrationLock $lockPath
     $client = $null
     try {
         if (Test-MigrationRuntime $runtime $version) { Set-MigrationReady $runtime $version; return }
-        if (Test-Path -LiteralPath $runtime) { throw '已有未完成或较旧的迁移运行目录，请保留该目录并使用在线安装器修复；没有覆盖现有文件。' }
+        if ((Test-Path -LiteralPath $runtime) -and !(Test-MigrationRuntime $runtime '0.0.0')) {
+            throw '已有未完成或无法验证的迁移运行目录，没有覆盖现有文件。'
+        }
         $client = New-OnlineHttpClient
         $metadataPath = Join-Path $WorkDirectory 'migration-release.json'
         Receive-OnlineFile -Client $client -Uri "https://api.github.com/repos/$script:OnlineRepo/releases/tags/$($pin.tag)" `
