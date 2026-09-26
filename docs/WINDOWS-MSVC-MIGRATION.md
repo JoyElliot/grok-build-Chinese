@@ -59,6 +59,14 @@ Cargo 全局保留 ARM64 的 VS 库环境，x64 的 C/C++ 编译器、归档器�
 
 编译输入带本轮提交、run/attempt、版本、host/target、profile/features、大小和 SHA-256。独立 Windows x64 作业严格核对后继续执行原 PE、PATH 隔离 CLI、ZIP/清单/安装器与两种 PowerShell 完整迁移测试；x64 MSVC 更新器 Rust 测试仍独立在原生 x64 上运行。新编译作业也加入最终必需门禁，失败、取消或跳过都不能放行。独立缓存首次冷构建，不读取原生 x64 MSVC 缓存；所有运行时优化、feature 与根 Cargo.toml 保持不变。
 
+### 交叉工具包装器修复（2026-09-26）
+
+`11b3b6b0` 的 [CI 36230269506](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36230269506) 在 ARM64/x64 Rust、C、CMake 预检后进入实际依赖编译，但 MSVC 交叉作业失败，不能计入成功或性能达标。BLAKE3 自身的交叉编译检测只接受空值、`cl` 或 `cl.exe`，完整路径 `cl.cmd` 导致它选择 GNU 汇编；`cc-rs` 此轮是否误判编译器族未被日志证明。AWS-LC 的约 13904 字符归档命令则在 `lib.cmd` 入口处明确报 `The command line is too long.`。
+
+修复将三个目标包装器改成宿主原生 PE：`cl.exe`、`link.exe`、`lib.exe`。目标 CC 使用裸名称 `cl.exe`，PATH 最前放仅含 `cl.exe` 的目录，目标 link/lib 仍用绝对路径；宿主 CC/CXX/AR/link 全部显式指定真实 ARM64 工具的绝对路径。包装器只加载预先捕获的 x64 编译环境，通过 `CreateProcessW` 原样转发参数尾部、标准流和退出码；不经过命令解释器，不修改优化配置或禁用汇编实现。Cargo 主进程仍使用 ARM64 库环境，包装器源码和生成脚本纳入编译缓存键。
+
+新增预检用真实 MSVC 工具覆盖空格/中文路径、错误宿主 INCLUDE/LIB 的隔离、超过 8191 字符的归档命令、链接 response file、x64 PE 架构及工具失败退出码。在完整锁定依赖下载后，另用产品相同版本 `cc 1.2.43`、`find-msvc-tools 0.1.4` 与 `blake3 1.8.2` 编译小型 Cargo 图，强制断言 MSVC family，验证实际优化汇编的选择。本地 x64 主机的上述检查通过；另将 BLAKE3 已编译 build script 的 HOST/TARGET 设为 ARM64/x64，实际执行其交叉条件分支，生成了 SSE2/SSE4.1/AVX2/AVX512 的 MSVC 汇编对象及库。这项本地检查仍运行 x64 工具，不是 ARM64 宿主验证；仍须 ARM64 runner 完整构建和独立 x64 迁移作业证明交叉路径可用。
+
 ## 正式启用前的发布顺序
 
 1. 先完成当前 PR 全部 CI 与性能验收。

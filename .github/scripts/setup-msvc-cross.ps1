@@ -42,37 +42,26 @@ foreach ($bin in @($hostBin, $targetBin)) {
         }
     }
 }
-$batch = @('@echo off')
-foreach ($key in $keys) {
-    $value = $targetEnv[$key]
-    if ($null -ne $value) {
-        if ($value -match '[\r\n"]') { throw "Unsupported compiler environment value: $key" }
-        $batch += 'set "{0}={1}"' -f $key, $value.Replace('%', '%%')
-    }
-}
-$batch += 'exit /b 0'
 $utf8 = [Text.UTF8Encoding]::new($false)
-$targetEnvPath = Join-Path $root 'target-env.cmd'
-[IO.File]::WriteAllLines($targetEnvPath, $batch, $utf8)
-foreach ($tool in @('cl', 'link', 'lib')) {
-    # The environment was prepared once; each invocation only imports it.
-    $body = @('@echo off', 'setlocal DisableDelayedExpansion', ('call "{0}"' -f $targetEnvPath),
-        ('"{0}" %*' -f (Join-Path $targetBin "$tool.exe")), 'exit /b %errorlevel%')
-    [IO.File]::WriteAllLines((Join-Path $root "$tool.cmd"), $body, $utf8)
-}
 foreach ($entry in $hostEnv.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
     "$($entry.Key)=$($entry.Value)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 }
+# Native wrappers avoid cmd.exe's 8191-character archive limit. BLAKE3's
+# cross-build detection additionally requires the bare CC name cl.exe.
+& "$PSScriptRoot/build-msvc-tool-wrappers.ps1" -HostCompiler (Join-Path $hostBin 'cl.exe') `
+    -TargetDirectory $targetBin -TargetEnvironment $targetEnv -OutputDirectory $root
 $overrides = @{
+    # Only cl.exe is exposed on PATH; host tools must not find target link/lib.
+    PATH = "$(Join-Path $root 'compiler');$($hostEnv.PATH)"
     CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = (Join-Path $hostBin 'link.exe')
-    CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Join-Path $root 'link.cmd')
+    CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = (Join-Path $root 'link.exe')
     CC_aarch64_pc_windows_msvc = (Join-Path $hostBin 'cl.exe')
     CXX_aarch64_pc_windows_msvc = (Join-Path $hostBin 'cl.exe')
     AR_aarch64_pc_windows_msvc = (Join-Path $hostBin 'lib.exe')
-    CC_x86_64_pc_windows_msvc = (Join-Path $root 'cl.cmd')
-    CXX_x86_64_pc_windows_msvc = (Join-Path $root 'cl.cmd')
-    AR_x86_64_pc_windows_msvc = (Join-Path $root 'lib.cmd')
+    CC_x86_64_pc_windows_msvc = 'cl.exe'
+    CXX_x86_64_pc_windows_msvc = 'cl.exe'
+    AR_x86_64_pc_windows_msvc = (Join-Path $root 'lib.exe')
     # The locked cmake-rs predates VS18; keep its MSBuild target selection.
     CMAKE_GENERATOR_x86_64_pc_windows_msvc = 'Visual Studio 18 2026'
 }
@@ -94,8 +83,8 @@ function Assert-Machine([string]$File, [int]$Expected) {
 foreach ($arch in @('arm64', 'x64')) {
     $target = if ($arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
     $machine = if ($arch -eq 'arm64') { 0xaa64 } else { 0x8664 }
-    $compiler = if ($arch -eq 'arm64') { Join-Path $hostBin 'cl.exe' } else { Join-Path $root 'cl.cmd' }
-    $linker = if ($arch -eq 'arm64') { Join-Path $hostBin 'link.exe' } else { Join-Path $root 'link.cmd' }
+    $compiler = if ($arch -eq 'arm64') { Join-Path $hostBin 'cl.exe' } else { Join-Path $root 'compiler/cl.exe' }
+    $linker = if ($arch -eq 'arm64') { Join-Path $hostBin 'link.exe' } else { Join-Path $root 'link.exe' }
     $cExe = Join-Path $root "$arch-c.exe"
     & $compiler /nologo /MT $cSource "/Fe:$cExe" "/Fo:$(Join-Path $root "$arch.obj")"
     if ($LASTEXITCODE -ne 0) { throw "C $arch link probe failed." }
@@ -109,6 +98,7 @@ foreach ($arch in @('arm64', 'x64')) {
         if ($LASTEXITCODE -ne 0) { throw 'Native ARM64 host probe could not run.' }
     }
 }
+& "$PSScriptRoot/tests/Test-MsvcToolWrappers.ps1" -WrapperDirectory $root
 # cmake-rs 0.1.54 selects this target/toolset with our explicit VS18 generator.
 # Probe its MSBuild path too; unlike Rust, some VS tools may run under emulation.
 $cmakeSource = Join-Path $root 'cmake-probe'

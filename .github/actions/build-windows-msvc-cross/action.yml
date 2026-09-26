@@ -59,7 +59,7 @@ runs:
         path: |
           ${{ runner.temp }}/grok-msvc-cross-target/release-dist
           ${{ runner.temp }}/grok-msvc-cross-target/x86_64-pc-windows-msvc/release-dist
-        key: grok-msvc-cross-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.toolchain_key }}-x64-release-dist-ltothin-debug0-cgu1-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock', '.github/scripts/setup-msvc-cross.ps1') }}
+        key: grok-msvc-cross-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.toolchain_key }}-x64-release-dist-ltothin-debug0-cgu1-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock', '.github/scripts/setup-msvc-cross.ps1', '.github/scripts/build-msvc-tool-wrappers.ps1', '.github/scripts/msvc-tool-wrapper.c') }}
 
     - name: 获取完整依赖并交叉编译
       shell: pwsh
@@ -67,6 +67,7 @@ runs:
         $ErrorActionPreference = 'Stop'
         cargo fetch --locked
         if ($LASTEXITCODE -ne 0) { throw 'Cargo fetch 失败。' }
+        & ./.github/scripts/tests/Test-MsvcToolWrappers.ps1 -WrapperDirectory (Join-Path $env:RUNNER_TEMP 'grok-msvc-cross-tools') -CargoProbe
         cargo build --frozen --timings -j $env:CARGO_BUILD_JOBS --target $env:TARGET -p xai-grok-pager-bin --profile release-dist --features release-dist --config profile.release-dist.debug=0
         if ($LASTEXITCODE -ne 0) { throw 'x64 MSVC 交叉编译失败。' }
         python -B .github/scripts/msvc-build-input.py write --directory "$env:RUNNER_TEMP/grok-msvc-cross-input" --executable "$env:CARGO_TARGET_DIR/$env:TARGET/release-dist/grok-zh.exe"
