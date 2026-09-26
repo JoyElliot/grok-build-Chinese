@@ -533,6 +533,8 @@ items = ["cwd", "model", "context"]
 <a id="telemetry"></a>
 ### 遥测
 
+> **社区版策略：** 本项目固定关闭遥测、内外部 OTLP、trace、反馈和自动会话上传。以下上游配置键保留解析兼容性，但不能开启这些上传；`/privacy` 仅控制真实的服务端账户留存偏好。正常模型请求、主动 `/share` 和显式远程控制仍会传输内容。详见仓库的 `docs/COMMUNITY-PRIVACY.md`。
+
 这些是相互独立的开关（见[监控使用情况](24-monitoring-usage.md#related-settings)）：
 
 - **`[features] telemetry`** / `GROK_TELEMETRY_ENABLED` —— 产品分析总开关。`/privacy` 不会改变它。

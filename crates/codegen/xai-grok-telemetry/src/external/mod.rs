@@ -153,6 +153,9 @@ pub fn init(cfg: Option<ExternalOtelConfig>) {
 }
 
 fn build_handle(cfg: ExternalOtelConfig) -> Option<Arc<ExternalTelemetry>> {
+    if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED {
+        return None;
+    }
     // If the internal firehose resolved its endpoint/headers from `OTEL_EXPORTER_OTLP_*` (the deprecated fallback), refuse to activate
     // This check, in code rather than release discipline, keeps the same events from going out twice
     if cfg.internal_pipeline_consumed_otel_vars {

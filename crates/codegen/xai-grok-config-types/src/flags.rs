@@ -6,6 +6,8 @@ use xai_grok_config::env_bool;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub enum ConfigSource {
+    /// A distribution policy that cannot be overridden by runtime configuration.
+    BuildPolicy,
     Requirement,
     Cli,
     Env,

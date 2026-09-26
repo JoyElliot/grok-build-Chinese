@@ -1,4 +1,4 @@
-//! Product identity for the unofficial Simplified Chinese community build.
+//! Product identity and privacy policy for the Simplified Chinese community build.
 //!
 //! Keep distribution identity separate from UI localization. Protocol names,
 //! server endpoints, model IDs, tool names, and wire fields must not depend on
@@ -23,6 +23,15 @@ pub const HOME_ENV: &str = "GROK_HOME";
 pub const LOCALE_ENV: &str = "GROK_ZH_LOCALE";
 /// Default UI locale for this distribution.
 pub const DEFAULT_UI_LOCALE: &str = "zh-CN";
+
+/// Build policy: product analytics, crash reports and OTLP exports are disabled.
+/// Configuration, environment variables and remote feature flags cannot opt in.
+pub const TELEMETRY_UPLOADS_ALLOWED: bool = false;
+/// Build policy: auxiliary session, trace and research uploads are disabled.
+/// This does not block model requests or tools explicitly requested by the user.
+pub const SESSION_DATA_UPLOADS_ALLOWED: bool = false;
+/// Build policy: feedback polling, submission and attached archives are disabled.
+pub const FEEDBACK_UPLOADS_ALLOWED: bool = false;
 
 /// Repository that owns every update accepted by the community distribution.
 pub const COMMUNITY_RELEASE_REPO: &str = "JoyElliot/grok-build-Chinese";

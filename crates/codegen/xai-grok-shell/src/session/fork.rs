@@ -110,7 +110,7 @@ pub async fn fork_session(
     // Register the fork with the backend from a spawned task
     // The local fork works without it: all fork state is in session files on disk, and the backend learns of the session when the task completes
     // Spawning keeps the network round-trip (~200-400ms) off the critical path
-    if let Some(am) = auth_manager {
+    if let Some(am) = auth_manager.filter(|_| xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED) {
         let sid = new_session_id.clone();
         let cwd = request.new_cwd.clone();
         let parent = request.source_session_id.clone();
@@ -171,6 +171,9 @@ async fn sync_forked_session_to_backend(
     session_agent_id: Option<&str>,
     auth_manager: std::sync::Arc<xai_grok_login::AuthManager>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+        return Ok(());
+    }
     let client = BackendClient::new().with_auth_manager(auth_manager);
     let metadata = ExportedMetadata {
         title: None, // The title is generated later when the session runs

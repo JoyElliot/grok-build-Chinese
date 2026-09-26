@@ -52,12 +52,29 @@ fn feedback_notice(app: &mut AppView, message: &str) {
 }
 
 /// Open the feedback modal (every screen mode; minimal hosts it in its live band).
+fn refuse_disabled_feedback(app: &mut AppView) -> bool {
+    if xai_grok_product::FEEDBACK_UPLOADS_ALLOWED {
+        return false;
+    }
+    let message = note_text(
+        app.locale.as_ref(),
+        "privacy.feedback_disabled",
+        "Feedback uploads are disabled in this community build. You can report an issue at https://github.com/JoyElliot/grok-build-Chinese/issues without attaching your session.",
+    );
+    feedback_notice(app, &message);
+    true
+}
+
+/// Open the feedback modal (every screen mode; minimal hosts it in its live band).
 /// Every refusal is visible (voice notice, blocker notice, or no-session notice); the state is never set invisibly.
 /// Early exits drop `open`, whose image owner cleans up the staged temp files.
 pub(super) fn dispatch_open_feedback_modal(
     app: &mut AppView,
     open: crate::views::feedback_modal::OpenFeedbackModal,
 ) -> Vec<Effect> {
+    if refuse_disabled_feedback(app) {
+        return vec![];
+    }
     let ActiveView::Agent(id) = app.active_view else {
         if matches!(app.active_view, ActiveView::AgentDashboard)
             && let Some(dashboard) = app.dashboard.as_mut()
@@ -170,6 +187,9 @@ pub(super) fn dispatch_submit_feedback_modal(
     app: &mut AppView,
     modal_id: crate::views::feedback_modal::FeedbackModalId,
 ) -> Vec<Effect> {
+    if refuse_disabled_feedback(app) {
+        return vec![];
+    }
     use crate::views::feedback_modal::{
         FeedbackTraceChoice as ModalTraceChoice, FeedbackTraceUploadIntent,
     };
@@ -540,6 +560,9 @@ pub(super) fn dispatch_send_feedback(
     images: crate::views::prompt_widget::FeedbackImages,
     trace: Option<FeedbackTraceChoice>,
 ) -> Vec<Effect> {
+    if refuse_disabled_feedback(app) {
+        return vec![];
+    }
     let no_session = note_static(
         app.locale.as_ref(),
         "session.no_active_period",

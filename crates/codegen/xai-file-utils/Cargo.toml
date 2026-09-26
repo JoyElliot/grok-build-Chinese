@@ -7,6 +7,7 @@ description = "Local data collection: upload queueing and blob storage"
 authors = ["xAI"]
 
 [dependencies]
+xai-grok-product = { path = "../xai-grok-product" }
 anyhow = { workspace = true }
 base64.workspace = true
 dunce = { workspace = true }

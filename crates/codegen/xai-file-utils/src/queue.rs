@@ -109,6 +109,9 @@ impl ResolvedStorageConfig {
     }
 }
 impl StorageConfig for ResolvedStorageConfig {
+    fn uploads_allowed(&self) -> bool {
+        self.config.uploads_allowed()
+    }
     fn bucket_url(&self) -> &str {
         self.config.bucket_url()
     }

@@ -31,16 +31,34 @@ use xai_grok_login::credential_provider::{
 pub(crate) struct TraceExportConfigWithAuth {
     inner: TraceExportConfig,
     auth_manager: Option<Arc<AuthManager>>,
+    explicit_session_share: bool,
 }
 impl TraceExportConfigWithAuth {
     pub(crate) fn new(inner: TraceExportConfig, auth_manager: Option<Arc<AuthManager>>) -> Self {
         Self {
             inner,
             auth_manager,
+            explicit_session_share: false,
+        }
+    }
+
+    /// Only the explicit `x.ai/share_session` handler may opt into this purpose.
+    /// Keeping it separate prevents a share from enabling background trace uploads.
+    pub(crate) fn for_session_share(
+        inner: TraceExportConfig,
+        auth_manager: Arc<AuthManager>,
+    ) -> Self {
+        Self {
+            inner,
+            auth_manager: Some(auth_manager),
+            explicit_session_share: true,
         }
     }
 }
 impl StorageConfig for TraceExportConfigWithAuth {
+    fn uploads_allowed(&self) -> bool {
+        self.explicit_session_share || self.inner.uploads_allowed()
+    }
     fn bucket_url(&self) -> &str {
         self.inner.bucket_url()
     }

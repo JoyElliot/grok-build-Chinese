@@ -550,6 +550,8 @@ Keyboard shortcuts are **not** configurable — all bindings are built in. See [
 
 ### Telemetry
 
+> **Community build policy:** Telemetry, internal/external OTLP, trace, feedback and automatic session uploads are disabled at build time. The upstream keys below remain parse-compatible but cannot enable these uploads. `/privacy` controls the actual server-side account retention preference. Model requests, explicit `/share` and explicitly enabled remote control still transmit content. See `docs/COMMUNITY-PRIVACY.md` in the repository.
+
 These are independent knobs (see [Monitoring Usage](24-monitoring-usage.md#related-settings)):
 
 - **`[features] telemetry`** / `GROK_TELEMETRY_ENABLED` — the product-analytics master switch. `/privacy` doesn't change it.

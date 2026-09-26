@@ -21,6 +21,10 @@ async fn handle_upload_trace_with_session_dir(
     args: &acp::ExtRequest,
     session_dir_override: Option<std::path::PathBuf>,
 ) -> ExtResult {
+    if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+        return Err(acp::Error::invalid_params()
+            .data("Session uploads are disabled by the community build privacy policy"));
+    }
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct UploadTraceRequest {

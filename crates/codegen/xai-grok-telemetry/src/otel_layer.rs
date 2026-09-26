@@ -14,6 +14,9 @@ where
     S: tracing::Subscriber + for<'span> LookupSpan<'span>,
 {
     let mode = match crate::instrumentation::current_mode() {
+        _ if !xai_grok_product::TELEMETRY_UPLOADS_ALLOWED => {
+            xai_grok_otel::provider::OtelProviderMode::Local
+        }
         crate::instrumentation::InstrumentationMode::Server => {
             xai_grok_otel::provider::OtelProviderMode::Server
         }
