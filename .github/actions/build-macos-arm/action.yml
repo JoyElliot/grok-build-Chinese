@@ -280,9 +280,15 @@ runs:
             fi
             codesign --verify --strict "${strip_input}"
           fi
+          if [[ "${MACOS_VERIFY_MODE}" == rosetta ]]; then
+            set -- --rosetta-startup
+          else
+            set --
+          fi
           python3 .github/scripts/strip-unix-binary.py --platform macos \
             --input "${strip_input}" --output "${package}/grok-zh" \
-            --diagnostics "${MACOS_BUILD_REPORT_DIR}/diagnostics" --version "${GROK_VERSION}"
+            --diagnostics "${MACOS_BUILD_REPORT_DIR}/diagnostics" --version "${GROK_VERSION}" \
+            "$@"
           cp LICENSE "${package}/LICENSE-grok-build.txt"
           cp SOURCE_REV "${package}/SOURCE_REV"
           cp THIRD-PARTY-NOTICES "${package}/THIRD-PARTY-NOTICES.txt"

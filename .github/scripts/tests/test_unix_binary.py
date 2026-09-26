@@ -1,11 +1,16 @@
 """Exercise the ELF/Mach-O invariants used before publishing stripped programs."""
 
 import importlib.util
+import contextlib
+import io
+import json
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.dont_write_bytecode = True
@@ -212,6 +217,103 @@ class UnixBinaryTests(unittest.TestCase):
                 fixture[machine_offset] ^= 1
                 with self.assertRaises(ValueError):
                     self.inspect(fixture, platform)
+
+
+class SmokePairTests(unittest.TestCase):
+    VERSION = b"grok-zh 1.2.3 (fixture)\n"
+
+    def run_pair(self, run, rosetta=False, diagnostics=None):
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return MODULE.smoke_pair(Path("before"), Path("after"), "1.2.3",
+                                     rosetta_startup=rosetta, diagnostics=diagnostics)
+
+    def test_startup_budget_requires_native_arm64_host_and_intel_macho(self):
+        for platform, system, machine, image, allowed in (
+            ("macos", "Darwin", "arm64", macho(cpu=0x1000007), True),
+            ("macos", "Darwin", "x86_64", macho(cpu=0x1000007), False),
+            ("macos", "Darwin", "arm64", macho(), False),
+            ("macos", "Windows", "arm64", macho(cpu=0x1000007), False),
+            ("linux", "Linux", "aarch64", elf(machine=183), False),
+        ):
+            with self.subTest(platform=platform, system=system, machine=machine, allowed=allowed), \
+                    mock.patch.object(MODULE.host_platform, "system", return_value=system), \
+                    mock.patch.object(MODULE.host_platform, "machine", return_value=machine):
+                details = MODULE.macho_image(image) if platform == "macos" else MODULE.elf_image(image)
+                MODULE.validate_rosetta_startup(platform, details, False)
+                if allowed:
+                    MODULE.validate_rosetta_startup(platform, details, True)
+                else:
+                    with self.assertRaisesRegex(ValueError, "Rosetta startup budget"):
+                        MODULE.validate_rosetta_startup(platform, details, True)
+
+    def test_all_commands_and_output_hashes_remain_checked(self):
+        for rosetta in (False, True):
+            calls = []
+            def run(command, **kwargs):
+                calls.append((Path(command[0]).name, command[1:], kwargs["timeout"]))
+                self.assertTrue(kwargs["check"])
+                self.assertTrue(Path(kwargs["env"]["GROK_HOME"]).is_dir())
+                return subprocess.CompletedProcess(command, 0, self.VERSION if command[1:] == ["--version"]
+                                                   else repr(command[1:]).encode())
+            checks = self.run_pair(run, rosetta)
+            self.assertEqual([c["args"] for c in checks],
+                             [["--version"], ["--help"], ["agent", "--help"], ["update", "--help"]])
+            self.assertEqual(checks[0]["stdout_sha256"], MODULE.digest(self.VERSION))
+            self.assertEqual([c[2] for c in calls], [120, 30, 120, 30] + [30] * 6 if rosetta else [30] * 8)
+            for args in (["--help"], ["agent", "--help"], ["update", "--help"]):
+                self.assertEqual([(p, limit) for p, a, limit in calls if a == args],
+                                 [("before", 30), ("after", 30)])
+
+    def test_timeouts_and_nonzero_exits_fail_without_retry_and_persist_diagnostics(self):
+        for index in range(10):
+            for failure in ("timeout", "nonzero_exit"):
+                with self.subTest(index=index, failure=failure), tempfile.TemporaryDirectory() as folder:
+                    log = Path(folder) / "cli-smoke.jsonl"
+                    count = 0
+                    def run(command, **kwargs):
+                        nonlocal count
+                        count += 1
+                        if count == index + 1:
+                            if failure == "timeout":
+                                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                            raise subprocess.CalledProcessError(17, command)
+                        return subprocess.CompletedProcess(command, 0, self.VERSION)
+                    with self.assertRaises(subprocess.TimeoutExpired if failure == "timeout"
+                                           else subprocess.CalledProcessError):
+                        self.run_pair(run, True, log)
+                    self.assertEqual(count, index + 1)
+                    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+                    self.assertEqual(len(events), 2 * count)
+                    self.assertEqual(events[-1]["outcome"], failure)
+                    self.assertGreaterEqual(events[-1]["duration_seconds"], 0)
+                    if failure == "nonzero_exit":
+                        self.assertEqual(events[-1]["returncode"], 17)
+
+    def test_wrong_version_empty_and_each_changed_output_still_fail(self):
+        def rejected(run, rosetta, expected):
+            with tempfile.TemporaryDirectory() as folder:
+                log = Path(folder) / "cli-smoke.jsonl"
+                with self.assertRaisesRegex(ValueError, expected):
+                    self.run_pair(run, rosetta, log)
+                events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(events[-1]["event"], "validation_failed")
+                self.assertIn(events[-1]["failure"],
+                              ("warm_output_changed", "output_changed_or_empty", "unexpected_version"))
+
+        for rosetta in (False, True):
+            for output in (b"", b"grok-zh 9.9.9 (fixture)\n"):
+                with self.subTest(rosetta=rosetta, output=output):
+                    rejected(lambda command, **kwargs: subprocess.CompletedProcess(command, 0, output),
+                             rosetta, "CLI output changed|unexpected executable version")
+            for index in range(10 if rosetta else 8):
+                count = 0
+                def run(command, **kwargs):
+                    nonlocal count
+                    count += 1
+                    return subprocess.CompletedProcess(command, 0, self.VERSION + (b"changed" if count == index + 1 else b""))
+                with self.subTest(rosetta=rosetta, index=index):
+                    rejected(run, rosetta, "CLI output changed")
 
 
 if __name__ == "__main__":

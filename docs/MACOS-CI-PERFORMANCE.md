@@ -72,3 +72,11 @@ Intel 原生 locale/updater 测试继续在 `macos-15-intel` 运行。新增的 
 第二轮提交 `f3dfb4d5` 的 [CI 36172021045](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36172021045) 中，Intel 交叉构建作业从 `18:13:22Z` 到 `18:56:06Z`，用时 **42 分 44 秒**；随后原生 Intel 制品验证在 `18:56:47Z` 成功完成，距工作流创建为 **43 分 34 秒**。Intel 原生测试也已通过。这只证明本轮 Intel 路径已低于 50 分钟；本轮最终全部通过，整轮为 **59 分 09 秒**，受 Windows x64 GNU 的 58 分 49 秒作业限制，尚未达到六平台目标。
 
 本次 Intel 交叉构建是冷构建：依赖、target 和 host 缓存全部 miss，Cargo 为 1411 Dirty / 0 Fresh，timings 总编译时间 **36 分 56 秒**。J3 最大采样进程树 RSS 为 3850.22 MiB、整机 swap 为 307.94 MiB；原生 Intel 制品检查通过真实 `uname -m == x86_64` 断言。与上一轮的宿主架构不同，因此两轮数据是实测对照，不是仅改变单一参数的实验。
+
+### 新版本复验中的 Rosetta 启动超时
+
+提交 `b390af67` 的 [CI 36239557884](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36239557884) 中，Intel 交叉构建在打包阶段失败：`strip-unix-binary.py` 调用裁剪后副本的第一次 `--version`，达到 30 秒超时。异常位置在 `codesign --verify --strict`、完整运行映像比较和裁剪前程序的 `--version` 成功之后。日志没有逐次启动计时，不能证明是 Rosetta 首次翻译延迟，也不能排除程序卡住；该轮不能计为完整复验成功。
+
+下一轮仅对显式启用且核实为 ARM64 macOS 宿主运行 x86_64 Mach-O 的 Rosetta 检查，给两个副本的第一次 `--version` 各 120 秒预算。首次成功后，各自追加一次 30 秒内必须完成且输出完全相同的 `--version`；其余三类 CLI 保留 30 秒上限和裁剪前后逐字节比较。任何超时、非零退出、版本错误或输出差异仍阻断发布。原生 macOS 与 Linux 继续使用原 30 秒预算；独立 Intel 原生测试、制品与安装器门禁保持必需。
+
+每次 CLI 的开始、结束、耗时、预算和失败类型写入 build-monitor 的 `diagnostics/cli-smoke.jsonl`，失败时也保留已有记录。本地回归只能验证预算范围、失败传播及输出门禁；实际 Rosetta 启动和本轮完整耗时仍由新 CI 验证。

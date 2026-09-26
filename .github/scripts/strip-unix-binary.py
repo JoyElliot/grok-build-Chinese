@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform as host_platform
 import re
 import shutil
 import struct
 import subprocess
 import tempfile
+import time
 
 
 def digest(data):
@@ -240,17 +242,67 @@ def verify_stripped(before, after, platform):
         raise ValueError("Mach-O local symbol count increased")
 
 
-def smoke_pair(before, after, version):
+def validate_rosetta_startup(platform, image, requested):
+    if requested and not (
+            platform == "macos" and host_platform.system() == "Darwin"
+            and host_platform.machine() == "arm64" and image["image"][0][1] == 0x1000007):
+        raise ValueError("Rosetta startup budget requires ARM64 macOS running x86_64 Mach-O")
+
+
+def smoke_pair(before, after, version, *, rosetta_startup=False, diagnostics=None):
     checks = []
+
+    def event(record):
+        line = json.dumps(record)
+        print(line, flush=True)
+        if diagnostics is not None:
+            with diagnostics.open("a", encoding="utf-8") as output:
+                output.write(line + "\n")
+
+    def run(path, role, args, timeout, phase, env):
+        command = [str(path.resolve()), *args]
+        record = {"binary": role, "command": command, "phase": phase, "timeout_seconds": timeout}
+        event(record | {"event": "start"})
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            result = subprocess.run(command, env=env, check=True, capture_output=True, timeout=timeout)
+            outcome = "success"
+            return result.stdout
+        except subprocess.TimeoutExpired:
+            outcome = "timeout"
+            raise
+        except subprocess.CalledProcessError as error:
+            outcome = "nonzero_exit"
+            record["returncode"] = error.returncode
+            raise
+        finally:
+            event(record | {"event": "end", "outcome": outcome,
+                            "duration_seconds": round(time.monotonic() - started, 3)})
+
     with tempfile.TemporaryDirectory(prefix="grok-unix-smoke-") as home:
         env = os.environ | {"GROK_HOME": home}
         for args in (["--version"], ["--help"], ["agent", "--help"], ["update", "--help"]):
-            outputs = [subprocess.run([str(p.resolve()), *args], env=env, check=True,
-                                      capture_output=True, timeout=30).stdout for p in (before, after)]
+            startup = rosetta_startup and args == ["--version"]
+            outputs = []
+            for role, path in (("before", before), ("after", after)):
+                output = run(path, role, args, 120 if startup else 30,
+                             "first_start" if startup else "check", env)
+                if startup:
+                    # Translation/startup gets a separate budget. A subsequent
+                    # call must still meet the original bound and match exactly.
+                    warm = run(path, role, args, 30, "warm_check", env)
+                    if output != warm:
+                        event({"event": "validation_failed", "failure": "warm_output_changed",
+                               "binary": role, "args": args})
+                        raise ValueError(f"CLI output changed after first startup: {role}")
+                outputs.append(output)
             if not outputs[0].strip() or outputs[0] != outputs[1]:
+                event({"event": "validation_failed", "failure": "output_changed_or_empty", "args": args})
                 raise ValueError(f"CLI output changed after stripping: {args}")
             if args == ["--version"] and not re.match(
                     rf"^grok-zh {re.escape(version)} \(", outputs[1].decode("utf-8")):
+                event({"event": "validation_failed", "failure": "unexpected_version", "args": args})
                 raise ValueError("unexpected executable version")
             checks.append({"args": args, "stdout_sha256": digest(outputs[1])})
     return checks
@@ -263,12 +315,15 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--diagnostics", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--rosetta-startup", action="store_true",
+                        help="Allow 120s for first x86_64 --version on ARM64 macOS, then verify again within 30s")
     args = parser.parse_args()
     if args.input.resolve() == args.output.resolve():
         parser.error("input and staged output must differ")
     if args.diagnostics.resolve().is_relative_to(args.output.resolve().parent):
         parser.error("symbol diagnostics must stay outside the installation package")
     before = inspect_image(args.input, args.platform)
+    validate_rosetta_startup(args.platform, before, args.rosetta_startup)
     args.diagnostics.mkdir(parents=True, exist_ok=True)
     symbols = args.diagnostics / "symbols.nm.gz"
     with tempfile.TemporaryFile() as raw:
@@ -292,7 +347,10 @@ def main():
     args.output.chmod(0o755)
     after = inspect_image(args.output, args.platform)
     verify_stripped(before, after, args.platform)
-    checks = smoke_pair(args.input, args.output, args.version)
+    smoke_log = args.diagnostics / "cli-smoke.jsonl"
+    smoke_log.write_text("", encoding="utf-8")
+    checks = smoke_pair(args.input, args.output, args.version,
+                        rosetta_startup=args.rosetta_startup, diagnostics=smoke_log)
     report = {
         "platform": args.platform, "version": args.version,
         "source_commit": os.environ.get("GITHUB_SHA"),
@@ -300,6 +358,7 @@ def main():
         "saved_bytes": before["bytes"] - after["bytes"],
         "input_sha256": before["sha256"], "output_sha256": after["sha256"],
         "runtime_image_unchanged": True, "cli_checks": checks,
+        "rosetta_startup_budget": args.rosetta_startup, "cli_timings_file": smoke_log.name,
         "symbols_file": symbols.name, "symbols_sha256": digest(symbols.read_bytes()),
         "symbols_bytes": symbols.stat().st_size, "symbols_command": ["nm", "-an"],
         "symbols_locale": "C", "symbols_format": "native nm numeric address/type/name listing",
