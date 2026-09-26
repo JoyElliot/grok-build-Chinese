@@ -575,7 +575,7 @@ jobs:
         id: build
         uses: ./.github/actions/build-windows-msvc-cross
         with:
-          version: '1.0.100'
+          version: '1.0.101'
 
   windows-msvc-migration-experiment:
     name: Windows GNU 到 MSVC 真实产物迁移试验

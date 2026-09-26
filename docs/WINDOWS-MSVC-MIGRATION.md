@@ -79,6 +79,31 @@ Cargo 全局保留 ARM64 的 VS 库环境，x64 的 C/C++ 编译器、归档器�
 
 本地用仅含八个 crate 归档与 sparse index、完全没有 registry/src 的临时 Cargo home，离线执行锁定 fetch 和 frozen 构建，通过相同版本 cc/BLAKE3 小图；另以仅恢复 git/db、没有 git/checkouts 的临时 home 完成锁定 Git 依赖的离线 fetch/frozen 构建。这证明缓存布局可恢复依赖，不替代 ARM64 runner 全仓构建或性能验收。相关工作流、输入身份和迁移打包共 14 项测试及 actionlint 通过。
 
+### 交叉迁移路径首次低于 50 分钟（2026-09-26）
+
+提交 `d19b10c5` 的 [CI 36236500352](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36236500352) 从 `10:40:30Z` 创建至 `11:28:01Z` 工作流完成，共 **47 分 31 秒**（attempt 1），首次在包含 MSVC 迁移的完整 CI 中达到目标。六平台产物、五平台独立原生测试、Windows core/ui、Intel 原生产物验收、MSVC 原生更新器和迁移 fixture、真实产品迁移及最终汇总全部成功，同步资料完整性成功；真账号 macOS 冒烟按条件跳过。
+
+MSVC 交叉构建作业为 `10:41:10Z–11:26:17Z`，共 **45 分 07 秒**；随后的 x64 原生实际产品迁移为 `11:26:19Z–11:27:53Z`，共 **1 分 34 秒**。完整计时仍包含格式预检、排队、准备、缓存保存、上传和最终汇总，没有扣除任何阶段。
+
+MSVC 产品 Cargo 为 **39 分 43.4 秒**，1361 Dirty / 0 Fresh；home/build 的 v2 恢复均 miss。CPU、runner image、Rust、MSVC 和 SDK 记录与上一轮相同。精简后的 home 缓存保存 **17.869 秒 / 222830279 字节**，上一轮为 138.293 秒 / 454079637 字节；编译缓存保存 **59.934 秒 / 1365401850 字节**，上一轮为 65.606 秒 / 1365699153 字节。home 保存实测减少约 120.4 秒，编译缓存保存减少约 5.7 秒；Cargo 本身快 75.9 秒，但没有足够证据把该编译差值归因于缓存布局。两轮总时差不能全部算作同一个优化的收益。
+
+消费者的 PowerShell 7 和 Windows PowerShell 5.1 均明确通过实际 **1.0.100** 产品迁移：旧 EXE-only 边界、按需安装、四类隔离 CLI 与后续不重复下载。并行测试作业的两种 PowerShell 各 **34 项 fixture 检查**、原生 x64 MSVC updater **228 项测试**也通过；fixture 测试运行时与实际产品验收保持区分。
+
+原六平台的内嵌版本均为 `1.0.35-zh.ci.147`，与隔离 MSVC 产品 `1.0.100` 分开。构建开始时的缓存与 Cargo 日志记录如下；命中缓存不等于整个构建无需重编译，未由命中状态推算 Dirty/Fresh：
+
+| 原六平台产品 | Cargo | home | 编译缓存 |
+| --- | --- | --- | --- |
+| Windows x64 GNU | 17 分 24 秒 | miss | 合并 build hit |
+| Windows ARM64 MSVC | 29 分 16 秒 | miss | build hit |
+| Linux x64 GNU | 20 分 14 秒 | miss | target/host hit |
+| Linux ARM64 GNU | 32 分 46 秒 | hit | target miss、host hit |
+| macOS ARM64 | 18 分 56 秒 | miss | target/host hit |
+| macOS Intel | 22 分 19 秒 | miss | target/host hit |
+
+Windows GNU core/ui 的 home 命中，各自 target/debug 均 miss，288 + 260 = **548 项测试通过**。这轮保留了完整测试与不同平台的实际缓存条件，不能称为同版本全暖缓存重跑。
+
+下一轮将实际 MSVC 产品版本从 `1.0.100` 改为 `1.0.101`，沿用已通过的动态版本传递和 v2 缓存布局，验证真正的新版本重编译及完整迁移。纯 fixture 继续固定 `1.0.99`，其中模拟更高运行时的用例保持原样。此次仅改变隔离产品版本，不改变工具链、运行时优化、测试或发布策略；工作流 10 项测试和 actionlint 通过。仍需该轮重复成功，不能用首轮达标或相同版本暖缓存重跑宣称稳定验收完成。
+
 ## 正式启用前的发布顺序
 
 1. 先完成当前 PR 全部 CI 与性能验收。
