@@ -95,6 +95,7 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn('runs-on: ubuntu-24.04', cross)
         self.assertIn('RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu', cross)
         self.assertIn('TARGET: x86_64-pc-windows-gnu', cross)
+        self.assertEqual(dependencies(cross), {'rust-format-preflight'})
         self.assertIn('runs-on: windows-2022', native)
         self.assertEqual(dependencies(native), {'windows-gnu-cross-build'})
         self.assertIn('needs.windows-gnu-cross-build.outputs.artifact_name', native)
@@ -104,7 +105,7 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn('write-package-protocol.py', native)
         self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot"', native)
         self.assertNotIn('continue-on-error:', cross + native)
-        self.assertNotIn('needs:', jobs['windows-gnu-rust-validation'])
+        self.assertEqual(dependencies(jobs['windows-gnu-rust-validation']), {'rust-format-preflight'})
         self.assertEqual(dependencies(jobs['windows-gnu-preview']),
                          {'windows-gnu-validation', 'windows-gnu-build'})
         self.assertIn('windows-gnu-preview', dependencies(jobs['multiplatform-result']))

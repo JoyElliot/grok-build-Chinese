@@ -38,8 +38,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  rust-format-preflight:
+    name: Rust 格式预检
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+      - name: 安装固定版本 rustfmt
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+      - name: 在六平台编译前检查全仓格式
+        run: cargo fmt --all -- --check
+
   windows-gnu-rust-validation:
     name: Windows GNU 测试 (${{ matrix.suite }})
+    needs: rust-format-preflight
     runs-on: windows-2022
     timeout-minutes: 180
     strategy:
@@ -95,6 +111,7 @@ jobs:
 
   windows-gnu-cross-build:
     name: Windows x64 GNU 交叉编译
+    needs: rust-format-preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     outputs:
@@ -394,6 +411,7 @@ jobs:
 
   native-rust-validation:
     name: 原生测试 (${{ matrix.label }})
+    needs: rust-format-preflight
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -472,6 +490,7 @@ jobs:
 
   windows-arm64-msvc-preview:
     name: Windows ARM64 MSVC 预览版
+    needs: rust-format-preflight
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 240
     outputs:
@@ -502,6 +521,7 @@ jobs:
 
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版
+    needs: rust-format-preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     outputs:
@@ -534,6 +554,7 @@ jobs:
 
   linux-arm64-gnu-preview:
     name: Linux ARM64 GNU 预览版
+    needs: rust-format-preflight
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     outputs:
@@ -566,6 +587,7 @@ jobs:
 
   macos-arm-preview:
     name: macOS ARM64 预览版
+    needs: rust-format-preflight
     runs-on: macos-15
     timeout-minutes: 240
     outputs:
@@ -597,6 +619,7 @@ jobs:
 
   macos-intel-preview:
     name: macOS Intel 预览版
+    needs: rust-format-preflight
     runs-on: macos-15
     timeout-minutes: 240
     outputs:
@@ -846,6 +869,7 @@ jobs:
     name: 六目标构建汇总
     if: ${{ always() }}
     needs:
+      - rust-format-preflight
       - native-rust-validation
       - macos-intel-native-smoke
       - windows-gnu-preview
@@ -857,6 +881,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
+      FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}
       NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}
       MACOS_INTEL_NATIVE_RESULT: ${{ needs.macos-intel-native-smoke.result }}
       WINDOWS_RESULT: ${{ needs.windows-gnu-preview.result }}
@@ -878,13 +903,14 @@ jobs:
           printf 'Windows x64: %s\nWindows ARM64: %s\nLinux x64: %s\nLinux ARM64: %s\nmacOS ARM64: %s\nmacOS Intel: %s\n' \
             "${WINDOWS_RESULT}" "${WINDOWS_ARM_RESULT}" "${LINUX_RESULT}" "${LINUX_ARM_RESULT}" "${MACOS_RESULT}" "${MACOS_INTEL_RESULT}"
           if [[ "${NATIVE_TEST_RESULT}" != success || "${WINDOWS_RESULT}" != success \
+            || "${FORMAT_RESULT}" != success \
             || "${MACOS_INTEL_NATIVE_RESULT}" != success \
             || "${WINDOWS_ARM_RESULT}" != success \
             || "${LINUX_RESULT}" != success \
             || "${LINUX_ARM_RESULT}" != success \
             || "${MACOS_RESULT}" != success \
             || "${MACOS_INTEL_RESULT}" != success ]]; then
-            echo '::error::至少一个平台构建未成功。'
+            echo '::error::格式预检、原生测试或平台构建未成功。'
             exit 1
           fi
           if [[ -z "${WINDOWS_ARM_ARTIFACT}" || -z "${LINUX_ARTIFACT}" || -z "${LINUX_ARM_ARTIFACT}" \
@@ -895,6 +921,7 @@ jobs:
           {
             echo '## 六目标预览构建通过'
             echo
+            echo "- Rust 全仓格式预检：${FORMAT_RESULT}"
             echo "- 五平台原生测试（与构建并行）：${NATIVE_TEST_RESULT}"
             echo "- macOS Intel 原生产物验证：${MACOS_INTEL_NATIVE_RESULT}"
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"

@@ -143,7 +143,13 @@ class PreviewNativeValidationTests(unittest.TestCase):
     def test_all_native_test_jobs_gate_the_six_artifacts(self):
         jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
         tests = jobs["native-rust-validation"]
-        self.assertNotIn("needs:", tests)  # Tests start alongside production builds.
+        # Tests and builds start together after the same lightweight format gate.
+        self.assertEqual(dependencies(tests), {"rust-format-preflight"})
+        preflight = jobs["rust-format-preflight"]
+        self.assertIn("RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu", preflight)
+        self.assertIn("run: cargo fmt --all -- --check", preflight)
+        self.assertNotIn("continue-on-error", preflight)
+        self.assertNotRegex(preflight, r"cargo (?:build|test|check|fetch)\b")
         self.assertIn("fail-fast: false", tests)
         targets = re.findall(r"^            target: (\S+)$", tests, re.M)
         self.assertCountEqual(targets, [
@@ -152,6 +158,10 @@ class PreviewNativeValidationTests(unittest.TestCase):
         ])
         self.assertEqual(tests.count("phase: test"), 3)
         gate = jobs["multiplatform-result"]
+        self.assertIn("rust-format-preflight", dependencies(gate))
+        self.assertIn("if: ${{ always() }}", gate)
+        self.assertIn("FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}", gate)
+        self.assertIn('"${FORMAT_RESULT}" != success', gate)
         self.assertIn("native-rust-validation", dependencies(gate))
         self.assertIn("NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}", gate)
         self.assertIn('"${NATIVE_TEST_RESULT}" != success ||', gate)
@@ -159,7 +169,7 @@ class PreviewNativeValidationTests(unittest.TestCase):
         for job in ("windows-arm64-msvc-preview", "linux-x64-gnu-preview",
                     "linux-arm64-gnu-preview", "macos-arm-preview", "macos-intel-preview"):
             with self.subTest(job=job):
-                self.assertNotIn("needs:", jobs[job])
+                self.assertEqual(dependencies(jobs[job]), {"rust-format-preflight"})
                 self.assertIn("phase: build", jobs[job])
                 self.assertIn(job, dependencies(gate))
 
