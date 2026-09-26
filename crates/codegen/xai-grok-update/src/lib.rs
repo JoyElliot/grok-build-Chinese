@@ -261,13 +261,19 @@ pub const fn community_updates_enabled() -> bool {
         && (cfg!(all(
             target_os = "windows",
             target_arch = "x86_64",
+            any(target_env = "gnu", target_env = "msvc")
+        )) || cfg!(all(
+            target_os = "windows",
+            target_arch = "aarch64",
+            target_env = "msvc"
+        )) || cfg!(all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )) || cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
             target_env = "gnu"
-        )) || cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            || cfg!(all(
-                target_os = "linux",
-                target_arch = "x86_64",
-                target_env = "gnu"
-            )))
+        )))
 }
 
 pub(crate) fn ensure_updates_enabled() -> anyhow::Result<()> {
@@ -317,18 +323,25 @@ mod community_build_tests {
         let supported_target = cfg!(all(
             target_os = "windows",
             target_arch = "x86_64",
+            any(target_env = "gnu", target_env = "msvc")
+        )) || cfg!(all(
+            target_os = "windows",
+            target_arch = "aarch64",
+            target_env = "msvc"
+        )) || cfg!(all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )) || cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
             target_env = "gnu"
-        )) || cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            || cfg!(all(
-                target_os = "linux",
-                target_arch = "x86_64",
-                target_env = "gnu"
-            ));
+        ));
         assert_eq!(updates_enabled(), supported_target);
         assert!(!default_auto_update_enabled());
         assert_eq!(community_updates_enabled(), supported_target);
         assert!(!official_update_sources_allowed());
         assert_eq!(ensure_community_updates_enabled().is_ok(), supported_target);
+        assert_eq!(ensure_selected_updates_enabled().is_ok(), supported_target);
         assert_eq!(
             ensure_updates_enabled().unwrap_err().to_string(),
             UPDATE_DISABLED_REASON

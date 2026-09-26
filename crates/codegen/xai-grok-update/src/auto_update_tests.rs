@@ -2882,6 +2882,8 @@ fn community_cleanup_recognizes_only_owned_installed_target_names() {
     for valid in [
         "grok-zh-1.0.35-linux-x86_64-gnu.42-1.installed",
         "grok-zh-1.0.35-rc.2-macos-aarch64.Ab12Cd.installed",
+        "grok-zh-1.0.36-linux-aarch64-gnu.42-1.installed",
+        "grok-zh-1.0.36-macos-x86_64.Ab12Cd.installed",
     ] {
         assert!(is_community_installed_target(valid));
     }

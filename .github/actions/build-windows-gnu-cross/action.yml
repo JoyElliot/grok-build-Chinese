@@ -1,0 +1,182 @@
+name: Cross-build Windows GNU preview
+description: Compile the unchanged Windows GNU release profile on Linux for native Windows packaging and validation.
+inputs:
+  version:
+    description: Optional preview version; defaults to the workflow run number.
+    required: false
+    default: ''
+outputs:
+  artifact_name:
+    value: ${{ steps.metadata.outputs.artifact_name }}
+  monitor_url:
+    value: ${{ steps.monitor.outputs.artifact-url }}
+runs:
+  using: composite
+  steps:
+    - name: 安装宿主工具与 MinGW 目标工具链
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends \
+          build-essential ca-certificates clang cmake curl libclang-dev libssl-dev \
+          gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
+          binutils-mingw-w64-x86-64 nasm pkg-config time unzip
+        # cmake-rs derives windres from the compiler name; keep the standard
+        # gcc/g++ names while explicitly selecting their POSIX implementations.
+        sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+        sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+
+    - name: 配置宿主、目标及预览版本
+      id: metadata
+      shell: bash
+      env:
+        REQUESTED_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        [[ "$(uname -s)" == Linux && "$TARGET" == x86_64-pc-windows-gnu ]]
+        [[ "$RUSTUP_TOOLCHAIN" == 1.94.0-x86_64-unknown-linux-gnu ]]
+        rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        rustup target add --toolchain "$RUSTUP_TOOLCHAIN" "$TARGET"
+        python3 - <<'PY'
+        import os, pathlib, re
+        requested = os.environ.get('REQUESTED_VERSION', '').strip()
+        manifest = pathlib.Path('crates/codegen/xai-grok-pager-bin/Cargo.toml').read_text()
+        base = re.search(r'^version\s*=\s*"([^"]+)"', manifest, re.M).group(1)
+        version = requested or f'{base}-zh.ci.{os.environ["GITHUB_RUN_NUMBER"]}'
+        number = r'(0|[1-9][0-9]*)'
+        identifier = r'(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+        pattern = rf'{number}\.{number}\.{number}(-{identifier}(\.{identifier})*)?'
+        if len(version) > 64 or not re.fullmatch(pattern, version):
+            raise SystemExit('Invalid preview version')
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write(f'GROK_VERSION={version}\n')
+        PY
+        mkdir -p "$RUNNER_TEMP/grok-gnu-cross-tools" "$RUNNER_TEMP/grok-gnu-cross-monitor"
+        {
+          echo "CARGO_HOME=$RUNNER_TEMP/grok-gnu-cross-cargo"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/grok-gnu-cross-target"
+          echo "PROTOC=$RUNNER_TEMP/grok-gnu-cross-tools/bin/protoc"
+          echo "CROSS_REPORT=$RUNNER_TEMP/grok-gnu-cross-monitor"
+          echo "CROSS_PAYLOAD=$RUNNER_TEMP/grok-gnu-cross-payload"
+        } >> "$GITHUB_ENV"
+        echo "artifact_name=grok-zh-windows-gnu-input-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        {
+          rustc -Vv
+          x86_64-w64-mingw32-gcc-posix --version
+          x86_64-w64-mingw32-ld --version
+          dpkg-query -W mingw-w64-common mingw-w64-x86-64-dev
+          lscpu
+          free -b
+        } > "$RUNNER_TEMP/grok-gnu-cross-monitor/toolchain-and-host.txt"
+        toolchain_hash="$( {
+          dpkg-query -W gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
+            binutils-mingw-w64-x86-64 mingw-w64-common mingw-w64-x86-64-dev
+          sha256sum "$(command -v x86_64-w64-mingw32-gcc-posix)" \
+            "$(command -v x86_64-w64-mingw32-g++-posix)" \
+            "$(command -v x86_64-w64-mingw32-ld)"
+        } | sha256sum | cut -d ' ' -f 1 )"
+        echo "toolchain_hash=$toolchain_hash" >> "$GITHUB_OUTPUT"
+        # Build scripts and proc macros retain the native Linux compiler.
+        # Only target compilation receives the MinGW compiler and linker.
+        curl --fail --location --retry 5 --retry-all-errors \
+          -o "$RUNNER_TEMP/protoc-linux.zip" \
+          https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip
+        echo "3e866620c5be27664f3d2fa2d656b5f3e09b5152b42f1bedbf427b333e90021a  $RUNNER_TEMP/protoc-linux.zip" | sha256sum -c -
+        unzip -q "$RUNNER_TEMP/protoc-linux.zip" -d "$RUNNER_TEMP/grok-gnu-cross-tools"
+
+    - name: 恢复交叉编译依赖缓存
+      id: home
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: |
+          ${{ runner.temp }}/grok-gnu-cross-cargo/registry
+          ${{ runner.temp }}/grok-gnu-cross-cargo/git
+        key: grok-gnu-cross-home-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+
+    - name: 恢复交叉编译产物缓存
+      id: build
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: |
+          ${{ runner.temp }}/grok-gnu-cross-target/release-dist
+          ${{ runner.temp }}/grok-gnu-cross-target/x86_64-pc-windows-gnu/release-dist
+        key: grok-gnu-cross-build-v1-ubuntu24-posix-${{ steps.metadata.outputs.toolchain_hash }}-${{ env.RUSTUP_TOOLCHAIN }}-release-dist-ltothin-debug0-cgu1-opt3-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock') }}
+
+    - name: 获取依赖并编译 Windows GNU
+      shell: bash
+      run: |
+        set -euo pipefail
+        "$PROTOC" --version
+        # Fetch the full lockfile graph: target-only filtering can omit
+        # platform dependencies required by the subsequent frozen build.
+        cargo fetch --locked
+        started=$SECONDS
+        set +e
+        /usr/bin/time -v -o "$CROSS_REPORT/time.txt" \
+          cargo build --frozen -j "$CARGO_BUILD_JOBS" --target "$TARGET" \
+          -p xai-grok-pager-bin --profile release-dist --features release-dist \
+          --timings --config profile.release-dist.debug=0
+        result=$?
+        set -e
+        echo "BUILD_DURATION_SECONDS=$((SECONDS-started))" >> "$GITHUB_ENV"
+        exit "$result"
+
+    - name: 准备交给 Windows 原生验证的构建输入
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$CROSS_PAYLOAD"
+        cp "$CARGO_TARGET_DIR/$TARGET/release-dist/grok-zh.exe" "$CROSS_PAYLOAD/grok-zh.exe"
+        python3 - <<'PY'
+        import hashlib, json, os, pathlib
+        root = pathlib.Path(os.environ['CROSS_PAYLOAD'])
+        data = (root / 'grok-zh.exe').read_bytes()
+        metadata = {
+            'commit': os.environ['GITHUB_SHA'], 'version': os.environ['GROK_VERSION'],
+            'target': os.environ['TARGET'], 'build_host': 'x86_64-unknown-linux-gnu',
+            'profile': 'release-dist', 'features': 'release-dist',
+            'sha256': hashlib.sha256(data).hexdigest(),
+            'build_duration_seconds': int(os.environ['BUILD_DURATION_SECONDS']),
+        }
+        (root / 'build-input.json').write_text(json.dumps(metadata, indent=2) + '\n')
+        PY
+
+    - name: 上传编译计时及宿主信息
+      id: monitor
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-gnu-cross-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/grok-gnu-cross-monitor
+          ${{ runner.temp }}/grok-gnu-cross-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7
+
+    - name: 上传 Windows 原生验收输入
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ steps.metadata.outputs.artifact_name }}
+        path: ${{ runner.temp }}/grok-gnu-cross-payload
+        if-no-files-found: error
+        compression-level: 1
+        retention-days: 7
+
+    - name: 保存交叉编译产物缓存
+      if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.build.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/save-cargo-cache
+      with:
+        path: |
+          ${{ runner.temp }}/grok-gnu-cross-target/release-dist
+          ${{ runner.temp }}/grok-gnu-cross-target/x86_64-pc-windows-gnu/release-dist
+        key: ${{ steps.build.outputs.cache-primary-key }}
+
+    - name: 保存交叉编译依赖缓存
+      if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.home.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/save-cargo-cache
+      with:
+        path: |
+          ${{ runner.temp }}/grok-gnu-cross-cargo/registry
+          ${{ runner.temp }}/grok-gnu-cross-cargo/git
+        key: ${{ steps.home.outputs.cache-primary-key }}

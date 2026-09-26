@@ -23,6 +23,14 @@ TARGET = "aarch64-apple-darwin"
 
 
 class MacosBuildTests(unittest.TestCase):
+    def test_both_native_macos_targets_use_the_release_command(self):
+        for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+            with self.subTest(target=target):
+                command = macos_build.cargo_command(True, target, 3)
+                self.assertEqual(command[command.index("--target") + 1], target)
+        with self.assertRaisesRegex(ValueError, "supported macOS target"):
+            macos_build.cargo_command(True, "aarch64-unknown-linux-gnu", 3)
+
     def test_thin_lto_trial_is_explicit_isolated_and_not_a_release_profile_switch(self):
         command = macos_build.cargo_command(False, TARGET, 3, "thin-lto")
         self.assertEqual(command[command.index("--profile") + 1], "release-dist")
@@ -106,6 +114,20 @@ class MacosBuildTests(unittest.TestCase):
                         Path(folder) / "grok-zh-macos-build-123-2",
                     )
                     self.assertFalse(Path(values["MACOS_BUILD_REPORT_DIR"]).exists())
+
+    def test_trusted_pr_cache_flag_cannot_enable_release_or_other_events(self):
+        for release, event, ref, trusted, expected in [
+            (False, "pull_request", "refs/pull/8/merge", True, True),
+            (False, "pull_request", "refs/pull/8/merge", False, False),
+            (True, "pull_request", "refs/pull/8/merge", True, False),
+            (False, "pull_request_target", "refs/heads/zh-dev", True, False),
+            (False, "workflow_run", "refs/heads/zh-dev", True, False),
+        ]:
+            with self.subTest(release=release, event=event, trusted=trusted):
+                self.assertEqual(macos_build.cache_writable(release, event, ref, trusted), expected)
+        action = (SCRIPT.parents[1] / "actions/build-macos-arm/action.yml").read_text(encoding="utf-8")
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", action)
+        self.assertIn("github.actor != 'dependabot[bot]'", action)
 
     def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
         with tempfile.TemporaryDirectory() as folder:

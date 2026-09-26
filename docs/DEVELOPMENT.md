@@ -15,7 +15,7 @@
   ```
 
 - `protoc` 优先通过 DotSlash 解析仓库内的 `bin/protoc`，也会回退到 `PATH` 或 `PROTOC` 指定的程序。
-- Windows 使用 GNU 工具链；依赖准备和完整打包步骤见 [Windows GNU 环境配置](../.github/actions/setup-windows-gnu/action.yml)及 [CI 工作流](../.github/workflows/zh-dev-windows-preview.yml)。
+- Windows x64 使用 GNU 工具链，ARM64 使用 MSVC；依赖准备和完整打包步骤见 [Windows x64 GNU 环境配置](../.github/actions/setup-windows-gnu/action.yml)、[Windows ARM64 MSVC 构建](../.github/actions/build-windows-arm/action.yml)及 [CI 工作流](../.github/workflows/zh-dev-windows-preview.yml)。
 
 在仓库根目录运行：
 

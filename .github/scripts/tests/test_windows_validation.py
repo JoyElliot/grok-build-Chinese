@@ -76,7 +76,7 @@ class WindowsValidationTests(unittest.TestCase):
             if filename.startswith('zh-release'):
                 self.assertIn("save-cache: 'false'", rust)
             else:
-                self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', rust)
+                self.assertIn("save-cache: ${{ github.ref == 'refs/heads/zh-dev' }}", rust)
 
     def test_cache_hit_does_not_skip_tests_and_suites_have_distinct_keys(self):
         action = (ROOT / '.github/actions/validate-windows-gnu/action.yml').read_text(encoding='utf-8')
@@ -87,6 +87,32 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn("inputs.save-cache == 'true'", action)
         self.assertIn('key: ${{ steps.cache.outputs.cache-primary-key }}', action)
         self.assertNotIn('github.sha', action)  # Bound immutable cache count per configuration.
+
+    def test_preview_cross_build_requires_native_packaging_and_all_native_tests(self):
+        jobs = job_blocks((ROOT / '.github/workflows/zh-dev-windows-preview.yml').read_text(encoding='utf-8'))
+        cross = jobs['windows-gnu-cross-build']
+        native = jobs['windows-gnu-build']
+        self.assertIn('runs-on: ubuntu-24.04', cross)
+        self.assertIn('RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu', cross)
+        self.assertIn('TARGET: x86_64-pc-windows-gnu', cross)
+        self.assertEqual(dependencies(cross), {'rust-format-preflight'})
+        self.assertIn('runs-on: windows-2022', native)
+        self.assertEqual(dependencies(native), {'windows-gnu-cross-build'})
+        self.assertIn('needs.windows-gnu-cross-build.outputs.artifact_name', native)
+        for identity in ('commit', 'version', 'target', 'profile', 'features', 'build_host', 'sha256'):
+            self.assertIn(f'$metadata.{identity}', native)
+        self.assertIn('strip-windows-binary.py', native)
+        self.assertIn('write-package-protocol.py', native)
+        self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot"', native)
+        self.assertNotIn('continue-on-error:', cross + native)
+        self.assertEqual(dependencies(jobs['windows-gnu-rust-validation']), {'rust-format-preflight'})
+        self.assertEqual(dependencies(jobs['windows-gnu-preview']),
+                         {'windows-gnu-validation', 'windows-gnu-build'})
+        self.assertIn('windows-gnu-preview', dependencies(jobs['multiplatform-result']))
+        action = (ROOT / '.github/actions/build-windows-gnu-cross/action.yml').read_text(encoding='utf-8')
+        self.assertIn('--profile release-dist --features release-dist', action)
+        self.assertIn('--timings --config profile.release-dist.debug=0', action)
+        self.assertNotIn('cargo test ', action)
 
 
 if __name__ == '__main__':

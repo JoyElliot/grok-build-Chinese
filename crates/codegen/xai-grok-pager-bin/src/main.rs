@@ -3488,11 +3488,9 @@ mod tests {
 
     #[test]
     fn community_product_uses_its_own_updater_policy() {
-        let supported_target = cfg!(all(
-            target_os = "windows",
-            target_arch = "x86_64",
-            target_env = "gnu"
-        )) || cfg!(all(target_os = "macos", target_arch = "aarch64"));
+        // Platform support belongs to the updater crate; test its composition
+        // with the pager's startup suppression rules here.
+        let supported_target = xai_grok_update::community_updates_enabled();
         assert_eq!(xai_grok_update::updates_enabled(), supported_target);
         assert!(!xai_grok_update::official_update_sources_allowed());
         // Debug binaries still suppress background update checks.
