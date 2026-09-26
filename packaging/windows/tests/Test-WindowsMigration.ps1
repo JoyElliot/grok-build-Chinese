@@ -26,7 +26,13 @@ class Program {
     static int Main(string[] args) {
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("grok-zh VERSION (fixture)"); return 0; }
-        if (args.Length == 1 && args[0] == "--stdin") { Console.Write(Console.In.ReadToEnd()); return 0; }
+        if (args.Length == 1 && args[0] == "--stdin") {
+            using (var bytes = new System.IO.MemoryStream()) {
+                Console.OpenStandardInput().CopyTo(bytes);
+                Console.Write(Convert.ToBase64String(bytes.ToArray()));
+            }
+            return 0;
+        }
         foreach (string arg in args) Console.WriteLine("arg=" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(arg)));
         Console.WriteLine("cwd=" + Environment.CurrentDirectory);
         Console.Error.WriteLine("fixture-stderr");
@@ -49,17 +55,31 @@ function New-TestContext([string]$Name) {
     return [pscustomobject]@{ version='1.0.99'; migration=$script:Pin; launcher=(Join-Path $root 'grok-zh.exe') }
 }
 function New-Work([string]$Name) { $path = Join-Path $testRoot $Name; $null = [IO.Directory]::CreateDirectory($path); return $path }
-function Invoke-Launcher([string]$Executable, [string]$Arguments, [string]$InputText = '') {
+function Invoke-Launcher([string]$Executable, [string]$Arguments, [byte[]]$InputBytes = @()) {
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName=$Executable; $info.Arguments=$Arguments; $info.WorkingDirectory=$testRoot
     $info.UseShellExecute=$false; $info.CreateNoWindow=$true
     $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
-    $info.RedirectStandardInput=($InputText.Length -gt 0)
+    $info.RedirectStandardInput=($InputBytes.Length -gt 0)
     $info.StandardOutputEncoding=$utf8; $info.StandardErrorEncoding=$utf8
     $process=[Diagnostics.Process]::new(); $process.StartInfo=$info
     try {
-        $null=$process.Start(); $stdout=$process.StandardOutput.ReadToEndAsync(); $stderr=$process.StandardError.ReadToEndAsync()
-        if ($InputText.Length -gt 0) { $process.StandardInput.Write($InputText); $process.StandardInput.Close() }
+        # .NET Framework eagerly creates an AutoFlush StreamWriter at Start;
+        # even using BaseStream later cannot undo a BOM emitted at that point.
+        $producerEncoding=[Console]::InputEncoding
+        try {
+            if ($InputBytes.Length -gt 0) { [Console]::InputEncoding=$utf8 }
+            $null=$process.Start()
+        } finally { [Console]::InputEncoding=$producerEncoding }
+        $stdout=$process.StandardOutput.ReadToEndAsync(); $stderr=$process.StandardError.ReadToEndAsync()
+        if ($InputBytes.Length -gt 0) {
+            # .NET Framework's text writer inherits Console.InputEncoding and
+            # may prepend a BOM. Test the launcher's pipe bytes independently
+            # of either host's text encoding; the fixture also reads raw bytes.
+            $inputStream=$process.StandardInput.BaseStream
+            $inputStream.Write($InputBytes,0,$InputBytes.Length)
+            $process.StandardInput.Close()
+        }
         if (!$process.WaitForExit(30000)) { $process.Kill(); throw '真实启动器 fixture 超时。' }
         return [pscustomobject]@{ Code=$process.ExitCode; Out=$stdout.GetAwaiter().GetResult(); Err=$stderr.GetAwaiter().GetResult() }
     } finally { $process.Dispose() }
@@ -229,8 +249,16 @@ int main(void) {
     Assert-True ($argsOut.Count -eq 5 -and $argsOut[0] -ceq '空 格' -and $argsOut[1] -ceq 'literal&value' -and $argsOut[2] -ceq 'quote"value' -and $argsOut[3] -ceq 'trailing\' -and $argsOut[4] -ceq '') '参数含中文、空格、引号、尾反斜杠和空参数仍完整'
     Assert-True ($result.Out.Contains("cwd=$testRoot") -and $result.Err.Contains('fixture-stderr')) '原工作目录与标准错误保留'
     Assert-True (!$result.Out.Contains('迁移') -and !$result.Out.Contains('正在')) '迁移诊断不污染程序stdout协议'
-    $stdinResult=Invoke-Launcher $context.launcher '--stdin' "input-pipe`nsecond-line`n"
-    Assert-True ($stdinResult.Code -eq 0 -and $stdinResult.Out -ceq "input-pipe`nsecond-line`n") '标准输入管道原样转交MSVC子程序'
+    $stdinBytes=[byte[]](@(0xEF,0xBB,0xBF)+$utf8.GetBytes("input-pipe`n中文输入`r`nsecond-line`n")+@(0,255))
+    $expectedInput=[Convert]::ToBase64String($stdinBytes)
+    $inputEncoding=[Console]::InputEncoding
+    try {
+        foreach ($bom in @($false,$true)) {
+            [Console]::InputEncoding=[Text.UTF8Encoding]::new($bom)
+            $stdinResult=Invoke-Launcher $context.launcher '--stdin' $stdinBytes
+            Assert-True ($stdinResult.Code -eq 0 -and $stdinResult.Out -ceq $expectedInput) "标准输入逐字节转交MSVC（宿主BOM=$bom；退出码=$($stdinResult.Code)；实际base64=$($stdinResult.Out)）"
+        }
+    } finally { [Console]::InputEncoding=$inputEncoding }
     New-FakeExe (Join-Path $runtime 'grok-zh.exe') '1.0.100'
     Invoke-GrokBootstrap -Context $context -WorkDirectory (New-Work 'future-launch')
     Assert-True ($script:Handler.Requests.Count -eq $requestCount) 'MSVC自行更新到更高版本后不重新迁移或降级'
