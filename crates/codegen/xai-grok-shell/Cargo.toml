@@ -125,6 +125,8 @@ strum = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
 
 xai-grok-paths = { path = "../xai-grok-paths" }
+xai-grok-locale = { path = "../xai-grok-locale" }
+xai-grok-product = { path = "../xai-grok-product" }
 xai-grok-shell-base = { workspace = true }
 xai-grok-shell-session-support = { workspace = true }
 xai-grok-shell-terminal = { workspace = true }
