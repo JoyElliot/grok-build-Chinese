@@ -1269,10 +1269,29 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::HooksActionResult { agent_id, result }
-        | TaskResult::PluginsActionResult { agent_id, result }
-        | TaskResult::MarketplaceActionResult { agent_id, result } => {
-            dispatch_action_result(app, agent_id, result)
+        TaskResult::HooksActionResult { agent_id, result } => {
+            dispatch_action_result(
+                app,
+                agent_id,
+                result,
+                crate::views::extensions_modal::ActionResultOrigin::Hooks,
+            )
+        }
+        TaskResult::PluginsActionResult { agent_id, result } => {
+            dispatch_action_result(
+                app,
+                agent_id,
+                result,
+                crate::views::extensions_modal::ActionResultOrigin::Plugins,
+            )
+        }
+        TaskResult::MarketplaceActionResult { agent_id, result } => {
+            dispatch_action_result(
+                app,
+                agent_id,
+                result,
+                crate::views::extensions_modal::ActionResultOrigin::Marketplace,
+            )
         }
         TaskResult::CtaPluginInstallDone {
             agent_id,

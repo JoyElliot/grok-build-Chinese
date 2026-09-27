@@ -171,6 +171,7 @@ fn synthesize_replay_turn_marker(
             super::prompt_origin::rate_limited_wake_failure_event(
                 agent_result,
                 elapsed_ms.map(std::time::Duration::from_millis),
+                None,
             )
         })
     })
@@ -389,6 +390,7 @@ pub(super) fn handle_session_notification_with_origin(
                             agent.push_end_marker_block(
                                 super::prompt_origin::rate_limited_wake_failure_event(
                                     agent_result.as_deref(),
+                                    None,
                                     None,
                                 ),
                             );
@@ -898,8 +900,11 @@ pub(super) fn handle_session_notification_with_origin(
             }
             tracing::debug!("Hook annotation: {message}");
             let event = match kind {
-                HookAnnotationKind::Note => SessionEvent::HookAnnotation { message },
                 HookAnnotationKind::ToolOutcome => SessionEvent::HookOutcome { message },
+                kind => SessionEvent::HookAnnotation {
+                    message,
+                    kind: Some(kind),
+                },
             };
             agent
                 .scrollback
@@ -1419,6 +1424,7 @@ fn queue_wake_turn_complete_notification(app: &mut AppView, agent_id: AgentId) {
     };
     let cwd_str = app.cwd.to_string_lossy().into_owned();
     let idle_title = crate::notifications::TitleState {
+        locale: None,
         session_name: session_name.as_deref(),
         model: model.as_deref(),
         activity: None,

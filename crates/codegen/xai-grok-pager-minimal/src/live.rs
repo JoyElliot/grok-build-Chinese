@@ -80,6 +80,7 @@ pub(super) fn prompt_style(
 }
 /// Draw the pinned live region (tail + status + prompt) into the inline viewport.
 pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &TerminalContext) {
+    let locale = app.locale.clone();
     let force_todos = minimal_api::minimal_show_todos(app);
     let auth_hint = crate::auth::minimal_auth_hint(
         &app.auth_state,
@@ -134,7 +135,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
             Clear.render(area, frame.buffer_mut());
             let agent = agent_id.and_then(|id| agents.get_mut(&id));
             let Some(agent) = agent else {
-                crate::auth::render_auth(frame.buffer_mut(), area, &theme, &auth_hint);
+                crate::auth::render_auth(frame.buffer_mut(), area, &theme, &auth_hint, &locale);
                 return (None, None);
             };
             agent.active_pane = xai_grok_pager::app::agent_view::AgentPane::Prompt;
@@ -142,15 +143,22 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
             let show_todos = crate::todo::todo_panel_visible(agent, force_todos);
             let queued = agent.session.pending_prompts.len() + agent.shared_queue.len();
             if let Some(kind) = super::panel::active(agent) {
-                let cursor = super::panel::render(frame.buffer_mut(), area, agent, kind, &theme);
+                let cursor = super::panel::render(frame.buffer_mut(), area, agent, kind, &theme, Some(locale.as_ref()));
                 return (cursor, None);
             }
             if super::overlay::app_modal_active(agent) {
-                super::overlay::render_app_modal(frame.buffer_mut(), area, agent, compact);
+                super::overlay::render_app_modal(frame.buffer_mut(), area, agent, compact, &locale);
                 return (None, None);
             }
             if let Some(modal) = minimal_api::feedback_modal_mut(agent) {
-                return super::feedback::render(frame.buffer_mut(), area, modal, &theme, compact);
+                return super::feedback::render(
+                    frame.buffer_mut(),
+                    area,
+                    modal,
+                    &theme,
+                    compact,
+                    Some(locale.as_ref()),
+                );
             }
             if minimal_api::extensions_modal(agent).is_some() {
                 let tick = (now_millis() / 100) as u64;
@@ -210,6 +218,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
                     &status_activity,
                     transcript_progress,
                     &theme,
+                    Some(locale.as_ref()),
                 );
                 let modal_area = Rect {
                     x: area.x,
@@ -238,6 +247,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
                     agent,
                     &theme,
                     term_h,
+                    &locale,
                 );
                 return (cursor, None);
             }
@@ -245,7 +255,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
             let sl_h = status_line_frame
                 .height()
                 .min(area.height.saturating_sub(status_h + 1));
-            let overlay_h = super::overlay::overlay_rows(&agent.prompt, area.width)
+            let overlay_h = super::overlay::overlay_rows(&agent.prompt, area.width, Some(locale.as_ref()))
                 .min(area.height.saturating_sub(status_h + sl_h + 1));
             let info_h = if overlay_h == 0 {
                 1u16.min(area.height.saturating_sub(status_h + sl_h + 1))
@@ -276,7 +286,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
                 after_btw.min(crate::todo::MAX_TODO_ROWS)
             };
             let todo_lines = if show_todos {
-                crate::todo::todo_panel_lines(agent, todos_cap, force_todos)
+                crate::todo::todo_panel_lines_with_locale(agent, todos_cap, force_todos, Some(locale.as_ref()))
             } else {
                 Vec::new()
             };
@@ -360,6 +370,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
                 &status_activity,
                 transcript_progress,
                 &theme,
+                Some(locale.as_ref()),
             );
             let prompt_area = Rect {
                 x: area.x,
@@ -380,6 +391,7 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
                     layout_cfg,
                     compact,
                     &theme,
+                    Some(locale.as_ref()),
                 );
             } else if info_h > 0 {
                 let info_area = inset_left(
@@ -538,6 +550,7 @@ fn render_minimal_status(
     activity: &Option<xai_grok_pager::acp::tracker::TurnActivity>,
     transcript_progress: Option<(usize, usize)>,
     theme: &Theme,
+    locale: Option<&xai_grok_pager::locale::LocaleContext>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -594,6 +607,7 @@ fn render_minimal_status(
             flat_background: true,
             held_queue: minimal_api::held_queue_count(agent),
             held_queue_top_sendable: minimal_api::held_queue_top_sendable(agent),
+            locale,
         },
     );
 }
@@ -931,7 +945,7 @@ mod tests {
         xai_grok_pager::app::set_minimal_show_switch_back_to_fullscreen_for_test(false);
         let a = agent();
         let mut buf = Buffer::empty(area);
-        render_minimal_status(&mut buf, area, &a, &None, None, &theme);
+        render_minimal_status(&mut buf, area, &a, &None, None, &theme, None);
         let idle = read(&buf);
         assert!(idle.contains("/help"), "idle hint: {idle:?}");
         assert!(
@@ -940,7 +954,7 @@ mod tests {
         );
         xai_grok_pager::app::set_minimal_show_switch_back_to_fullscreen_for_test(true);
         let mut buf = Buffer::empty(area);
-        render_minimal_status(&mut buf, area, &a, &None, None, &theme);
+        render_minimal_status(&mut buf, area, &a, &None, None, &theme, None);
         let switched = read(&buf);
         assert!(
             switched.contains("/fullscreen to go back"),
@@ -957,6 +971,7 @@ mod tests {
             &Some(TurnActivity::Responding),
             None,
             &theme,
+            None,
         );
         let text = read(&buf);
         assert!(text.contains("Responding"), "rich activity: {text:?}");
@@ -973,6 +988,7 @@ mod tests {
             }),
             None,
             &theme,
+            None,
         );
         assert!(read(&buf).contains("Retrying"), "retry: {:?}", read(&buf));
     }
@@ -1002,7 +1018,7 @@ mod tests {
         );
         assert_eq!(minimal_api::watchers(&a).loops, 1);
         let mut buf = Buffer::empty(area);
-        render_minimal_status(&mut buf, area, &a, &None, None, &theme);
+        render_minimal_status(&mut buf, area, &a, &None, None, &theme, None);
         let text = read(&buf);
         assert!(
             text.contains("1 loop still running"),

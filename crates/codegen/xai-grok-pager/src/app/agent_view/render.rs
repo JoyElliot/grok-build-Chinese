@@ -37,6 +37,9 @@ use std::time::Instant;
 /// Tests take `Default` and override only what they exercise.
 #[derive(Default)]
 pub struct AppRenderParams<'a> {
+    /// App-owned immutable UI locale. `None` keeps existing tests and
+    /// non-composition renderers on the complete English fallback.
+    pub locale: Option<&'a crate::locale::LocaleContext>,
     /// Voice feature available (shows the mic affordances).
     pub voice_available: bool,
     /// Mic open and streaming on the active surface; drives the recording row and the prompt voice overlay.
@@ -70,6 +73,16 @@ impl OverlayHeader<'_> {
         self.cycle_position().is_some()
     }
 }
+fn localized_ui_label(
+    locale: Option<&crate::locale::LocaleContext>,
+    id: &str,
+    english: &'static str,
+) -> &'static str {
+    locale
+        .map(|locale| locale.named_static_text(id, english))
+        .unwrap_or(english)
+}
+
 /// What the bottom shortcuts bar renders this frame.
 enum ShortcutsBarContent {
     /// A blocking surface's own keys, rendered as given.
@@ -576,6 +589,7 @@ impl AgentView {
         Option<crate::terminal::overlay::PostFlush>,
     ) {
         let AppRenderParams {
+            locale,
             voice_available,
             voice_listening,
             voice_interim,
@@ -668,6 +682,7 @@ impl AgentView {
                     header: overlay_header,
                     stop_label: self.overlay_stop_label(),
                 }),
+                locale,
             );
         }
         if let Some(esc) = self.take_subagent_inline_media_clear_escapes() {
@@ -1248,6 +1263,8 @@ impl AgentView {
                 task_counts,
                 &theme,
                 self.hit_bg_status.hovered,
+                self.scrollback.animation_tick(),
+                locale,
             ) {
                 status.push("bg_tasks", line);
             }
@@ -2072,6 +2089,7 @@ impl AgentView {
                         flat_background: false,
                         held_queue,
                         held_queue_top_sendable,
+                        locale,
                     },
                 );
                 self.hit_cancel_button
@@ -2738,6 +2756,7 @@ impl AgentView {
                     layout.prompt,
                     &rw.phase,
                     prompt_focused,
+                    locale,
                 );
             }
         } else if jump_view_h > 0 {
@@ -3162,7 +3181,7 @@ impl AgentView {
             self.history_dropdown_area = None;
         }
         if self.active_modal.is_some() {
-            self.draw_active_modal(area, buf, theme, compact);
+            self.draw_active_modal(area, buf, theme, compact, locale);
             self.pane_areas = layout.pane_areas();
             return (None, crate::terminal::overlay::clear().map(Into::into));
         }
@@ -3241,6 +3260,7 @@ impl AgentView {
                         &self.session.cwd,
                         &theme,
                         effective_comment_count,
+                        locale,
                     );
                     viewer
                         .last_popup_area
@@ -3567,6 +3587,7 @@ impl AgentView {
                 theme.bg_base,
                 theme.text_primary,
                 theme.gray_dim,
+                localized_ui_label(locale, "media.video", "Video"),
             ) {
                 if let Some(esc) = crate::terminal::overlay::volatile_centered(
                     viewer.current_frame_data(),
@@ -3762,6 +3783,7 @@ impl AgentView {
                 appearance: appearance.clone(),
                 is_selected: false,
                 cwd: Some(self.session.cwd.clone()),
+                locale: self.scrollback.locale().clone(),
             };
             let preamble = entry.block.preamble(&preamble_ctx);
             let mut prepend_lines: Vec<ratatui::text::Line<'static>> = preamble
@@ -3791,7 +3813,7 @@ impl AgentView {
                 width: content_w,
                 height: content_height,
             };
-            viewer.render_content(content_area, buf, &entry, true, &prepend_lines);
+            viewer.render_content(content_area, buf, &entry, true, &prepend_lines, locale);
             viewer.render_text_drag_overlay(buf);
             let has_input_bar =
                 viewer.list_state.input_mode().is_some() || viewer.list_state.matcher().is_some();

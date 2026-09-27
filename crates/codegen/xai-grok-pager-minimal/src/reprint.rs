@@ -79,6 +79,7 @@ fn reprint_committed(app: &AppView, terminal: &mut PagerTerminal, width: u16) ->
     let Some(agent) = app.agents.get(id) else {
         return Ok(());
     };
+    let locale = app.locale.clone();
     let appearance = committed_appearance(&app.appearance);
     let max_rows = appearance.minimal_max_commit_rows;
     let theme = Theme::current();
@@ -118,7 +119,7 @@ fn reprint_committed(app: &AppView, terminal: &mut PagerTerminal, width: u16) ->
     for &(i, cap) in committed.get(first..).unwrap_or_default() {
         let Some(entry) = sb.get(i) else { continue };
         let renderer = minimal_renderer(entry, &theme, appearance.clone(), cwd, COMMITTED_TICK);
-        insert_committed(terminal, renderer, width, cap, footer_style)?;
+        insert_committed(terminal, renderer, width, cap, footer_style, locale.as_ref())?;
     }
     Ok(())
 }

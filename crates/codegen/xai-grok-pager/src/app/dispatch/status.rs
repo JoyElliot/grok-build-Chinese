@@ -753,6 +753,7 @@ pub(super) fn dispatch_show_release_notes(
                 agent.active_modal = Some(crate::views::modal::ActiveModal::DocViewer {
                     title,
                     content,
+                    locale: app.locale.locale(),
                     scroll: 0,
                     window: crate::views::modal_window::ModalWindowState::new(),
                     cached_lines: None,
@@ -765,6 +766,7 @@ pub(super) fn dispatch_show_release_notes(
             app.welcome_doc_viewer = Some(crate::views::modal::ActiveModal::DocViewer {
                 title,
                 content,
+                locale: app.locale.locale(),
                 scroll: 0,
                 window: crate::views::modal_window::ModalWindowState::new(),
                 cached_lines: None,
@@ -775,4 +777,11 @@ pub(super) fn dispatch_show_release_notes(
         _ => {}
     }
     vec![]
+}
+
+pub(super) fn dispatch_show_howto_doc(app: &mut AppView, id: crate::docs::DocId) -> Vec<Effect> {
+    let Some(doc) = crate::docs::localized_doc(id, app.locale.locale()) else {
+        return vec![];
+    };
+    dispatch_show_release_notes(app, doc.title, doc.content.to_owned())
 }

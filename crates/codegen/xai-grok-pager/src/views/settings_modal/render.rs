@@ -29,6 +29,19 @@ pub struct ResetConfirmOverlay<'a> {
 
 /// Render the settings modal.
 /// Returns `true` if the reset-confirm overlay was rendered (caller suppresses row-list mouse events).
+pub fn render_settings_modal_with_locale(
+    buf: &mut Buffer,
+    full_area: Rect,
+    state: &mut SettingsModalState,
+    compact: bool,
+    overlay: Option<&ResetConfirmOverlay<'_>>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> bool {
+    // QUESTION(localize): settings modal TARGET body; accept locale for call-site compatibility.
+    let _ = locale;
+    render_settings_modal(buf, full_area, state, compact, overlay)
+}
+
 pub fn render_settings_modal(
     buf: &mut Buffer,
     full_area: Rect,

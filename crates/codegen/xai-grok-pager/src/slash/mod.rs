@@ -30,8 +30,8 @@ use registry::{CommandRegistry, CommandSource, CommandTrigger};
 use xai_grok_tools::implementations::skills::types::SkillScope;
 
 pub use command::{
-    AppCtx, ArgItem, CommandExecCtx, CommandProvenance, CommandResult, SlashCommand,
-    WorkflowChoice, WorkflowRunChoice,
+    AppCtx, ArgItem, ArgPresentation, CommandExecCtx, CommandProvenance, CommandResult,
+    SlashCommand, WorkflowChoice, WorkflowRunChoice,
 };
 pub use mode_support::{ModeSupport, Remedy};
 
@@ -99,6 +99,14 @@ impl MenuKey {
 /// A single row in the slash suggestion dropdown.
 #[derive(Debug, Clone)]
 pub struct SuggestionRow {
+    /// Stable canonical command name used only for presentation metadata.
+    /// `None` for argument rows. Display aliases and inserted text remain
+    /// untouched by localization.
+    pub command_canonical: Option<String>,
+    /// Whether the fixed command description may be resolved through the
+    /// locale catalog. Dynamic ACP skills/workflows remain opaque even if
+    /// their name collides with a built-in command.
+    pub localize_description: bool,
     /// Display text (e.g., "/model" or "Grok 4 Fast").
     pub display: String,
     /// Description text (e.g., "Switch the active model").
@@ -112,9 +120,87 @@ pub struct SuggestionRow {
     pub tag: Option<String>,
     /// Provenance badge; `Some` only on rows in a builtin/skill name collision.
     pub provenance: Option<CommandProvenance>,
+    /// Render-only localized badge text. Provenance remains canonical for
+    /// collision handling and command identity.
+    pub provenance_badge: Option<String>,
+    /// Stable argument presentation metadata copied from [`ArgItem`].
+    pub presentation: Option<ArgPresentation>,
 }
 
 impl SuggestionRow {
+    fn is_known_shell_command(trigger: &CommandTrigger) -> bool {
+        if trigger.provenance != CommandProvenance::Shell || !trigger.trusted_shell_metadata {
+            return false;
+        }
+        matches!(
+            (trigger.canonical.as_str(), trigger.description.as_str()),
+            (
+                "deep-research",
+                "Research with bounded parallel agents, cross-check evidence, and write a cited report"
+            ) | (
+                "workflow",
+                "Launch a saved workflow, list runs, or manage a run (pause, resume, stop, save)"
+            ) | ("goal", "Set, manage, or check an autonomous goal")
+                | ("flush", "Flush conversation memory to disk now")
+                | (
+                    "dream",
+                    "Run memory consolidation (merge session logs into organized topics)"
+                )
+                | ("memory", "Browse, view, and manage your memories")
+        )
+    }
+
+    /// Bundled skills are dynamic ACP commands, but their shipped short
+    /// descriptions are stable client-owned chrome. Require both trusted
+    /// bundled scope and an exact canonical/English pair so user, project,
+    /// plugin, workflow, and changed server text remain opaque.
+    fn is_known_bundled_skill(trigger: &CommandTrigger) -> bool {
+        if !trigger.bundled_skill && !trigger.product_chat_skill {
+            return false;
+        }
+        matches!(
+            (trigger.canonical.as_str(), trigger.description.as_str()),
+            (
+                "build-with-ai",
+                "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)"
+            ) | (
+                "code-review",
+                "Run an extremely strict maintainability review for abstraction quality, giant files, and spaghetti-condition growth. Use for a deep code quality audit or an especially harsh maintainability review."
+            ) | ("create-skill", "Create a new Grok skill")
+                | ("create-workflow", "Author a new multi-agent workflow")
+                | (
+                    "design",
+                    "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan."
+                )
+                | (
+                    "execute-plan",
+                    "Execute a PR Plan DAG from a design document. Parses the plan, topologically sorts it, implements PRs in parallel using worktree-isolated subagents, runs mandatory orchestrator-level review, and assembles either a Graphite PR stack or a plain-git branch stack depending on tool availability."
+                )
+                | (
+                    "bundled:imagine",
+                    "Prompting and workflow guidance for Imagine image tools"
+                )
+                | (
+                    "implement",
+                    "Run the full implement-review-fix loop using implementer and reviewer personas. Supports effort-based multi-reviewer scaling (1-5 reviewers) with automatic specialization selection. Includes memory-based feedback loop that learns from past review patterns. Loops until all reviewers find 0 issues of any severity."
+                )
+                | (
+                    "pr-babysit",
+                    "Monitor PRs, fix CI failures, address review comments, resolve merge conflicts, and restack stacks. Supports independent PRs, Graphite stacks, and GitHub stacked PRs (gh-stack)."
+                )
+                | (
+                    "resume-claude",
+                    "Continue from a recent Claude Code session"
+                )
+                | ("resume-codex", "Continue from a recent Codex session")
+                | ("resume-cursor", "Continue from a recent Cursor session")
+                | (
+                    "review",
+                    "Run a reviewer subagent against uncommitted local changes, a named branch, or a GitHub PR. Local and branch modes write a review file plus a summary to disk. PR mode posts the findings as a PENDING GitHub review for the user to inspect and submit through the UI."
+                )
+        )
+    }
+
     fn from_command(
         trigger: &CommandTrigger,
         takes_args: bool,
@@ -125,23 +211,45 @@ impl SuggestionRow {
             insert_text.push(' ');
         }
         Self {
+            command_canonical: Some(trigger.canonical.clone()),
+            localize_description: trigger.source == CommandSource::Builtin
+                || Self::is_known_shell_command(trigger)
+                || Self::is_known_bundled_skill(trigger),
             display: trigger.display.clone(),
             description: trigger.description.clone(),
             insert_text,
             indices: Vec::new(),
             tag: None,
             provenance: collides_with_builtin_or_skill.then(|| trigger.provenance.clone()),
+            provenance_badge: None,
+            presentation: (trigger.product_chat_skill || trigger.bundled_skill).then(|| {
+                ArgPresentation::OfficialSkill {
+                    skill_id: if trigger.bundled_skill {
+                        trigger
+                            .canonical
+                            .strip_prefix("bundled:")
+                            .unwrap_or(&trigger.canonical)
+                            .to_owned()
+                    } else {
+                        trigger.canonical.clone()
+                    },
+                }
+            }),
         }
     }
 
     fn from_arg(item: &ArgItem) -> Self {
         Self {
+            command_canonical: None,
+            localize_description: false,
             display: item.display.clone(),
             description: item.description.clone(),
             insert_text: item.insert_text.clone(),
             indices: Vec::new(),
             tag: None,
             provenance: None,
+            provenance_badge: None,
+            presentation: item.presentation.clone(),
         }
     }
 
@@ -150,6 +258,134 @@ impl SuggestionRow {
         self.display.strip_prefix('/').unwrap_or(&self.display)
     }
 }
+
+
+/// Locale catalog id for a fixed, client-owned argument placeholder.
+///
+/// ACP argument hints are normally opaque server/user/plugin content. Only
+/// built-ins, exact official shell metadata, and exact bundled/product skill
+/// metadata may opt in here. The returned id is presentation-only: command
+/// names, accepted argument values, and inserted text remain canonical.
+fn args_placeholder_catalog_id(
+    command: &dyn SlashCommand,
+    placeholder: &str,
+) -> Option<&'static str> {
+    match command.provenance() {
+        CommandProvenance::Builtin => match (command.name(), placeholder) {
+            ("btw", "<question>") => Some("slash.command.btw.arg_placeholder"),
+            ("cd", "path") => Some("slash.command.cd.arg_placeholder"),
+            ("compact", "compaction instructions") => Some("slash.command.compact.arg_placeholder"),
+            ("copy", "[N] [file]") => Some("slash.command.copy.arg_placeholder"),
+            ("docs", "[web|title]") => Some("slash.command.docs.arg_placeholder"),
+            ("effort", "<level>") => Some("slash.command.effort.arg_placeholder"),
+            ("export", "[filename]") => Some("slash.command.export.arg_placeholder"),
+            ("feedback", "[feedback text]") => Some("slash.command.feedback.arg_placeholder"),
+            ("find", "[text]") => Some("slash.command.find.arg_placeholder"),
+            ("fork", "[directive]") => Some("slash.command.fork.arg_placeholder"),
+            ("imagine", "description of the image to generate") => {
+                Some("slash.command.imagine.arg_placeholder")
+            }
+            ("imagine-video", "description of the video to generate") => {
+                Some("slash.command.imagine-video.arg_placeholder")
+            }
+            ("loop", "[interval] <prompt>") => Some("slash.command.loop.arg_placeholder"),
+            ("model", "<model> [effort]") => Some("slash.command.model.arg_placeholder"),
+            ("plan", "[description]") => Some("slash.command.plan.arg_placeholder"),
+            ("remember", "[memory note text]") => Some("slash.command.remember.arg_placeholder"),
+            ("rename", "<title>") => Some("slash.command.rename.arg_placeholder"),
+            ("theme", "<theme>") => Some("slash.command.theme.arg_placeholder"),
+            (
+                "workflow",
+                "<name> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [name]",
+            ) => Some("slash.command.workflow.arg_placeholder"),
+            // hide/show, scroll/fps/log, fix/FIX, and on/off are literal
+            // accepted values rather than prose placeholders; keep them raw.
+            _ => None,
+        },
+        CommandProvenance::Shell if command.has_trusted_shell_metadata() => {
+            match (command.name(), command.description(), placeholder) {
+                (
+                    "compact",
+                    "Compress conversation history to save context window",
+                    "optional context about what to preserve",
+                ) => Some("slash.command.compact.shell_arg_placeholder"),
+                (
+                    "hooks-add",
+                    "Add a custom hook file or directory",
+                    "path to hook file or directory",
+                )
+                | (
+                    "hooks-remove",
+                    "Remove a custom hook file or directory path",
+                    "path to hook file or directory",
+                ) => Some("slash.command.hooks.path_arg_placeholder"),
+                (
+                    "plugins",
+                    "Manage plugins (list, reload, trust, add, remove)",
+                    "list | reload | trust <path> | add <path> | remove <path>",
+                ) => Some("slash.command.plugins.arg_placeholder"),
+                ("feedback", "Send feedback about the current session", "feedback text") => {
+                    Some("slash.command.feedback.shell_arg_placeholder")
+                }
+                (
+                    "deep-research",
+                    "Research with bounded parallel agents, cross-check evidence, and write a cited report",
+                    "<query>",
+                ) => Some("slash.command.deep-research.arg_placeholder"),
+                (
+                    "workflow",
+                    "Launch a saved workflow, list runs, or manage a run (pause, resume, stop, save)",
+                    "<name> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [name]",
+                ) => Some("slash.command.workflow.arg_placeholder"),
+                (
+                    "goal",
+                    "Set, manage, or check an autonomous goal",
+                    "<objective> [--budget <tokens>] | status | pause | resume | clear",
+                ) => Some("slash.command.goal.arg_placeholder"),
+                ("loop", "Run a prompt on a recurring interval", "[interval] <prompt>") => {
+                    Some("slash.command.loop.arg_placeholder")
+                }
+                // on|off is an accepted enum for always-approve/memory.
+                _ => None,
+            }
+        }
+        CommandProvenance::Shell => None,
+        CommandProvenance::Skill { .. }
+            if command.is_bundled_skill() || command.is_product_chat_skill() =>
+        {
+            match (command.name(), command.description(), placeholder) {
+                (
+                    "build-with-ai",
+                    "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
+                    "<what you're building>",
+                ) => Some("slash.command.build-with-ai.arg_placeholder"),
+                (
+                    "design",
+                    "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan.",
+                    "<description of what to design>",
+                ) => Some("slash.command.design.arg_placeholder"),
+                (
+                    "resume-claude",
+                    "Continue from a recent Claude Code session",
+                    "[words describing the session | session id]",
+                ) => Some("slash.command.resume-claude.arg_placeholder"),
+                (
+                    "resume-codex",
+                    "Continue from a recent Codex session",
+                    "[words describing the session | session id]",
+                ) => Some("slash.command.resume-codex.arg_placeholder"),
+                (
+                    "resume-cursor",
+                    "Continue from a recent Cursor session",
+                    "[words describing the session | session id]",
+                ) => Some("slash.command.resume-cursor.arg_placeholder"),
+                _ => None,
+            }
+        }
+        CommandProvenance::Skill { .. } => None,
+    }
+}
+
 
 /// Argument rows plus the row the dropdown opens on when no selection carries over.
 #[derive(Default)]
@@ -266,6 +502,9 @@ pub struct SlashSnapshot {
     pub cursor_in_command: bool,
     /// Placeholder text for args (e.g., "[context]").
     pub args_placeholder: Option<String>,
+    /// Render-only locale catalog id for a trusted fixed placeholder.
+    /// `None` keeps dynamic ACP/user/plugin hints byte-for-byte unchanged.
+    pub args_placeholder_catalog_id: Option<&'static str>,
     /// Whether the args query is empty (for placeholder display).
     pub args_query_is_empty: bool,
     /// Whether the resolved command is a skill (for accent color theming).
@@ -335,6 +574,7 @@ impl SlashState {
             inner.matches.clear();
             inner.args_range = None;
             inner.args_placeholder = None;
+            inner.args_placeholder_catalog_id = None;
             inner.args_query_is_empty = false;
         });
     }
@@ -625,6 +865,7 @@ impl SlashController {
             args_range: input.args_range.clone(),
             cursor_in_command: input.cursor_in_command,
             args_placeholder: None,
+            args_placeholder_catalog_id: None,
             args_query_is_empty: args_text_empty,
             is_skill: false,
             command_recognized: false,
@@ -660,7 +901,11 @@ impl SlashController {
                 snapshot.command_recognized = true;
                 snapshot.is_skill = command.is_skill();
                 if args_text_empty {
-                    snapshot.args_placeholder = command.arg_placeholder().map(|s| s.to_string());
+                    if let Some(placeholder) = command.arg_placeholder() {
+                        snapshot.args_placeholder = Some(placeholder.to_string());
+                        snapshot.args_placeholder_catalog_id =
+                            args_placeholder_catalog_id(command.as_ref(), placeholder);
+                    }
                 }
             }
         }
@@ -729,6 +974,7 @@ impl SlashController {
                     args_range: None,
                     cursor_in_command: true,
                     args_placeholder: None,
+                    args_placeholder_catalog_id: None,
                     args_query_is_empty: true,
                     is_skill: false,
                     command_recognized: is_recognized,
@@ -774,6 +1020,7 @@ impl SlashController {
             args_range: None,
             cursor_in_command: false,
             args_placeholder: None,
+            args_placeholder_catalog_id: None,
             args_query_is_empty: true,
             is_skill: false,
             command_recognized: is_recognized,
@@ -854,7 +1101,11 @@ impl SlashController {
             .unwrap_or(0);
         snapshot.matches = suggestions.rows;
         if args_empty {
-            snapshot.args_placeholder = command.arg_placeholder().map(|s| s.to_string());
+            if let Some(placeholder) = command.arg_placeholder() {
+                snapshot.args_placeholder = Some(placeholder.to_string());
+                snapshot.args_placeholder_catalog_id =
+                    args_placeholder_catalog_id(command.as_ref(), placeholder);
+            }
         }
 
         snapshot
@@ -2507,12 +2758,17 @@ mod tests {
         assert!(!command_prefix_matches_smart("Privacy", "PR"));
 
         let row = SuggestionRow {
+            command_canonical: None,
+            localize_description: false,
+
             display: "/Privacy".to_string(),
             description: String::new(),
             insert_text: "/Privacy ".to_string(),
             indices: Vec::new(),
             tag: None,
             provenance: None,
+            provenance_badge: None,
+            presentation: None,
         };
         // Without smart-case, starts_with("p") fails on "Privacy" and the ghost disappears
         // The dropdown would still highlight the row via CaseMatching::Smart
@@ -3495,6 +3751,7 @@ mod tests {
                 match_text: match_text.into(),
                 insert_text: insert.into(),
                 description: String::new(),
+                presentation: None,
             };
             if let Some(rest) = args_query.strip_prefix("first")
                 && rest.starts_with(char::is_whitespace)

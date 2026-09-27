@@ -923,7 +923,7 @@ pub async fn run_single_turn(
             anyhow::bail!("{msg}");
         }
     };
-    let _agent_guard = AgentShutdownGuard::new_with_locale(
+    let agent_guard = AgentShutdownGuard::new_with_locale(
         cancel.clone(),
         Some(spawned.thread_handle),
         options.locale.as_ref(),

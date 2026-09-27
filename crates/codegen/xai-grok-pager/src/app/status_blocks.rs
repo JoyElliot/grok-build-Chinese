@@ -47,6 +47,10 @@ fn status_column(locale: Option<&crate::locale::LocaleContext>, status: &str) ->
     }
 }
 
+pub(crate) fn queue_block_text(agent: &AgentView) -> String {
+    queue_block_text_with_locale(agent, None)
+}
+
 /// `/queue` body — a read-only list of the queued prompts.
 ///
 /// Server-authoritative shared-queue rows (the in-flight prompt excluded) come
@@ -88,6 +92,10 @@ pub(crate) fn queue_block_text_with_locale(
 
 ///
 /// [`crate::views::tasks_pane::TasksPane`] without its styled rows.
+pub(crate) fn tasks_block_text(agent: &AgentView) -> String {
+    tasks_block_text_with_locale(agent, None)
+}
+
 pub(crate) fn tasks_block_text_with_locale(
     agent: &AgentView,
     locale: Option<&crate::locale::LocaleContext>,
@@ -243,7 +251,6 @@ pub(crate) fn tasks_block_text_with_locale(
 
 /// `/usage` body — per-session token and cost totals, scoped to the ledger's
 /// lifetime: since session start, or since the last `/resume`.
-#[cfg(test)]
 pub(crate) fn session_usage_block_text(
     usage: &xai_grok_shell::extensions::notification::PromptUsage,
 ) -> String {

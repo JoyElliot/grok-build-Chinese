@@ -301,7 +301,8 @@ impl FeatureOverrideState {
             | ConfigSource::UserConfig
             | ConfigSource::ManagedConfig
             | ConfigSource::SystemManagedConfig
-            | ConfigSource::EnvOverlay => None,
+            | ConfigSource::EnvOverlay
+            | ConfigSource::BuildPolicy => None,
         }
     }
 }

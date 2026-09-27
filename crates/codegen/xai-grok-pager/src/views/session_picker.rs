@@ -10,8 +10,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::app_view::SessionPickerEntry;
 use crate::views::picker::{PickerEntry, PickerField, PickerRow, PickerState};
-use indexmap::IndexMap;
-use std::collections::HashSet;
 /// Offset added to content-hit indices in the picker `expanded` set so they don't collide with fuzzy-entry indices.
 pub const CONTENT_EXPAND_OFFSET: usize = 100_000;
 /// Session id for free-text Enter (`SubmitQuery` with no selectable rows).

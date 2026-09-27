@@ -382,7 +382,7 @@ fn paint_peek_config_badge(
         width: area.width.saturating_sub(2),
         height: 1,
     };
-    reply.render_info_line(buf, info_rect, &info, theme.bg_base, theme, panel.focused);
+    reply.render_info_line(buf, info_rect, &info, theme.bg_base, theme, panel.focused, None);
 }
 
 /// On a too-narrow / too-short area, paints nothing and returns an empty result; the caller can

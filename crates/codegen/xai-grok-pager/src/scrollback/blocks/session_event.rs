@@ -632,7 +632,10 @@ impl SessionEvent {
             SessionEvent::TurnCompleted { elapsed: None } => {
                 text("scrollback.session_event.turn_completed", "Turn completed.")
             }
-            SessionEvent::TurnCancelled { elapsed, cause } => {
+            SessionEvent::TurnCancelled {
+                elapsed: Some(elapsed),
+                cause,
+            } => {
                 let id = match cause {
                     super::CancelledBy::User => "scrollback.cancel.user",
                     super::CancelledBy::SessionClosed => "scrollback.cancel.session_closed",
@@ -646,12 +649,31 @@ impl SessionEvent {
                 text("scrollback.cancel.duration", "{cause} in {duration}.")
                     .replace("{cause}", &text(id, cause.phrase()))
                     .replace("{duration}", &format_duration(*elapsed))
-            },
-            SessionEvent::TurnBlockedByHook { elapsed } => text(
+            }
+            SessionEvent::TurnCancelled { elapsed: None, cause } => {
+                let id = match cause {
+                    super::CancelledBy::User => "scrollback.cancel.user",
+                    super::CancelledBy::SessionClosed => "scrollback.cancel.session_closed",
+                    super::CancelledBy::Shutdown => "scrollback.cancel.shutdown",
+                    super::CancelledBy::MaxTurns => "scrollback.cancel.max_turns",
+                    super::CancelledBy::PermissionDenied => "scrollback.cancel.permission_denied",
+                    super::CancelledBy::PermissionDismissed => "scrollback.cancel.permission_dismissed",
+                    super::CancelledBy::HostInterrupt => "scrollback.cancel.host_interrupt",
+                    super::CancelledBy::Unspecified => "scrollback.cancel.unspecified",
+                };
+                text(id, cause.phrase())
+            }
+            SessionEvent::TurnBlockedByHook {
+                elapsed: Some(elapsed),
+            } => text(
                 "scrollback.session_event.turn_blocked_by_hook",
                 "Turn blocked by a hook in {duration}.",
             )
             .replace("{duration}", &format_duration(*elapsed)),
+            SessionEvent::TurnBlockedByHook { elapsed: None } => text(
+                "scrollback.session_event.turn_blocked_by_hook_no_duration",
+                "Turn blocked by a hook.",
+            ),
             SessionEvent::TurnHalted { elapsed } => text(
                 "scrollback.session_event.turn_halted",
                 "Agent was unable to make progress — turn ended in {duration}.",

@@ -35,6 +35,44 @@ const GROUP_HEADER_HEIGHT: u16 = 2;
 /// The user must press Space to peek (which routes the permission question and options into the
 /// peek panel) and then a number key to answer.
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn render_dashboard_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &mut DashboardState,
+    agents: &mut IndexMap<AgentId, AgentView>,
+    registry: &crate::actions::ActionRegistry,
+    pending_hint: Option<crate::views::shortcuts_bar::PendingHint>,
+    roster: &[crate::app::roster::RosterEntry],
+    workspace_dashboard_enabled: bool,
+    row_inputs: super::row::WorkspaceRowInputs<'_>,
+    dashboard_session_picker: Option<
+        &mut crate::views::session_picker_surface::SessionPickerSurface,
+    >,
+    dashboard_sessions_loading: bool,
+    upgrade_cta: Option<HeaderUpgradeCta<'_>>,
+    credit_balance: Option<&crate::views::credit_bar::CreditBalance>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Option<(u16, u16)> {
+    // QUESTION(localize): TARGET dashboard render body; locale accepted for call-site
+    // compatibility. Full zh-dev `_with_locale` chrome rewiring is a follow-up card.
+    let _ = locale;
+    render_dashboard(
+        buf,
+        area,
+        state,
+        agents,
+        registry,
+        pending_hint,
+        roster,
+        workspace_dashboard_enabled,
+        row_inputs,
+        dashboard_session_picker,
+        dashboard_sessions_loading,
+        upgrade_cta,
+        credit_balance,
+    )
+}
+
 pub(crate) fn render_dashboard(
     buf: &mut Buffer,
     area: Rect,
@@ -320,6 +358,8 @@ pub(crate) fn render_dashboard(
                 source_filter: surface.source_filter,
                 pending_delete: false,
                 chat_mode: false,
+                // QUESTION(localize): thread dashboard locale once with_locale body is rewired
+                locale: None,
             },
         );
         surface.state.hit_areas = (hit_areas.search_bar.width > 0).then_some(hit_areas);
@@ -347,6 +387,8 @@ pub(crate) fn render_dashboard(
     }
 
     if let Some(modal) = state.usage_modal.as_mut() {
+        // QUESTION(localize): thread dashboard locale once with_locale body is rewired
+        let usage_locale = crate::locale::LocaleContext::default();
         crate::views::usage_modal::render_usage_modal(
             buf,
             area,
@@ -354,6 +396,7 @@ pub(crate) fn render_dashboard(
             credit_balance,
             /* compact */ false,
             &theme,
+            &usage_locale,
         );
         return None;
     }
@@ -2136,7 +2179,7 @@ fn paint_dispatch_config_badge(
     };
     state
         .dispatch
-        .render_info_line(buf, info_rect, &info, theme.bg_base, theme, input_focused);
+        .render_info_line(buf, info_rect, &info, theme.bg_base, theme, input_focused, None);
 }
 
 /// Paint the left-aligned `● rec` badge on a box's top border while the mic is hot.
@@ -3060,6 +3103,29 @@ pub fn popup_rect(view: Rect) -> Rect {
 /// `title_label` is passed by the caller rather than computed here from a borrowed `AgentView`. The
 /// closure can then take a mutable borrow of the agents map without conflicting with the title
 /// lookup.
+pub fn render_popup_overlay_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    title_label: &str,
+    state: &mut DashboardState,
+    locale: Option<&crate::locale::LocaleContext>,
+    draw_agent: impl FnOnce(
+        Rect,
+        &mut Buffer,
+    ) -> (
+        Option<(u16, u16)>,
+        Option<crate::terminal::overlay::PostFlush>,
+    ),
+) -> (
+    Option<(u16, u16)>,
+    Option<crate::terminal::overlay::PostFlush>,
+    bool,
+) {
+    let _ = locale; // QUESTION(localize): popup overlay locale chrome
+    render_popup_overlay(buf, area, theme, title_label, state, draw_agent)
+}
+
 pub fn render_popup_overlay(
     buf: &mut Buffer,
     area: Rect,

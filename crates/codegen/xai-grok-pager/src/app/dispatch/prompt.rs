@@ -529,6 +529,7 @@ pub(in crate::app) fn present_export_copy_tip(
     agent: &mut AgentView,
     seen_counts: &mut std::collections::HashMap<&'static str, u32>,
     gate: bool,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> bool {
     if !gate {
         return false;
@@ -537,7 +538,10 @@ pub(in crate::app) fn present_export_copy_tip(
     if agent.ephemeral_tip.current_key() == Some(crate::tips::export_copy::EXPORT_COPY_TIP_KEY) {
         return false;
     }
-    let shown = agent.show_ephemeral_tip(crate::tips::export_copy::export_copy_tip(), seen_counts);
+    let shown = agent.show_ephemeral_tip(
+        crate::tips::export_copy::export_copy_tip_with_locale(locale),
+        seen_counts,
+    );
     if shown {
         log_event(xai_grok_telemetry::events::ContextualTip {
             tip: xai_grok_telemetry::events::ContextualTipKind::ExportCopy,
@@ -1739,6 +1743,7 @@ pub(super) fn handle_prompt_response(
                 let cwd_str = app.cwd.to_string_lossy();
                 let model = agent.session.models.current_model_name();
                 let idle_title = crate::notifications::TitleState {
+        locale: None,
                     session_name,
                     model: model.as_deref(),
                     activity: None,

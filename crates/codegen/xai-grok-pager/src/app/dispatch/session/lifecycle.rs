@@ -185,6 +185,54 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
 /// Open the local worktree question modal for `/new`.
 /// Mirrors [`open_fork_question`] but uses [`LocalQuestionKind::NewSession`].
 /// The answer routes to [`dispatch_new_session_inner`] or [`dispatch_new_worktree_session`].
+pub(in crate::app::dispatch) fn localized_welcome_workspace_error(
+    locale: &crate::locale::LocaleContext,
+    error: &str,
+) -> String {
+    match error {
+        "local-workspace resolve returned no config after own-mode request"
+        | "local-workspace resolve returned no config after ack" => locale
+            .named_text("session.workspace.local_resolve_missing", error)
+            .into_owned(),
+        _ => error.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod workspace_error_localization_tests {
+    use super::localized_welcome_workspace_error;
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+
+    #[test]
+    fn local_workspace_missing_config_localizes_exact_internal_errors_only() {
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &zh,
+                "local-workspace resolve returned no config after ack"
+            ),
+            "本地工作区解析未返回配置"
+        );
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &zh,
+                "local-workspace resolve returned no config after ack: future detail"
+            ),
+            "local-workspace resolve returned no config after ack: future detail"
+        );
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &LocaleContext::default(),
+                "local-workspace resolve returned no config after ack"
+            ),
+            "local-workspace resolve returned no config after ack"
+        );
+    }
+}
+
 pub(in crate::app::dispatch) fn open_new_session_question(app: &mut AppView) -> Vec<Effect> {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
     use xai_grok_tools::implementations::grok_build::ask_user_question::{
@@ -214,7 +262,7 @@ pub(in crate::app::dispatch) fn open_new_session_question(app: &mut AppView) -> 
             id: None,
         },
     ];
-    options.extend(worktree_persist_options());
+    options.extend(worktree_persist_options(app.locale.as_ref()));
     let question = Question {
         question: "Start the new session in an isolated git worktree?".into(),
         id: None,
@@ -1819,7 +1867,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
         Some(_) | None => format!("Cannot create worktree: {error}"),
     };
     let msg = match orphaned_worktree_root {
-        Some(root) => crate::app::worktree_session::note_orphaned_worktree(&reason, &root),
+        Some(root) => crate::app::worktree_session::note_orphaned_worktree(&reason, &root, app.locale.as_ref()),
         None => reason,
     };
     let is_orphan = app

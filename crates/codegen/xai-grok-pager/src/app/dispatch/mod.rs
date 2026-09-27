@@ -44,9 +44,9 @@ pub(crate) use billing::{
 pub(crate) use dashboard::{DashboardStopReadiness, dashboard_stop_readiness};
 pub(crate) use modes::{downgrade_displayed_auto_if_gated, effective_auto};
 pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
-#[cfg(test)]
-pub(crate) use notes::recap_unavailable_toast;
-pub(crate) use notes::{recap_unavailable_toast_with_locale, scrollback_has_user_messages};
+pub(crate) use notes::{
+    recap_unavailable_toast, recap_unavailable_toast_with_locale, scrollback_has_user_messages,
+};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;
 pub(in crate::app) use prompt::{
