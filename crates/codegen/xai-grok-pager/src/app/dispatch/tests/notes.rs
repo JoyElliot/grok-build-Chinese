@@ -2727,6 +2727,7 @@ fn zh_localization_review135_btw_notices_translate_without_rewriting_reply() {
             assert_eq!(content.text(), "Original reply {count}");
         }
     }
+}
 
 /// A plain `[Image #1]` with no record behind it rides the side question as text; the send goes out
 /// and the toast says the image is not attached, as it does for a queued prompt.
@@ -2761,5 +2762,4 @@ fn btw_with_unbound_placeholder_sends_and_toasts() {
         Some("Image #1 not attached — placeholder sent as text")
     );
     assert_eq!(test_agent(&app, id).prompt.text(), "");
-
 }
