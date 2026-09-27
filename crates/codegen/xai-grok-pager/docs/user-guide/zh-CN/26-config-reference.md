@@ -223,9 +223,9 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `features.non_git_warning` | `boolean` | `yes` | `user` | Grok 在非 Git 仓库中启动时显示阻塞警告。 |
 | `features.remember_mode` | `boolean` | `—` | `—` | 跨会话记住上次权限模式；仅从用户 `config.toml` 读取。 |
 | `features.remote_fetch` | `boolean` | `pin` | `fleet` | 固定远程模型目录和资源获取；托管值与用户值同时存在时，托管值优先。 |
-| `features.repo_status_in_system_prompt` | `boolean` | `pin` | `user` | 启用或禁用 `repo_status_in_system_prompt`；默认 true。也对应 `GROK_REPO_STATUS_IN_SYSTEM_PROMPT`。 |
 | `features.session_recap` | `boolean` | `pin` | `user` | 启用或禁用 `session_recap`；默认 true。也对应 `GROK_SESSION_RECAP`。 |
 | `features.session_search` | `boolean` | `pin` | `user` | 启用或禁用 `session_search`；默认 true。也对应 `GROK_SESSION_SEARCH`。 |
+| `features.subagent_model_inheritance` | `boolean` | `pin` | `user` | 当可选模型均为 xAI 模型时隐藏子代理的 `model` 参数，使子代理继承父模型；默认 false。也对应 `GROK_SUBAGENT_MODEL_INHERITANCE`。会话启动时读取；变更后需重启。 |
 | `features.subagent_worktree_snapshot` | `boolean` | `pin` | `user` | 启用或禁用 `subagent_worktree_snapshot`；默认 false。也对应 `GROK_SUBAGENT_WORKTREE_SNAPSHOT`。 |
 | `features.support_permission` | `boolean` | `yes` | `user` | 允许智能体为工具执行请求权限。 |
 | `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | 产品遥测模式；企业默认关闭。 |
@@ -302,6 +302,14 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `hooks.<event>[].hooks[].command` | `string` | `yes` | `user` | 为该 hook 运行的命令；加载时不展开 `$VAR`。 |
 | `hooks.<event>[].hooks[].type` | `command` | `yes` | `user` | hook 处理器类型；支持命令 hook。 |
 | `hooks.<event>[].matcher` | `string` | `yes` | `user` | 该 hook 组的工具名匹配器。 |
+
+### `long_reasoning_reminder`
+
+| 键 | 类型／取值 | Requirements | 托管 | 说明 |
+| --- | --- | --- | --- | --- |
+| `long_reasoning_reminder.enabled` | `boolean` | `yes` | `user` | 在一次隐藏推理较长的模型调用后，于轮次中途注入简短推理提醒；默认 false。也对应 `GROK_LONG_REASONING_REMINDER`（布尔词，或与本表同形的 JSON 对象）。 |
+| `long_reasoning_reminder.tokens` | `integer` | `yes` | `user` | 单次模型调用中计为「较长」的推理 token 数；默认 1000，钳制到 100–200000。也对应 `GROK_LONG_REASONING_REMINDER` JSON 对象中的 `tokens`。 |
+| `long_reasoning_reminder.delay` | `integer` | `yes` | `user` | 长调用之后、注入提醒之前要等待的模型调用次数；默认 1，钳制到 0–10。也对应 `GROK_LONG_REASONING_REMINDER` JSON 对象中的 `delay`。 |
 
 ### `managed_mcps`
 
@@ -383,6 +391,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `model.<id>.hidden` | `boolean` | `yes` | `user` | 从选择器隐藏模型；仍可用 `-m` 选择。 |
 | `model.<id>.inference_idle_timeout_secs` | `number` | `yes` | `user` | 该模型流式推理的空闲超时。 |
 | `model.<id>.max_completion_tokens` | `number` | `yes` | `user` | 该模型最大补全 token 数。 |
+| `model.<id>.max_request_bytes` | `number` | `yes` | `user` | 提供方请求体上限；内联图片会被淘汰以保持在该上限以下。未设置时继承 `[model_providers.<id>]` 的值，再回退到 `api_backend` 默认：`messages` 为 30 MB，其余为 50 MiB。 |
 | `model.<id>.max_retries` | `number` | `yes` | `user` | 该模型的推理重试次数。 |
 | `model.<id>.model` | `string` | `yes` | `user` | 发送给 API 的模型 ID。 |
 | `model.<id>.model_family` | `string` | `yes` | `user` | 用于压缩和能力分组的模型家族 ID。 |
@@ -594,6 +603,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `ui.combine_queued_prompts` | `boolean` | `yes` | `user` | 将连续的普通后续提示合并为一个轮次。 |
 | `ui.compact_mode` | `boolean` | `yes` | `user` | 使用更紧凑的消息留白。也对应 `/compact-mode`。 |
 | `ui.confirm_before_rewind` | `boolean` | `yes` | `user` | 回退对话历史前询问确认。 |
+| `ui.dashboard_preview` | `boolean` | `yes` | `user` | Dashboard 预览与回复面板默认显示（`/settings` 中的外观）。 |
 | `ui.contextual_hints.image_input` | `boolean` | `yes` | `user` | 模型支持图像时显示剪贴板图像粘贴提示。 |
 | `ui.contextual_hints.plan_mode` | `boolean` | `yes` | `user` | 针对规划型提示建议使用计划模式（Shift+Tab）。 |
 | `ui.contextual_hints.send_now` | `boolean` | `yes` | `user` | 轮次中途排队后续提示后，空提示按 Enter 可立即发送。 |

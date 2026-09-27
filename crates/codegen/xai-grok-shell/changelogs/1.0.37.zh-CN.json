@@ -1,0 +1,27 @@
+[
+  {
+    "category": "fixes",
+    "description": "含复杂标签或较大尺寸的 **Mermaid 流程图**现可正确渲染并打开。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/context`** 图例现显示始终合计为 100% 的准确百分比。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "在队列行上**按 `y`** 现会将提示文本复制到剪贴板。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`/model`** 推理强度选择器现默认使用该模型的推荐强度级别。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "使用带引号文件名变量的 **Bash 命令**现会遵守已配置的权限规则，而不再总是弹出提示。",
+    "breaking_change": false
+  }
+]

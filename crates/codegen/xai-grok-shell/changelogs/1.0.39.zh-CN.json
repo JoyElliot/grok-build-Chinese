@@ -1,0 +1,67 @@
+[
+  {
+    "category": "features",
+    "description": "**子代理**可始终使用父模型，该选择在会话启动时锁定。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "本地 worktree 捕获不再拒绝含未初始化子模块的仓库。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**记忆采集**不再包含不透明的模型推理 blob。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "空闲超时时现会显示清晰消息，而不再是原始内部文本。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "附加到最近用户提示的图片现可在压缩后保留。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "更早的图片附件现可通过持久化路径列表在多次压缩后保留。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**子代理启动**不再必须选择类型；省略时默认 general-purpose。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**自定义智能体配置**现可在会话恢复与重载后正确持久化。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**子代理标签**在会话记录与任务面板中现显示为「Subagent」，而不再是「General」。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "智能体现将辅助脚本、日志与 PR 草稿保存在系统临时目录，而不再写入仓库。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "read_file 描述现会告知模型：对 SKILL.md 与指令文件会忽略 offset／limit。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "模型的推理强度级别现来自 API，而不再是硬编码列表；配置别名会继承该菜单。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "收到错误 JSON 形状的 MCP 工具，在不匹配无歧义时现会自动修正。",
+    "breaking_change": false
+  }
+]

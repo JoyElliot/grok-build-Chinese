@@ -1,0 +1,32 @@
+[
+  {
+    "category": "fixes",
+    "description": "**子代理覆盖层**在子轮次结束后不再卡在「正在取消」状态。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "提示建议会话记录中的**长智能体回复**不再会在句中被截断。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "对技能与指令文件的 **read_file** 现可按部署单独配置。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**粘贴的图片**在 yank／撤销／历史召回后仍会保留，无法发送时会通知用户。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "权限提示中的**长引号参数**现会换行显示，而不再被裁切。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**修复工具调用错误**：改为仅发送内联 use_tool schema。",
+    "breaking_change": false
+  }
+]

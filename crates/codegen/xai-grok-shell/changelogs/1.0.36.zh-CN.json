@@ -1,0 +1,57 @@
+[
+  {
+    "category": "fixes",
+    "description": "**`grok --sandbox`** 在接受文件夹信任时不再退出。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Dashboard 中已固定的智能体**在活动状态变化时不再跳动位置。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "含三引号字符串的 **Swift 代码**现在可在分页器中正确高亮。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "config.toml 现已接受**大小写混用的 reasoning_effort** 值（例如 \"xHigh\"）。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**修复意外的空智能体会话**：从 Dashboard 发送后立刻按 Enter 不再误开空会话。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**修复默认 TUI 会话**：config.toml 中设置的 [agent] 现会被遵守，而不再总是使用内置 plan。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**新增 Dashboard 预览设置**，可在 Dashboard 上隐藏所选会话的预览面板。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**新增策略设置**，允许组织禁用非托管策略来源的 hooks。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**后台 Shell 命令**现会以实时任务行显示，并流式输出。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**MCP 插件认证**对在清单中声明 client ID 的服务器现可成功完成。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "来自后台子代理的 **Shell 命令审批**现会显示，而不再被静默拒绝。",
+    "breaking_change": false
+  }
+]
