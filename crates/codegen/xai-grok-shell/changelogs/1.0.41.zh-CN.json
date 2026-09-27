@@ -6,7 +6,7 @@
   },
   {
     "category": "fixes",
-    "description": "**修复**智能体 frontmatter 中的 `mcpServers`：活动智能体 agent.md 中的 headers 与 URL 现在会正确覆盖 config.toml，并在配置重载或切换智能体后保持生效。",
+    "description": "**修复**智能体 frontmatter 中的 `mcpServers`：当前活动智能体 `agent.md` 里的 headers 与 URL 现会正确覆盖 config.toml，并在配置重载或切换智能体后继续生效。",
     "breaking_change": false
   },
   {
@@ -21,7 +21,7 @@
   },
   {
     "category": "fixes",
-    "description": "**Dashboard** 现在会聚焦「+ New Agent」行，而不再停留在先前会话。",
+    "description": "**Dashboard** 现在会聚焦「+ 新建智能体」行，而不再停留在先前会话。",
     "breaking_change": false
   },
   {
@@ -66,7 +66,7 @@
   },
   {
     "category": "fixes",
-    "description": "**Effort 级别选择**现在除 ID 外也接受菜单标签。",
+    "description": "**推理强度级别选择**现在除 ID 外也接受菜单标签。",
     "breaking_change": false
   }
 ]
