@@ -16,9 +16,10 @@ mod worktree;
 
 pub use announcements::*;
 pub use campaigns::{
-    CampaignModelsDefault, campaign_driven_models_default, load_effective_config,
-    load_effective_config_disk_only, persist_models_default, remote_campaigns_from_settings,
-    set_remote_campaigns_from_settings, sync_campaign_fields,
+    CampaignModelsDefault, EffectiveConfigLayers, campaign_driven_models_default,
+    load_effective_config, load_effective_config_disk_only, load_effective_config_with_layers,
+    persist_models_default, remote_campaigns_from_settings, set_remote_campaigns_from_settings,
+    sync_campaign_fields,
 };
 pub use consent::*;
 pub use hints::*;
@@ -34,6 +35,6 @@ pub use tips::*;
 pub use worktree::*;
 pub use xai_grok_config_types::{
     CampaignOverride, ConsentGate, ContextualHintsRemote, DisplayRefreshSettings,
-    DoomLoopRecoverySettings, GoalRoleModel, RemoteSettings, WorktreeAutoGcSettings,
-    WorktreeKindMaxAge, deserialize_tolerant,
+    DoomLoopRecoverySettings, GoalRoleModel, LongReasoningReminderSettings, RemoteSettings,
+    WorktreeAutoGcSettings, WorktreeKindMaxAge, deserialize_tolerant,
 };

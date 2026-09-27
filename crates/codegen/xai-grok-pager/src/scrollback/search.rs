@@ -122,10 +122,6 @@ fn scan_matches(entries: &[IndexedEntry], matcher: &TextMatcher) -> Vec<Scrollba
     matches
 }
 
-// ---------------------------------------------------------------------------
-// Background search daemon
-// ---------------------------------------------------------------------------
-
 /// Latest scan results published by the daemon for the UI thread to pick up.
 ///
 /// `request_generation` is assigned synchronously by the UI and identifies the exact query/corpus request that produced this snapshot.

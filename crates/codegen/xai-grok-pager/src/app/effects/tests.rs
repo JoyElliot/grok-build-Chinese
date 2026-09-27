@@ -765,6 +765,7 @@ async fn bounded_clipboard_probe_maps_each_drop_reason_to_its_completion() {
         (Reason::PasteboardChangedBeforeRead, None, "ProbeDropped"),
         (Reason::PasteboardChangedAfterRead, Some(probe_raster()), "ProbeDropped"),
         (Reason::BracketedPayloadMismatch, None, "ProbeDropped"),
+        (Reason::BracketedOriginReadFailed, None, "ProbeDropped"),
         (Reason::PersistFailed, Some(probe_raster()), "PersistFailed(disk full)"),
         (Reason::ReadFailed, None, "ProbeFailed"),
         (Reason::Timeout, None, "ProbeFailed"),
@@ -869,6 +870,96 @@ fn probe_stage_attaches_the_raster_or_reports_none() {
     let (attachment, _) = outcome.expect("the read stands");
     assert!(matches!(attachment, ProbedAttachment::NoRaster), "got {attachment:?}");
 }
+#[test]
+fn non_bracketed_probe_attaches_even_when_text_does_not_match() {
+    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
+        text: Some("screenshot".to_owned()),
+        ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
+    });
+    let outcome = probe_clipboard_attachment_blocking(
+        Some(1),
+        Some("中".to_owned()),
+        false,
+        None,
+    );
+    crate::clipboard::clear_clipboard_probe_hook();
+    let (attachment, _) = outcome.expect("an explicit paste key still attaches");
+    assert!(matches!(attachment, ProbedAttachment::Image(_)), "got {attachment:?}");
+}
+#[test]
+fn bracketed_probe_drops_a_mismatched_payload_before_reading_the_raster() {
+    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
+        text: Some("screenshot".to_owned()),
+        ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
+    });
+    let outcome = probe_clipboard_attachment_blocking(
+        Some(1),
+        Some("中".to_owned()),
+        true,
+        None,
+    );
+    let probe_calls = crate::clipboard::clipboard_probe_call_count();
+    crate::clipboard::clear_clipboard_probe_hook();
+    let drop = outcome.expect_err("mismatched bracketed payload");
+    assert_eq!(Reason::BracketedPayloadMismatch, drop.reason);
+    assert!(drop.image.is_none());
+    assert_eq!(0, probe_calls);
+}
+#[test]
+fn bracketed_probe_attaches_when_the_payload_matches_clipboard_text() {
+    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
+        text: Some("caption".to_owned()),
+        ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
+    });
+    let outcome = probe_clipboard_attachment_blocking(
+        Some(1),
+        Some("caption".to_owned()),
+        true,
+        None,
+    );
+    crate::clipboard::clear_clipboard_probe_hook();
+    let (attachment, file_urls) = outcome.expect("a matching caption still probes");
+    assert!(matches!(attachment, ProbedAttachment::Image(_)), "got {attachment:?}");
+    assert!(file_urls.is_none());
+}
+#[test]
+fn bracketed_probe_attaches_an_image_only_paste() {
+    crate::clipboard::set_clipboard_probe_hook(
+        crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster())),
+    );
+    let outcome = probe_clipboard_attachment_blocking(
+        Some(1),
+        Some(String::new()),
+        true,
+        None,
+    );
+    crate::clipboard::clear_clipboard_probe_hook();
+    let (attachment, _) = outcome
+        .expect("empty payload with no clipboard text still matches");
+    assert!(matches!(attachment, ProbedAttachment::Image(_)), "got {attachment:?}");
+}
+/// Origin-text read failure on a bracketed probe is its own silent drop, not the toasting `ReadFailed`.
+#[test]
+fn bracketed_probe_names_a_clipboard_text_read_failure() {
+    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
+        text_read_failed: true,
+        ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
+    });
+    let outcome = probe_clipboard_attachment_blocking(
+        Some(1),
+        Some("中".to_owned()),
+        true,
+        None,
+    );
+    let probe_calls = crate::clipboard::clipboard_probe_call_count();
+    crate::clipboard::clear_clipboard_probe_hook();
+    let drop = outcome.expect_err("clipboard text read failed");
+    assert_eq!(Reason::BracketedOriginReadFailed, drop.reason);
+    assert!(drop.image.is_none());
+    assert_eq!(0, probe_calls);
+}
 /// A failed session persist keeps the raster (for the drop's hash) and the error text (for the toast).
 #[test]
 fn probe_stage_reports_a_failed_persist_with_its_error() {
@@ -939,6 +1030,17 @@ async fn persist_setting_type_mismatch_errors_show_timeline() {
         );
 }
 #[tokio::test]
+async fn persist_setting_type_mismatch_errors_dashboard_preview() {
+    use crate::settings::SettingValue;
+    let error = persist_setting(
+            "dashboard_preview",
+            SettingValue::String("nope".to_owned()),
+        )
+        .await
+        .expect_err("dashboard preview rejects a non-boolean value");
+    assert!(error.contains("persist_setting(dashboard_preview) expected Bool"), "{error}");
+}
+#[tokio::test]
 async fn persist_setting_type_mismatch_errors_page_flip_on_send() {
     use crate::settings::SettingValue;
     let r = persist_setting("page_flip_on_send", SettingValue::String("nope".into()))
@@ -998,6 +1100,15 @@ fn spawn_fake_acp_agent(
         while let Some(msg) = rx.recv().await {
             if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = msg {
                 if args.request.method.as_ref() == "x.ai/yolo_mode_changed" {
+                    let params: serde_json::Value = serde_json::from_str(
+                            args.request.params.get(),
+                        )
+                        .expect("permission notification payload");
+                    assert_eq!(
+                            Some("test-session"),
+                            params.get("sessionId").and_then(serde_json::Value::as_str),
+                            "permission notifications must name their session"
+                        );
                     counter_clone.fetch_add(1, Ordering::SeqCst);
                 }
                 let _ = args.response_tx.send(Ok(()));
@@ -1078,7 +1189,7 @@ fn unregister_best_effort_is_nonblocking_under_lock_contention() {
                 .expect("list")
                 .len(),
             1,
-            "contended unregister must leave the entry for collect_crashed",
+            "contended unregister must leave the entry for the next register to prune",
         );
 }
 /// A real I/O error (uncreatable registry root) is swallowed: the best-effort helper logs and returns instead of panicking.
@@ -3018,4 +3129,68 @@ fn zh_localization_review135_usage_unsupported_is_typed_not_a_text_rewrite() {
     assert_eq!(unsupported_or_sanitized(acp::Error::method_not_found(), &LocaleContext::default()), "not supported by this agent version");
     let expected = sanitize_user_error(&acp::Error::internal_error().to_string());
     assert_eq!(unsupported_or_sanitized(acp::Error::internal_error(), &zh), expected);
+
+/// Every answer the shell can give, plus a dead channel and a broken peer, comes back as `TeamCapabilityHydrated` for the identity that asked.
+/// The serialization arm is not in the table: `HydrateTeamCapabilityRequest` is two `Option<String>`s, whose `Serialize` cannot fail, so no input reaches it.
+#[tokio::test]
+async fn hydrate_team_capability_adapter_maps_every_reply_to_the_asking_identity() {
+    use std::sync::Arc;
+    use xai_acp_lib::AcpAgentMessage;
+    use xai_grok_shell::extensions::auth::HydrateTeamCapabilityResponse;
+    let identity = crate::app::app_view::AuthIdentity {
+        email: Some("a@acme.test".into()),
+        team_id: Some("team-a".into()),
+        team_principal: true,
+    };
+    type ScriptedReply = (Option<Result<&'static str, acp::Error>>, Option<bool>);
+    let replies: [ScriptedReply; 8] = [
+        (Some(Ok(r#"{"canAdministerTeam":true}"#)), Some(true)),
+        (Some(Ok(r#"{"canAdministerTeam":false}"#)), Some(false)),
+        (Some(Ok(r#"{"canAdministerTeam":null,"extra":1}"#)), None),
+        (Some(Err(acp::Error::method_not_found())), None),
+        (Some(Ok(r#"{"canAdministerTeam":"yes"}"#)), None),
+        (Some(Ok(r#"{}"#)), None),
+        (Some(Ok(r#"{"canadministerteam":true}"#)), None),
+        (None, None),
+    ];
+    for (reply, expected) in replies {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let asked = identity.clone();
+        tokio::spawn(async move {
+            let Some(AcpAgentMessage::ExtMethod(args)) = rx.recv().await else {
+                panic!("one ext request")
+            };
+            assert_eq!(args.request.method.as_ref(), "x.ai/auth/hydrate_team_capability");
+            assert_eq!(
+                    args.request.params.get(),
+                    r#"{"email":"a@acme.test","teamId":"team-a"}"#
+                );
+            if let Some(reply) = reply {
+                let response = reply
+                    .map(|body| {
+                        let raw = serde_json::value::RawValue::from_string(
+                                body.to_owned(),
+                            )
+                            .unwrap();
+                        acp::ExtResponse::new(Arc::from(raw))
+                    });
+                let _ = args.response_tx.send(response);
+            }
+        });
+        match send_hydrate_team_capability(&tx, asked).await {
+            TaskResult::TeamCapabilityHydrated {
+                identity: answered,
+                can_administer_team,
+            } => {
+                assert_eq!((answered, can_administer_team), (identity.clone(), expected))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(serde_json::from_str::<HydrateTeamCapabilityResponse>("{}").is_err());
+    assert!(
+            serde_json::from_str::<HydrateTeamCapabilityResponse>(r#"{"canadministerteam":true}"#)
+                .is_err()
+        );
+
 }

@@ -4318,6 +4318,610 @@ async fn bind_advertises_configured_mcp_per_session() {
     );
     server_task.abort();
 }
+/// Stopping a server drops the session's client and its hub registrations while the publish keeps
+/// naming it. A reload's convergence (`IfChanged`) leaves it stopped, so the daemon can stop the
+/// computer-use helper the moment Grok Desktop quits and push the app-endpoint drop right after
+/// without the push starting the helper again; the next bind's convergence (`Always`, like every
+/// bind) starts a fresh client.
+#[tokio::test]
+async fn a_stopped_server_stays_configured_and_returns_at_the_next_bind() {
+    let state = BindMcpTestState::default();
+    let (url, server_task) = spawn_bind_mcp_server(state.clone()).await;
+    let factory = Arc::new(TestSessionContextFactory::new());
+    let mut config =
+        WorkspaceHandle::test_config(factory.temp.path().to_path_buf(), factory.clone());
+    config.bind_mcp = Some(
+        BindMcpConfig::new([configured_test_mcp("bound", url)])
+            .with_first_party_servers(["bound".to_owned()]),
+    );
+    let handle = WorkspaceHandle::new(config).unwrap();
+    handle.create_session("main").unwrap();
+    let resolver = bind_resolver_fixture(&handle);
+    let session_id = "conversation";
+    let sid = xai_tool_protocol::SessionId::new(session_id).unwrap();
+    resolver(sid.clone(), None)
+        .await
+        .expect("bind must succeed");
+    let hub = FakeHubRegistry::default();
+    converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    let clients_before = state.session_ids.lock().len();
+    assert_eq!(
+        Some(vec![("bound".to_owned(), vec!["echo".to_owned()])]),
+        live_mcp_servers(&handle, session_id).await
+    );
+    assert!(
+        handle
+            .stop_session_mcp_server(session_id, "bound", Some(&hub))
+            .await,
+        "the server was running here"
+    );
+    assert_eq!(
+        Some(Vec::new()),
+        live_mcp_servers(&handle, session_id).await
+    );
+    assert!(
+        hub.handlers_for_session(&sid).is_empty(),
+        "the stopped server's tools leave the hub with it"
+    );
+    assert_eq!(
+        1,
+        handle
+            .shared
+            .bind_mcp
+            .as_ref()
+            .map_or(0, |published| published.read().servers().len()),
+        "the publish is untouched"
+    );
+    assert!(
+        !handle
+            .stop_session_mcp_server(session_id, "bound", Some(&hub))
+            .await
+    );
+    let reloaded =
+        converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::IfChanged).await;
+    assert_eq!(
+        crate::mcp::SessionMcpDelta::default(),
+        reloaded,
+        "a reload does not start a server stopped until the next bind"
+    );
+    assert_eq!(
+        Some(Vec::new()),
+        live_mcp_servers(&handle, session_id).await
+    );
+    assert_eq!(
+        clients_before,
+        state.session_ids.lock().len(),
+        "the reload opened no client"
+    );
+    resolver(sid.clone(), None)
+        .await
+        .expect("rebind must succeed");
+    let revived = converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    assert_eq!(vec!["bound".to_owned()], revived.added);
+    assert_eq!(
+        Some(vec![("bound".to_owned(), vec!["echo".to_owned()])]),
+        live_mcp_servers(&handle, session_id).await
+    );
+    assert!(
+        state.session_ids.lock().len() > clients_before,
+        "the revived server is a new client, not the stopped one"
+    );
+    server_task.abort();
+}
+/// Grok Desktop can quit while a bind's convergence is still starting the helper: the stop then
+/// finds nothing running and only marks the server stopped, without waiting for the convergence
+/// (which may hold the session's `update_lock` for the whole discovery window). The start that
+/// completes afterwards must not commit — the client the convergence opened ends, the way a stop
+/// ends a running one — and the server stays stopped until the session's next bind.
+/// Deterministic: the stop lands while the server is parked in discovery; the record then commits
+/// its client under the FIFO binding lock, a probe captures that client, and the install runs last.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_during_a_bind_start_ends_the_client_the_start_opened() {
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (url, server_task) = spawn_bind_mcp_server(BindMcpTestState {
+        tools_list_gate: Some((Arc::clone(&reached), Arc::clone(&release))),
+        ..Default::default()
+    })
+    .await;
+    let factory = Arc::new(TestSessionContextFactory::new());
+    let mut config =
+        WorkspaceHandle::test_config(factory.temp.path().to_path_buf(), factory.clone());
+    let mcp_config = BindMcpConfig::new([configured_test_mcp("helper", url)]);
+    config.bind_mcp = Some(mcp_config.clone());
+    let handle = WorkspaceHandle::new(config).unwrap();
+    handle.create_session("main").unwrap();
+    let resolver = bind_resolver_fixture(&handle);
+    let session_id = "conversation";
+    let sid = xai_tool_protocol::SessionId::new(session_id).unwrap();
+    resolver(sid.clone(), None)
+        .await
+        .expect("bind must succeed");
+    let session = handle.session(session_id).expect("session exists");
+    let hub = Arc::new(FakeHubRegistry::default());
+    let converge = {
+        let session = Arc::clone(&session);
+        let hub = Arc::clone(&hub);
+        let mcp_config = mcp_config.clone();
+        tokio::spawn(async move {
+            let _update_guard = session.update_lock.lock().await;
+            crate::mcp::converge_session(
+                &session,
+                session_id,
+                &mcp_config,
+                &*hub,
+                crate::mcp::McpReclaim::Always,
+                xai_grok_session_events::EventWriter::noop(),
+            )
+            .await
+        })
+    };
+    reached.notified().await;
+    assert!(
+        !handle
+            .stop_session_mcp_server(session_id, "helper", Some(&*hub))
+            .await,
+        "nothing is running yet when the host goes"
+    );
+    let gate = session.mcp_binding.lock().await;
+    release.notify_one();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let probe = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            let _binding = session.mcp_binding.lock().await;
+            session
+                .mcp_state
+                .lock()
+                .await
+                .owned_clients
+                .get("helper")
+                .map(Arc::downgrade)
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    drop(gate);
+    let delta = converge
+        .await
+        .unwrap()
+        .expect("the convergence still succeeds");
+    let client = probe
+        .await
+        .unwrap()
+        .expect("the record committed the client before the install saw the stop");
+    assert!(
+        client.upgrade().is_none(),
+        "the client the start opened ends: nothing holds it after the stop"
+    );
+    assert_eq!(
+        crate::mcp::SessionMcpDelta::default(),
+        delta,
+        "a server stopped mid-start was neither added nor failed"
+    );
+    assert_eq!(
+        Some(Vec::new()),
+        live_mcp_servers(&handle, session_id).await,
+        "the stopped server never enters the session's set"
+    );
+    assert!(
+        hub.handlers_for_session(&sid).is_empty(),
+        "nothing of the stopped server is advertised"
+    );
+    assert!(
+        !session
+            .mcp_state
+            .lock()
+            .await
+            .owned_clients
+            .contains_key("helper"),
+        "the session no longer owns the client"
+    );
+    assert_eq!(
+        crate::mcp::SessionMcpDelta::default(),
+        converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::IfChanged).await
+    );
+    resolver(sid.clone(), None)
+        .await
+        .expect("rebind must succeed");
+    release.notify_one();
+    let revived = converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    assert_eq!(vec!["helper".to_owned()], revived.added);
+    server_task.abort();
+}
+/// A server whose rmcp service loop ended (its child was killed, crashed, or closed its pipes)
+/// stays in the session's live set, so a convergence used to plan nothing for it and every call
+/// through it failed `Transport closed` until the daemon restarted. The next convergence — every
+/// bind runs one — must stop the dead client and start a fresh one.
+#[tokio::test]
+async fn a_server_whose_transport_closed_is_restarted_at_the_next_convergence() {
+    let state = BindMcpTestState::default();
+    let (url, server_task) = spawn_bind_mcp_server(state.clone()).await;
+    let factory = Arc::new(TestSessionContextFactory::new());
+    let mut config =
+        WorkspaceHandle::test_config(factory.temp.path().to_path_buf(), factory.clone());
+    config.bind_mcp = Some(
+        BindMcpConfig::new([configured_test_mcp("bound", url)])
+            .with_first_party_servers(["bound".to_owned()]),
+    );
+    let handle = WorkspaceHandle::new(config).unwrap();
+    handle.create_session("main").unwrap();
+    let resolver = bind_resolver_fixture(&handle);
+    let session_id = "conversation";
+    let sid = xai_tool_protocol::SessionId::new(session_id).unwrap();
+    resolver(sid.clone(), None)
+        .await
+        .expect("bind must succeed");
+    let hub = FakeHubRegistry::default();
+    converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    let clients_before = state.session_ids.lock().len();
+    let echo = |hub: &FakeHubRegistry| {
+        hub.handlers_for_session(&sid)
+            .into_iter()
+            .find(|handler| handler.tool_id().as_str() == "echo")
+            .expect("echo is advertised")
+    };
+    end_mcp_service_loop(&handle, session_id, "bound").await;
+    let dead_call = echo(&hub)
+        .handle_call(
+            ToolCallContext::default(),
+            serde_json::json!({"message": "dead"}),
+        )
+        .await;
+    let error = drain_terminal_err(dead_call).await;
+    assert!(
+        error.to_string().contains("Transport closed"),
+        "a call through the dead client fails closed: {error}"
+    );
+    assert_eq!(
+        Some(vec![("bound".to_owned(), vec!["echo".to_owned()])]),
+        live_mcp_servers(&handle, session_id).await,
+        "nothing removes the dead server from the live set on its own"
+    );
+    resolver(sid.clone(), None)
+        .await
+        .expect("rebind must succeed");
+    let delta = converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    assert_eq!(vec!["bound".to_owned()], delta.removed);
+    assert_eq!(vec!["bound".to_owned()], delta.added);
+    assert!(
+        state.session_ids.lock().len() > clients_before,
+        "the restarted server is a new client, not the dead one"
+    );
+    let output = drain_terminal_ok(
+        echo(&hub)
+            .handle_call(
+                ToolCallContext::default(),
+                serde_json::json!({"message": "alive"}),
+            )
+            .await,
+    )
+    .await;
+    assert!(output.value.to_string().contains("MCP_CALL_OK"));
+    let clients_after_restart = state.session_ids.lock().len();
+    let steady = converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    assert!(steady.is_empty(), "{steady:?}");
+    assert_eq!(clients_after_restart, state.session_ids.lock().len());
+    server_task.abort();
+}
+/// End a live server's rmcp service loop and wait until its client reports the transport closed:
+/// the loop quits `Cancelled` here and `Closed` for a SIGKILLed stdio child, but both leave the
+/// client `Ready` over a dead transport, which is all the convergence can observe.
+async fn end_mcp_service_loop(handle: &WorkspaceHandle, session_id: &str, server: &str) {
+    let session = handle.session(session_id).expect("session exists");
+    let client = session
+        .mcp_state
+        .lock()
+        .await
+        .owned_clients
+        .get(server)
+        .cloned()
+        .expect("the session owns the server's client");
+    let service = client
+        .ensure_initialized()
+        .await
+        .expect("the client is ready");
+    service.cancellation_token().cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while client.liveness_check().await != xai_grok_mcp::servers::LivenessCheck::TransportClosed
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the transport closes once the service loop ends");
+}
+async fn drain_terminal_err(
+    mut stream: impl futures::Stream<
+        Item = xai_tool_runtime::ToolStreamItem<xai_tool_runtime::TypedToolOutput>,
+    > + Unpin,
+) -> xai_tool_runtime::ToolError {
+    use futures::StreamExt;
+    use xai_tool_runtime::ToolStreamItem;
+    while let Some(item) = stream.next().await {
+        match item {
+            ToolStreamItem::Terminal(Err(e)) => return e,
+            ToolStreamItem::Progress(_) => {}
+            ToolStreamItem::Terminal(Ok(t)) => {
+                panic!("expected Terminal(Err), got Ok: {t:?}")
+            }
+        }
+    }
+    panic!("stream ended without terminal")
+}
+/// [`crate::mcp::HubToolRegistry`] wrapper that notes, at the first unregister, whether the
+/// stopped server's client was still alive.
+struct ClientAtFirstUnregister {
+    inner: FakeHubRegistry,
+    client: parking_lot::Mutex<Option<std::sync::Weak<xai_grok_mcp::servers::McpClient>>>,
+    alive_at_first_unregister: parking_lot::Mutex<Option<bool>>,
+}
+impl crate::mcp::HubToolRegistry for ClientAtFirstUnregister {
+    async fn register_tool_dynamic(
+        &self,
+        handler: Arc<dyn xai_computer_hub_sdk::ToolServerHandler>,
+        sessions: Vec<xai_tool_protocol::SessionId>,
+        life: u64,
+    ) -> Result<(), xai_computer_hub_sdk::ClientError> {
+        crate::mcp::HubToolRegistry::register_tool_dynamic(&self.inner, handler, sessions, life)
+            .await
+    }
+    async fn unregister_tool_dynamic(
+        &self,
+        tool_id: &xai_tool_protocol::ToolId,
+        session_id: &xai_tool_protocol::SessionId,
+        life: u64,
+    ) -> Result<bool, xai_computer_hub_sdk::ClientError> {
+        let alive = self
+            .client
+            .lock()
+            .as_ref()
+            .is_some_and(|client| client.upgrade().is_some());
+        self.alive_at_first_unregister.lock().get_or_insert(alive);
+        crate::mcp::HubToolRegistry::unregister_tool_dynamic(&self.inner, tool_id, session_id, life)
+            .await
+    }
+}
+/// Reload, `configure_mcp` and the per-session stop all remove servers through `stop_servers`, so
+/// this pins its order once: the client is gone (its child with it) before the hub's first round
+/// trip, which a loaded hub can stretch; the stop is the safety action and must not wait on them.
+#[tokio::test]
+async fn stop_servers_ends_the_client_before_the_first_hub_unregister() {
+    let (url, server_task) = spawn_bind_mcp_server(BindMcpTestState::default()).await;
+    let factory = Arc::new(TestSessionContextFactory::new());
+    let mut config =
+        WorkspaceHandle::test_config(factory.temp.path().to_path_buf(), factory.clone());
+    config.bind_mcp = Some(BindMcpConfig::new([configured_test_mcp("bound", url)]));
+    let handle = WorkspaceHandle::new(config).unwrap();
+    handle.create_session("main").unwrap();
+    let resolver = bind_resolver_fixture(&handle);
+    let session_id = "conversation";
+    let sid = xai_tool_protocol::SessionId::new(session_id).unwrap();
+    resolver(sid.clone(), None)
+        .await
+        .expect("bind must succeed");
+    let hub = ClientAtFirstUnregister {
+        inner: FakeHubRegistry::default(),
+        client: parking_lot::Mutex::new(None),
+        alive_at_first_unregister: parking_lot::Mutex::new(None),
+    };
+    let session = handle.session(session_id).expect("session exists");
+    {
+        let published = handle
+            .shared
+            .bind_mcp
+            .as_ref()
+            .expect("bind_mcp")
+            .read()
+            .clone();
+        let _update_guard = session.update_lock.lock().await;
+        crate::mcp::converge_session(
+            &session,
+            session_id,
+            &published,
+            &hub,
+            crate::mcp::McpReclaim::Always,
+            xai_grok_session_events::EventWriter::noop(),
+        )
+        .await
+        .expect("converge must succeed");
+    }
+    let client = session
+        .mcp_state
+        .lock()
+        .await
+        .owned_clients
+        .get("bound")
+        .map(Arc::downgrade)
+        .expect("the converged server's client is owned by the session");
+    *hub.client.lock() = Some(client.clone());
+    assert!(
+        !hub.inner.handlers_for_session(&sid).is_empty(),
+        "the server's tools are on the hub before the stop"
+    );
+    assert!(
+        handle
+            .stop_session_mcp_server(session_id, "bound", Some(&hub))
+            .await
+    );
+    assert_eq!(
+        Some(false),
+        *hub.alive_at_first_unregister.lock(),
+        "the hub is first told after the client is already gone"
+    );
+    assert!(
+        client.upgrade().is_none(),
+        "nothing keeps the stopped client alive"
+    );
+    assert!(hub.inner.handlers_for_session(&sid).is_empty());
+    server_task.abort();
+}
+/// The stop is the safety action, so it does not wait for a hub: with none connected (as here,
+/// where the handle never dialled one) the client still ends, its child with it, and only the
+/// unregisters are skipped — the registrations went away with the connection.
+#[tokio::test]
+async fn stop_mcp_server_ends_the_client_without_a_hub() {
+    let (url, server_task) = spawn_bind_mcp_server(BindMcpTestState::default()).await;
+    let factory = Arc::new(TestSessionContextFactory::new());
+    let mut config =
+        WorkspaceHandle::test_config(factory.temp.path().to_path_buf(), factory.clone());
+    config.bind_mcp = Some(BindMcpConfig::new([configured_test_mcp("bound", url)]));
+    let handle = WorkspaceHandle::new(config).unwrap();
+    handle.create_session("main").unwrap();
+    let resolver = bind_resolver_fixture(&handle);
+    let session_id = "conversation";
+    let sid = xai_tool_protocol::SessionId::new(session_id).unwrap();
+    resolver(sid.clone(), None)
+        .await
+        .expect("bind must succeed");
+    let hub = FakeHubRegistry::default();
+    converge_with(&handle, session_id, &hub, crate::mcp::McpReclaim::Always).await;
+    let session = handle.session(session_id).expect("session exists");
+    let client = session
+        .mcp_state
+        .lock()
+        .await
+        .owned_clients
+        .get("bound")
+        .map(Arc::downgrade)
+        .expect("the converged server's client is owned by the session");
+    let advertised = hub.handlers_for_session(&sid).len();
+    assert!(advertised > 0, "the server's tools are on the hub");
+    assert!(
+        handle.shared.hub_server_blocking().await.is_none(),
+        "this handle has no hub connection"
+    );
+    assert_eq!(
+        vec![session_id.to_owned()],
+        handle.stop_mcp_server("bound").await,
+        "the stop reports the session it released"
+    );
+    assert!(
+        client.upgrade().is_none(),
+        "the client ends without a hub to tell"
+    );
+    assert_eq!(
+        Some(Vec::new()),
+        live_mcp_servers(&handle, session_id).await
+    );
+    assert_eq!(
+        advertised,
+        hub.handlers_for_session(&sid).len(),
+        "only the unregisters are skipped"
+    );
+    server_task.abort();
+}
+/// [`crate::mcp::HubToolRegistry`] whose unregisters are never acknowledged, like the hub once
+/// Grok Desktop's session is gone: the daemon's config push then waits out its whole budget.
+struct HubThatNeverAcksUnregisters {
+    inner: FakeHubRegistry,
+}
+impl crate::mcp::HubToolRegistry for HubThatNeverAcksUnregisters {
+    async fn register_tool_dynamic(
+        &self,
+        handler: Arc<dyn xai_computer_hub_sdk::ToolServerHandler>,
+        sessions: Vec<xai_tool_protocol::SessionId>,
+        life: u64,
+    ) -> Result<(), xai_computer_hub_sdk::ClientError> {
+        crate::mcp::HubToolRegistry::register_tool_dynamic(&self.inner, handler, sessions, life)
+            .await
+    }
+    async fn unregister_tool_dynamic(
+        &self,
+        _tool_id: &xai_tool_protocol::ToolId,
+        _session_id: &xai_tool_protocol::SessionId,
+        _life: u64,
+    ) -> Result<bool, xai_computer_hub_sdk::ClientError> {
+        std::future::pending().await
+    }
+}
+/// When Grok Desktop quits, the daemon stops the helper and, right behind it, pushes the config
+/// without the app's server; that push's convergence holds the session's `update_lock` and waits
+/// on a hub that never acknowledges the app's unregisters. The stop shares no lock with it across
+/// a hub round trip, so the helper's client is gone within a second while the push is still waiting.
+#[tokio::test]
+async fn the_stop_ends_the_client_while_the_push_waits_on_the_hub() {
+    let (app_url, app_task) = spawn_bind_mcp_server(BindMcpTestState {
+        tool_name: Some("open_window".to_owned()),
+        ..BindMcpTestState::default()
+    })
+    .await;
+    let (url, server_task) = spawn_bind_mcp_server(BindMcpTestState::default()).await;
+    let factory = Arc::new(TestSessionContextFactory::new());
+    let mut config =
+        WorkspaceHandle::test_config(factory.temp.path().to_path_buf(), factory.clone());
+    config.bind_mcp = Some(BindMcpConfig::new([
+        configured_test_mcp("app", app_url),
+        configured_test_mcp("helper", url.clone()),
+    ]));
+    let handle = WorkspaceHandle::new(config).unwrap();
+    handle.create_session("main").unwrap();
+    let resolver = bind_resolver_fixture(&handle);
+    let session_id = "conversation";
+    resolver(xai_tool_protocol::SessionId::new(session_id).unwrap(), None)
+        .await
+        .expect("bind must succeed");
+    let hub = Arc::new(HubThatNeverAcksUnregisters {
+        inner: FakeHubRegistry::default(),
+    });
+    converge_with(
+        &handle,
+        session_id,
+        &hub.inner,
+        crate::mcp::McpReclaim::Always,
+    )
+    .await;
+    let session = handle.session(session_id).expect("session exists");
+    let helper = session
+        .mcp_state
+        .lock()
+        .await
+        .owned_clients
+        .get("helper")
+        .map(Arc::downgrade)
+        .expect("the helper's client is owned by the session");
+    let stop = tokio::spawn({
+        let handle = handle.clone();
+        let hub = hub.clone();
+        async move {
+            handle
+                .stop_session_mcp_server(session_id, "helper", Some(&*hub))
+                .await
+        }
+    });
+    let without_app = BindMcpConfig::new([configured_test_mcp("helper", url)]);
+    let push = tokio::spawn({
+        let session = session.clone();
+        let hub = hub.clone();
+        async move {
+            let _update_guard = session.update_lock.lock().await;
+            crate::mcp::converge_session(
+                &session,
+                session_id,
+                &without_app,
+                &*hub,
+                crate::mcp::McpReclaim::IfChanged,
+                xai_grok_session_events::EventWriter::noop(),
+            )
+            .await
+        }
+    });
+    let released = tokio::time::Instant::now();
+    while helper.upgrade().is_some() {
+        assert!(
+            released.elapsed() < std::time::Duration::from_secs(1),
+            "the helper's client must end within a second of the stop"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !push.is_finished(),
+        "the push is still waiting on the hub when the helper is gone"
+    );
+    stop.abort();
+    push.abort();
+    app_task.abort();
+    server_task.abort();
+}
 /// Drive one session's MCP convergence the way the bind-spawned task and the reload walk do, but
 /// against a fake hub — tests have no live hub connection, so `converge_session_mcp` (which
 /// resolves the real one) is exercised here at the `converge_session` level with the published config.
@@ -8624,4 +9228,33 @@ async fn fork_inherits_path_virtualization() {
         .path_virtualization()
         .expect("fork must inherit mapping");
     assert_eq!(virt.real_root(), "/workspace/conv-abc");
+}
+/// A status probe reads a server's settled outcome without waiting on the session's MCP lock.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_server_outcome_reports_settled_starts_and_never_waits() {
+    use crate::session::McpServerOutcome;
+    let handle = make_handle();
+    let session = handle.session("main").expect("main session");
+    assert_eq!(session.mcp_server_outcome("computer_use"), None);
+    session
+        .settle_mcp_server_for_test("computer_use", McpServerOutcome::Failed)
+        .await;
+    assert_eq!(
+        session.mcp_server_outcome("computer_use"),
+        Some(McpServerOutcome::Failed)
+    );
+    session
+        .settle_mcp_server_for_test("computer_use", McpServerOutcome::Connected)
+        .await;
+    assert_eq!(
+        session.mcp_server_outcome("computer_use"),
+        Some(McpServerOutcome::Connected)
+    );
+    let held = session.mcp_state.lock().await;
+    assert_eq!(
+        session.mcp_server_outcome("computer_use"),
+        None,
+        "a start holding the lock reads as unsettled rather than blocking the probe"
+    );
+    drop(held);
 }

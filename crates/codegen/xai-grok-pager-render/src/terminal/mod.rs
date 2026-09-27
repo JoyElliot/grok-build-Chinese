@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use xai_ratatui_inline::WidthShrink;
+
 use crate::host::HostOs;
 
 pub mod da2;
@@ -153,9 +155,30 @@ impl TerminalName {
         )
     }
 
-    /// Only Otty is known to wrap macOS IME commits in bracketed paste.
-    pub fn delivers_ime_as_bracketed_paste(self) -> bool {
-        matches!(self, Self::Otty)
+    /// Only brands known to re-wrap on-screen rows when the window narrows return [`WidthShrink::Rewraps`].
+    /// Warp skips the re-wrap for panes it classifies as CLI agents.
+    pub fn width_shrink(self) -> WidthShrink {
+        match self {
+            Self::AppleTerminal
+            | Self::Ghostty
+            | Self::Iterm2
+            | Self::VsCode
+            | Self::Cursor
+            | Self::Windsurf
+            | Self::Zed
+            | Self::WezTerm
+            | Self::Kitty
+            | Self::Alacritty
+            | Self::Rio
+            | Self::Foot
+            | Self::GrokDesktop
+            | Self::Vte
+            | Self::Terminator
+            | Self::WindowsTerminal => WidthShrink::Rewraps,
+            Self::WarpTerminal | Self::JetBrains | Self::Otty | Self::Unknown => {
+                WidthShrink::Truncates
+            }
+        }
     }
 }
 
@@ -290,6 +313,21 @@ impl TerminalContext {
     /// That needs focus reporting enabled upstream (e.g. tmux `focus-events on`, off by default).
     pub fn repaints_pane_out_of_band(&self) -> bool {
         self.embedded_editor.is_some() || self.multiplexer != MultiplexerKind::Undetected
+    }
+
+    /// How the innermost layer drawing our pane treats on-screen rows when the width shrinks.
+    /// Fails closed to [`WidthShrink::Truncates`]. A wrong `Rewraps` clears committed rows.
+    pub fn width_shrink(&self) -> WidthShrink {
+        if self.embedded_editor.is_some() {
+            return WidthShrink::Truncates;
+        }
+        match self.multiplexer {
+            MultiplexerKind::Tmux | MultiplexerKind::Zellij | MultiplexerKind::Cmux => {
+                WidthShrink::Rewraps
+            }
+            MultiplexerKind::Screen | MultiplexerKind::Herdr => WidthShrink::Truncates,
+            MultiplexerKind::Undetected => self.env_brand.width_shrink(),
+        }
     }
 
     /// In Byobu-on-tmux, this is `~/.byobu/.tmux.conf`; otherwise `~/.tmux.conf`.

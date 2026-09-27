@@ -656,13 +656,6 @@ impl ScrollbackState {
             .width
     }
 
-    /// Content-column width (excluding accent bar and block padding) for a full scrollback width.
-    /// Used to size the inline edit textarea.
-    pub fn entry_text_column_width(&self, width: u16) -> u16 {
-        let simulated_area = Rect::new(0, 0, width, 1);
-        HorizontalLayout::new(simulated_area, &self.appearance.scrollback.layout).content_width()
-    }
-
     /// Measure exact heights for not-yet-measured entries in `[start, end]`. Returns `(entry_index, height_delta)` for
     /// each estimate replaced by an exact height. Hidden (group-truncated, height 0) and synthetic group-header rows
     /// render no markdown, so they are skipped. Their height is owned by group truncation, not measurement.
@@ -687,7 +680,6 @@ impl ScrollbackState {
         let theme = Theme::current();
         let entry_area_width = self.entry_area_width(width);
         let cwd = self.cwd.as_deref();
-        let inline_edit_height = self.inline_edit_height;
 
         let Some(cache) = self.layout_cache.as_mut() else {
             return Vec::new();
@@ -709,16 +701,13 @@ impl ScrollbackState {
             if info.height == 0 || (info.is_group_header() && !info.is_expanded_verb_header()) {
                 continue;
             }
-            let Some((entry_id, entry)) = self.entries.get_index(idx) else {
+            let Some((_, entry)) = self.entries.get_index(idx) else {
                 continue;
             };
             let renderer = EntryRenderer::new(entry, &theme)
                 .with_appearance_ref(&self.appearance)
                 .with_cwd(cwd);
-            let member_height = match inline_edit_height {
-                Some((edit_id, h)) if edit_id == *entry_id => h,
-                _ => renderer.desired_height(entry_area_width),
-            };
+            let member_height = renderer.desired_height(entry_area_width);
             let exact_height = info.with_verb_header_row(member_height);
             let delta = exact_height as i32 - info.height as i32;
             if let Some(slot) = cache.entries.get_mut(idx) {
@@ -981,7 +970,6 @@ impl ScrollbackState {
     pub(super) fn update_dirty_entry_heights(&mut self, width: u16) -> Vec<(usize, i32)> {
         let entry_area_width = self.entry_area_width(width);
         let cwd = self.cwd.as_deref();
-        let inline_edit_height = self.inline_edit_height;
         let Some(cache) = self.layout_cache.as_mut() else {
             return Vec::new();
         };
@@ -990,14 +978,14 @@ impl ScrollbackState {
 
         let mut changes = Vec::new();
 
-        // Collect (id, idx) pairs first to avoid borrow issues
-        let dirty_entries: Vec<(EntryId, usize)> = self
+        // Collect indices first: the height update mutably borrows the cache while `dirty_heights` is still live
+        let dirty_entries: Vec<usize> = self
             .dirty_heights
             .iter()
-            .filter_map(|&id| self.entries.get_index_of(&id).map(|idx| (id, idx)))
+            .filter_map(|id| self.entries.get_index_of(id))
             .collect();
 
-        for (id, idx) in dirty_entries {
+        for idx in dirty_entries {
             if idx >= cache.entries.len() {
                 continue; // Entry added after cache was built
             }
@@ -1011,10 +999,7 @@ impl ScrollbackState {
             let renderer = EntryRenderer::new(entry, &theme)
                 .with_appearance_ref(&self.appearance)
                 .with_cwd(cwd);
-            let member_height = match inline_edit_height {
-                Some((edit_id, h)) if edit_id == id => h,
-                _ => renderer.desired_height(entry_area_width),
-            };
+            let member_height = renderer.desired_height(entry_area_width);
             let new_height = info.with_verb_header_row(member_height);
             let old_height = info.height;
             // This entry now has an exact (re)measured height, so it no longer needs the lazy viewport measurement pass

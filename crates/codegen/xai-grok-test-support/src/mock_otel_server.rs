@@ -35,6 +35,7 @@ impl MockOtelServer {
         match signal {
             OtelSignal::Logs => "/v1/logs",
             OtelSignal::Metrics => "/v1/metrics",
+            OtelSignal::Traces => "/v1/traces",
         }
     }
 
@@ -105,9 +106,16 @@ async fn receive(
     let (status, received) = match &payload {
         Ok(bytes) => {
             let content_type = header(&headers, CONTENT_TYPE).unwrap_or_default();
-            let received = ReceivedBody::InFull {
-                bytes,
-                decoded: otel_decode::decode_post(signal, &content_type, bytes),
+            let received = if signal == OtelSignal::Traces {
+                ReceivedBody::Spans {
+                    bytes,
+                    decoded: otel_decode::decode_trace_post(&content_type, bytes),
+                }
+            } else {
+                ReceivedBody::InFull {
+                    bytes,
+                    decoded: otel_decode::decode_post(signal, &content_type, bytes),
+                }
             };
             (StatusCode::OK, received)
         }

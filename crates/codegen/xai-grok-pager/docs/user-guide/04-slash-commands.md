@@ -39,7 +39,8 @@ Grok also auto-compacts once the context window hits 85% (tune it with `[session
 
 ### `/context`
 
-Show how the context window is being used: a category breakdown (system prompt, messages, reasoning and overhead, free space) plus informational rows for tool definitions, the skills listing, and MCP server announcements with their estimated token cost.
+Show the context window split into System prompt, Messages, Reasoning/overhead, and Free.
+Rows for Tool definitions, Skills, and MCP servers are already counted in those totals.
 
 ### `/session-info`
 

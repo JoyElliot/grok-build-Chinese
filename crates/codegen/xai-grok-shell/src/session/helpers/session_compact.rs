@@ -1,3 +1,5 @@
+use std::path::{Component, Path};
+
 use crate::sampling::{
     ApiBackend, ChatCompletionRequest, ChatRequestMessage, Client as OaiCompatClient,
     ConversationRequest, ConversationToolChoice, HostedTool, SamplingError, ToolChoice,
@@ -117,6 +119,46 @@ impl CompactFailure {
 
 // Single definition so turn-path and compaction size detection can't drift.
 pub(crate) use xai_grok_compaction::is_context_length_error;
+
+/// Newest verified attached image paths kept in the compaction note.
+pub(crate) const MAX_COMPACTION_IMAGE_PATHS: usize = 32;
+
+/// Keep the newest [`MAX_COMPACTION_IMAGE_PATHS`] attached image paths this shell itself could have
+/// written, in the chronological order of `paths`, and count the rest (junk and over-cap alike).
+/// The note tells the model to `read_file` these paths, so a harvested block is never trusted: a path
+/// stays only if it is absolute, has no `.`/`..` components, is a direct child of `assets_dir` (all
+/// `persist_user_images` ever writes; a symlinked subdirectory would otherwise launder an outside
+/// file, since `symlink_metadata` does not check intermediate components), and `symlink_metadata`
+/// says it is a regular file (a symlink to one is dropped). Newest first, so a planted or stale entry
+/// never takes a slot from a real asset; fs calls are bounded by the lexical prefilter plus the cap.
+pub(crate) async fn retain_session_asset_files(
+    paths: Vec<String>,
+    assets_dir: &Path,
+) -> (Vec<String>, usize) {
+    let total = paths.len();
+    let mut kept = Vec::with_capacity(total.min(MAX_COMPACTION_IMAGE_PATHS));
+    for path in paths.into_iter().rev() {
+        if kept.len() == MAX_COMPACTION_IMAGE_PATHS {
+            break;
+        }
+        let candidate = Path::new(&path);
+        let inside_assets = candidate.is_absolute()
+            && candidate
+                .components()
+                .all(|component| !matches!(component, Component::ParentDir | Component::CurDir))
+            && candidate.parent() == Some(assets_dir);
+        let regular_file = inside_assets
+            && tokio::fs::symlink_metadata(candidate)
+                .await
+                .is_ok_and(|metadata| metadata.is_file());
+        if regular_file {
+            kept.push(path);
+        }
+    }
+    kept.reverse();
+    let dropped = total - kept.len();
+    (kept, dropped)
+}
 
 /// Classify an upstream `SamplingError` for the compaction retry loop.
 /// Size overflows (HTTP 413 by status, or size-worded error text) classify as [`CompactFailure::Overflow`] so the caller's input ladder engages.
@@ -397,7 +439,9 @@ pub(crate) async fn generate_session_compact(
     if cancel.is_cancelled() {
         return Err(CompactFailure::Cancelled);
     }
-    let prepared_history = chat_history.into().prepare(compaction_tool_tokens);
+    let prepared_history = chat_history
+        .into()
+        .prepare(sampling_config.max_request_bytes, compaction_tool_tokens);
     let budget = prepared_history.image_budget;
     if budget.inline_images > 0 {
         tracing::info!(
@@ -783,3 +827,7 @@ mod large_body_tests;
 #[cfg(test)]
 #[path = "session_compact_reasoning_compaction_regression_tests.rs"]
 mod reasoning_compaction_regression_tests;
+
+#[cfg(test)]
+#[path = "session_compact_retain_session_asset_files_tests.rs"]
+mod retain_session_asset_files_tests;

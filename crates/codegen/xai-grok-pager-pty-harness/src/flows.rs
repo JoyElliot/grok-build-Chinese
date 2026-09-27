@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::content::LogEntry;
+use crate::content::{LogEntry, MockCanAdministerTeam};
 use crate::{ContentController, PtyHarness};
 
 /// Pump PTY output until every label is absent from the visible screen.
@@ -70,6 +70,12 @@ pub fn seed_fake_oauth_coding_data_opted_out(content: &ContentController, user: 
     seed_fake_oauth_with_opt_out(content, user, true);
 }
 
+/// A team login is a `Team` principal whose `team_id` is the principal id; `GrokAuth::is_team_principal` keys on both.
+const TEAM_PRINCIPAL_FIELDS: &str = r#",
+    "principal_type": "Team",
+    "principal_id": "6f1c1d3e-0000-4000-8000-000000000000",
+    "team_id": "6f1c1d3e-0000-4000-8000-000000000000""#;
+
 /// Like [`seed_fake_oauth_coding_data_opted_out`], but on a Zero Data Retention team.
 /// `team_blocked_reasons` carries `BLOCKED_REASON_NO_LOGS`, the shell's `GrokAuth::is_zdr_team` trigger.
 /// This locks the settings modal's `coding_data_sharing` row to `ZDR` and suppresses the privacy banner.
@@ -78,19 +84,51 @@ pub fn seed_fake_oauth_zdr_team(content: &ContentController, user: &str) {
         content,
         user,
         true,
-        ",\n    \"team_name\": \"PTY ZDR Team\",\n    \"team_role\": \"MEMBER\",\n    \
-         \"team_blocked_reasons\": [\"BLOCKED_REASON_NO_LOGS\"]",
+        &format!(
+            r#"{TEAM_PRINCIPAL_FIELDS},
+    "team_name": "PTY ZDR Team",
+    "team_role": "MEMBER",
+    "team_blocked_reasons": ["BLOCKED_REASON_NO_LOGS"]"#
+        ),
     );
 }
 
-/// Like [`seed_fake_oauth_coding_data_opted_out`], but as a non-admin member of a (non-ZDR) team.
-/// This locks the settings modal's `coding_data_sharing` row to `Opt out · Admin Managed` and suppresses the privacy banner.
+/// Like [`seed_fake_oauth_coding_data_opted_out`], but as a `MEMBER` of a (non-ZDR) team with no `can_administer_team`.
+/// Team name and role alone neither lock the `coding_data_sharing` row nor gate the banner.
 pub fn seed_fake_oauth_team_member(content: &ContentController, user: &str) {
     seed_fake_oauth_raw(
         content,
         user,
         true,
-        ",\n    \"team_name\": \"PTY Team\",\n    \"team_role\": \"MEMBER\"",
+        &format!(
+            r#"{TEAM_PRINCIPAL_FIELDS},
+    "team_name": "PTY Team",
+    "team_role": "MEMBER""#
+        ),
+    );
+}
+
+pub fn seed_fake_oauth_team_member_can_administer(
+    content: &ContentController,
+    user: &str,
+    can_administer: MockCanAdministerTeam,
+) {
+    let capability = match can_administer.wire_value() {
+        Some(value) => format!(
+            r#",
+    "can_administer_team": {value}"#
+        ),
+        None => String::new(),
+    };
+    seed_fake_oauth_raw(
+        content,
+        user,
+        true,
+        &format!(
+            r#"{TEAM_PRINCIPAL_FIELDS},
+    "team_name": "PTY Team",
+    "team_role": "MEMBER"{capability}"#
+        ),
     );
 }
 

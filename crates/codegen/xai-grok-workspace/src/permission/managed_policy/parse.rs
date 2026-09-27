@@ -203,6 +203,8 @@ pub const MANAGED_POLICY_CONFIG_KEYS: &[&str] = &[
     "denied_mcp_servers",
     "allowManagedMcpServersOnly",
     "allow_managed_mcp_servers_only",
+    "allowManagedHooksOnly",
+    "allow_managed_hooks_only",
     "enableAllProjectMcpServers",
     "enable_all_project_mcp_servers",
     "pluginAutoUpdate",

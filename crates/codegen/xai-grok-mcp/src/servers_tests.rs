@@ -3137,21 +3137,24 @@ async fn try_call_tool_http_outer_timeout_resets_transport_no_retry() {
         "no re-init during the timed-out dispatch"
     );
 
+    // Shares the flag like `run`'s auth retry: `try_call_tool` never clears it.
     let mut reconnect2 = false;
-    let mut is_timeout2 = false;
     let out = tool
         .try_call_tool(
             &client,
             &raw,
             &mut reconnect2,
-            &mut is_timeout2,
+            &mut is_timeout,
             &ew,
             &tracing::Span::none(),
         )
         .await
         .expect("second dispatch should re-init and succeed");
     assert!(!out.is_error.unwrap_or(false));
-    assert!(!is_timeout2);
+    assert!(
+        is_timeout,
+        "a successful dispatch leaves a stale flag; the caller owns the reset"
+    );
     assert_eq!(
         handles.inits.load(Ordering::Relaxed),
         2,

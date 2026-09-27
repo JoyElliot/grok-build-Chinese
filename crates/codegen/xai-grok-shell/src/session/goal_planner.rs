@@ -301,6 +301,7 @@ impl ChannelSpawner {
             owner: SubagentOwner::Task,
             cancel_token: self.cancel_token.clone(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
         let backend = ChannelBackend::new(self.event_tx.clone());
         let cancel = self.cancel_token.clone();

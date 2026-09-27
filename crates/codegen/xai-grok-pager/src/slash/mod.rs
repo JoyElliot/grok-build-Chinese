@@ -27,133 +27,16 @@ use crate::acp::model_state::ModelState;
 
 use matcher::FuzzyMatcher;
 use registry::{CommandRegistry, CommandSource, CommandTrigger};
+use xai_grok_tools::implementations::skills::types::SkillScope;
 
 pub use command::{
-    AppCtx, ArgItem, ArgPresentation, CommandExecCtx, CommandProvenance, CommandResult,
-    SlashCommand, WorkflowChoice, WorkflowRunChoice,
+    AppCtx, ArgItem, CommandExecCtx, CommandProvenance, CommandResult, SlashCommand,
+    WorkflowChoice, WorkflowRunChoice,
 };
 pub use mode_support::{ModeSupport, Remedy};
 
 /// Maximum number of visible rows in the dropdown (scroll beyond this).
 pub const MAX_VISIBLE_SUGGESTIONS: usize = 8;
-
-/// Localize client-owned slash-command errors at the presentation boundary.
-///
-/// Command identity, arguments, model/theme names, effort ids, and unknown
-/// ACP/server messages remain byte-for-byte unchanged. Keeping localization
-/// here avoids threading UI state through every [`CommandExecCtx`] literal.
-pub(crate) fn localize_command_error(
-    message: &str,
-    locale: &crate::locale::LocaleContext,
-) -> String {
-    // Match only exact client-owned diagnostics; server text stays opaque.
-    let owned_id = match message {
-        "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status." => {
-            Some("slash.command.memory.error.arguments")
-        }
-        "No themes available" => Some("slash.command.theme.error.none_available"),
-        "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
-        "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
-        _ => None,
-    };
-    if let Some(id) = owned_id {
-        return locale.named_text(id, message).into_owned();
-    }
-    if let Some(command) = message.strip_prefix("Usage: ") {
-        return format!(
-            "{}{command}",
-            locale.named_text("slash.error.usage", "Usage: ")
-        );
-    }
-    if let Some(model) = message.strip_prefix("Unknown model: ") {
-        return locale
-            .named_text(
-                "slash.command.model.error.unknown",
-                "Unknown model: {model}",
-            )
-            .replace("{model}", model);
-    }
-    if message == "No active model" || message == "no active model to apply effort to" {
-        return locale
-            .named_text("reasoning.error.no_active_model", message)
-            .into_owned();
-    }
-    if message == "current model does not support reasoning effort" {
-        return locale
-            .named_text("reasoning.error.unsupported", message)
-            .into_owned();
-    }
-    if let Some(rest) = message.strip_prefix("unknown effort level '") {
-        if let Some(token) = rest.strip_suffix("'; this model has no selectable effort levels") {
-            return locale
-                .named_text(
-                    "reasoning.error.unknown_no_options",
-                    "unknown effort level '{token}'; this model has no selectable effort levels",
-                )
-                .replace("{token}", token);
-        }
-        if let Some((token, options)) = rest.split_once("'; use one of: ") {
-            return locale
-                .named_text(
-                    "reasoning.error.unknown_options",
-                    "unknown effort level '{token}'; use one of: {options}",
-                )
-                .replace("{token}", token)
-                .replace("{options}", options);
-        }
-    }
-    if let Some(rest) = message.strip_prefix("Unknown theme: ")
-        && let Some((theme, available)) = rest.rsplit_once(". Available: ")
-    {
-        return locale
-            .named_text(
-                "slash.command.theme.error.unknown",
-                "Unknown theme: {theme}. Available: {available}",
-            )
-            .replace("{theme}", theme)
-            .replace("{available}", available);
-    }
-    if message == "/usage is not available." {
-        return locale
-            .named_text(
-                "slash.command.usage.error.unavailable",
-                "/usage is not available.",
-            )
-            .into_owned();
-    }
-    if let Some(rest) = message.strip_prefix("Unknown argument: ")
-        && let Some((argument, hint)) = rest.rsplit_once(". Use ")
-    {
-        return locale
-            .named_text(
-                "slash.command.usage.error.unknown_argument",
-                "Unknown argument: {argument}. Use {hint}",
-            )
-            .replace("{argument}", argument)
-            .replace("{hint}", hint);
-    }
-    if let Some(mode) = message
-        .strip_prefix("No active session to reopen in ")
-        .and_then(|rest| rest.strip_suffix(" mode"))
-    {
-        let localized_mode = match mode {
-            "minimal" => {
-                locale.named_text("settings.setting.screen_mode.choice.minimal.label", mode)
-            }
-            "fullscreen" => {
-                locale.named_text("settings.setting.screen_mode.choice.fullscreen.label", mode)
-            }
-            _ => std::borrow::Cow::Borrowed(mode),
-        };
-        return locale
-            .named_text(
-                "slash.command.screen_mode.error.no_session",
-                "No active session to reopen in {mode} mode",
-            )
-            .replace("{mode}", &localized_mode);
-    }
-    message.to_owned()
-}
 
 /// Grouping for the bare `/` menu, ordered top to bottom. Skills sink below the commands because there can be far more of them than fit on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -165,9 +48,14 @@ enum MenuGroup {
 }
 
 impl MenuGroup {
-    fn of(trigger: &CommandTrigger) -> Self {
-        match &trigger.provenance {
-            CommandProvenance::Skill { .. } if trigger.bundled_skill => Self::BundledSkill,
+    fn of(provenance: &CommandProvenance) -> Self {
+        match provenance {
+            // A skill's source is its plugin name when it has one, else its scope, and bundled skills never come from a plugin.
+            CommandProvenance::Skill { source }
+                if source.as_str() == SkillScope::Bundled.as_ref() =>
+            {
+                Self::BundledSkill
+            }
             CommandProvenance::Skill { .. } => Self::OtherSkill,
             CommandProvenance::Builtin | CommandProvenance::Shell => Self::Command,
         }
@@ -211,14 +99,6 @@ impl MenuKey {
 /// A single row in the slash suggestion dropdown.
 #[derive(Debug, Clone)]
 pub struct SuggestionRow {
-    /// Stable canonical command name used only for presentation metadata.
-    /// `None` for argument rows. Display aliases and inserted text remain
-    /// untouched by localization.
-    pub command_canonical: Option<String>,
-    /// Whether the fixed command description may be resolved through the
-    /// locale catalog. Dynamic ACP skills/workflows remain opaque even if
-    /// their name collides with a built-in command.
-    pub localize_description: bool,
     /// Display text (e.g., "/model" or "Grok 4 Fast").
     pub display: String,
     /// Description text (e.g., "Switch the active model").
@@ -232,87 +112,9 @@ pub struct SuggestionRow {
     pub tag: Option<String>,
     /// Provenance badge; `Some` only on rows in a builtin/skill name collision.
     pub provenance: Option<CommandProvenance>,
-    /// Render-only localized badge text. Provenance remains canonical for
-    /// collision handling and command identity.
-    pub provenance_badge: Option<String>,
-    /// Stable argument presentation metadata copied from [`ArgItem`].
-    pub presentation: Option<ArgPresentation>,
 }
 
 impl SuggestionRow {
-    fn is_known_shell_command(trigger: &CommandTrigger) -> bool {
-        if trigger.provenance != CommandProvenance::Shell || !trigger.trusted_shell_metadata {
-            return false;
-        }
-        matches!(
-            (trigger.canonical.as_str(), trigger.description.as_str()),
-            (
-                "deep-research",
-                "Research with bounded parallel agents, cross-check evidence, and write a cited report"
-            ) | (
-                "workflow",
-                "Launch a saved workflow, list runs, or manage a run (pause, resume, stop, save)"
-            ) | ("goal", "Set, manage, or check an autonomous goal")
-                | ("flush", "Flush conversation memory to disk now")
-                | (
-                    "dream",
-                    "Run memory consolidation (merge session logs into organized topics)"
-                )
-                | ("memory", "Browse, view, and manage your memories")
-        )
-    }
-
-    /// Bundled skills are dynamic ACP commands, but their shipped short
-    /// descriptions are stable client-owned chrome. Require both trusted
-    /// bundled scope and an exact canonical/English pair so user, project,
-    /// plugin, workflow, and changed server text remain opaque.
-    fn is_known_bundled_skill(trigger: &CommandTrigger) -> bool {
-        if !trigger.bundled_skill && !trigger.product_chat_skill {
-            return false;
-        }
-        matches!(
-            (trigger.canonical.as_str(), trigger.description.as_str()),
-            (
-                "build-with-ai",
-                "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)"
-            ) | (
-                "code-review",
-                "Run an extremely strict maintainability review for abstraction quality, giant files, and spaghetti-condition growth. Use for a deep code quality audit or an especially harsh maintainability review."
-            ) | ("create-skill", "Create a new Grok skill")
-                | ("create-workflow", "Author a new multi-agent workflow")
-                | (
-                    "design",
-                    "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan."
-                )
-                | (
-                    "execute-plan",
-                    "Execute a PR Plan DAG from a design document. Parses the plan, topologically sorts it, implements PRs in parallel using worktree-isolated subagents, runs mandatory orchestrator-level review, and assembles either a Graphite PR stack or a plain-git branch stack depending on tool availability."
-                )
-                | (
-                    "bundled:imagine",
-                    "Prompting and workflow guidance for Imagine image tools"
-                )
-                | (
-                    "implement",
-                    "Run the full implement-review-fix loop using implementer and reviewer personas. Supports effort-based multi-reviewer scaling (1-5 reviewers) with automatic specialization selection. Includes memory-based feedback loop that learns from past review patterns. Loops until all reviewers find 0 issues of any severity."
-                )
-                | (
-                    "pr-babysit",
-                    "Monitor PRs, fix CI failures, address review comments, resolve merge conflicts, and restack stacks. Supports independent PRs, Graphite stacks, and GitHub stacked PRs (gh-stack)."
-                )
-                | (
-                    "resume-claude",
-                    "Continue from a recent Claude Code session"
-                )
-                | ("resume-codex", "Continue from a recent Codex session")
-                | ("resume-cursor", "Continue from a recent Cursor session")
-                | (
-                    "review",
-                    "Run a reviewer subagent against uncommitted local changes, a named branch, or a GitHub PR. Local and branch modes write a review file plus a summary to disk. PR mode posts the findings as a PENDING GitHub review for the user to inspect and submit through the UI."
-                )
-        )
-    }
-
     fn from_command(
         trigger: &CommandTrigger,
         takes_args: bool,
@@ -323,45 +125,23 @@ impl SuggestionRow {
             insert_text.push(' ');
         }
         Self {
-            command_canonical: Some(trigger.canonical.clone()),
-            localize_description: trigger.source == CommandSource::Builtin
-                || Self::is_known_shell_command(trigger)
-                || Self::is_known_bundled_skill(trigger),
             display: trigger.display.clone(),
             description: trigger.description.clone(),
             insert_text,
             indices: Vec::new(),
             tag: None,
             provenance: collides_with_builtin_or_skill.then(|| trigger.provenance.clone()),
-            provenance_badge: None,
-            presentation: (trigger.product_chat_skill || trigger.bundled_skill).then(|| {
-                ArgPresentation::OfficialSkill {
-                    skill_id: if trigger.bundled_skill {
-                        trigger
-                            .canonical
-                            .strip_prefix("bundled:")
-                            .unwrap_or(&trigger.canonical)
-                            .to_owned()
-                    } else {
-                        trigger.canonical.clone()
-                    },
-                }
-            }),
         }
     }
 
     fn from_arg(item: &ArgItem) -> Self {
         Self {
-            command_canonical: None,
-            localize_description: false,
             display: item.display.clone(),
             description: item.description.clone(),
             insert_text: item.insert_text.clone(),
             indices: Vec::new(),
             tag: None,
             provenance: None,
-            provenance_badge: None,
-            presentation: item.presentation.clone(),
         }
     }
 
@@ -371,130 +151,12 @@ impl SuggestionRow {
     }
 }
 
-/// Locale catalog id for a fixed, client-owned argument placeholder.
-///
-/// ACP argument hints are normally opaque server/user/plugin content. Only
-/// built-ins, exact official shell metadata, and exact bundled/product skill
-/// metadata may opt in here. The returned id is presentation-only: command
-/// names, accepted argument values, and inserted text remain canonical.
-fn args_placeholder_catalog_id(
-    command: &dyn SlashCommand,
-    placeholder: &str,
-) -> Option<&'static str> {
-    match command.provenance() {
-        CommandProvenance::Builtin => match (command.name(), placeholder) {
-            ("btw", "<question>") => Some("slash.command.btw.arg_placeholder"),
-            ("cd", "path") => Some("slash.command.cd.arg_placeholder"),
-            ("compact", "compaction instructions") => Some("slash.command.compact.arg_placeholder"),
-            ("copy", "[N] [file]") => Some("slash.command.copy.arg_placeholder"),
-            ("docs", "[web|title]") => Some("slash.command.docs.arg_placeholder"),
-            ("effort", "<level>") => Some("slash.command.effort.arg_placeholder"),
-            ("export", "[filename]") => Some("slash.command.export.arg_placeholder"),
-            ("feedback", "[feedback text]") => Some("slash.command.feedback.arg_placeholder"),
-            ("find", "[text]") => Some("slash.command.find.arg_placeholder"),
-            ("fork", "[directive]") => Some("slash.command.fork.arg_placeholder"),
-            ("imagine", "description of the image to generate") => {
-                Some("slash.command.imagine.arg_placeholder")
-            }
-            ("imagine-video", "description of the video to generate") => {
-                Some("slash.command.imagine-video.arg_placeholder")
-            }
-            ("loop", "[interval] <prompt>") => Some("slash.command.loop.arg_placeholder"),
-            ("model", "<model> [effort]") => Some("slash.command.model.arg_placeholder"),
-            ("plan", "[description]") => Some("slash.command.plan.arg_placeholder"),
-            ("remember", "[memory note text]") => Some("slash.command.remember.arg_placeholder"),
-            ("rename", "<title>") => Some("slash.command.rename.arg_placeholder"),
-            ("theme", "<theme>") => Some("slash.command.theme.arg_placeholder"),
-            (
-                "workflow",
-                "<name> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [name]",
-            ) => Some("slash.command.workflow.arg_placeholder"),
-            // hide/show, scroll/fps/log, fix/FIX, and on/off are literal
-            // accepted values rather than prose placeholders; keep them raw.
-            _ => None,
-        },
-        CommandProvenance::Shell if command.has_trusted_shell_metadata() => {
-            match (command.name(), command.description(), placeholder) {
-                (
-                    "compact",
-                    "Compress conversation history to save context window",
-                    "optional context about what to preserve",
-                ) => Some("slash.command.compact.shell_arg_placeholder"),
-                (
-                    "hooks-add",
-                    "Add a custom hook file or directory",
-                    "path to hook file or directory",
-                )
-                | (
-                    "hooks-remove",
-                    "Remove a custom hook file or directory path",
-                    "path to hook file or directory",
-                ) => Some("slash.command.hooks.path_arg_placeholder"),
-                (
-                    "plugins",
-                    "Manage plugins (list, reload, trust, add, remove)",
-                    "list | reload | trust <path> | add <path> | remove <path>",
-                ) => Some("slash.command.plugins.arg_placeholder"),
-                ("feedback", "Send feedback about the current session", "feedback text") => {
-                    Some("slash.command.feedback.shell_arg_placeholder")
-                }
-                (
-                    "deep-research",
-                    "Research with bounded parallel agents, cross-check evidence, and write a cited report",
-                    "<query>",
-                ) => Some("slash.command.deep-research.arg_placeholder"),
-                (
-                    "workflow",
-                    "Launch a saved workflow, list runs, or manage a run (pause, resume, stop, save)",
-                    "<name> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [name]",
-                ) => Some("slash.command.workflow.arg_placeholder"),
-                (
-                    "goal",
-                    "Set, manage, or check an autonomous goal",
-                    "<objective> [--budget <tokens>] | status | pause | resume | clear",
-                ) => Some("slash.command.goal.arg_placeholder"),
-                ("loop", "Run a prompt on a recurring interval", "[interval] <prompt>") => {
-                    Some("slash.command.loop.arg_placeholder")
-                }
-                // on|off is an accepted enum for always-approve/memory.
-                _ => None,
-            }
-        }
-        CommandProvenance::Shell => None,
-        CommandProvenance::Skill { .. }
-            if command.is_bundled_skill() || command.is_product_chat_skill() =>
-        {
-            match (command.name(), command.description(), placeholder) {
-                (
-                    "build-with-ai",
-                    "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
-                    "<what you're building>",
-                ) => Some("slash.command.build-with-ai.arg_placeholder"),
-                (
-                    "design",
-                    "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan.",
-                    "<description of what to design>",
-                ) => Some("slash.command.design.arg_placeholder"),
-                (
-                    "resume-claude",
-                    "Continue from a recent Claude Code session",
-                    "[words describing the session | session id]",
-                ) => Some("slash.command.resume-claude.arg_placeholder"),
-                (
-                    "resume-codex",
-                    "Continue from a recent Codex session",
-                    "[words describing the session | session id]",
-                ) => Some("slash.command.resume-codex.arg_placeholder"),
-                (
-                    "resume-cursor",
-                    "Continue from a recent Cursor session",
-                    "[words describing the session | session id]",
-                ) => Some("slash.command.resume-cursor.arg_placeholder"),
-                _ => None,
-            }
-        }
-        CommandProvenance::Skill { .. } => None,
-    }
+/// Argument rows plus the row the dropdown opens on when no selection carries over.
+#[derive(Default)]
+struct ArgSuggestions {
+    rows: Vec<SuggestionRow>,
+    /// Index into `rows` of the command's `preselected_arg`, when that row survived ranking.
+    preselected: Option<usize>,
 }
 
 /// Prefix match aligned with nucleo `CaseMatching::Smart`: all-lowercase query is case-insensitive; any uppercase in the query requires exact prefix.
@@ -604,9 +266,6 @@ pub struct SlashSnapshot {
     pub cursor_in_command: bool,
     /// Placeholder text for args (e.g., "[context]").
     pub args_placeholder: Option<String>,
-    /// Render-only locale catalog id for a trusted fixed placeholder.
-    /// `None` keeps dynamic ACP/user/plugin hints byte-for-byte unchanged.
-    pub args_placeholder_catalog_id: Option<&'static str>,
     /// Whether the args query is empty (for placeholder display).
     pub args_query_is_empty: bool,
     /// Whether the resolved command is a skill (for accent color theming).
@@ -676,7 +335,6 @@ impl SlashState {
             inner.matches.clear();
             inner.args_range = None;
             inner.args_placeholder = None;
-            inner.args_placeholder_catalog_id = None;
             inner.args_query_is_empty = false;
         });
     }
@@ -967,7 +625,6 @@ impl SlashController {
             args_range: input.args_range.clone(),
             cursor_in_command: input.cursor_in_command,
             args_placeholder: None,
-            args_placeholder_catalog_id: None,
             args_query_is_empty: args_text_empty,
             is_skill: false,
             command_recognized: false,
@@ -979,14 +636,17 @@ impl SlashController {
         // branches partition: analyze_input sets args_range exactly when the cursor is past the command token.
         if input.cursor_in_command {
             let matches = self.command_suggestions(&input.query, models);
-            snapshot.selected = Self::carry_selection(&previous, &matches, true, &input);
+            snapshot.selected =
+                Self::carry_selection(&previous, &matches, true, &input).unwrap_or(0);
             snapshot.open = !matches.is_empty();
             snapshot.matches = matches;
         } else if input.args_range.is_some() {
-            let matches = self.arg_suggestions_for_input(text, &input, models);
-            snapshot.selected = Self::carry_selection(&previous, &matches, false, &input);
-            snapshot.open = !matches.is_empty();
-            snapshot.matches = matches;
+            let suggestions = self.arg_suggestions_for_input(text, &input, models);
+            snapshot.selected = Self::carry_selection(&previous, &suggestions.rows, false, &input)
+                .or(suggestions.preselected)
+                .unwrap_or(0);
+            snapshot.open = !suggestions.rows.is_empty();
+            snapshot.matches = suggestions.rows;
         }
 
         // Resolve the command for args placeholder and skill detection.
@@ -1000,11 +660,7 @@ impl SlashController {
                 snapshot.command_recognized = true;
                 snapshot.is_skill = command.is_skill();
                 if args_text_empty {
-                    if let Some(placeholder) = command.arg_placeholder() {
-                        snapshot.args_placeholder_catalog_id =
-                            args_placeholder_catalog_id(command.as_ref(), placeholder);
-                        snapshot.args_placeholder = Some(placeholder.to_string());
-                    }
+                    snapshot.args_placeholder = command.arg_placeholder().map(|s| s.to_string());
                 }
             }
         }
@@ -1062,7 +718,7 @@ impl SlashController {
                     args_range: None,
                     args_query: String::new(),
                 };
-                let selected = Self::carry_selection(previous, &matches, true, &input);
+                let selected = Self::carry_selection(previous, &matches, true, &input).unwrap_or(0);
                 SlashSnapshot {
                     active: true,
                     open: !matches.is_empty(),
@@ -1073,7 +729,6 @@ impl SlashController {
                     args_range: None,
                     cursor_in_command: true,
                     args_placeholder: None,
-                    args_placeholder_catalog_id: None,
                     args_query_is_empty: true,
                     is_skill: false,
                     command_recognized: is_recognized,
@@ -1119,7 +774,6 @@ impl SlashController {
             args_range: None,
             cursor_in_command: false,
             args_placeholder: None,
-            args_placeholder_catalog_id: None,
             args_query_is_empty: true,
             is_skill: false,
             command_recognized: is_recognized,
@@ -1182,7 +836,7 @@ impl SlashController {
             String::new()
         };
 
-        let arg_matches = self.arg_suggestions(command.as_ref(), models, &args_query);
+        let suggestions = self.arg_suggestions(command.as_ref(), models, &args_query);
         let args_range = Some(start..args_end);
         let input = SlashInput {
             command_range: token.range.clone(),
@@ -1194,15 +848,13 @@ impl SlashController {
 
         snapshot.args_query_is_empty = args_empty;
         snapshot.args_range = args_range;
-        snapshot.open = !arg_matches.is_empty();
-        snapshot.matches = arg_matches;
-        snapshot.selected = Self::carry_selection(previous, &snapshot.matches, false, &input);
+        snapshot.open = !suggestions.rows.is_empty();
+        snapshot.selected = Self::carry_selection(previous, &suggestions.rows, false, &input)
+            .or(suggestions.preselected)
+            .unwrap_or(0);
+        snapshot.matches = suggestions.rows;
         if args_empty {
-            if let Some(placeholder) = command.arg_placeholder() {
-                snapshot.args_placeholder_catalog_id =
-                    args_placeholder_catalog_id(command.as_ref(), placeholder);
-                snapshot.args_placeholder = Some(placeholder.to_string());
-            }
+            snapshot.args_placeholder = command.arg_placeholder().map(|s| s.to_string());
         }
 
         snapshot
@@ -1245,14 +897,15 @@ impl SlashController {
     }
 
     /// Try to carry the previous selection across a refresh.
+    /// `None` when the dropdown context changed or there was nothing to carry, so the caller picks the opening row.
     fn carry_selection(
         previous: &SlashSnapshot,
         matches: &[SuggestionRow],
         cursor_in_command: bool,
         input: &SlashInput,
-    ) -> usize {
+    ) -> Option<usize> {
         if matches.is_empty() {
-            return 0;
+            return None;
         }
 
         let same_context = if cursor_in_command {
@@ -1261,7 +914,7 @@ impl SlashController {
             !previous.cursor_in_command && previous.args_range == input.args_range
         };
         if !same_context || previous.matches.is_empty() {
-            return 0;
+            return None;
         }
 
         let prev_idx = previous
@@ -1272,10 +925,10 @@ impl SlashController {
                 .iter()
                 .position(|row| row.insert_text == prev_row.insert_text)
         {
-            return pos;
+            return Some(pos);
         }
 
-        previous.selected.min(matches.len().saturating_sub(1))
+        Some(previous.selected.min(matches.len().saturating_sub(1)))
     }
 
     /// Byte ranges of recognized `/command` tokens anywhere in `text`. Both the composer's teal token highlighting and
@@ -1388,7 +1041,7 @@ impl SlashController {
                         colliding_command_indices.contains(&trigger.command_index),
                     ));
                     canonicals.push(trigger.canonical.as_str());
-                    groups.push(MenuGroup::of(trigger));
+                    groups.push(MenuGroup::of(&trigger.provenance));
                 }
             }
             // Tag from the data map in one scoped borrow; key off canonical (never the alias/display)
@@ -1552,13 +1205,13 @@ impl SlashController {
         text: &str,
         input: &SlashInput,
         models: &ModelState,
-    ) -> Vec<SuggestionRow> {
+    ) -> ArgSuggestions {
         let Some(invocation) = parse_invocation(text) else {
-            return Vec::new();
+            return ArgSuggestions::default();
         };
         // Clone the Arc to release the borrow on self.registry before calling arg_suggestions (which needs &mut self for the matcher)
         let Some(command) = self.registry.get(invocation.token).cloned() else {
-            return Vec::new();
+            return ArgSuggestions::default();
         };
         // Hidden commands never produce arg suggestions either.
         let offered = {
@@ -1566,7 +1219,7 @@ impl SlashController {
             command_offered(command.as_ref(), &visible_ctx, self.hide_session_scoped)
         };
         if !offered {
-            return Vec::new();
+            return ArgSuggestions::default();
         }
         self.arg_suggestions(command.as_ref(), models, &input.args_query)
     }
@@ -1590,34 +1243,72 @@ impl SlashController {
         command: &dyn SlashCommand,
         models: &ModelState,
         query: &str,
-    ) -> Vec<SuggestionRow> {
+    ) -> ArgSuggestions {
         let ctx = self.app_ctx(models);
         if !command.takes_args_now(&ctx) {
-            return Vec::new();
+            return ArgSuggestions::default();
         }
         let Some(items) = command.suggest_args(&ctx, query) else {
-            return Vec::new();
+            return ArgSuggestions::default();
         };
         if items.is_empty() {
-            return Vec::new();
+            return ArgSuggestions::default();
         }
+        // `ctx` borrows `&self` and `self.matcher.rank` below needs `&mut self`, so ask before ranking
+        let target = command.preselected_arg(&ctx, query);
         let trimmed = query.trim();
-        if trimmed.is_empty() {
-            return items.iter().map(SuggestionRow::from_arg).collect();
-        }
-        let hits = self
-            .matcher
-            .rank(items.as_slice(), trimmed, items.len(), |item| {
-                item.match_text.as_str()
-            });
-        hits.into_iter()
-            .filter_map(|(idx, _)| {
-                let mut row = SuggestionRow::from_arg(items.get(idx)?);
-                row.indices = self.argument_highlight_indices(trimmed, &row.display);
-                Some(row)
-            })
-            .collect()
+        let rows: Vec<SuggestionRow> = if trimmed.is_empty() {
+            items.iter().map(SuggestionRow::from_arg).collect()
+        } else {
+            let fallbacks: Vec<String> = items.iter().map(label_match_haystack).collect();
+            let cands: Vec<(&ArgItem, &str)> = items
+                .iter()
+                .zip(fallbacks.iter().map(String::as_str))
+                .collect();
+            let hits = self.matcher.rank_either(
+                cands.as_slice(),
+                trimmed,
+                cands.len(),
+                |cand| cand.0.match_text.as_str(),
+                |cand| cand.1,
+            );
+            hits.into_iter()
+                .filter_map(|(idx, _)| {
+                    let mut row = SuggestionRow::from_arg(items.get(idx)?);
+                    row.indices = self.argument_highlight_indices(trimmed, &row.display);
+                    Some(row)
+                })
+                .collect()
+        };
+        let preselected =
+            target.and_then(|target| rows.iter().position(|row| row.insert_text == target));
+        ArgSuggestions { rows, preselected }
     }
+}
+
+/// Label haystack. Keeps the model-name prefix when the label is not already in `match_text`.
+fn label_match_haystack(item: &ArgItem) -> String {
+    let label = item
+        .display
+        .strip_suffix(" (active)")
+        .or_else(|| item.display.strip_suffix(" (current)"))
+        .unwrap_or(item.display.as_str());
+    if contains_ignore_ascii_case(&item.match_text, label) {
+        return label.to_string();
+    }
+    match item.match_text.rsplit_once(' ') {
+        Some((prefix, _)) => format!("{prefix} {label}"),
+        None => label.to_string(),
+    }
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    needle.is_empty()
+        || haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// Conversely, [`SlashCommand::dashboard_only`] commands (`/cd`) are offered only when `hide_session_scoped` is set
@@ -1988,450 +1679,6 @@ mod tests {
 
     use super::registry::CommandRegistry;
     use super::*;
-
-    fn zh_locale() -> crate::locale::LocaleContext {
-        crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
-            locale: crate::locale::UiLocale::ZhCn,
-            source: crate::locale::LocaleSource::Requirement,
-        })
-    }
-
-    #[test]
-    fn zh_localization_dynamic_bundled_skill_uses_slug_without_changing_qualified_command() {
-        use xai_grok_locale::dynamic::{DisplayCatalog, DisplayEntry, Domain};
-        let raw = "Prompting and workflow guidance for Imagine image tools";
-        let meta =
-            serde_json::json!({"scope":"bundled", "path":"/grok/bundled/skills/imagine/SKILL.md"});
-        let command = acp::AvailableCommand::new("bundled:imagine", raw)
-            .meta(meta.as_object().unwrap().clone());
-        let mut ctrl = SlashController::new(CommandRegistry::new(Vec::new()), ".".into());
-        ctrl.registry_mut().set_acp_commands(&[command]);
-        let state = SlashState::default();
-        ctrl.refresh(&state, "/", 1, &ModelState::default());
-        let locale = zh_locale();
-        let entry = DisplayEntry {
-            field: "description".into(),
-            context: vec!["imagine".into()],
-            source: Some(raw.into()),
-            source_sha256: None,
-            translation: "图像工具指南".into(),
-        };
-        locale.install_display_catalog(Arc::new(
-            DisplayCatalog::from_entries(Domain::Skills, vec![entry]).unwrap(),
-        ));
-        let snapshot =
-            crate::views::slash_dropdown::localized_snapshot(state.snapshot(), Some(&locale));
-        let row = snapshot
-            .matches
-            .iter()
-            .find(|row| row.command_canonical.as_deref() == Some("bundled:imagine"))
-            .unwrap();
-        assert_eq!(row.description, "图像工具指南");
-        assert_eq!(row.insert_text.trim_end(), "/bundled:imagine");
-    }
-
-    #[test]
-    fn localizes_owned_slash_errors_without_changing_dynamic_tokens() {
-        let locale = zh_locale();
-        assert_eq!(
-            localize_command_error("Usage: /model <name> [effort]", &locale),
-            "用法：/model <name> [effort]"
-        );
-        assert_eq!(
-            localize_command_error("Unknown model: Grok Private 7", &locale),
-            "未知模型：Grok Private 7"
-        );
-        assert_eq!(
-            localize_command_error(
-                "unknown effort level 'deep'; use one of: low, high",
-                &locale,
-            ),
-            "未知的推理强度“deep”；可选值：low, high"
-        );
-        assert_eq!(
-            localize_command_error(
-                "Unknown theme: solarized. Available: auto, Grokday, Groknight",
-                &locale,
-            ),
-            "未知主题：solarized。可用主题：auto, Grokday, Groknight"
-        );
-        for (english, chinese) in [
-            ("No themes available", "没有可用的主题"),
-            ("/flush takes no arguments.", "/flush 不接受参数。"),
-            ("/dream takes no arguments.", "/dream 不接受参数。"),
-            (
-                "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status.",
-                "/memory 不接受参数。打开后按 t 启用或停用记忆，按 s 查看状态。",
-            ),
-        ] {
-            assert_eq!(localize_command_error(english, &locale), chinese);
-            assert_eq!(
-                localize_command_error(english, &crate::locale::LocaleContext::default()),
-                english,
-            );
-        }
-        assert_eq!(
-            localize_command_error("/custom takes no arguments.", &locale),
-            "/custom takes no arguments.",
-        );
-        assert_eq!(
-            localize_command_error("server supplied opaque error", &locale),
-            "server supplied opaque error"
-        );
-    }
-
-    #[test]
-    fn zh_localization_every_builtin_arg_placeholder_is_localized_or_literal_command_syntax() {
-        let locale = zh_locale();
-        let literal_syntax = [
-            ("announcements", "hide|show"),
-            ("debug", "scroll | fps | log"),
-            ("doctor", "[fix [FIX]]"),
-            ("timestamps", "on/off"),
-        ];
-        let mut uncovered = Vec::new();
-
-        for command in commands::builtin_commands() {
-            let Some(placeholder) = command.arg_placeholder() else {
-                continue;
-            };
-            if literal_syntax.contains(&(command.name(), placeholder)) {
-                assert_eq!(
-                    args_placeholder_catalog_id(command.as_ref(), placeholder),
-                    None,
-                    "literal accepted values must stay canonical for /{}",
-                    command.name()
-                );
-                continue;
-            }
-            let Some(id) = args_placeholder_catalog_id(command.as_ref(), placeholder) else {
-                uncovered.push(format!("/{}: {placeholder}", command.name()));
-                continue;
-            };
-            assert_ne!(
-                locale.named_text(id, placeholder).as_ref(),
-                placeholder,
-                "missing zh-CN placeholder metadata for /{} ({id})",
-                command.name()
-            );
-        }
-
-        assert!(
-            uncovered.is_empty(),
-            "new fixed placeholders need localization or an explicit literal-syntax exemption: {uncovered:?}"
-        );
-    }
-
-    #[test]
-    fn zh_localization_trusted_acp_placeholders_get_catalog_ids_but_dynamic_collisions_stay_opaque()
-    {
-        fn command(
-            name: &str,
-            description: &str,
-            hint: &str,
-            meta: Option<serde_json::Value>,
-        ) -> acp::AvailableCommand {
-            let mut command = acp::AvailableCommand::new(name.to_string(), description.to_string())
-                .input(Some(acp::AvailableCommandInput::Unstructured(
-                    acp::UnstructuredCommandInput::new(hint.to_string()),
-                )));
-            if let Some(meta) = meta.and_then(|value| value.as_object().cloned()) {
-                command = command.meta(meta);
-            }
-            command
-        }
-
-        fn placeholder_snapshot(command: acp::AvailableCommand) -> SlashSnapshot {
-            let text = format!("/{} ", command.name);
-            let mut controller = SlashController::new(
-                CommandRegistry::new(Vec::new()),
-                std::path::PathBuf::from("."),
-            );
-            controller.registry_mut().set_acp_commands(&[command]);
-            let state = SlashState::default();
-            controller.refresh(&state, &text, text.len(), &ModelState::default());
-            state.snapshot()
-        }
-
-        let bundled = |name: &str| {
-            Some(serde_json::json!({
-                "scope": "bundled",
-                "path": format!("/grok/bundled/skills/{name}/SKILL.md"),
-            }))
-        };
-        let skill_cases = [
-            (
-                "build-with-ai",
-                "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
-                "<what you're building>",
-                "slash.command.build-with-ai.arg_placeholder",
-            ),
-            (
-                "design",
-                "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan.",
-                "<description of what to design>",
-                "slash.command.design.arg_placeholder",
-            ),
-            (
-                "resume-claude",
-                "Continue from a recent Claude Code session",
-                "[words describing the session | session id]",
-                "slash.command.resume-claude.arg_placeholder",
-            ),
-            (
-                "resume-codex",
-                "Continue from a recent Codex session",
-                "[words describing the session | session id]",
-                "slash.command.resume-codex.arg_placeholder",
-            ),
-            (
-                "resume-cursor",
-                "Continue from a recent Cursor session",
-                "[words describing the session | session id]",
-                "slash.command.resume-cursor.arg_placeholder",
-            ),
-        ];
-        for (name, description, hint, key) in skill_cases {
-            let snapshot = placeholder_snapshot(command(name, description, hint, bundled(name)));
-            assert_eq!(snapshot.args_placeholder.as_deref(), Some(hint));
-            assert_eq!(snapshot.args_placeholder_catalog_id, Some(key));
-            assert_ne!(zh_locale().named_text(key, hint).as_ref(), hint);
-        }
-
-        let dynamic = placeholder_snapshot(command(
-            "build-with-ai",
-            "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
-            "<what you're building>",
-            Some(serde_json::json!({
-                "scope": "local",
-                "path": "/home/user/.grok/skills/build-with-ai/SKILL.md",
-                "product": "chat",
-            })),
-        ));
-        assert_eq!(dynamic.args_placeholder_catalog_id, None);
-
-        let user_product = placeholder_snapshot(command(
-            "build-with-ai",
-            "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
-            "<what you're building>",
-            Some(serde_json::json!({
-                "scope": "user",
-                "path": "chat-product://build-with-ai",
-                "product": "chat",
-            })),
-        ));
-        assert_eq!(user_product.args_placeholder_catalog_id, None);
-
-        let changed = placeholder_snapshot(command(
-            "design",
-            "Team-owned design helper",
-            "<description of what to design>",
-            bundled("design"),
-        ));
-        assert_eq!(changed.args_placeholder_catalog_id, None);
-
-        for plugin_name in [
-            serde_json::json!("acme"),
-            serde_json::json!("  \t"),
-            serde_json::json!(42),
-            serde_json::Value::Null,
-        ] {
-            let spoofed = placeholder_snapshot(command(
-                "design",
-                "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan.",
-                "<description of what to design>",
-                Some(serde_json::json!({
-                    "scope": "bundled",
-                    "path": "/grok/bundled/skills/design/SKILL.md",
-                    "pluginName": plugin_name,
-                })),
-            ));
-            assert_eq!(
-                spoofed.args_placeholder_catalog_id, None,
-                "a pluginName key of any shape must block bundled placeholder localization"
-            );
-        }
-
-        let bundled_scope_plugin = command(
-            "design",
-            "Run the full design-doc-writer and design-doc-reviewer loop until consensus. Produces a polished design document with a PR plan.",
-            "<description of what to design>",
-            Some(serde_json::json!({
-                "scope": "bundled",
-                "path": "/grok/bundled/skills/design/SKILL.md",
-                "pluginName": null,
-            })),
-        );
-        let mut registry = CommandRegistry::new(Vec::new());
-        registry.set_acp_commands(&[bundled_scope_plugin]);
-        let trigger = registry
-            .triggers()
-            .iter()
-            .find(|trigger| trigger.canonical == "design")
-            .expect("design trigger");
-        assert!(!trigger.bundled_skill);
-        assert_eq!(MenuGroup::of(trigger), MenuGroup::OtherSkill);
-
-        let product = placeholder_snapshot(command(
-            "build-with-ai",
-            "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
-            "<what you're building>",
-            Some(serde_json::json!({
-                "scope": "server",
-                "path": "chat-product://build-with-ai",
-                "product": "chat",
-            })),
-        ));
-        assert_eq!(
-            product.args_placeholder_catalog_id,
-            Some("slash.command.build-with-ai.arg_placeholder")
-        );
-
-        let product_with_plugin_key = placeholder_snapshot(command(
-            "build-with-ai",
-            "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)",
-            "<what you're building>",
-            Some(serde_json::json!({
-                "scope": "server",
-                "path": "chat-product://build-with-ai",
-                "pluginName": null,
-                "product": "chat",
-            })),
-        ));
-        assert_eq!(product_with_plugin_key.args_placeholder_catalog_id, None);
-    }
-
-    #[test]
-    fn zh_localization_exact_official_shell_placeholders_are_localizable_without_translating_enums()
-    {
-        fn shell_command_with_meta(
-            name: &str,
-            description: &str,
-            hint: &str,
-            meta: Option<serde_json::Value>,
-        ) -> acp_command::AcpSlashCommand {
-            let mut command = acp::AvailableCommand::new(name.to_string(), description.to_string())
-                .input(Some(acp::AvailableCommandInput::Unstructured(
-                    acp::UnstructuredCommandInput::new(hint.to_string()),
-                )));
-            if let Some(meta) = meta.and_then(|value| value.as_object().cloned()) {
-                command = command.meta(meta);
-            }
-            acp_command::AcpSlashCommand::from(&command)
-        }
-
-        fn shell_command(
-            name: &str,
-            description: &str,
-            hint: &str,
-        ) -> acp_command::AcpSlashCommand {
-            shell_command_with_meta(name, description, hint, None)
-        }
-
-        let localized = [
-            (
-                "compact",
-                "Compress conversation history to save context window",
-                "optional context about what to preserve",
-            ),
-            (
-                "hooks-add",
-                "Add a custom hook file or directory",
-                "path to hook file or directory",
-            ),
-            (
-                "hooks-remove",
-                "Remove a custom hook file or directory path",
-                "path to hook file or directory",
-            ),
-            (
-                "plugins",
-                "Manage plugins (list, reload, trust, add, remove)",
-                "list | reload | trust <path> | add <path> | remove <path>",
-            ),
-            (
-                "feedback",
-                "Send feedback about the current session",
-                "feedback text",
-            ),
-            (
-                "deep-research",
-                "Research with bounded parallel agents, cross-check evidence, and write a cited report",
-                "<query>",
-            ),
-            (
-                "workflow",
-                "Launch a saved workflow, list runs, or manage a run (pause, resume, stop, save)",
-                "<name> [--agent-budget N] [--effort LEVEL] [args] | runs | pause|resume|stop|save [name]",
-            ),
-            (
-                "goal",
-                "Set, manage, or check an autonomous goal",
-                "<objective> [--budget <tokens>] | status | pause | resume | clear",
-            ),
-            (
-                "loop",
-                "Run a prompt on a recurring interval",
-                "[interval] <prompt>",
-            ),
-        ];
-        for (name, description, hint) in localized {
-            let command = shell_command(name, description, hint);
-            let key = args_placeholder_catalog_id(&command, hint)
-                .unwrap_or_else(|| panic!("missing shell placeholder mapping for /{name}"));
-            assert_ne!(zh_locale().named_text(key, hint).as_ref(), hint);
-        }
-
-        for (name, description) in [
-            (
-                "always-approve",
-                "Toggle always-approve mode (skip all permission prompts)",
-            ),
-            ("memory", "Browse, view, and manage your memories"),
-        ] {
-            let command = shell_command(name, description, "on|off");
-            assert_eq!(args_placeholder_catalog_id(&command, "on|off"), None);
-        }
-
-        let goal_description = "Set, manage, or check an autonomous goal";
-        let goal_hint = "<objective> [--budget <tokens>] | status | pause | resume | clear";
-        for (label, meta) in [
-            (
-                "foreign scope",
-                serde_json::json!({"scope": "future", "path": "/x"}),
-            ),
-            (
-                "malformed path",
-                serde_json::json!({"scope": "local", "path": 42}),
-            ),
-        ] {
-            let command =
-                shell_command_with_meta("goal", goal_description, goal_hint, Some(meta.clone()));
-            assert_eq!(
-                args_placeholder_catalog_id(&command, goal_hint),
-                None,
-                "{label} must not gain an official shell placeholder catalog id"
-            );
-
-            let mut registry = CommandRegistry::new(Vec::new());
-            let mut available = acp::AvailableCommand::new("goal", goal_description).input(Some(
-                acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
-                    goal_hint,
-                )),
-            ));
-            available = available.meta(meta.as_object().cloned().expect("object metadata"));
-            registry.set_acp_commands(&[available]);
-            let trigger = registry
-                .triggers()
-                .iter()
-                .find(|trigger| trigger.canonical == "goal")
-                .expect("goal trigger");
-            assert!(
-                !SuggestionRow::is_known_shell_command(trigger),
-                "{label} must keep its dynamic description opaque"
-            );
-        }
-    }
 
     #[test]
     fn parses_invocation_with_args() {
@@ -3260,16 +2507,12 @@ mod tests {
         assert!(!command_prefix_matches_smart("Privacy", "PR"));
 
         let row = SuggestionRow {
-            command_canonical: Some("privacy".to_string()),
-            localize_description: true,
             display: "/Privacy".to_string(),
             description: String::new(),
             insert_text: "/Privacy ".to_string(),
             indices: Vec::new(),
             tag: None,
             provenance: None,
-            provenance_badge: None,
-            presentation: None,
         };
         // Without smart-case, starts_with("p") fails on "Privacy" and the ghost disappears
         // The dropdown would still highlight the row via CaseMatching::Smart
@@ -3861,106 +3104,6 @@ mod tests {
     }
 
     #[test]
-    fn localization_regression_only_exact_bundled_skill_descriptions_are_localizable() {
-        fn skill(scope: &str, description: &str) -> agent_client_protocol::AvailableCommand {
-            let meta = serde_json::json!({
-                "scope": scope,
-                "path": format!("/grok/{scope}/build-with-ai/SKILL.md"),
-            })
-            .as_object()
-            .cloned()
-            .expect("skill meta is an object");
-            agent_client_protocol::AvailableCommand::new(
-                "build-with-ai".to_string(),
-                description.to_string(),
-            )
-            .meta(meta)
-        }
-
-        fn product_skill(
-            description: &str,
-            product: &str,
-        ) -> agent_client_protocol::AvailableCommand {
-            let meta = serde_json::json!({
-                "scope": "server",
-                "path": "chat-product://build-with-ai",
-                "product": product,
-            })
-            .as_object()
-            .cloned()
-            .expect("skill meta is an object");
-            agent_client_protocol::AvailableCommand::new(
-                "build-with-ai".to_string(),
-                description.to_string(),
-            )
-            .meta(meta)
-        }
-
-        let exact = "Build AI apps on SpaceXAI (XAI_API_KEY + api.x.ai)";
-        let mut ctrl = SlashController::new(
-            CommandRegistry::new(Vec::new()),
-            std::path::PathBuf::from("."),
-        );
-        let state = SlashState::default();
-        let models = ModelState::default();
-
-        ctrl.registry_mut()
-            .set_acp_commands(&[skill("bundled", exact)]);
-        ctrl.refresh(&state, "/", 1, &models);
-        let bundled = state
-            .snapshot()
-            .matches
-            .into_iter()
-            .find(|row| row.display == "/build-with-ai")
-            .expect("bundled skill row");
-        assert!(bundled.localize_description);
-
-        ctrl.registry_mut()
-            .set_acp_commands(&[product_skill(exact, "chat")]);
-        ctrl.refresh(&state, "/", 1, &models);
-        let product = state
-            .snapshot()
-            .matches
-            .into_iter()
-            .find(|row| row.display == "/build-with-ai")
-            .expect("product skill row");
-        assert!(product.localize_description);
-
-        ctrl.registry_mut()
-            .set_acp_commands(&[product_skill(exact, "team")]);
-        ctrl.refresh(&state, "/", 1, &models);
-        let other_server = state
-            .snapshot()
-            .matches
-            .into_iter()
-            .find(|row| row.display == "/build-with-ai")
-            .expect("other server skill row");
-        assert!(!other_server.localize_description);
-
-        ctrl.registry_mut()
-            .set_acp_commands(&[skill("local", exact)]);
-        ctrl.refresh(&state, "/", 1, &models);
-        let local = state
-            .snapshot()
-            .matches
-            .into_iter()
-            .find(|row| row.display == "/build-with-ai")
-            .expect("local skill row");
-        assert!(!local.localize_description);
-
-        ctrl.registry_mut()
-            .set_acp_commands(&[skill("bundled", "Build AI apps with a team-owned override")]);
-        ctrl.refresh(&state, "/", 1, &models);
-        let changed = state
-            .snapshot()
-            .matches
-            .into_iter()
-            .find(|row| row.display == "/build-with-ai")
-            .expect("changed bundled row");
-        assert!(!changed.localize_description);
-    }
-
-    #[test]
     fn flat_mru_boosts_recent_command_regardless_of_typed_prefix() {
         // Flat schema (hermetic): using `plan` recently boosts it even when typing `/p`, independent of the live builtin registry
         let mut ctrl = tie_controller(
@@ -4352,7 +3495,6 @@ mod tests {
                 match_text: match_text.into(),
                 insert_text: insert.into(),
                 description: String::new(),
-                presentation: None,
             };
             if let Some(rest) = args_query.strip_prefix("first")
                 && rest.starts_with(char::is_whitespace)
@@ -4415,6 +3557,119 @@ mod tests {
         assert_eq!(
             snap.matches.first().map(|m| m.indices.as_slice()),
             Some([0, 1].as_slice())
+        );
+    }
+
+    #[test]
+    fn model_effort_phase_opens_on_default_row_and_keeps_carry_semantics() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("reasoning-x"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id, "Reasoning X").meta(
+                serde_json::json!({ "supportsReasoningEffort": true, "reasoningEffort": "high" })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+
+        let text = "/model Reasoning X ";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let snap = state.snapshot();
+        assert_eq!(1, snap.selected);
+        assert_eq!(
+            Some("Reasoning X high"),
+            snap.selection().map(|row| row.insert_text.as_str())
+        );
+
+        // Arrow navigation survives a same-text refresh; the opening row applies only to a new args context
+        ctrl.move_selection(&state, 1);
+        ctrl.refresh(&state, text, text.len(), &models);
+        assert_eq!(2, state.snapshot().selected);
+
+        let text = "/model Reasoning X h";
+        ctrl.refresh(&state, text, text.len(), &models);
+        assert_eq!(0, state.snapshot().selected);
+    }
+
+    #[test]
+    fn model_effort_phase_matches_a_catalog_id_prefix() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("grok-4.7"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id, "Grok 4.7").meta(
+                serde_json::json!({ "supportsReasoningEffort": true, "reasoningEffort": "high" })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+
+        // `grok-4.7` is not a subsequence of `Grok 4.7` (the hyphen). Rows must carry the id.
+        let text = "/model grok-4.7 ";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let snap = state.snapshot();
+        assert!(snap.open, "effort menu closed for a catalog id");
+        assert_eq!(
+            Some("grok-4.7 high"),
+            snap.selection().map(|row| row.insert_text.as_str())
+        );
+
+        let text = "/model grok-4.7 hi";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let snap = state.snapshot();
+        assert!(
+            snap.matches
+                .iter()
+                .any(|row| row.insert_text == "grok-4.7 high"),
+            "id prefix filtered out the effort rows: {:?}",
+            snap.matches
+                .iter()
+                .map(|row| row.insert_text.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effort_active_suffix_is_not_searchable() {
+        let mut ctrl = SlashController::with_builtins(std::path::PathBuf::from("."));
+        let state = SlashState::default();
+        let mut models = ModelState::default();
+        let id = acp::ModelId::new(Arc::from("reasoning-x"));
+        models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "Reasoning X").meta(
+                serde_json::json!({ "supportsReasoningEffort": true, "reasoningEffort": "high" })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+        models.current = Some(id);
+        models.reasoning_effort = Some(xai_grok_shell::sampling::types::ReasoningEffort::High);
+
+        let text = "/effort ";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let open = state.snapshot();
+        assert!(
+            open.matches
+                .iter()
+                .any(|row| row.display == "high (active)"),
+            "expected the active row before filtering"
+        );
+
+        let text = "/effort act";
+        ctrl.refresh(&state, text, text.len(), &models);
+        let filtered = state.snapshot();
+        assert!(
+            filtered
+                .matches
+                .iter()
+                .all(|row| row.display != "high (active)"),
+            "active suffix matched"
         );
     }
 

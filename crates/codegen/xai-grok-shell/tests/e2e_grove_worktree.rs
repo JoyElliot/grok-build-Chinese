@@ -185,8 +185,24 @@ impl IsolatedGrove {
         ]
     }
 
+    fn write_clone_config(&self) {
+        let (_, config, _) = self.private_home_dirs();
+        let grove_cfg = config.join("grove");
+        std::fs::create_dir_all(&grove_cfg).expect("grove config dir");
+        std::fs::write(
+            grove_cfg.join("config.toml"),
+            "auth_mode = \"git\"\n\n[clone]\nenabled = true\n",
+        )
+        .expect("write grove clone config");
+    }
+
+    fn scratch(&self, name: &str) -> PathBuf {
+        self._tmp.path().join(name)
+    }
+
     fn start_daemon(&mut self) {
         let (home, config, share) = self.private_home_dirs();
+        self.write_clone_config();
         let mut cmd = Command::new(&self.bin);
         cmd.env("GROVE_CONTROL_SOCK", &self.sock)
             .env("XDG_RUNTIME_DIR", &self.runtime_dir)
@@ -201,6 +217,32 @@ impl IsolatedGrove {
         let child = cmd.spawn().expect("spawn grove daemon");
         self.child = Some(child);
         self.wait_alive();
+    }
+
+    fn clone_into(&mut self, url: &str, dest: &Path) {
+        let (home, config, share) = self.private_home_dirs();
+        self.write_clone_config();
+        let dest_s = dest.to_str().expect("utf8 clone dest");
+        let mut cmd = Command::new(&self.bin);
+        cmd.env("GROVE_CONTROL_SOCK", &self.sock)
+            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_DATA_HOME", &share)
+            .env("GROK_CLONE", "1")
+            .args(["clone", url, dest_s, "--branch", "main"])
+            .stdin(Stdio::null());
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("grove clone spawn: {e}"));
+        assert!(
+            out.status.success(),
+            "grove clone failed: status={:?} stdout={} stderr={}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        self.note_mount(dest);
     }
 
     fn wait_alive(&mut self) {
@@ -624,5 +666,92 @@ fn isolated_subagent_from_grove_dest_is_isolated() {
 
         grove.unmount(&dest2);
         grove.unmount(&dest1);
+    });
+}
+
+/// First attach from a full local repo does not exercise that skip.
+#[test]
+fn worktree_create_from_grove_clone_dest_forks_fuse() {
+    if !require_fuse_or_skip() {
+        return;
+    }
+    if require_grove_bin().is_none() {
+        return;
+    }
+    run_agent_test(|_cwd, _mock| async move {
+        let mut grove = IsolatedGrove::dirs();
+        grove.start_daemon();
+        let _env = grove.install_env();
+
+        let src = grove.scratch("src");
+        std::fs::create_dir_all(&src).expect("clone source");
+        xai_test_utils::git::git_init_seed(&src);
+        std::fs::write(src.join("tracked.txt"), "hello\n").expect("write tracked");
+        xai_test_utils::git::git_commit_all(&src, "initial");
+        let url = format!("file://{}", src.display());
+        let clone_dest = grove.scratch("clone-dest");
+        grove.clone_into(&url, &clone_dest);
+        assert!(
+            dest_is_live_mount(&clone_dest),
+            "grove clone dest must be a live mount"
+        );
+        assert_eq!(
+            xai_test_utils::git::run_git(
+                &clone_dest,
+                &["config", "--get", "remote.origin.partialclonefilter"]
+            ),
+            "blob:none",
+            "clone dest must be the blob:none store grok -w has to skip libgit2 for"
+        );
+        std::fs::write(clone_dest.join("from-clone.txt"), b"p").expect("dirty clone dest");
+
+        let (conn, _init) =
+            connect_and_auth_with_remote(AutoApproveClient, "test", Some(gate_remote())).await;
+        let child = ext_method(
+            &conn,
+            CREATE_SYNC,
+            create_params(&clone_dest, "grove-from-clone"),
+        )
+        .await;
+        let dest2 = worktree_path(&child);
+        grove.note_mount(&dest2);
+        let strategy = strategy_of(&child);
+        assert_eq!(strategy["requestedStrategy"], json!("grove"));
+        assert_eq!(
+            strategy["resolvedStrategy"],
+            json!("grove-fuse"),
+            "fork from a Grove clone dest must stay grove-fuse, not fail libgit2 discover: {strategy}"
+        );
+        assert_eq!(
+            strategy["transport"],
+            json!("fuse"),
+            "Linux must never label FUSE as NFS: {strategy}"
+        );
+        assert!(
+            strategy.get("fallbackReason").is_none(),
+            "Grove clone-dest fork must not fall back: {strategy}"
+        );
+        assert!(
+            dest_is_live_mount(&dest2),
+            "child dest must be a live mount"
+        );
+        assert_ne!(clone_dest, dest2);
+        assert_eq!(
+            std::fs::read_to_string(dest2.join("from-clone.txt")).expect("child dirty"),
+            "p",
+            "dirty preserve must copy the clone dest file into the child"
+        );
+        std::fs::write(dest2.join("only-child.txt"), b"c").expect("child write");
+        assert!(
+            !clone_dest.join("only-child.txt").exists(),
+            "child write must not appear on the clone dest"
+        );
+        assert!(
+            dest_is_live_mount(&clone_dest),
+            "clone dest must stay mounted after the child forks"
+        );
+
+        grove.unmount(&dest2);
+        grove.unmount(&clone_dest);
     });
 }

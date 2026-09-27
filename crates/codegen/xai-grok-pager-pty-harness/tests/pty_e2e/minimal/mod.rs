@@ -29,6 +29,7 @@ mod minimal_parked_plan_survives_quit;
 mod minimal_queue_indicator_shows_while_running;
 mod minimal_quit_resets_bracketed_paste;
 mod minimal_resize_preserves_committed_scrollback;
+mod minimal_resize_reanchors_live_region;
 mod minimal_settings_modal_opens_and_closes;
 mod minimal_shift_tab_shows_mode_in_info_bar;
 mod minimal_short_response_stays_on_screen;

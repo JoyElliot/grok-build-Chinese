@@ -1577,6 +1577,11 @@ impl AcpUpdateTracker {
                 scrollback.finish_running(entry_id);
             }
         }
+        if self.skip_next_user_echo
+            && chunk_meta_flag(&chunk, user_message_chunk_meta::HIDE_FROM_SCROLLBACK)
+        {
+            return false;
+        }
         if self.skip_next_user_echo {
             self.skip_next_user_echo = false;
             if text.contains("<command-name>") {

@@ -14,11 +14,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::types::{
     ActiveAgentMessageOutcome, ActiveAgentMessageRequest, ActiveMessageSenderContext,
-    SpawnedSubagentRef, SubagentActiveMessageRequest, SubagentCancelOutcome, SubagentCancelRequest,
-    SubagentCancelTarget, SubagentDescribeOutcome, SubagentDescribeRequest, SubagentEvent,
-    SubagentEventSender, SubagentInspectRequest, SubagentInspection, SubagentListRunningRequest,
-    SubagentQueryRequest, SubagentRegistryCounts, SubagentRegistryCountsRequest, SubagentRequest,
-    SubagentResult, SubagentSnapshot, SubagentSpawnRequest, SubagentSpawnedRefsRequest,
+    HandedOffForegroundSubagent, SpawnedSubagentRef, SubagentActiveMessageRequest,
+    SubagentCancelOutcome, SubagentCancelRequest, SubagentCancelTarget, SubagentDescribeOutcome,
+    SubagentDescribeRequest, SubagentEvent, SubagentEventSender, SubagentHandOffForegroundRequest,
+    SubagentInspectRequest, SubagentInspection, SubagentListRunningRequest, SubagentQueryRequest,
+    SubagentRegistryCounts, SubagentRegistryCountsRequest, SubagentRequest, SubagentResult,
+    SubagentSnapshot, SubagentSpawnRequest, SubagentSpawnedRefsRequest,
     SubagentValidateTypeOutcome, SubagentValidateTypeRequest,
 };
 use crate::register_resource;
@@ -261,6 +262,16 @@ impl ChannelBackend {
         self
     }
 
+    /// Same transport, with lookups bound to `parent_session_id` so the coordinator only answers for children reachable from that session.
+    #[must_use]
+    pub fn scoped_to_session(&self, parent_session_id: impl Into<Arc<str>>) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            parent_session_id: Some(parent_session_id.into()),
+            root_targets: self.root_targets,
+        }
+    }
+
     fn parent_session_id(&self) -> Option<String> {
         self.parent_session_id.as_deref().map(str::to_owned)
     }
@@ -416,6 +427,30 @@ impl ChannelBackend {
                 prompt_id: prompt_id.to_owned(),
                 respond_to,
             }))
+            .is_err()
+        {
+            return Vec::new();
+        }
+        response_rx.await.unwrap_or_default()
+    }
+
+    pub async fn hand_off_foreground_for_prompt(
+        &self,
+        prompt_id: &str,
+    ) -> Vec<HandedOffForegroundSubagent> {
+        let Some(parent_session_id) = self.parent_session_id() else {
+            return Vec::new();
+        };
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SubagentEvent::HandOffForeground(
+                SubagentHandOffForegroundRequest {
+                    parent_session_id,
+                    prompt_id: prompt_id.to_owned(),
+                    respond_to,
+                },
+            ))
             .is_err()
         {
             return Vec::new();

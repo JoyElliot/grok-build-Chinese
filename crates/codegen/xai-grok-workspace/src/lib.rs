@@ -68,7 +68,7 @@ pub use path_virtualization::{
     VISIBLE_ROOT,
 };
 pub use permission::*;
-pub use session::{WorkspaceSession, WorkspaceShared};
+pub use session::{McpServerOutcome, WorkspaceSession, WorkspaceShared};
 pub use session::{file_state, git, jj};
 pub use upload::environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use workspace_ops::{WorkspaceOp, WorkspaceOps};

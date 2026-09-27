@@ -6,8 +6,7 @@ use xai_grok_tools::types::SessionMode;
 use crate::app::agent_view::AgentView;
 
 impl AgentView {
-    /// Stores the agent's offered modes. A published list drops permission staged by the
-    /// pre-session Grok ring, which has no arm here and would otherwise stick on the prompt row.
+    /// Stores the modes the agent published and turns Auto off. Ask replaces Auto for these agents.
     pub(crate) fn apply_session_modes(&mut self, modes: Option<acp::SessionModeState>) -> bool {
         let Some(modes) = modes else {
             return false;
@@ -16,9 +15,12 @@ impl AgentView {
         self.session_mode_pending = None;
         self.plan_mode_active = self.session_mode.is_plan();
         self.available_modes = modes.available_modes;
-        self.session.yolo_mode = false;
+
         self.session.auto_mode = false;
-        self.deferred_permission_mode = None;
+        if self.deferred_permission_mode == Some("auto") {
+            self.deferred_permission_mode = None;
+        }
+
         true
     }
 
@@ -55,23 +57,9 @@ impl AgentView {
         }
     }
 
-    /// Next offered mode in ring order, with the name the agent gave it. Unknown ids are skipped.
-    pub(crate) fn next_published_mode(&self) -> Option<(SessionMode, &str)> {
-        let known: Vec<(SessionMode, &str)> = self
-            .available_modes
-            .iter()
-            .filter_map(|mode| mode.id.0.parse().ok().map(|id| (id, mode.name.as_str())))
-            .collect();
-        let current = self.effective_session_mode();
-        let position = known.iter().position(|(mode, _)| *mode == current);
-        // An empty ring yields `None` from `get`; the modulo is only reached when a mode matched.
-        let next = position.map_or(0, |index| (index + 1) % known.len());
-        known.get(next).cloned()
-    }
-
     /// Optimistic Shift+Tab pick, pending the agent's `CurrentModeUpdate`.
-    pub(crate) fn pick_published_mode(&mut self, mode: SessionMode) {
-        self.plan_mode_pending = Some(mode.is_plan());
+    pub(crate) fn stage_session_mode(&mut self, mode: SessionMode) {
+        self.stage_plan_mode(mode.is_plan());
         self.session_mode_pending = Some(mode);
     }
 }

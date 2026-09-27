@@ -77,11 +77,12 @@ pub struct SessionHandle {
     pub emit_local_background_tasks: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Status-line and live user-echo gates. Shared with [`super::notifications::NotificationSender`].
     pub(crate) client_caps: super::notifications::SessionClientCaps,
-    /// MCP server configs for this session (merged local and client-provided).
-    /// Stored on the handle so forked sessions can inherit the parent's MCP servers without a round-trip through the session actor.
-    pub mcp_servers: Vec<acp::McpServer>,
+    /// Admitted MCP servers (disk, client, and the current agent.md overlay).
+    /// Shared with the actor's `McpState`: config commits publish here, and forks
+    /// snapshot the cell so they see the current seat's servers and headers.
+    pub mcp_servers: super::mcp_servers::AdmittedMcpServers,
     /// Client-provided MCP servers as admitted by the vendor `mcps` kill-switch, before merging with disk/plugin/managed servers.
-    /// Hot-reloads re-merge from this seed; a server the kill-switch rejected cannot reappear because its on-disk attribution vanished mid-session.
+    /// Writers assign this through `with_resident_mut` before enqueue. The actor keeps its own copy, updated from `UpdateMcpServers.client_seed`.
     pub initial_client_mcp_servers: Vec<acp::McpServer>,
     /// Stable display path for forked sessions (original project path).
     /// When set, the hunk tracker extension handler rewrites worktree paths in API responses to this path.
@@ -450,8 +451,10 @@ impl SessionHandle {
         })
     }
     /// Snapshot the session's resolved tool schema for verbatim-fork inheritance.
-    /// A dead actor or dropped reply fails open to an empty list (child then builds its own toolset, same as a non-fork spawn).
-    pub(crate) async fn snapshot_tool_definitions(&self) -> Vec<xai_grok_sampling_types::ToolSpec> {
+    /// A dead actor, dropped reply, or empty schema fails open to `None`; the child builds its own.
+    pub(crate) async fn snapshot_tool_definitions(
+        &self,
+    ) -> Option<crate::session::commands::ForkedToolSnapshot> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -461,14 +464,18 @@ impl SessionHandle {
             tracing::warn!(
                 "snapshot_tool_definitions: session actor gone; fork child inherits no parent tools"
             );
-            return Vec::new();
+            return None;
         }
-        rx.await.unwrap_or_else(|_| {
-            tracing::warn!(
-                "snapshot_tool_definitions: reply dropped; fork child inherits no parent tools"
-            );
-            Vec::new()
-        })
+        match rx.await {
+            Ok(snapshot) if !snapshot.specs.is_empty() => Some(snapshot),
+            Ok(_) => None,
+            Err(_) => {
+                tracing::warn!(
+                    "snapshot_tool_definitions: reply dropped; fork child inherits no parent tools"
+                );
+                None
+            }
+        }
     }
     pub(crate) async fn workflow_catalog_state(&self) -> (bool, bool) {
         let (tx, rx) = oneshot::channel();

@@ -2668,6 +2668,25 @@ impl TextArea {
         self.wrap_cache.replace(None);
     }
 
+    /// Register one element over existing buffer text without editing. `None` when `range` is not a valid slice or
+    /// strictly intersects an existing element (adjacent ranges are accepted). Not undoable, like [`Self::restore_elements`].
+    pub fn restore_element(
+        &mut self,
+        range: Range<usize>,
+        kind: ElementKind,
+        display: Option<Line<'static>>,
+    ) -> Option<ElementId> {
+        self.get_range(range.clone())?;
+        let intersects = self
+            .elements
+            .iter()
+            .any(|e| e.range.start < range.end && range.start < e.range.end);
+        if intersects {
+            return None;
+        }
+        Some(self.add_element(range, kind, display))
+    }
+
     /// Inline an element: remove it from the element list so its buffer text becomes plain editable characters. The text
     /// content is unchanged. The cursor is placed at the end of the inlined region. This operation is a single undoable step.
     /// Returns `true` if the element was found and inlined, `false` otherwise.

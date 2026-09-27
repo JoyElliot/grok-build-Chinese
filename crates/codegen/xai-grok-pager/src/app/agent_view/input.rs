@@ -47,7 +47,6 @@ impl AgentView {
             || self.plan_approval_view.is_some()
             || self.casual_commenting_range.is_some()
             || self.rewind_state.is_some()
-            || self.inline_edit.is_some()
             || self.jump_state.is_some()
             || self.prompt.any_dropdown_open();
         if owned_elsewhere {
@@ -946,24 +945,6 @@ impl AgentView {
                 _ => InputOutcome::Unchanged,
             };
         }
-        if self.inline_edit.is_some() {
-            return match ev {
-                Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
-                    if key!('q', CONTROL).matches(key) {
-                        return InputOutcome::Unchanged;
-                    }
-                    self.handle_inline_edit_key(key)
-                }
-                Event::Mouse(mouse) => self.handle_inline_edit_mouse(mouse),
-                Event::Paste(text) => {
-                    if let Some(ref mut edit) = self.inline_edit {
-                        edit.textarea.insert_str(text);
-                    }
-                    InputOutcome::Changed
-                }
-                _ => InputOutcome::Unchanged,
-            };
-        }
         if self.jump_state.is_some() {
             return match ev {
                 Event::Key(key) if key.kind != crossterm::event::KeyEventKind::Release => {
@@ -1018,7 +999,6 @@ impl AgentView {
                 AgentPane::Todo => self.handle_todo_key(key, registry),
                 AgentPane::Queue => self.handle_queue_key(key, registry),
                 AgentPane::Tasks => self.handle_bg_tasks_key(key, registry),
-                AgentPane::Catalog => self.handle_catalog_key(key, registry),
                 AgentPane::Dock => self.handle_dock_key(key),
             },
             Event::Paste(text) => {
@@ -1047,7 +1027,6 @@ impl AgentView {
                     let consumed = match self.active_pane {
                         AgentPane::Todo => self.todo.handle_paste(text),
                         AgentPane::Tasks => self.tasks.handle_paste(text),
-                        AgentPane::Catalog => self.catalog.handle_paste(text),
                         AgentPane::Queue => self.queue.handle_paste(text),
                         AgentPane::Prompt | AgentPane::Scrollback | AgentPane::Dock => false,
                     };
@@ -1396,9 +1375,6 @@ impl AgentView {
             if target != AgentPane::Tasks {
                 self.tasks.overlay.focused = false;
             }
-            if target != AgentPane::Catalog {
-                self.catalog.overlay.focused = false;
-            }
             if target != AgentPane::Queue {
                 self.queue.overlay.focused = false;
             }
@@ -1413,9 +1389,6 @@ impl AgentView {
         }
         if target != AgentPane::Tasks {
             self.tasks.overlay.focused = false;
-        }
-        if target != AgentPane::Catalog {
-            self.catalog.overlay.focused = false;
         }
         if target != AgentPane::Queue {
             self.queue.overlay.focused = false;
@@ -2504,41 +2477,6 @@ mod voice_stop_click_during_plan_review_tests {
             matches!(outcome, InputOutcome::Action(Action::VoiceToggle)),
             "[stop] click during plan feedback must dispatch VoiceToggle, got {outcome:?}"
         );
-    }
-}
-#[cfg(test)]
-mod rich_textarea_paste_routing_tests {
-    use super::test_fixtures::make_agent;
-    use crate::actions::ActionRegistry;
-    use crate::app::inline_edit::InlineEditState;
-    use crate::scrollback::entry::EntryId;
-    use crossterm::event::Event;
-    use xai_ratatui_textarea::{TextArea, TextAreaState};
-    #[test]
-    fn inline_edit_receives_raw_multiline_paste_without_touching_prompt() {
-        let mut agent = make_agent();
-        agent.prompt.set_text("hidden prompt");
-        let mut textarea = TextArea::new();
-        textarea.set_text("ab");
-        textarea.set_cursor(1);
-        agent.inline_edit = Some(InlineEditState {
-            entry_id: EntryId::new(1),
-            prompt_index: 0,
-            original: "ab".to_owned(),
-            textarea,
-            textarea_state: TextAreaState::default(),
-            last_text_area: None,
-            last_rect: None,
-        });
-        let _ = agent.handle_input(
-            &Event::Paste("中\nline".to_owned()),
-            &ActionRegistry::defaults(),
-        );
-        assert_eq!(
-            agent.inline_edit.as_ref().map(|edit| edit.textarea.text()),
-            Some("a中\nlineb")
-        );
-        assert_eq!(agent.prompt.text(), "hidden prompt");
     }
 }
 /// Pasting while the scrollback pane holds the keyboard (prompt unfocused) must land in the composer.

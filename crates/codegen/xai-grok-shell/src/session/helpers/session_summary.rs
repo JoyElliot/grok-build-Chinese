@@ -1,8 +1,11 @@
 //! Session title generation via LLM tool call.
 
+use xai_grok_sampler::SamplerConfig;
+use xai_grok_sampling_types::ApiBackend;
+
 use crate::sampling::{
     Client as OaiCompatClient, ConversationItem, ConversationRequest, ConversationToolChoice,
-    ToolSpec,
+    SamplingClient, ToolSpec,
 };
 use crate::session::helpers::chat::floor_char_boundary;
 
@@ -10,22 +13,9 @@ use crate::session::helpers::chat::floor_char_boundary;
 /// Titles only need the opening, and this keeps the request well under the model prompt limit.
 const TITLE_SOURCE_MAX_BYTES: usize = 8_000;
 
-const SESSION_TITLE_SYSTEM_PROMPT: &str = r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
-We describe the session title below
-# Session Title
-A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.
-
-You will be given the user query below encapsulated in <user_query></user_query>.
-
-Write the title in the same natural language as the user query. If the user query contains Chinese, the session_title MUST be concise Chinese and MUST NOT be translated into English. For mixed-language queries, follow the predominant natural language while preserving code identifiers, commands, and product names.
-
-Just generate the session_title and nothing else"#;
-
-/// Real-user turn counts at which the auto title is refreshed from the whole
-/// conversation, then frozen. Turn 1's title comes from the fast first-prompt
-/// path; refreshing at a couple of early turns lets the title catch up to the
-/// real topic without churning enough to make sessions hard to recognize. A
-/// manual `/rename` always wins and stops refreshes.
+/// Real-user turn counts at which the auto title is refreshed from the whole conversation, then frozen.
+/// Refreshing at a couple of early turns lets the title catch up to the real topic without churning enough to make sessions hard to recognize.
+/// A manual `/rename` always wins and stops refreshes.
 pub(crate) const TITLE_REFRESH_TURNS: [usize; 2] = [3, 6];
 
 /// Number of [`TITLE_REFRESH_TURNS`] checkpoints reached at `turns` real-user turns, i.e. the checkpoint index to advance to.
@@ -38,6 +28,55 @@ pub(crate) fn checkpoints_reached(turns: usize) -> usize {
 /// Hard byte cap guarding runaway title output; the instruction already targets 5-10 words.
 /// Applied on a char boundary, so a multibyte title is capped a little shorter, which is fine for a safety bound.
 const TITLE_MAX_BYTES: usize = 80;
+
+/// An explicit sampler route a backend pins its titles to, instead of the configured default.
+#[derive(Clone)]
+pub struct DirectSessionTitleRoute {
+    base_url: String,
+    model: String,
+    api_key: String,
+}
+
+impl DirectSessionTitleRoute {
+    pub fn new(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
+        DirectSessionTitleRoute {
+            base_url: base_url.into(),
+            model: model.into(),
+            api_key: api_key.into(),
+        }
+    }
+}
+
+/// Builds the title client for a daemon pinned to a direct Grok model endpoint. The route is
+/// authoritative: its credential never falls through to the configured public endpoints.
+pub fn build_direct_session_title_client(
+    direct: DirectSessionTitleRoute,
+    client_version: Option<String>,
+) -> crate::sampling::Result<(SamplingClient, String)> {
+    let sampling_config = direct_session_title_sampling_config(direct, client_version);
+    let model = sampling_config.model.clone();
+    let client = SamplingClient::new(sampling_config)?;
+    Ok((client, model))
+}
+
+fn direct_session_title_sampling_config(
+    direct: DirectSessionTitleRoute,
+    client_version: Option<String>,
+) -> SamplerConfig {
+    SamplerConfig {
+        api_key: Some(direct.api_key),
+        base_url: direct.base_url,
+        model: direct.model,
+        api_backend: ApiBackend::Responses,
+        context_window: 200_000,
+        client_version,
+        ..SamplerConfig::default()
+    }
+}
 
 /// Durable title-refresh checkpoint watermark under `{session_dir}/`: the number of [`TITLE_REFRESH_TURNS`] checkpoints already consumed.
 /// Only a committed value is persisted, so an aborted refresh still retries.
@@ -116,7 +155,8 @@ fn strip_system_reminder_blocks(text: &str) -> String {
 
 /// Text the session title is derived from: strip system reminders and skill XML markup, then cap to the first few KB.
 /// Stripping runs before the cap so a leading reminder larger than the cap is still removed.
-fn title_source_text(user_message: &str) -> String {
+/// Callers that retain a prompt for later titling keep this, not the raw text.
+pub fn title_source_text(user_message: &str) -> String {
     let without_reminders = strip_system_reminder_blocks(user_message);
     let base = if without_reminders.is_empty() {
         user_message
@@ -130,7 +170,8 @@ fn title_source_text(user_message: &str) -> String {
     display
 }
 
-pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
+/// The deterministic first-ten-words fallback shared by every initial-title path.
+pub fn title_fallback_from_user_text(user_message: &str) -> String {
     let text = title_source_text(user_message);
     let s = text
         .split_whitespace()
@@ -144,33 +185,8 @@ pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
     }
 }
 
-fn contains_han(text: &str) -> bool {
-    text.chars().any(|character| {
-        matches!(
-            character,
-            '\u{3400}'..='\u{4DBF}'
-                | '\u{4E00}'..='\u{9FFF}'
-                | '\u{F900}'..='\u{FAFF}'
-                | '\u{20000}'..='\u{2FA1F}'
-        )
-    })
-}
-
-/// Keep generated titles non-empty and enforce the Chinese-language contract.
-/// Other languages rely on the model instruction because this crate does not
-/// carry a general-purpose language detector.
-fn validated_generated_title(source: &str, generated: &str) -> Option<String> {
-    let generated = generated.trim();
-    if generated.is_empty() || (contains_han(source) && !contains_han(generated)) {
-        return None;
-    }
-    Some(generated.to_string())
-}
-
-/// Generate the initial session title from the first user message, for the fast
-/// first-prompt path ([`crate::session::summary::SummaryGenerator`]). The title
-/// is later refreshed from the whole conversation at the early checkpoints in
-/// [`TITLE_REFRESH_TURNS`], then frozen.
+/// Generate the initial session title from the first user message, for the fast first-prompt path ([`crate::session::summary::SummaryGenerator`]).
+/// The title is later refreshed from the whole conversation at the early checkpoints in [`TITLE_REFRESH_TURNS`], then frozen.
 pub async fn generate_session_summary(
     user_message: String,
     client: OaiCompatClient,
@@ -178,7 +194,16 @@ pub async fn generate_session_summary(
 ) -> String {
     let clean_message = title_source_text(&user_message);
     let request = ConversationRequest::from_items(vec![
-        ConversationItem::system(SESSION_TITLE_SYSTEM_PROMPT),
+        ConversationItem::system(
+            r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
+We describe the session title below
+# Session Title
+A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.
+
+You will be given the user query below encapsulated in <user_query></user_query>.
+
+Just generate the session_title and nothing else"#,
+        ),
         ConversationItem::user(format!(
             r#"<user_query>
 {}
@@ -189,17 +214,14 @@ pub async fn generate_session_summary(
     .with_model(model)
     .with_tools(vec![ToolSpec {
         name: "session_title".to_owned(),
-        description: Some(
-            "Generate a concise session_title in the same natural language as the user query"
-                .to_owned(),
-        ),
+        description: Some("Generate the session_title which we use for the user_message".to_owned()),
         parameters: serde_json::json!({
             "type": "object",
             "required": ["session_title"],
             "properties": {
                 "session_title": {
                     "type": "string",
-                    "description": "Final 5-10 word descriptive title in the same language as the user query. A Chinese query requires a concise Chinese title. Super info dense, no filler."
+                    "description": "Final session title, just 5-10 word descriptive title for the session. Super info dense, no filler."
                 }
             },
             "additionalProperties": false
@@ -215,15 +237,7 @@ pub async fn generate_session_summary(
                 && let Some(tool_call) = a.tool_calls.first()
                 && let Ok(result) = serde_json::from_str::<SessionTitle>(&tool_call.arguments)
             {
-                if let Some(title) =
-                    validated_generated_title(&clean_message, &result.session_title)
-                {
-                    return title;
-                }
-                tracing::warn!(
-                    model = %model,
-                    "session title generation returned an empty or wrong-language title; falling back to user text"
-                );
+                return result.session_title;
             }
             tracing::debug!(
                 model = %model,
@@ -249,11 +263,7 @@ pub(crate) fn title_refresh_instruction(tag: &str) -> String {
         "<{tag}>Generate a session title for the conversation above. It should be a short and \
          distinctive 5-10 word descriptive title capturing what this session is actually about \
          (the main task or topic), based on the WHOLE conversation — not just the first message. \
-         Write the title in the same natural language as the conversation. If the conversation \
-         contains Chinese, the title MUST be concise Chinese and MUST NOT be translated into \
-         English. For mixed-language conversations, follow the predominant natural language \
-         while preserving code identifiers, commands, and product names. Super info dense, no \
-         filler. User-role messages wrapped in reminder tags like this one \
+         Super info dense, no filler. User-role messages wrapped in reminder tags like this one \
          are injected context, not the user.\n\n\
          Output ONLY the title: plain text, no quotes, no labels, no markdown. Do NOT call any \
          tools — respond with plain text only.</{tag}>"
@@ -275,10 +285,22 @@ pub(crate) fn clean_title_text(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SESSION_TITLE_SYSTEM_PROMPT, TITLE_SOURCE_MAX_BYTES, clean_title_text,
-        strip_system_reminder_blocks, title_fallback_from_user_text, title_refresh_instruction,
-        title_source_text, validated_generated_title,
+        DirectSessionTitleRoute, TITLE_SOURCE_MAX_BYTES, clean_title_text,
+        direct_session_title_sampling_config, strip_system_reminder_blocks,
+        title_fallback_from_user_text, title_refresh_instruction, title_source_text,
     };
+
+    #[test]
+    fn direct_title_route_builds_its_own_sampler_config() {
+        let config = direct_session_title_sampling_config(
+            DirectSessionTitleRoute::new("http://127.0.0.1:4242/v1", "local-model", "direct-key"),
+            Some("test-version".to_owned()),
+        );
+
+        assert_eq!("http://127.0.0.1:4242/v1", config.base_url);
+        assert_eq!("local-model", config.model);
+        assert_eq!(Some("direct-key"), config.api_key.as_deref());
+    }
 
     #[test]
     fn checkpoints_reached_counts_and_catches_up() {
@@ -335,10 +357,6 @@ mod tests {
         let text = title_refresh_instruction("system-reminder");
         assert!(text.starts_with("<system-reminder>"));
         assert!(text.ends_with("</system-reminder>"));
-        assert!(text.contains("WHOLE conversation"));
-        assert!(text.contains("5-10 word"));
-        assert!(text.contains("contains Chinese"));
-        assert!(text.contains("MUST be concise Chinese"));
     }
 
     #[test]
@@ -453,33 +471,5 @@ mod tests {
             title_fallback_from_user_text("fix the auth bug in login.rs"),
             "fix the auth bug in login.rs",
         );
-    }
-
-    #[test]
-    fn prompt_requires_titles_to_follow_the_user_language() {
-        assert!(SESSION_TITLE_SYSTEM_PROMPT.contains("same natural language as the user query"));
-        assert!(SESSION_TITLE_SYSTEM_PROMPT.contains("contains Chinese"));
-        assert!(SESSION_TITLE_SYSTEM_PROMPT.contains("MUST be concise Chinese"));
-    }
-
-    #[test]
-    fn chinese_source_rejects_english_generated_title() {
-        assert_eq!(
-            validated_generated_title("测试各种工具链是否正常", "Tool Chain Functionality Test"),
-            None
-        );
-        assert_eq!(
-            validated_generated_title("测试各种工具链是否正常", "测试工具链功能"),
-            Some("测试工具链功能".to_string())
-        );
-    }
-
-    #[test]
-    fn generated_title_is_trimmed_and_non_chinese_languages_remain_supported() {
-        assert_eq!(
-            validated_generated_title("fix the auth bug", "  Fix authentication bug  "),
-            Some("Fix authentication bug".to_string())
-        );
-        assert_eq!(validated_generated_title("fix the auth bug", "   "), None);
     }
 }

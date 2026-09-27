@@ -105,7 +105,9 @@ async fn execute_with_captured_active_message_events(
 ) -> Vec<crate::session::telemetry::ActiveAgentMessageEvent> {
     let (result, events) = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        crate::session::telemetry::capture_product_events(actor.execute_tool_calls(vec![call])),
+        crate::session::telemetry::capture_product_events(
+            actor.execute_tool_calls(vec![call], None),
+        ),
     )
     .await
     .expect("generic tool completion must not hang");

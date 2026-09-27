@@ -1,5 +1,6 @@
 pub mod auto_mode;
 pub mod bash_command_splitting;
+mod bash_permission_script;
 pub mod claude_settings;
 mod exec_risk;
 mod gate_preflight;

@@ -2845,6 +2845,81 @@ fn unreadable_policy_layer_locks_down() {
     );
     assert!(ms.project_mcp.is_disabled());
     assert!(ms.plugin_auto_update.is_disabled());
+    assert!(ms.non_managed_hooks.is_disabled());
+}
+
+/// `allow_managed_hooks_only` is a tighten-only lockdown pin: `true` from any layer engages it
+/// (attributed to the first pinning layer in tier order), `false` never releases it,
+/// and a non-boolean value engages it (fail closed).
+#[test]
+fn allow_managed_hooks_only_pins_from_any_layer_and_fails_closed() {
+    let ms = layered(None, &[(PolicyLayerTier::UserManaged, USER_MANAGED, "")]);
+    assert!(!ms.non_managed_hooks.is_disabled(), "absent: unpinned");
+
+    let ms = layered(
+        None,
+        &[(
+            PolicyLayerTier::UserRequirements,
+            USER_REQ,
+            "allow_managed_hooks_only = true\n",
+        )],
+    );
+    assert_eq!(
+        ms.non_managed_hooks.source(),
+        Some(std::path::Path::new(USER_REQ))
+    );
+    assert!(matches!(
+        ms.non_managed_hooks,
+        PolicyPin::Disabled {
+            ownership: PolicyLayerOwnership::User,
+            ..
+        }
+    ));
+
+    // The admin layer pins first, a later user layer cannot re-attribute it, and `false` cannot release it.
+    let ms = layered(
+        None,
+        &[
+            (
+                PolicyLayerTier::UserRequirements,
+                USER_REQ,
+                "allow_managed_hooks_only = true\n",
+            ),
+            (
+                PolicyLayerTier::SystemRequirements,
+                SYS_REQ,
+                "allowManagedHooksOnly = true\n",
+            ),
+            (
+                PolicyLayerTier::UserManaged,
+                USER_MANAGED,
+                "allow_managed_hooks_only = false\n",
+            ),
+        ],
+    );
+    assert!(matches!(
+        ms.non_managed_hooks,
+        PolicyPin::Disabled {
+            ownership: PolicyLayerOwnership::Admin,
+            ..
+        }
+    ));
+    assert_eq!(
+        ms.non_managed_hooks.source(),
+        Some(std::path::Path::new(SYS_REQ))
+    );
+
+    // Not a boolean: engages the lockdown and warns.
+    let path = std::path::Path::new(CLAUDE_PATH);
+    let (ms, logs) = capturing_warn_logs(|| {
+        parse_managed_settings_json(&serde_json::json!({ "allowManagedHooksOnly": "yes" }), path)
+    });
+    assert!(ms.non_managed_hooks.is_disabled());
+    assert!(logs.contains("policy key must be a boolean"), "{logs:?}");
+
+    let ms =
+        parse_managed_settings_json(&serde_json::json!({ "allowManagedHooksOnly": false }), path);
+    assert!(!ms.non_managed_hooks.is_disabled());
 }
 
 /// An unreadable `extraKnownMarketplaces` key fails closed on the auto-update

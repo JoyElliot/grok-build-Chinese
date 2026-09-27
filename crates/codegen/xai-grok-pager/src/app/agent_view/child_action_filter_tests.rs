@@ -31,6 +31,7 @@ const ALLOWED: &[&str] = &[
     "FocusScrollback",
     "FocusPrompt",
     "CancelTurn",
+    "KillBgTask",
     "CopyBlockContent",
     "CopyBlockMeta",
     "OpenBlockViewer",
@@ -58,6 +59,7 @@ fn unreached_denied_samples() -> Vec<Action> {
         Action::SendPromptNow {
             text: String::from("hi"),
             images: Vec::new(),
+            image_notice: None,
         },
         Action::Interject {
             text: String::from("hi"),
@@ -78,7 +80,6 @@ fn unreached_denied_samples() -> Vec<Action> {
         Action::DrainQueue,
         Action::Rewind,
         Action::RewindShowPicker,
-        Action::KillBgTask(String::from("t1")),
     ]
 }
 
@@ -164,6 +165,7 @@ fn child_send_family_is_denied() {
         InputOutcome::ActionThenForward(Action::SendPromptNow {
             text: String::from("hi"),
             images: Vec::new(),
+            image_notice: None,
         }),
         InputOutcome::ActionPair(
             Action::CopyBlockContent,

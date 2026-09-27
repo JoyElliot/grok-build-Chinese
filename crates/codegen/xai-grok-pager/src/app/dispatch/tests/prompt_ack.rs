@@ -120,7 +120,9 @@ fn expired_watch_on_an_overlay_child_restores_the_child_prompt() {
     );
     child.session.enqueue_prompt("child text".into());
     assert!(matches!(
-        maybe_drain_queue(&mut child).effects.as_slice(),
+        maybe_drain_queue(&mut child, &mut Vec::new())
+            .effects
+            .as_slice(),
         [Effect::SendPrompt { .. }]
     ));
     let pid = child

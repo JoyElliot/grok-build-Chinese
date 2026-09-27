@@ -1866,57 +1866,6 @@ fn bundle_status_failed_logs_but_keeps_state() {
 }
 
 #[test]
-fn catalog_entry_ready_opens_viewer() {
-    let mut app = test_app_with_agent();
-
-    dispatch(
-        Action::TaskComplete(TaskResult::CatalogEntryReady {
-            kind: "persona".into(),
-            name: "researcher".into(),
-            content: "instructions = \"deep research\"".into(),
-        }),
-        &mut app,
-    );
-
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("expected agent view");
-    };
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.block_viewer.is_some());
-    let viewer = agent.block_viewer.as_ref().unwrap();
-    assert_eq!(
-        viewer.kind,
-        crate::views::block_viewer::ViewerKind::PlainText
-    );
-}
-
-#[test]
-fn catalog_entry_failed_shows_system_message() {
-    let mut app = test_app_with_agent();
-    let initial_len = {
-        let ActiveView::Agent(id) = app.active_view else {
-            panic!("expected agent view");
-        };
-        expect_agent(&app, id).scrollback.len()
-    };
-
-    let effects = dispatch(
-        Action::TaskComplete(TaskResult::CatalogEntryFailed {
-            error: "not found".into(),
-        }),
-        &mut app,
-    );
-
-    assert!(effects.is_empty());
-    let ActiveView::Agent(id) = app.active_view else {
-        panic!("expected agent view");
-    };
-    let agent = app.agents.get(&id).unwrap();
-    assert!(agent.block_viewer.is_none());
-    assert!(agent.scrollback.len() > initial_len);
-}
-
-#[test]
 fn available_commands_refreshed_updates_generation() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);

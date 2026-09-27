@@ -3,6 +3,8 @@
 //! Both buttons write the choice through the shell's `PUT /privacy/coding-data-retention` round trip and stamp
 //! `[privacy].privacy_banner_acked` only once that succeeds. The banner hides as soon as the write is pending, so
 //! hiding and acknowledging are separate steps.
+//! `[Opt out]` runs as a personal account, whose capability `/user` never resolves; `[Opt in]` as a member the server says
+//! can administer the team.
 //!
 //! Drives the real pager binary through a PTY against the shared mock inference server (isolated `$HOME`).
 //! A seeded opted-out OAuth entry is the active auth (`XAI_API_KEY` removed) and the rollout is forced on via `GROK_PRIVACY_NOTICE_ROLLOUT=1`.
@@ -17,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use xai_grok_pager_pty_harness::{
-    ContentController, EnvOp, PtyExitPoll, PtyHarness, keys, pager_binary,
-    seed_fake_oauth_coding_data_opted_out,
+    ContentController, EnvOp, MockCanAdministerTeam, PtyExitPoll, PtyHarness, keys, pager_binary,
+    seed_fake_oauth_coding_data_opted_out, seed_fake_oauth_team_member_can_administer,
 };
 
 const ROWS: u16 = 50;
@@ -40,13 +42,27 @@ async fn privacy_banner_persists_into_agent_view_and_opt_in_shares() {
     run_opt_in().await.expect("privacy banner opt-in e2e");
 }
 
-/// The banner's two preconditions: force the rollout flag on (the env override beats remote settings) and remove the sandbox's fake `XAI_API_KEY`.
+/// The banner's env preconditions: force the rollout flag on (the env override beats remote settings) and remove the sandbox's fake `XAI_API_KEY`.
 /// Removing the key makes the seeded opted-out OAuth entry the active auth.
-fn banner_env_ops() -> [EnvOp<'static>; 2] {
+/// The `[Opt in]` team principal would otherwise start a managed-config fetch the mock does not serve.
+fn banner_env_ops() -> [EnvOp<'static>; 3] {
     [
         EnvOp::set("GROK_PRIVACY_NOTICE_ROLLOUT", "1"),
+        EnvOp::set("GROK_MANAGED_CONFIG", "0"),
         EnvOp::remove("XAI_API_KEY"),
     ]
+}
+
+/// Disk and mock agree so a `/user` refresh cannot flip the capability.
+fn seed_team_admin_user(content: &ContentController) {
+    content
+        .server()
+        .set_user_can_administer_team(MockCanAdministerTeam::Allowed);
+    seed_fake_oauth_team_member_can_administer(
+        content,
+        "pty-privacy-user",
+        MockCanAdministerTeam::Allowed,
+    );
 }
 
 async fn run_opt_out() -> Result<()> {
@@ -107,7 +123,7 @@ async fn run_opt_in() -> Result<()> {
         .await
         .context("start mock server")?;
     content.set_response(format!("{ACK} done."));
-    seed_fake_oauth_coding_data_opted_out(&content, "pty-privacy-user");
+    seed_team_admin_user(&content);
 
     let project = tempfile::tempdir().context("project dir")?;
     std::fs::create_dir_all(project.path().join(".git")).context("create .git")?;

@@ -1,4 +1,4 @@
-//! Managed MCP + plugin + marketplace policy engine: `managed-settings.json`
+//! Managed MCP + plugin + marketplace + hooks policy engine: `managed-settings.json`
 //! plus every `managed_config.toml` / `requirements.toml` layer, resolved
 //! strictest-wins into MCP/marketplace allowlists and tighten-only pins.
 //!
@@ -36,7 +36,7 @@ use super::resolution::parse_managed_settings_base;
 use crate::permission::rules::DefaultPermissionMode;
 use crate::permission::types::{PermissionRule, Sourced};
 
-/// Managed MCP/plugin/marketplace policy from Claude `managed-settings.json` plus every `managed_config.toml` / `requirements.toml` layer.
+/// Managed MCP/plugin/marketplace/hooks policy from Claude `managed-settings.json` plus every `managed_config.toml` / `requirements.toml` layer.
 /// Strictest-wins: any deny wins, every restricted source must allow, pins only tighten. Loaded once per process. No `managed-settings.d/`, MDM, or registry yet.
 #[derive(Debug, Default)]
 pub struct ManagedSettings {
@@ -52,8 +52,57 @@ pub struct ManagedSettings {
     pub project_mcp: PolicyPin,
     /// `plugin_auto_update = false`: no session-start plugin auto-update.
     pub plugin_auto_update: PolicyPin,
+    /// `allow_managed_hooks_only = true`: hooks that are not managed policy are pinned off.
+    pub non_managed_hooks: PolicyPin,
     /// Marketplaces pinned via managed `extraKnownMarketplaces`.
     pub extra_marketplaces: Vec<ManagedMarketplace>,
+}
+
+/// The tighten-only boolean pins. One row per pin: every policy layer reads it under both key spellings,
+/// an invalid value fails closed to the engaging one, and an unreadable layer engages all of them.
+#[derive(Debug, Clone, Copy)]
+enum BoolPin {
+    ProjectMcp,
+    PluginAutoUpdate,
+    NonManagedHooks,
+}
+
+impl BoolPin {
+    const ALL: [Self; 3] = [
+        Self::ProjectMcp,
+        Self::PluginAutoUpdate,
+        Self::NonManagedHooks,
+    ];
+
+    /// Claude `managed-settings.json` spelling first, native TOML spelling second.
+    fn keys(self) -> [&'static str; 2] {
+        match self {
+            Self::ProjectMcp => [
+                "enableAllProjectMcpServers",
+                "enable_all_project_mcp_servers",
+            ],
+            Self::PluginAutoUpdate => ["pluginAutoUpdate", "plugin_auto_update"],
+            Self::NonManagedHooks => ["allowManagedHooksOnly", "allow_managed_hooks_only"],
+        }
+    }
+
+    /// The value that engages the pin (`false` switches the first two off; `true` switches the lockdown on).
+    fn engages_on(self) -> bool {
+        match self {
+            Self::ProjectMcp | Self::PluginAutoUpdate => false,
+            Self::NonManagedHooks => true,
+        }
+    }
+}
+
+impl ManagedSettings {
+    fn pin_mut(&mut self, pin: BoolPin) -> &mut PolicyPin {
+        match pin {
+            BoolPin::ProjectMcp => &mut self.project_mcp,
+            BoolPin::PluginAutoUpdate => &mut self.plugin_auto_update,
+            BoolPin::NonManagedHooks => &mut self.non_managed_hooks,
+        }
+    }
 }
 
 static MANAGED_SETTINGS: OnceLock<ManagedSettings> = OnceLock::new();
@@ -140,7 +189,7 @@ fn resolve_managed_settings(
                 tracing::error!(
                     path = %layer.path.display(),
                     error = %e,
-                    "policy layer could not be read; treating every policy key as malformed (MCP and marketplace lockdown, project MCP and plugin auto-update pinned off)"
+                    "policy layer could not be read; treating every policy key as malformed (MCP and marketplace lockdown, every boolean pin engaged)"
                 );
                 apply_unreadable_policy_source(&mut ms, &layer.path, layer.tier);
             }
@@ -164,7 +213,7 @@ fn parse_managed_settings_json(json: &serde_json::Value, path: &Path) -> Managed
 }
 
 /// Fail-closed stand-in for a layer whose policy keys could not be read: as if
-/// every key were present-but-malformed (MCP + marketplace lockdown, pins off).
+/// every key were present-but-malformed (MCP + marketplace lockdown, every boolean pin engaged).
 fn apply_unreadable_policy_source(ms: &mut ManagedSettings, path: &Path, tier: PolicyLayerTier) {
     ms.mcp_allowlist.sources.push(
         McpServerAllowlist::new(Vec::new(), Vec::new(), Some(path.to_path_buf()))
@@ -177,8 +226,9 @@ fn apply_unreadable_policy_source(ms: &mut ManagedSettings, path: &Path, tier: P
         source_path: Some(path.to_path_buf()),
         authority: tier.authority(),
     });
-    pin_disabled(&mut ms.project_mcp, path, tier.ownership());
-    pin_disabled(&mut ms.plugin_auto_update, path, tier.ownership());
+    for pin in BoolPin::ALL {
+        pin_disabled(ms.pin_mut(pin), path, tier.ownership());
+    }
 }
 
 /// Tighten-only disable pin: the first pinning layer names the source, but an
@@ -258,28 +308,11 @@ fn apply_policy_source(
         ms.mcp_allowlist.sources.push(allowlist);
     }
 
-    // Both boolean pins fail closed on an invalid value (`false` disables).
-    if policy_bool(
-        json,
-        &[
-            "enableAllProjectMcpServers",
-            "enable_all_project_mcp_servers",
-        ],
-        false,
-        path,
-    ) == Some(false)
-    {
-        pin_disabled(&mut ms.project_mcp, path, ownership);
-    }
-
-    if policy_bool(
-        json,
-        &["pluginAutoUpdate", "plugin_auto_update"],
-        false,
-        path,
-    ) == Some(false)
-    {
-        pin_disabled(&mut ms.plugin_auto_update, path, ownership);
+    for pin in BoolPin::ALL {
+        let engages_on = pin.engages_on();
+        if policy_bool(json, &pin.keys(), engages_on, path) == Some(engages_on) {
+            pin_disabled(ms.pin_mut(pin), path, ownership);
+        }
     }
 
     let strict = parse_strict_marketplaces(json);

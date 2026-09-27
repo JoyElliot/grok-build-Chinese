@@ -9,10 +9,6 @@ fn at<T: Copy>(xs: &[T], i: usize) -> T {
         .unwrap_or_else(|| panic!("index {i} out of bounds, len={}", xs.len()))
 }
 
-// -----------------------------------------------------------------------
-// Group gap tests
-// -----------------------------------------------------------------------
-
 /// Helper: create an expanded groupable stub block.
 fn expanded_groupable(text: &str) -> ScrollbackEntry {
     ScrollbackEntry::new(RenderBlock::stub(text, Color::Blue))
@@ -241,10 +237,6 @@ fn test_is_groupable_block_types() {
         "System should be groupable"
     );
 }
-
-// -----------------------------------------------------------------------
-// Group range tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_group_range_mode_a_all_collapsed() {
@@ -722,8 +714,6 @@ fn test_anchor_no_gap_delta_first_in_group() {
     assert_eq!(at(&gaps_after, 0), 1, "prompt→a gap still 1 after expand");
 }
 
-// ── Group truncation tests ──
-
 #[test]
 fn truncation_disabled_when_max_visible_zero() {
     let mut state = ScrollbackState::new();
@@ -853,8 +843,6 @@ fn navigation_skips_hidden_entries() {
     state.select_prev(); // skips entries 2,1 (height=0) back to entry 0
     assert_eq!(state.selected, Some(0));
 }
-
-// ── Verb-group fold tests ──
 
 fn verb_state() -> ScrollbackState {
     crate::appearance::cache::set_group_tool_verbs(true);
@@ -2085,10 +2073,6 @@ fn expanded_group_shows_all_entries_including_first() {
         assert!(h > 0, "entry {i} should be visible, got height={h}");
     }
 }
-
-// -----------------------------------------------------------------------
-// reapply_thinking_fold_policy (minimal → fullscreen return)
-// -----------------------------------------------------------------------
 
 #[test]
 fn reapply_thinking_fold_policy_refolds_minimal_expanded_thought() {

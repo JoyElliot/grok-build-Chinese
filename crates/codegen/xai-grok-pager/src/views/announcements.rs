@@ -1077,8 +1077,6 @@ mod tests {
         );
     }
 
-    // ── Promo ───────────────────────────────────────────────────────────
-
     /// Promo selection mirrors the critical gate: severity filter, hidden skip-reveals-next, and the slash gate stays hidden-agnostic.
     #[test]
     fn first_promo_selection_filters_severity_and_hidden() {

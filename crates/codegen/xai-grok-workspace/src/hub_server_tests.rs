@@ -1586,7 +1586,7 @@ async fn dispatch_store_session_image_preserves_binary_in_bound_folder() {
         let path = std::path::PathBuf::from(response.file_path);
         assert!(path.is_absolute());
         assert_eq!(
-            Some(folder.path().canonicalize().unwrap().as_path()),
+            Some(dunce::canonicalize(folder.path()).unwrap().as_path()),
             path.parent()
         );
         assert_eq!(Some(std::ffi::OsStr::new(extension)), path.extension());
@@ -1599,7 +1599,7 @@ async fn dispatch_store_session_image_preserves_binary_in_bound_folder() {
     assert_eq!(4, paths.len());
     assert_eq!(
         paths,
-        directory_entries(&folder.path().canonicalize().unwrap())
+        directory_entries(&dunce::canonicalize(folder.path()).unwrap())
     );
     assert_eq!(before, directory_entries(&root));
     assert_eq!(
@@ -1761,6 +1761,119 @@ async fn dispatch_store_session_image_reports_write_failure() {
     );
     assert_eq!(vec![not_a_directory], directory_entries(folder.path()));
     assert_eq!(before, directory_entries(&root));
+}
+/// `workspace.client_fs_write_file` dispatches under the bound session with camelCase params and a camelCase response.
+/// Sync `block_on` under the env lock: the dispatch reads `WORKSPACE_CLIENT_FS_QUERIES`, which `write_file_behind_client_fs_gate` sets.
+#[test]
+fn dispatch_client_fs_write_file_round_trips_through_envelope() {
+    use base64::Engine;
+    use xai_grok_workspace_types::rpc::fs::{ClientFsWriteFileReq, ClientFsWriteFileRes};
+    let _env = crate::LockedTestEnv::lock();
+    let _unset = crate::TestEnvGuard::unset("WORKSPACE_CLIENT_FS_QUERIES");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handler = rt.block_on(async { WorkspaceRpcHandler::new(make_handle()) });
+    let root = handler.workspace.root_cwd().unwrap();
+    let bytes = b"\x00\xff\xfe binary \x00";
+    let params = serde_json::json!({
+        "path": "out/blob.bin",
+        "uploadId": "rt-1",
+        "contentBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+        "offset": 0,
+        "finalize": true,
+    });
+    let round_trip: ClientFsWriteFileReq = serde_json::from_value(params.clone()).unwrap();
+    assert!(round_trip.create_dirs && !round_trip.overwrite);
+    let value = rt
+        .block_on(handler.dispatch(ClientFsWriteFileReq::METHOD, params, Some("main")))
+        .unwrap();
+    let response: ClientFsWriteFileRes = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(value, serde_json::to_value(&response).unwrap());
+    assert_eq!(response.size, bytes.len() as u64);
+    assert_eq!(response.hash.as_deref(), Some(test_sha256(bytes).as_str()));
+    assert_eq!(
+        response.file_path.as_deref(),
+        Some(root.join("out/blob.bin").to_str().unwrap())
+    );
+    assert_eq!(
+        value.get("filePath"),
+        Some(&serde_json::json!(response.file_path))
+    );
+    assert_eq!(std::fs::read(root.join("out/blob.bin")).unwrap(), bytes);
+    let error = rt
+        .block_on(
+            handler
+                .dispatch(
+                    ClientFsWriteFileReq::METHOD,
+                    serde_json::json!({
+                "path": "unbound.bin", "uploadId": "rt-2", "contentBase64": "AA==", "offset": 0, "finalize": true
+            }),
+                    None,
+                ),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "hub error: client_fs_write_file requires a bound session"
+    );
+    assert!(!root.join("unbound.bin").exists());
+}
+/// `WORKSPACE_CLIENT_FS_QUERIES=0` refuses the write like the reads, before params are parsed or anything is staged.
+/// Sync `block_on` so the env lock is not held across `.await`.
+#[test]
+fn write_file_behind_client_fs_gate() {
+    use xai_grok_workspace_types::rpc::fs::{ClientFsReadFileReq, ClientFsWriteFileReq};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handler = rt.block_on(async { WorkspaceRpcHandler::new(make_handle()) });
+    let root = handler.workspace.root_cwd().unwrap();
+    let params = serde_json::json!({
+        "path": "gated.bin", "uploadId": "gate", "contentBase64": "AA==", "offset": 0, "finalize": true
+    });
+    let read_params = serde_json::json!({ "path": "gated.bin", "encoding": "base64" });
+    let (write_err, read_err) = {
+        let _env = crate::LockedTestEnv::lock()
+            .set("WORKSPACE_CLIENT_FS_QUERIES", std::path::Path::new("0"));
+        rt.block_on(async {
+            let write_err = handler
+                .dispatch(ClientFsWriteFileReq::METHOD, params.clone(), Some("main"))
+                .await
+                .unwrap_err();
+            let read_err = handler
+                .dispatch(ClientFsReadFileReq::METHOD, read_params, Some("main"))
+                .await
+                .unwrap_err();
+            (write_err, read_err)
+        })
+    };
+    assert_eq!(
+        write_err.to_string(),
+        "hub error: client fs queries disabled on this workspace"
+    );
+    assert_eq!(write_err.to_string(), read_err.to_string());
+    assert!(!root.join("gated.bin").exists());
+    assert!(
+        directory_entries(&root)
+            .iter()
+            .all(|p| !p.to_string_lossy().contains("grok-upload")),
+        "nothing staged while gated"
+    );
+    assert_eq!(
+        handler
+            .workspace
+            .session("main")
+            .unwrap()
+            .staged_uploads()
+            .len(),
+        0
+    );
+    let _env = crate::LockedTestEnv::lock();
+    let _unset = crate::TestEnvGuard::unset("WORKSPACE_CLIENT_FS_QUERIES");
+    rt.block_on(async {
+        handler
+            .dispatch(ClientFsWriteFileReq::METHOD, params, Some("main"))
+            .await
+            .unwrap();
+    });
+    assert_eq!(std::fs::read(root.join("gated.bin")).unwrap(), b"\x00");
 }
 #[tokio::test]
 async fn dispatch_put_files_writes_and_returns_hash() {

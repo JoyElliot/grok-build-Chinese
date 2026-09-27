@@ -47,8 +47,6 @@ fn viewer_static(
 /// Stable ids for mermaid affordance rows (above source lines and comments).
 const MERMAID_AFFORDANCE_ID_BASE: u64 = 2_000_000;
 
-// ── Line item ───────────────────────────────────────────────────────────
-
 /// A single source line for the line viewer.
 #[derive(Clone)]
 pub struct SourceLine {
@@ -282,8 +280,6 @@ impl ListItem for SourceLine {
     }
 }
 
-// ── Comment lines ─────────────────────────────────────────────────────
-
 /// An inline review comment displayed between source lines.
 pub struct CommentLine {
     pub comment_id: u64,
@@ -430,8 +426,6 @@ impl ListItem for CommentLine {
     }
 }
 
-// ── Mermaid affordance row ────────────────────────────────────────────
-
 /// Blank reserved row under a Mermaid diagram; buttons are painted by the
 /// draw loop (same pattern as scrollback).
 pub struct MermaidAffordanceLine {
@@ -518,8 +512,6 @@ impl ListItem for MermaidAffordanceLine {
         }
     }
 }
-
-// ── Plan viewer item ──────────────────────────────────────────────────
 
 /// Source line, review comment, or Mermaid affordance row.
 pub enum PlanViewerItem {
@@ -633,8 +625,6 @@ impl ListItem for PlanViewerItem {
         }
     }
 }
-
-// ── Viewer state ────────────────────────────────────────────────────────
 
 /// What kind of content the line viewer is showing. Replaces string-based type sniffing
 /// (`title_override == Some("plan.md")`) with a typed enum. Plan-specific behavior (commenting,
@@ -1175,8 +1165,6 @@ impl LineViewerState {
     }
 }
 
-// ── Syntax highlighting ─────────────────────────────────────────────────
-
 /// Build syntax-highlighted source lines from file content.
 fn build_source_lines(path: &Path, content: &str) -> Vec<SourceLine> {
     let syntect = get_syntect();
@@ -1390,8 +1378,6 @@ fn digit_count(n: usize) -> usize {
         ((n as f64).log10().floor() as usize) + 1
     }
 }
-
-// ── Rendering helpers ───────────────────────────────────────────────────
 
 /// Band for the active commenting / gutter-drag line range: a subtle 15% `accent_plan` tint over the canvas on RGB themes.
 /// Profile palettes (terminal theme, Reset canvas) cannot express a dim yellow tint, so the band is the solid named `accent_plan` with forced Black text — readable on both polarities.

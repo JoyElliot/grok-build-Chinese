@@ -201,6 +201,7 @@ fn render(
                 Failure::Status(status) => ModelReply::Refusal(status),
                 Failure::StreamError(stream_error) => ModelReply::StreamError(stream_error),
                 Failure::Cut { .. } => ModelReply::CutReply,
+                Failure::ContentFilter { .. } => ModelReply::ContentFilter,
                 Failure::Dropped { .. } => ModelReply::Dropped,
                 Failure::MalformedBody { .. } => ModelReply::Malformed,
                 Failure::Hang { .. } => ModelReply::Hang,
@@ -426,6 +427,7 @@ impl ReplayingScript {
             Failure::Status(_)
             | Failure::StreamError(_)
             | Failure::Cut { .. }
+            | Failure::ContentFilter { .. }
             | Failure::Dropped { .. }
             | Failure::MalformedBody { .. }
             | Failure::Hang { .. } => (None, None),

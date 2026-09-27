@@ -153,6 +153,7 @@ fn request() -> SubagentRequest {
         owner: SubagentOwner::Task,
         cancel_token: CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     }
 }
 

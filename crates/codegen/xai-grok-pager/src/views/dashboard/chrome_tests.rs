@@ -1,5 +1,5 @@
 use super::*;
-use crate::views::dashboard::state::{ActionsFocus, DashboardRowId, DashboardState};
+use crate::views::dashboard::state::{ActionsFocus, DashboardState};
 use crate::views::dashboard::test_support::{buf_to_text, header_test_row};
 
 fn buf_cell(buf: &Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
@@ -777,40 +777,6 @@ fn render_header_location_label_never_overlaps_chips() {
     assert!(
         after.starts_with(&format!("   {}", crate::glyphs::diamond_filled())),
         "expected a 3-cell gutter then the awaiting glyph after the ellipsis, got: {after:?}",
-    );
-}
-
-/// Subagents inherit their parent's state and must NOT inflate the header chip tallies.
-/// The header counts top-level rows only.
-#[test]
-fn render_header_counts_top_level_rows_only() {
-    let theme = Theme::current();
-    let mut buf = Buffer::empty(Rect::new(0, 0, 160, 1));
-    let mut state = DashboardState::new();
-    let parent = DashboardRow {
-        indent: 0,
-        ..header_test_row(1, RowState::Working, "parent")
-    };
-    let sub_completed = DashboardRow {
-        id: DashboardRowId::Subagent {
-            parent: crate::app::agent::AgentId(1),
-            child_session_id: "c1".to_string(),
-        },
-        indent: 1,
-        ..header_test_row(11, RowState::Completed, "child")
-    };
-    let rows = vec![parent, sub_completed];
-    render_header_only(&mut buf, Rect::new(0, 0, 160, 1), &theme, &rows, &mut state);
-    let content = buf_to_text(&buf);
-    // Only the top-level parent counts: its Working chip shows.
-    assert!(
-        content.contains("1 working"),
-        "expected `1 working` chip for the top-level parent, got: {content:?}"
-    );
-    // Subagent's Completed must NOT show up as `1 done`.
-    assert!(
-        !content.contains("1 done"),
-        "header must not count subagent state, got: {content:?}",
     );
 }
 

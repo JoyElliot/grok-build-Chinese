@@ -66,6 +66,16 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
             ..Default::default()
         };
         xai_grok_shell::util::config::set_remote_campaigns_from_settings(Some(&rs));
+        // The settings row read its campaign layer at startup; the same re-read the shell does on `/new` keeps its value and lock current
+        match xai_grok_shell::config::load_effective_config_with_layers() {
+            Ok((layers, _)) => {
+                app.subagent_model_inheritance.reseed_config_layers(&layers);
+                crate::app::dispatch::refresh_open_settings_modals(app);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "config layers not re-read after a campaign update")
+            }
+        }
     }
 
     if let Some(v) = update.auto_permission_mode_enabled {
@@ -160,6 +170,12 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     }
     if let Some(remote_v) = update.dock_enabled {
         crate::views::dock::set_enabled(crate::app::resolve_dock_enabled(Some(remote_v)));
+    }
+    // Presence-aware: omit (an older shell, or one without settings yet) keeps the seeded tier, null means fetched settings cleared it
+    // Only the settings row reads it; running agents keep the mode they latched when built
+    if let Some(remote) = update.subagent_model_inheritance_enabled {
+        app.subagent_model_inheritance.other_tiers.remote = remote;
+        crate::app::dispatch::refresh_open_settings_modals(app);
     }
     if let Some(remote_v) = update.terminal_theme_enabled {
         let enabled = crate::app::resolve_terminal_theme_enabled(Some(remote_v));
@@ -386,25 +402,26 @@ pub(super) fn apply_soft_default_permission_mode(
 /// `yolo_mode` is deliberately OMITTED: the agent skips the yolo branch when the key is absent.
 /// A sibling tab's always-approve is thus preserved; only auto is cleared.
 pub(super) fn notify_sessions_leave_auto(app: &AppView, session_ids: &[acp::SessionId]) {
-    if session_ids.is_empty() {
-        return;
+    for session_id in session_ids {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "auto_mode": false,
+            "permission_mode": "ask",
+        });
+        let notification = acp::ExtNotification::new(
+            "x.ai/yolo_mode_changed",
+            serde_json::value::to_raw_value(&params)
+                .expect("serialize yolo_mode_changed params")
+                .into(),
+        );
+
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        let args = xai_acp_lib::AcpArgs {
+            request: notification,
+            response_tx,
+        };
+        let _ = app.acp_tx.send(args.into());
     }
-    let params = serde_json::json!({
-        "auto_mode": false,
-        "permission_mode": "ask",
-    });
-    let notification = acp::ExtNotification::new(
-        "x.ai/yolo_mode_changed",
-        serde_json::value::to_raw_value(&params)
-            .expect("serialize yolo_mode_changed params")
-            .into(),
-    );
-    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-    let args = xai_acp_lib::AcpArgs {
-        request: notification,
-        response_tx,
-    };
-    let _ = app.acp_tx.send(args.into());
 }
 
 /// Handle `x.ai/sessions/changed`: the leader broadcasts roster upserts/removals to all clients (FleetView dashboard).
@@ -533,6 +550,10 @@ pub(super) struct PagerSettingsUpdate {
     dock_enabled: Option<bool>,
     #[serde(default)]
     terminal_theme_enabled: Option<bool>,
+    /// Tri-state like `permission_mode`: the key is omitted by an older shell or one without settings yet, and `null`
+    /// when fetched settings lack the value.
+    #[serde(default, deserialize_with = "deserialize_presence_aware")]
+    subagent_model_inheritance_enabled: Option<Option<bool>>,
     #[serde(default)]
     session_picker_grouped: Option<bool>,
     #[serde(default)]
@@ -564,7 +585,7 @@ pub(super) struct PagerSettingsUpdate {
     /// Soft-default permission mode.
     /// Omission happens with older shells that predate the field (they can never clear a mode they don't know about).
     /// That version skew is why this is tri-state instead of a plain `Option`.
-    #[serde(default, deserialize_with = "deserialize_presence_aware_string")]
+    #[serde(default, deserialize_with = "deserialize_presence_aware")]
     permission_mode: Option<Option<String>>,
     #[serde(default)]
     group_tool_verbs: Option<bool>,
@@ -581,14 +602,13 @@ pub(super) struct PagerSettingsUpdate {
     consent_gate: Option<xai_grok_shell::util::config::ConsentGate>,
 }
 
-/// Presence-aware string: omit gives `None` (`#[serde(default)]`), null gives `Some(None)`, and a string gives `Some(Some(_))`.
-fn deserialize_presence_aware_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
+/// Presence-aware value: omit gives `None` (`#[serde(default)]`), null gives `Some(None)`, and a value gives `Some(Some(_))`.
+fn deserialize_presence_aware<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Ok(Some(Option::<String>::deserialize(deserializer)?))
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
 }
 
 /// Presence-aware and tolerant tags map for live settings updates.
@@ -622,7 +642,7 @@ mod presence_aware_dto_tests {
 
     #[derive(Deserialize)]
     struct Probe {
-        #[serde(default, deserialize_with = "deserialize_presence_aware_string")]
+        #[serde(default, deserialize_with = "deserialize_presence_aware")]
         permission_mode: Option<Option<String>>,
     }
 

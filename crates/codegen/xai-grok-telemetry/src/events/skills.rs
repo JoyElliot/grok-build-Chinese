@@ -35,4 +35,36 @@ pub struct SkillDispatched {
     /// None = skill-tool unclassified; omit rather than invent a source.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_source: Option<String>,
+    /// The validated frontmatter `origin` slug (the tool that wrote the skill). None = hand-written, or no frontmatter in hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_origin: Option<String>,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessSurfaceKind {
+    Skill,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessChangeOp {
+    Added,
+    Removed,
+}
+
+/// One item of the user's harness changed; emitted once per item alongside the count-only `skill_added` / `skill_removed`.
+#[derive(Serialize)]
+pub struct HarnessChanged {
+    pub kind: HarnessSurfaceKind,
+    pub op: HarnessChangeOp,
+    pub name: String,
+    /// Where the skill is loaded from, same vocabulary as `SkillDispatched::skill_source`; independent of `origin`.
+    pub skill_source: String,
+    /// The validated frontmatter `origin` slug. None = hand-written or unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_source: Option<String>,
+    pub success: bool,
 }

@@ -1,5 +1,6 @@
 //! Tests for ChatStateActor.
 
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
@@ -3063,7 +3064,8 @@ async fn turn_capture_survives_integrity_repair_prefix_shrink() {
 
     // Integrity repair shrinks the conversation below the un-rebased capture offset.
     // Without the fix the later slice is out of range, panics the actor, and the query returns None.
-    h.handle.repair_dangling_after_harness_halt("test-halt");
+    h.handle
+        .repair_dangling_after_harness_halt("test-halt", HashMap::new());
 
     // Second turn item lands after the rebase — it must still be captured.
     h.handle
@@ -3099,7 +3101,8 @@ async fn integrity_repair_does_not_flag_compaction() {
 
     // An in-place integrity repair goes through `snapshot_turn_slice` like
     // compaction does, but it is NOT compaction — the flag must stay unset.
-    h.handle.repair_dangling_after_harness_halt("test-halt");
+    h.handle
+        .repair_dangling_after_harness_halt("test-halt", HashMap::new());
 
     let capture = h
         .handle
@@ -3464,7 +3467,8 @@ async fn cancel_integrity_repair_drops_stranded_continue_reminder() {
     h.handle
         .push_user_message(ConversationItem::length_continue_reminder("continue"));
 
-    h.handle.repair_dangling_after_harness_halt("test-cancel");
+    h.handle
+        .repair_dangling_after_harness_halt("test-cancel", HashMap::new());
     let conv = h.handle.get_conversation().await;
     assert!(
         !matches!(

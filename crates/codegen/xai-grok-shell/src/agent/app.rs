@@ -114,6 +114,8 @@ pub(crate) async fn run_auto_update_checker(
         }
     }
 }
+/// Holds the agent past `drop(local_set)`; see `LocalRef`. Declared before the `LocalSet` so an unwind keeps that order.
+type AgentKeepalive = Rc<std::cell::RefCell<Option<Rc<MvpAgent>>>>;
 /// Spawn the agent inside a LocalSet and return a handle to the I/O future.
 fn spawn_agent_local(
     agent_config: AgentConfig,
@@ -123,6 +125,7 @@ fn spawn_agent_local(
     memory_config: Option<crate::config::MemoryConfig>,
     outgoing: impl futures::AsyncWrite + Unpin + 'static,
     incoming: impl futures::AsyncRead + Unpin + 'static,
+    keepalive: &AgentKeepalive,
 ) -> impl std::future::Future<Output = Result<(), acp::Error>> {
     let (gw_tx, gw_rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(gw_tx);
@@ -138,6 +141,8 @@ fn spawn_agent_local(
     if let Some(mc) = memory_config {
         agent.set_memory_config(mc);
     }
+    let agent = Rc::new(agent);
+    *keepalive.borrow_mut() = Some(Rc::clone(&agent));
     let incoming = LineBufferedRead::spawn_local(incoming);
     let (conn, handle_io) = acp::AgentSideConnection::new(agent, outgoing, incoming, |fut| {
         tokio::task::spawn_local(fut);
@@ -256,10 +261,12 @@ pub async fn run_stdio_agent(
         let _ = stdin_closed_tx.send(());
     });
     let _skills_watcher = spawn_skills_file_watcher(&acp_incoming_tx, &agent_config.skills.paths);
+    let agent_keepalive = AgentKeepalive::default();
     let local_set = tokio::task::LocalSet::new();
     let agent_cancel = tokio_util::sync::CancellationToken::new();
     let _cancel_on_exit = agent_cancel.clone().drop_guard();
     let cancel_for_agent = agent_cancel.clone();
+    let keepalive_for_spawn = Rc::clone(&agent_keepalive);
     let result = local_set
         .run_until(async move {
             let simplex_tx = acp_incoming_tx;
@@ -289,6 +296,7 @@ pub async fn run_stdio_agent(
                 memory_config,
                 outgoing,
                 incoming,
+                &keepalive_for_spawn,
             );
             handle_io.await?;
             Ok::<(), anyhow::Error>(())
@@ -422,10 +430,12 @@ pub async fn run_headless(
         Some(cancel.clone()),
         Some(on_first_connect),
     );
+    let agent_keepalive = AgentKeepalive::default();
     let local_set = tokio::task::LocalSet::new();
     let mut agent_config_clone = agent_config.clone();
     let memory_config_for_first = memory_config;
     let agent_cancel = cancel.clone();
+    let keepalive_for_spawn = Rc::clone(&agent_keepalive);
     local_set
         .run_until(async move {
             let _agent_handle = tokio::task::spawn_local(async move {
@@ -459,6 +469,8 @@ pub async fn run_headless(
                 if let Some(mc) = memory_config_for_first {
                     agent.set_memory_config(mc);
                 }
+                let agent = Rc::new(agent);
+                *keepalive_for_spawn.borrow_mut() = Some(Rc::clone(&agent));
                 let incoming = LineBufferedRead::spawn_local(incoming);
                 let (conn, handle_io) = acp::AgentSideConnection::new(
                     agent,
@@ -669,6 +681,16 @@ pub struct LeaderRunOptions {
     /// Inert on a build without worker support.
     pub cursor_worker: Option<CursorWorkerStartArgs>,
 }
+/// Another process is wedged inside its own open+flock of the leader lock (stalled grok home). Only `tracing`
+/// here: a socket probe, pid read, or log open under the grok home could wedge this process too. Best effort: a
+/// client-spawned leader's stderr is `$GROK_HOME/leader.log`, so even this line can park in `write(2)` there.
+fn refuse_in_flight_leader_lock(e: crate::leader::LockError) -> anyhow::Error {
+    tracing::error!(
+        error = %e,
+        "leader lock acquisition already in flight in another process (stalled filesystem?); exiting without touching the lock"
+    );
+    anyhow::Error::new(e).context("refusing to start a second leader-lock acquirer")
+}
 /// Run the agent in leader mode, accepting IPC connections from multiple clients. When a grok.com session is present, the leader connects to the websocket relay after startup (post-auth, post-prefetch).
 /// BYOK / no-session leaders start serving clients over IPC only. A relay-eligible token hot-reloaded later arms the relay via [`DeferredRelayArm`]. IPC server started (`tokio::spawn`); socket bound HERE, before auth.
 /// Bounded non-interactive auth (no blocking model/settings prefetch; those stream in after readiness). `None` (BYOK / no session) is not an error: the relay stays off and a background cold-mint / re-login can start it later.
@@ -693,18 +715,15 @@ pub async fn run_leader(
     } = options;
     register_fs_watch_runtime();
     xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
-    tokio::task::spawn_blocking(|| {
-        xai_file_utils::queue::cleanup_orphaned_uploads(
-            &grok_home::grok_home(),
-            xai_file_utils::queue::DEFAULT_MAX_AGE,
-        );
-    });
     let mut agent_config = agent_config.clone();
     agent_config.mode = crate::agent::config::AgentMode::Leader;
     let ws_url = &agent_config.grok_com_config.grok_ws_url;
     let mut lock = LeaderLock::new(ws_url);
     let socket_path = lock.socket_path().clone();
     match lock.try_acquire() {
+        Err(e @ LockError::AcquireInProgress { .. }) => {
+            return Err(refuse_in_flight_leader_lock(e));
+        }
         Ok(true) => {
             lock.write_pid()?;
             debug!("Acquired leader lock, proceeding as leader");
@@ -722,11 +741,14 @@ pub async fn run_leader(
                 ));
             }
             match lock.acquire_reopen_timeout(LEADER_ACQUIRE_TIMEOUT).await {
+                Err(e @ LockError::AcquireInProgress { .. }) => {
+                    return Err(refuse_in_flight_leader_lock(e));
+                }
                 Ok(()) => {
                     lock.write_pid()?;
                     debug!("Acquired leader lock after bounded wait, proceeding as leader");
                 }
-                Err(LockError::Timeout(_)) => {
+                Err(LockError::Timeout { .. }) => {
                     info!(
                         "Timed out waiting for the leader lock ({}). Exiting so the \
                          client adopts whoever won it.",
@@ -746,6 +768,12 @@ pub async fn run_leader(
     }
     lock.cleanup_socket()?;
     info!("Leader server starting");
+    tokio::task::spawn_blocking(|| {
+        xai_file_utils::queue::cleanup_orphaned_uploads(
+            &grok_home::grok_home(),
+            xai_file_utils::queue::DEFAULT_MAX_AGE,
+        );
+    });
     let (ipc_to_agent_tx, mut ipc_to_agent_rx) = mpsc::unbounded_channel::<String>();
     let (agent_to_ipc_tx, agent_to_ipc_rx) = mpsc::unbounded_channel::<String>();
     let (ws_to_agent_tx, mut ws_to_agent_rx) = mpsc::unbounded_channel::<String>();
@@ -849,9 +877,11 @@ pub async fn run_leader(
     info!(
         "Leader ready: local-only boot (model/settings refresh runs in background), ACP forwarding enabled"
     );
+    let agent_keepalive = AgentKeepalive::default();
     let local_set = tokio::task::LocalSet::new();
     let mut agent_config_for_spawn = agent_config.clone();
     agent_config_for_spawn.remote_settings = None;
+    let keepalive_for_spawn = Rc::clone(&agent_keepalive);
     crate::util::config::sync_campaign_fields(&mut agent_config_for_spawn);
     let agent_to_ipc_tx_clone = agent_to_ipc_tx.clone();
     let cancel_clone = cancel.clone();
@@ -927,6 +957,8 @@ pub async fn run_leader(
                 if let Some(tx) = agent_config_watcher_path_tx {
                     agent.set_config_watcher_path_tx(tx);
                 }
+                let agent = Rc::new(agent);
+                *keepalive_for_spawn.borrow_mut() = Some(Rc::clone(&agent));
                 let incoming = LineBufferedRead::spawn_local(incoming);
                 let (conn, handle_io) = acp::AgentSideConnection::new(
                     agent,

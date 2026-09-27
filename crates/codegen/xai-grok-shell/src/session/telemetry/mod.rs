@@ -2,6 +2,18 @@
 
 mod active_agent_message;
 mod permission;
+mod read_profile;
+mod tool_call;
+
+pub(crate) use read_profile::model_origin;
+#[cfg(not(feature = "test-support"))]
+pub(crate) use tool_call::tool_execution_span;
+pub(crate) use tool_call::{
+    CompletedTool, PreparedToolFacts, ToolCallProjection, ToolExecutionInput, coarse_span_outcome,
+    completed_event, record_tool_execution, requested_model_snapshot, tool_identity,
+};
+#[cfg(feature = "test-support")]
+pub use tool_call::{complete_projected_call, grep_output, tool_execution_span};
 
 pub(crate) use active_agent_message::*;
 pub(crate) use permission::*;

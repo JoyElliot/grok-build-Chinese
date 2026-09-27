@@ -486,9 +486,11 @@ mod tests {
 
     #[test]
     fn save_and_load_from_file() {
-        let dir = std::env::temp_dir().join("grok-mcp-credentials-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test_creds.json");
+        // Unique dir: a hardcoded `$TMP/grok-mcp-credentials-test` is shared
+        // across `--runs_per_test` shards on the same worker, so a sibling
+        // can delete the file between `exists()` and `read_to_string`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_creds.json");
 
         let mut store = McpCredentialStore::default();
         let url = Url::parse("https://test.example.com/mcp").unwrap();
@@ -497,9 +499,6 @@ mod tests {
 
         let loaded = McpCredentialStore::load_from(&path).unwrap();
         assert!(loaded.get("test", &url).is_some());
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir(&dir);
     }
 
     #[cfg(unix)]

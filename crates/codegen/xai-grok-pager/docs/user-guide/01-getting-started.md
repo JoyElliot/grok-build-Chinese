@@ -43,6 +43,17 @@ selecting a modern `release-v*` version. The much older
 `v1.0.0-zh.preview.3`, which hardcoded the former repository, requires one
 manual complete-package installation.
 
+If you installed Grok Build with WinGet, update it with WinGet instead. Quit
+Grok first, then run:
+
+```powershell
+winget upgrade --id xAI.GrokBuild -e
+```
+
+On a WinGet install, `grok update` prints this command and changes nothing.
+The WinGet package tracks the stable channel, and new releases can take a few
+days to reach it.
+
 To fetch a repository through Grove (NFS on macOS, FUSE on Linux), enable
 `grok clone` with `[clone] enabled = true` in Grove config, `GROK_CLONE=1`,
 or the enable-both convenience `GROK_GROVE=1` / `[cli] grove = true` in

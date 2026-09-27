@@ -436,6 +436,7 @@ async fn build_auth(
         user_blocked_reason: None,
         team_blocked_reasons: vec![],
         coding_data_retention_opt_out: crate::default_coding_data_retention_opt_out(),
+        can_administer_team: None,
         has_grok_code_access: None,
         refresh_token: tokens.refresh_token.clone(),
         expires_at: tokens.expires_in.map(|s| now + Duration::seconds(s)),

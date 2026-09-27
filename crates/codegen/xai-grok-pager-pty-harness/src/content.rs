@@ -14,7 +14,9 @@ use xai_grok_test_support::{MockInferenceServer, TestSandbox};
 
 pub use xai_grok_test_support::mock_server::FeedbackPost;
 pub use xai_grok_test_support::mock_server::LogEntry;
+pub use xai_grok_test_support::mock_server::MockCanAdministerTeam;
 pub use xai_grok_test_support::mock_server::MockModelEntry as MockModel;
+pub use xai_grok_test_support::mock_server::MockUserTeam;
 pub use xai_grok_test_support::mock_server::StorageUpload;
 pub use xai_grok_test_support::sse;
 pub use xai_grok_test_support::{

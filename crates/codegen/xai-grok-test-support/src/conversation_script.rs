@@ -286,6 +286,11 @@ impl Conversation {
         self
     }
 
+    pub fn content_filter(mut self, count: usize) -> Self {
+        self.pending.failures.push(Failure::ContentFilter { count });
+        self
+    }
+
     pub fn fail_stream(mut self, stream_error: StreamError) -> Self {
         self.pending
             .failures

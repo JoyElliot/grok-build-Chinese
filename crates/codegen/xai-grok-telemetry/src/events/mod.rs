@@ -180,6 +180,14 @@ telemetry_event!(
 telemetry_event!(SubagentLimitHit, "subagent_limit_hit");
 telemetry_event!(SubagentRateLimitWaited, "subagent_rate_limit_waited");
 telemetry_event!(
+    SubagentModelPresentationApplied,
+    "subagent_model_presentation_applied"
+);
+telemetry_event!(
+    SubagentModelOverrideRejected,
+    "subagent_model_override_rejected"
+);
+telemetry_event!(
     ActiveAgentMessageCompleted,
     "active_agent_message_completed"
 );
@@ -221,6 +229,7 @@ telemetry_event!(HookBlocked, "hook_blocked");
 telemetry_event!(ClientHookGate, "client_hook_gate");
 telemetry_event!(SkillAdded, "skill_added");
 telemetry_event!(SkillRemoved, "skill_removed");
+telemetry_event!(HarnessChanged, "harness_changed");
 telemetry_event!(
     SkillDispatched,
     "skill_dispatched",
@@ -238,6 +247,9 @@ telemetry_event!(
 );
 telemetry_event!(McpInitCompleted, "mcp_init_completed");
 telemetry_event!(McpToolCalled, "mcp_tool_called");
+telemetry_event!(McpFileInputUsed, "mcp_file_input_used");
+telemetry_event!(McpFileInputCompleted, "mcp_file_input_completed");
+telemetry_event!(McpFileInputLimitHit, "mcp_file_input_limit_hit");
 telemetry_event!(
     SessionHarness,
     "session_harness",
@@ -406,6 +418,10 @@ telemetry_event!(
 telemetry_event!(
     crate::session_metrics::DoomLoopRecovery,
     "doom_loop_recovery"
+);
+telemetry_event!(
+    crate::session_metrics::LongReasoningReminderTurn,
+    "long_reasoning_reminder"
 );
 telemetry_event!(
     crate::session_metrics::TraceUploadAttempted,
@@ -607,6 +623,8 @@ mod tests {
             ("DoomLoopDetected", "turn_number"),
             ("DoomLoopRecovery", "session_id"),
             ("DoomLoopRecovery", "turn_number"),
+            ("LongReasoningReminderTurn", "session_id"),
+            ("LongReasoningReminderTurn", "turn_number"),
             ("FeedbackDraftOp", "session_id"),
             ("FeedbackModalOpened", "session_id"),
             ("MemoryFlushComplete", "session_id"),
@@ -1018,7 +1036,7 @@ mod tests {
         ("RedirectFallbackReason", "image_attach_failed,image_cap"),
         (
             "RedirectFailureReason",
-            "ebusy,sharing_violation,demote_budget,in_flight,live_dir,foreign_object,foreign_link,foreign_mount,occupied,overlap,parent_is_link,not_ignored,index_tracked,unattributed_mount,conversion_failed,image_txn_pending,image_scan_overflow,dest_claimed,eperm,attach_timeout,attach_failed,create_failed,remount_failed,copy_failed,verify_failed,repo_file_invalid,purge_failed,identity_refused,cancelled,io",
+            "ebusy,sharing_violation,demote_budget,in_flight,live_dir,residue,foreign_object,foreign_link,foreign_mount,occupied,overlap,parent_is_link,not_ignored,index_tracked,unattributed_mount,conversion_failed,image_txn_pending,image_scan_overflow,dest_claimed,eperm,attach_timeout,attach_failed,create_failed,remount_failed,copy_failed,verify_failed,repo_file_invalid,purge_failed,identity_refused,cancelled,io",
         ),
         ("ReplicationKind", "none,clonefile,copy,move"),
         ("OverwriteDisposition", "replicated,refused,forced"),
@@ -1194,51 +1212,96 @@ mod tests {
 
     #[test]
     fn tool_call_completed_omits_tool_result_size_bytes_when_absent() {
+        let mut with_size = completed_for_test("bash", "grok");
+        with_size.duration_ms = 7;
+        with_size.tool_result_size_bytes = Some(2_048);
         assert_eq!(
-            serde_json::to_value(ToolCallCompleted {
-                tool_name: "bash".into(),
-                outcome: xai_grok_session_events::types::ToolOutcome::Success,
-                hook_rewrote: false,
-                duration_ms: 7,
-                tool_result_size_bytes: Some(2_048),
-                model_id: "grok".into(),
-                file_path: None,
-                parameters: None,
-                tool_use_id: None,
-                tool_output: None,
-                error_message: None,
-            })
-            .unwrap(),
+            serde_json::to_value(with_size).unwrap(),
             serde_json::json!({
                 "tool_name": "bash",
                 "outcome": "success",
                 "hook_rewrote": false,
                 "duration_ms": 7,
                 "tool_result_size_bytes": 2_048,
+                "model_id": "grok",
+                "invocation_id": "018f6b6c-7b3a-7c3a-8c3a-000000000001",
+                "tool_id": "opaque",
+                "source_status": "unknown",
+                "source_reason": "not_instrumented",
             })
         );
+        let mut without_size = completed_for_test("bash", "not-a-grok-model");
+        without_size.duration_ms = 7;
         assert_eq!(
-            serde_json::to_value(ToolCallCompleted {
-                tool_name: "bash".into(),
-                outcome: xai_grok_session_events::types::ToolOutcome::Success,
-                hook_rewrote: false,
-                duration_ms: 7,
-                tool_result_size_bytes: None,
-                model_id: "grok".into(),
-                file_path: None,
-                parameters: None,
-                tool_use_id: None,
-                tool_output: None,
-                error_message: None,
-            })
-            .unwrap(),
+            serde_json::to_value(without_size).unwrap(),
             serde_json::json!({
                 "tool_name": "bash",
                 "outcome": "success",
                 "hook_rewrote": false,
                 "duration_ms": 7,
+                "invocation_id": "018f6b6c-7b3a-7c3a-8c3a-000000000001",
+                "tool_id": "opaque",
+                "source_status": "unknown",
+                "source_reason": "not_instrumented",
             })
         );
+    }
+
+    #[test]
+    fn read_profile_serializes_a_token_rejection_without_the_path() {
+        let mut event = completed_for_test("read_note", "grok-4.6");
+        event.file_path = Some("/tmp/secret-project/SKILL.md".into());
+        event.error_message =
+            Some("File content (30000 tokens) exceeds /tmp/secret-project/SKILL.md".into());
+        event.source_status = ToolSourceStatus::Failed;
+        event.source_reason = Some(ToolSourceReason::ReadTokenLimit);
+        event.output_limit = Some(ToolOutputLimit::Limited);
+        event.read = Some(ReadProfile {
+            read_file_role: ReadFileRole::SkillEntry,
+            read_skill_match: ReadSkillMatch::Unregistered,
+            read_skill_source: None,
+            read_selection: ReadSelection::Unknown,
+            read_source_bytes: None,
+            read_returned_lines: None,
+            read_returned_bytes: None,
+            read_limit_kind: ReadLimitKind::Tokens,
+            read_lines_applicability: CapApplicability::Applies,
+            read_lines_limit: Some(1_000),
+            read_lines_observed: None,
+            read_lines_disposition: CapDisposition::Unobserved,
+            read_bytes_applicability: CapApplicability::NotApplicable,
+            read_bytes_limit: None,
+            read_bytes_observed: None,
+            read_bytes_disposition: CapDisposition::Unobserved,
+            read_tokens_applicability: CapApplicability::Applies,
+            read_tokens_limit: Some(25_000),
+            read_tokens_observed: None,
+            read_tokens_disposition: CapDisposition::Rejected,
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            Some("tokens"),
+            json.get("read_limit_kind")
+                .and_then(serde_json::Value::as_str)
+        );
+        assert_eq!(
+            Some("rejected"),
+            json.get("read_tokens_disposition")
+                .and_then(serde_json::Value::as_str)
+        );
+        assert_eq!(
+            Some(25_000),
+            json.get("read_tokens_limit")
+                .and_then(serde_json::Value::as_i64)
+        );
+        assert!(json.get("read_tokens_observed").is_none());
+        assert_eq!(
+            Some("skill_entry"),
+            json.get("read_file_role")
+                .and_then(serde_json::Value::as_str)
+        );
+        assert!(!json.to_string().contains("secret-project"));
+        assert!(!json.to_string().contains("SKILL.md"));
     }
 
     #[test]
@@ -1341,6 +1404,7 @@ mod tests {
             ClipboardProbeDropReason::PasteboardChangedBeforeRead,
             ClipboardProbeDropReason::PasteboardChangedAfterRead,
             ClipboardProbeDropReason::BracketedPayloadMismatch,
+            ClipboardProbeDropReason::BracketedOriginReadFailed,
             ClipboardProbeDropReason::ReadFailed,
             ClipboardProbeDropReason::Timeout,
             ClipboardProbeDropReason::PersistFailed,
@@ -1351,6 +1415,7 @@ mod tests {
                 "pasteboard_changed_before_read",
                 "pasteboard_changed_after_read",
                 "bracketed_payload_mismatch",
+                "bracketed_origin_read_failed",
                 "read_failed",
                 "timeout",
                 "persist_failed",
@@ -1555,6 +1620,7 @@ mod tests {
                 plugin_source: None,
                 trigger,
                 skill_source: Some("bundled".into()),
+                skill_origin: None,
             })
             .unwrap();
             assert_eq!(
@@ -1571,12 +1637,117 @@ mod tests {
             plugin_source: None,
             trigger: SkillTrigger::SlashCommand,
             skill_source: None,
+            skill_origin: None,
         })
         .unwrap();
         assert_eq!(
             omitted,
             serde_json::json!({ "skill_name": "pdf", "trigger": "slash_command" })
         );
+    }
+
+    #[test]
+    fn skill_dispatched_carries_skill_origin_when_set() {
+        let value = serde_json::to_value(SkillDispatched {
+            skill_name: "pdf".into(),
+            plugin_source: None,
+            trigger: SkillTrigger::SkillMdRead,
+            skill_source: Some("user".into()),
+            skill_origin: Some("learn".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::json!({
+                "skill_name": "pdf",
+                "trigger": "skill_md_read",
+                "skill_source": "user",
+                "skill_origin": "learn",
+            }),
+            value
+        );
+    }
+
+    #[test]
+    fn harness_changed_name_and_shape() {
+        assert_eq!(HarnessChanged::NAME, "harness_changed");
+        let with_origin = serde_json::to_value(HarnessChanged {
+            kind: HarnessSurfaceKind::Skill,
+            op: HarnessChangeOp::Added,
+            name: "pdf".into(),
+            skill_source: "user".into(),
+            origin: Some("learn".into()),
+            plugin_source: None,
+            success: true,
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::json!({
+                "kind": "skill",
+                "op": "added",
+                "name": "pdf",
+                "skill_source": "user",
+                "origin": "learn",
+                "success": true,
+            }),
+            with_origin
+        );
+        let omitted = serde_json::to_value(HarnessChanged {
+            kind: HarnessSurfaceKind::Skill,
+            op: HarnessChangeOp::Removed,
+            name: "pdf".into(),
+            skill_source: "bundled".into(),
+            origin: None,
+            plugin_source: None,
+            success: false,
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::json!({
+                "kind": "skill",
+                "op": "removed",
+                "name": "pdf",
+                "skill_source": "bundled",
+                "success": false,
+            }),
+            omitted
+        );
+    }
+
+    #[test]
+    fn workflow_run_ended_omits_workflow_name_when_none() {
+        let ended = |source: WorkflowSourceKind, workflow_name: Option<String>| {
+            serde_json::to_value(WorkflowRunEnded {
+                run_id: "wf_1".into(),
+                parent_session_id: "s1".into(),
+                source,
+                workflow_name,
+                status: WorkflowRunEndStatus::Interrupted,
+                duration_ms: 10,
+                agents_used: 0,
+                agent_budget: None,
+                agents_failed: 0,
+                peak_concurrent_agents: 0,
+                slot_waits: 0,
+                slot_wait_ms_total: 0,
+                slot_wait_ms_max: 0,
+            })
+            .unwrap()
+        };
+        let builtin = ended(WorkflowSourceKind::Builtin, Some("learn".into()));
+        assert_eq!(Some(&serde_json::json!("builtin")), builtin.get("source"));
+        assert_eq!(
+            Some(&serde_json::json!("learn")),
+            builtin.get("workflow_name")
+        );
+        let bundled = ended(WorkflowSourceKind::Bundled, Some("learn-traces".into()));
+        assert_eq!(Some(&serde_json::json!("bundled")), bundled.get("source"));
+        assert_eq!(
+            Some(&serde_json::json!("learn-traces")),
+            bundled.get("workflow_name")
+        );
+        let file = ended(WorkflowSourceKind::File, None);
+        assert_eq!(Some(&serde_json::json!("file")), file.get("source"));
+        assert_eq!(None, file.get("workflow_name"));
     }
 
     #[test]

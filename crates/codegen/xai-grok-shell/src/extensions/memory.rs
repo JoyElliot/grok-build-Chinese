@@ -24,7 +24,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         m if m.starts_with("x.ai/compact_conversation") => handle_compact(agent, args).await,
         MEMORY_FLUSH_METHOD => handle_flush(agent, args).await,
         MEMORY_DREAM_METHOD => handle_dream(agent, args).await,
-        "x.ai/memory/rewrite" => handle_rewrite(agent, args).await,
+        MEMORY_REWRITE_METHOD => handle_rewrite(agent, args).await,
         MEMORY_LIST_METHOD => handle_list(agent, args).await,
         MEMORY_TOGGLE_METHOD => handle_toggle(agent, args).await,
         MEMORY_FORGET_METHOD => handle_forget(agent, args).await,
@@ -34,6 +34,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
 
 pub const MEMORY_FLUSH_METHOD: &str = "x.ai/memory/flush";
 pub const MEMORY_DREAM_METHOD: &str = "x.ai/memory/dream";
+pub const MEMORY_REWRITE_METHOD: &str = "x.ai/memory/rewrite";
 pub const MEMORY_LIST_METHOD: &str = "x.ai/memory/list";
 pub const MEMORY_TOGGLE_METHOD: &str = "x.ai/memory/toggle";
 pub const MEMORY_FORGET_METHOD: &str = "x.ai/memory/forget";
@@ -154,7 +155,7 @@ fn plural(count: usize, noun: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryFlushDisposition {
-    /// Every completed turn is captured and indexed.
+    /// Every finished or stopped turn is captured and indexed.
     Flushed,
     /// Capture failed but will be retried in the background.
     RetryRequired,
@@ -382,16 +383,24 @@ async fn handle_dream(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     to_raw_response(&response)
 }
 
-async fn handle_rewrite(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct RewriteRequest {
-        session_id: String,
-        raw_text: String,
-        context_summary: String,
-    }
+/// Request body for `x.ai/memory/rewrite`: a raw `/remember` note and the conversation summary the
+/// model resolves references against.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRewriteRequest {
+    pub session_id: String,
+    pub raw_text: String,
+    pub context_summary: String,
+}
 
-    let req: RewriteRequest = parse_params(args)?;
+/// Response body for `x.ai/memory/rewrite`: the note as Markdown
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRewriteResponse {
+    pub rewritten: String,
+}
+
+async fn handle_rewrite(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let req: MemoryRewriteRequest = parse_params(args)?;
     let session = resident_session(agent, req.session_id)?;
     let (tx, rx) = oneshot::channel();
     let _ = session.cmd_tx.send(SessionCommand::RewriteMemoryNote {
@@ -403,7 +412,7 @@ async fn handle_rewrite(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         .await
         .map_err(|_| acp::Error::internal_error().data("session failed to respond"))?
         .map_err(|e| acp::Error::internal_error().data(e))?;
-    to_raw_response(&serde_json::json!({ "rewritten": rewritten }))
+    to_raw_response(&MemoryRewriteResponse { rewritten })
 }
 
 #[cfg(test)]

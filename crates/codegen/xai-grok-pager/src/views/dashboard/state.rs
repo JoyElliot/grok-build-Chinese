@@ -21,15 +21,10 @@ use xai_grok_shell::session::persistence::MAX_TITLE_SCALARS as MAX_RENAME_SCALAR
 
 const PROMPT_MULTI_CLICK_MS: u128 = 300;
 
-/// Stable identity for a dashboard row. When the parent closes, the subagent rows naturally
-/// disappear because the row builder iterates `app.agents.values()`; no separate cleanup needed.
+/// Stable identity for a dashboard row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DashboardRowId {
     TopLevel(AgentId),
-    Subagent {
-        parent: AgentId,
-        child_session_id: String,
-    },
     /// A leader-roster-only row: a session hosted by the leader (or a remote host) that this client is NOT locally attached to.
     /// Keyed by the roster `session_id`.
     /// Not locally controllable.
@@ -42,12 +37,6 @@ pub enum DashboardRowId {
 }
 
 impl DashboardRowId {
-    /// True for a subagent row.
-    /// Used to gate the "rename" affordance; subagents are read-only in this version.
-    pub fn is_subagent(&self) -> bool {
-        matches!(self, Self::Subagent { .. })
-    }
-
     pub fn is_workspace(&self) -> bool {
         matches!(self, Self::Workspace { .. })
     }
@@ -58,7 +47,6 @@ impl DashboardRowId {
 
     pub(crate) fn is_owned_by_agent(&self, agent_id: AgentId) -> bool {
         matches!(self, Self::TopLevel(id) if *id == agent_id)
-            || matches!(self, Self::Subagent { parent, .. } if *parent == agent_id)
     }
 }
 
@@ -74,13 +62,6 @@ pub(crate) fn scrollback_mut_for_row<'a>(
 ) -> Option<&'a mut crate::scrollback::state::ScrollbackState> {
     match row {
         DashboardRowId::TopLevel(id) => agents.get_mut(id).map(|a| &mut a.scrollback),
-        DashboardRowId::Subagent {
-            parent,
-            child_session_id,
-        } => agents
-            .get_mut(parent)
-            .and_then(|p| p.subagent_view_mut(child_session_id))
-            .map(|c| &mut c.scrollback),
         DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => None,
     }
 }
@@ -91,12 +72,6 @@ pub(crate) fn scrollback_available_for_row(
 ) -> bool {
     match row {
         DashboardRowId::TopLevel(id) => agents.contains_key(id),
-        DashboardRowId::Subagent {
-            parent,
-            child_session_id,
-        } => agents
-            .get(parent)
-            .is_some_and(|p| p.has_subagent_view(child_session_id)),
         DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => false,
     }
 }
@@ -121,51 +96,28 @@ pub(crate) struct DeferredPeekSend {
 /// the current process lifetime.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PersistedRowId {
-    TopLevel {
-        session_id: String,
-    },
-    Subagent {
-        parent_session_id: String,
-        child_session_id: String,
-    },
+    TopLevel { session_id: String },
 }
 
 impl PersistedRowId {
-    /// On-disk serialisation. `top:<session_id>` or `sub:<parent_session_id>:<child_session_id>`. The
-    /// session ids themselves are opaque to the dashboard; we never split them. The first colon after
-    /// `sub:` is the only one we split on.
+    /// On-disk serialisation: `top:<session_id>`.
     pub fn to_key(&self) -> String {
         match self {
             Self::TopLevel { session_id } => format!("top:{session_id}"),
-            Self::Subagent {
-                parent_session_id,
-                child_session_id,
-            } => format!("sub:{parent_session_id}:{child_session_id}"),
         }
     }
 
     /// Parse a persisted key back.
-    /// Returns `None` for malformed input.
+    /// Returns `None` for malformed input. A `sub:` key is a pinned or reordered subagent row from
+    /// before those rows were removed; dropping it keeps the rest of the dashboard config loadable.
     pub fn from_key(s: &str) -> Option<Self> {
-        if let Some(sid) = s.strip_prefix("top:") {
-            if sid.is_empty() {
-                return None;
-            }
-            return Some(Self::TopLevel {
-                session_id: sid.to_string(),
-            });
+        let sid = s.strip_prefix("top:")?;
+        if sid.is_empty() {
+            return None;
         }
-        if let Some(rest) = s.strip_prefix("sub:")
-            && let Some((parent, child)) = rest.split_once(':')
-            && !parent.is_empty()
-            && !child.is_empty()
-        {
-            return Some(Self::Subagent {
-                parent_session_id: parent.to_string(),
-                child_session_id: child.to_string(),
-            });
-        }
-        None
+        Some(Self::TopLevel {
+            session_id: sid.to_string(),
+        })
     }
 }
 
@@ -183,11 +135,11 @@ pub(crate) fn send_echo_window_open(since_send: std::time::Duration) -> bool {
 
 /// Coarse state used for the dashboard grouping.
 ///
-/// See [`super::row::classify_top_level`] / [`super::row::classify_subagent`] for the mapping rules.
+/// See [`super::row::classify_top_level`] for the mapping rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(strum::EnumIter))]
 pub enum RowState {
-    /// Pending permission OR pending ask_user_question (top-level only; subagents never enter this state in this version).
+    /// Pending permission OR pending ask_user_question.
     NeedsInput,
     /// Live turn or command running.
     Working,
@@ -614,6 +566,7 @@ pub struct DashboardState {
     /// Surface-local compose mode for dispatch and peek (not persisted; not shared with agent sessions).
     /// `/multiline` or Ctrl+M.
     pub multiline_mode: bool,
+    pub(crate) preview_enabled: bool,
     /// `/usage` modal, hosted here because the dashboard has no agent to hang it on (session-less: no session id).
     /// Owns input while open; cleared on dashboard-open and on every overlay exit back to the list.
     pub usage_modal: Option<Box<crate::views::usage_modal::UsageInfoModalState>>,
@@ -1020,11 +973,6 @@ fn location_picker_config<'a>() -> crate::views::picker::PickerConfig<'a> {
 pub struct SessionIdResolver {
     /// Maps session_id to AgentId (top-level).
     top: std::collections::HashMap<String, crate::app::agent::AgentId>,
-    /// Maps agent_session_id to a set of (child_session_id, AgentId-of-parent).
-    subs: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, crate::app::agent::AgentId>,
-    >,
     /// Reverse: maps AgentId to session_id (for `to_persisted`).
     top_rev: std::collections::HashMap<crate::app::agent::AgentId, String>,
     workspace: std::collections::HashSet<String>,
@@ -1045,47 +993,19 @@ impl SessionIdResolver {
     ) -> Self {
         let mut top = std::collections::HashMap::new();
         let mut top_rev = std::collections::HashMap::new();
-        let mut subs: std::collections::HashMap<
-            String,
-            std::collections::HashMap<String, crate::app::agent::AgentId>,
-        > = std::collections::HashMap::new();
         for (id, agent) in agents {
             if let Some(sid) = agent.session.session_id.as_ref() {
                 let sid_str = sid.0.to_string();
                 if let Some(prev) = top.get(&sid_str) {
-                    // Top-level collision: keep first mapping.
-                    // And call out the subagents we're dropping by name so a debugger can correlate the missing children back to the losing parent
-                    let dropped: Vec<&str> =
-                        agent.subagent_sessions.keys().map(String::as_str).collect();
                     tracing::warn!(
                         session_id = %sid_str,
                         first = ?prev,
                         duplicate = ?id,
-                        dropped_subagents = ?dropped,
-                        "SessionIdResolver: duplicate session_id; keeping first mapping (subagents of losing parent are dropped)"
+                        "SessionIdResolver: duplicate session_id; keeping first mapping"
                     );
                 } else {
                     top.insert(sid_str.clone(), *id);
-                    top_rev.insert(*id, sid_str.clone());
-                    // Populate the subs map via the entry()/or_insert_with() API so the "first wins" rule is explicit
-                    // Defensive: a colliding child_session_id within a single parent's map would also warn rather than silently overwrite
-                    let children = subs.entry(sid_str.clone()).or_default();
-                    for child_sid in agent.subagent_sessions.keys() {
-                        if let Some(prev_child) = children.get(child_sid) {
-                            tracing::warn!(
-                                parent_session_id = %sid_str,
-                                child_session_id = %child_sid,
-                                first = ?prev_child,
-                                duplicate = ?id,
-                                "SessionIdResolver: duplicate child session_id under same parent; keeping first mapping"
-                            );
-                        } else {
-                            children.insert(child_sid.clone(), *id);
-                        }
-                    }
-                    if children.is_empty() {
-                        subs.remove(&sid_str);
-                    }
+                    top_rev.insert(*id, sid_str);
                 }
             }
         }
@@ -1098,7 +1018,6 @@ impl SessionIdResolver {
             .collect();
         Self {
             top,
-            subs,
             top_rev,
             workspace,
         }
@@ -1109,7 +1028,6 @@ impl SessionIdResolver {
     pub fn empty() -> Self {
         Self {
             top: std::collections::HashMap::new(),
-            subs: std::collections::HashMap::new(),
             top_rev: std::collections::HashMap::new(),
             workspace: std::collections::HashSet::new(),
         }
@@ -1129,17 +1047,6 @@ impl SessionIdResolver {
                             session_id: session_id.clone(),
                         })
                 }),
-            PersistedRowId::Subagent {
-                parent_session_id,
-                child_session_id,
-            } => self
-                .subs
-                .get(parent_session_id)
-                .and_then(|m| m.get(child_session_id).copied())
-                .map(|parent| DashboardRowId::Subagent {
-                    parent,
-                    child_session_id: child_session_id.clone(),
-                }),
         }
     }
 
@@ -1151,16 +1058,6 @@ impl SessionIdResolver {
                     .map(|sid| PersistedRowId::TopLevel {
                         session_id: sid.clone(),
                     })
-            }
-            DashboardRowId::Subagent {
-                parent,
-                child_session_id,
-            } => {
-                let parent_sid = self.top_rev.get(parent)?.clone();
-                Some(PersistedRowId::Subagent {
-                    parent_session_id: parent_sid,
-                    child_session_id: child_session_id.clone(),
-                })
             }
             DashboardRowId::Workspace { session_id } => Some(PersistedRowId::TopLevel {
                 session_id: session_id.clone(),
@@ -1267,6 +1164,8 @@ impl DashboardState {
             voice_listening: false,
             voice_interim: None,
             multiline_mode: false,
+            preview_enabled: xai_grok_shell::agent::config::UiConfig::default()
+                .dashboard_preview_enabled(),
             usage_modal: None,
             // Fresh dashboard with no rows seeded, so the `+ New Agent` button is the default cursor target
             // Open sites that want a specific row seeded call `focus_row` after construction, which clears this atomically
@@ -1778,7 +1677,7 @@ impl DashboardState {
     }
 
     /// Garbage-collect stale row ids from `pinned` / `reorder`. Called on dashboard open: any persisted
-    /// id whose underlying agent/subagent no longer exists is silently dropped (e.g. a pinned row whose
+    /// id whose underlying agent no longer exists is silently dropped (e.g. a pinned row whose
     /// agent was deleted).
     pub fn gc_stale_refs(&mut self, alive: &dyn Fn(&DashboardRowId) -> bool) {
         self.pinned.retain(|id| alive(id));
@@ -4194,18 +4093,15 @@ impl DashboardState {
                 self.focus_section(key);
             }
         }
-        // Skip non-selectable placeholders ("… N more").
-        let selectable: Vec<&DashboardRow> =
-            rows.iter().filter(|r| !r.is_more_placeholder).collect();
-        if selectable.is_empty() {
+        if rows.is_empty() {
             self.selected = None;
             self.delete_confirm = None;
             return;
         }
         if let Some(sel) = self.selected.as_ref()
-            && !selectable.iter().any(|r| r.id == *sel)
+            && !rows.iter().any(|r| r.id == *sel)
         {
-            // The previously selected row was filtered out / closed / lost its parent
+            // The previously selected row was filtered out or closed.
             // Drop the cursor; re-selecting is the user's job
             self.selected = None;
         }

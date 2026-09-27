@@ -25,8 +25,9 @@ worktrees of the same repository share one workspace scope.
 
 Each scope keeps its knowledge as ordinary Markdown files. `topics/` holds
 curated notes, one file per subject, and is what Grok reads at the start of a
-session. New facts captured from a completed turn land as small observations
-that a later consolidation pass (`/dream`) folds into topics. A bounded generated
+session. New facts captured after each turn, including a turn you stop before it
+finishes, land as small observations that a later consolidation pass (`/dream`)
+folds into topics. A bounded generated
 index of both scopes is injected into the model's context once per session so
 it can decide which topics to open.
 
@@ -93,19 +94,7 @@ internal hardening notes, not here.
 
 ## How Memory Is Stored
 
-Memory is stored as Markdown files under `~/.grok/memory/`:
-
-| Location | Scope | Description |
-|----------|-------|-------------|
-| `~/.grok/memory/MEMORY.md` | Global | Facts that apply across all your projects |
-| `~/.grok/memory/<project-slug>-<hash8>/MEMORY.md` | Workspace | Project-specific conventions and context |
-| `~/.grok/memory/<project-slug>-<hash8>/sessions/` | Sessions | Per-session summaries and logs |
-
-Grok suffixes each workspace directory with a short hash of the repository's identity. The identity is the `origin` remote in `org/repo` form when the directory is a Git repository with an `origin` remote, or the directory path otherwise. Because clones and worktrees of the same repository share an `origin` remote, they also share one memory directory.
-
-An SQLite index supports search across all memory files:
-- **FTS5** provides the default full-text search for keyword matching.
-- **vec0** adds vector search for semantic similarity when an embedding model is configured.
+When v2 is on (`[memory_v2] enabled`), each scope stores Markdown under `~/.grok/memory-v2/`: `topics/` for curated notes and `observations/_inbox/` for new facts. When v2 is off and legacy memory is on, files live under `~/.grok/memory/` (`MEMORY.md` plus hashed workspace directories). `[memory] enabled` and `[memory_v2] enabled` both default off.
 
 ---
 

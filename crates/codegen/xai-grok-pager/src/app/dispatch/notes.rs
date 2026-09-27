@@ -1044,7 +1044,12 @@ const BTW_IMAGE_AGGREGATE_CAP: usize = 50_000_000;
 
 pub(crate) struct BtwImageEncode {
     pub blocks: Option<Vec<acp::ContentBlock>>,
+    /// Every attachment that did not encode: the aggregate-cap drops plus the unreadable ones.
     pub omitted: usize,
+    /// Attachments the aggregate cap dropped before any load was attempted.
+    pub omitted_by_cap: usize,
+    /// Display numbers of attachments whose bytes could not be loaded (a subset of `omitted`).
+    pub skipped_display_numbers: Vec<usize>,
 }
 
 /// Encode composer images into `x.ai/btw` content blocks.
@@ -1059,6 +1064,8 @@ pub(crate) fn encode_btw_images(
         return BtwImageEncode {
             blocks: None,
             omitted: 0,
+            omitted_by_cap: 0,
+            skipped_display_numbers: Vec::new(),
         };
     }
     let kept = images_within_aggregate_cap(images);
@@ -1067,21 +1074,26 @@ pub(crate) fn encode_btw_images(
         return BtwImageEncode {
             blocks: None,
             omitted: images.len(),
+            omitted_by_cap,
+            skipped_display_numbers: Vec::new(),
         };
     }
-    let blocks = crate::prompt_images::build_content_blocks_with_workspace_ref(
+    let build = crate::prompt_images::build_content_blocks_with_workspace_report_ref(
         question.to_string(),
         &kept,
         Some(cwd),
     );
-    let produced = blocks
+    let produced = build
+        .blocks
         .iter()
         .filter(|block| matches!(block, acp::ContentBlock::Image(_)))
         .count();
-    let omitted = omitted_by_cap + kept.len().saturating_sub(produced);
+    let omitted = omitted_by_cap + build.skipped_display_numbers.len();
     BtwImageEncode {
-        blocks: (produced > 0).then_some(blocks),
+        blocks: (produced > 0).then_some(build.blocks),
         omitted,
+        omitted_by_cap,
+        skipped_display_numbers: build.skipped_display_numbers,
     }
 }
 
@@ -1281,6 +1293,7 @@ pub(super) fn handle_btw_response(
     result: Result<String, String>,
     minimal_request_id: Option<uuid::Uuid>,
     image_notice: Option<String>,
+    skipped_image_numbers: &[usize],
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         use crate::views::btw_overlay::BtwOverlayState;
@@ -1289,16 +1302,17 @@ pub(super) fn handle_btw_response(
             .map(|notice| localized_btw_image_notice(notice, agent.scrollback.locale()));
         if let Some(request_id) = minimal_request_id {
             // A dismissed or stale request ignores the answer. Don't toast either.
-            if crate::minimal_api::finish_minimal_btw(agent, request_id, result)
-                && let Some(notice) = image_notice.as_deref()
-            {
-                agent.show_toast(notice);
+            if crate::minimal_api::finish_minimal_btw(agent, request_id, result) {
+                app.pending_image_notices.extend(image_notice);
+                app.pending_image_notices
+                    .extend(agent.skipped_image_send_notice(skipped_image_numbers));
             }
             return vec![];
         }
-        if let Some(notice) = image_notice.as_deref() {
-            agent.show_toast(notice);
-        }
+        // Cap drops and read failures are disjoint sets; the flush shows them as one message.
+        app.pending_image_notices.extend(image_notice);
+        app.pending_image_notices
+            .extend(agent.skipped_image_send_notice(skipped_image_numbers));
         let question = match &agent.btw_state {
             Some(BtwOverlayState::Loading { question }) => question.clone(),
             _ => String::new(),

@@ -57,9 +57,9 @@ fn mcp_server_definitions_equal(a: &acp::McpServer, b: &acp::McpServer) -> bool 
     canonical_definition(a) == canonical_definition(b)
 }
 
-fn canonical_definition(server: &acp::McpServer) -> acp::McpServer {
-    let mut server = server.clone();
-    match &mut server {
+/// Sort `env` and `headers` by name so map-iteration order cannot change equality or hot-reload diffs.
+pub(crate) fn canonicalize_mcp_maps(server: &mut acp::McpServer) {
+    match server {
         acp::McpServer::Stdio(s) => s
             .env
             .sort_by(|a, b| (&a.name, &a.value).cmp(&(&b.name, &b.value))),
@@ -72,6 +72,11 @@ fn canonical_definition(server: &acp::McpServer) -> acp::McpServer {
         // `McpServer` is #[non_exhaustive]; unknown transports have nothing to canonicalize.
         _ => {}
     }
+}
+
+fn canonical_definition(server: &acp::McpServer) -> acp::McpServer {
+    let mut server = server.clone();
+    canonicalize_mcp_maps(&mut server);
     server
 }
 
@@ -104,6 +109,7 @@ pub(crate) fn merge_and_send_managed_mcp_update(
     cmd_tx
         .send(crate::session::SessionCommand::UpdateMcpServers {
             mcp_servers: merged,
+            client_seed: None,
             respond_to: tx,
         })
         .is_ok()
@@ -328,10 +334,13 @@ fn apply_mcp_server_policy(
 
 /// Policy gate for the session-less MCP pool (without it `x.ai/mcp/call` spawns blocked servers);
 /// native tier needs the payload to EQUAL the on-disk TOML definition, as in the session merge.
+/// Also drops `enabled = false` / `disabled_mcp_servers` names — the same kill switch as
+/// [`merge_managed_mcp_servers`] / [`apply_mcp_server_policy`].
 pub(crate) fn filter_policy_blocked_agent_mcp(
     servers: Vec<acp::McpServer>,
     cwd: &std::path::Path,
 ) -> Vec<acp::McpServer> {
+    let servers = drop_config_disabled_mcp(servers, cwd);
     if servers.is_empty() {
         return servers;
     }
@@ -346,6 +355,21 @@ pub(crate) fn filter_policy_blocked_agent_mcp(
         &crate::agent::folder_trust::project_scoped_mcp_names(cwd),
         xai_grok_workspace::permission::resolution::managed_settings(),
     )
+}
+
+/// Same name set [`apply_mcp_server_policy`] drops before spawn.
+fn drop_config_disabled_mcp(
+    servers: Vec<acp::McpServer>,
+    cwd: &std::path::Path,
+) -> Vec<acp::McpServer> {
+    if servers.is_empty() {
+        return servers;
+    }
+    let disabled = crate::util::config::disabled_mcp_server_names(cwd);
+    servers
+        .into_iter()
+        .filter(|s| !disabled.contains(mcp_server_name(s)))
+        .collect()
 }
 
 /// [`filter_policy_blocked_agent_mcp`] over injected inputs (the OnceLock
@@ -1255,6 +1279,30 @@ command = "echo"
             &deny_name,
         );
         assert_eq!(names(&kept), vec!["corp"]);
+    }
+
+    #[test]
+    fn filter_policy_blocked_agent_mcp_drops_enabled_false_name() {
+        let cwd = tempfile::tempdir().unwrap();
+        git2::Repository::init(cwd.path()).unwrap();
+        std::fs::create_dir_all(cwd.path().join(".grok")).unwrap();
+        std::fs::write(
+            cwd.path().join(".grok").join("config.toml"),
+            r#"
+[mcp_servers.agent_md_ks_adder]
+url = "https://toml.example/mcp"
+enabled = false
+"#,
+        )
+        .unwrap();
+        let servers = vec![acp::McpServer::Http(
+            acp::McpServerHttp::new("agent_md_ks_adder", "https://agent.example/mcp")
+                .headers(vec![]),
+        )];
+        assert!(
+            filter_policy_blocked_agent_mcp(servers, cwd.path()).is_empty(),
+            "enabled = false must drop the name before overlay/pool spawn"
+        );
     }
 
     /// The native match compares a `load_mcp_servers` payload with `load_mcp_servers_toml_only`;

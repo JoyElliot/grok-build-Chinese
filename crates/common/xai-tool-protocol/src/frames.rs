@@ -345,9 +345,44 @@ pub struct ServerInfo {
     /// from old hubs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_ms: Option<u64>,
+    /// What hosts the server, as the hub resolved it from the minter of the
+    /// server's serve credential — never from the `host_kind` the server
+    /// declared in `metadata`, which a process anywhere can spell as it
+    /// likes. A picker groups and labels on this and falls back to the
+    /// declared value only when it is absent (a hub before this field, or a
+    /// minter the hub does not know). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_kind: Option<HostKind>,
 }
 
-/// Well-known `host_kind` values. Readers tolerate unknown strings and fall
+/// What hosts a tool server, resolved by the hub from the *minter* of its
+/// serve credential at upgrade — never from the client-declared `host_kind`
+/// in registration `metadata`. Bind-time policy keys on it, and
+/// `servers.list` carries it as [`ServerInfo::host_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKind {
+    /// The user's own device (the daemon the desktop runs on the hub's mint).
+    Desktop,
+    /// A container the organisation runs, on its own minter's credential.
+    Container,
+    /// A sandbox guest, on the sandbox service's credential.
+    Sandbox,
+}
+
+impl std::fmt::Display for HostKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Desktop => "desktop",
+            Self::Container => "container",
+            Self::Sandbox => "sandbox",
+        })
+    }
+}
+
+/// Well-known values of the `host_kind` a server *declares* in its
+/// registration `metadata` (display only; the hub's own resolution is
+/// [`ServerInfo::host_kind`]). Readers tolerate unknown strings and fall
 /// back to a plain per-server row.
 pub const HOST_KIND_DESKTOP: &str = "desktop";
 pub const HOST_KIND_DAEMON: &str = "daemon";

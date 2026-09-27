@@ -51,6 +51,21 @@ fn mid_text_goal_toasts_and_does_not_send() {
     assert_mid_text_goal_refused(&app, id, &effects, TESLA);
 }
 
+/// A refused submission sends nothing, so an unbound `[Image #1]` in it raises no image notice: the
+/// refusal toast is the one on screen after the dispatch.
+#[test]
+fn mid_text_goal_refusal_raises_no_unbound_image_notice() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    register_goal(&mut app, id);
+    const TYPED: &str = "here is the crash [Image #1]\n\n/goal figure out why it crashes";
+    test_agent_mut(&mut app, id).prompt.set_text(TYPED);
+
+    let effects = dispatch(Action::SendPrompt(TYPED.to_owned()), &mut app);
+
+    assert_mid_text_goal_refused(&app, id, &effects, TYPED);
+}
+
 /// `/btw` hoist must not run first: `context /goal … /btw …` would become
 /// `/btw context /goal …` and skip the toast.
 #[test]

@@ -1542,7 +1542,11 @@ mod tests {
         refresh_marker_cache(true);
         let dir = tempfile::tempdir().unwrap();
         let compat = xai_grok_tools::types::compat::CompatConfig::default();
-        let paths = crate::util::hooks::discover_hook_source_paths(Some(dir.path()), &compat);
+        let paths = xai_grok_hooks::discovery::discover_hook_source_paths(
+            Some(dir.path()),
+            &compat,
+            is_claude_import_marked(),
+        );
         let project_strs = source_path_strs(&paths.project);
         assert!(
             !project_strs.iter().any(|s| s.contains(".claude")),
@@ -1580,7 +1584,11 @@ mod tests {
         refresh_marker_cache(false);
         let dir = tempfile::tempdir().unwrap();
         let compat = xai_grok_tools::types::compat::CompatConfig::default();
-        let paths = crate::util::hooks::discover_hook_source_paths(Some(dir.path()), &compat);
+        let paths = xai_grok_hooks::discovery::discover_hook_source_paths(
+            Some(dir.path()),
+            &compat,
+            is_claude_import_marked(),
+        );
         let project_strs = source_path_strs(&paths.project);
         assert!(
             project_strs.iter().any(|s| s.contains(".claude")),
@@ -1596,7 +1604,11 @@ mod tests {
         refresh_marker_cache(false);
         let dir = tempfile::tempdir().unwrap();
         let compat = xai_grok_tools::types::compat::CompatConfig::default();
-        let paths = crate::util::hooks::discover_hook_source_paths(Some(dir.path()), &compat);
+        let paths = xai_grok_hooks::discovery::discover_hook_source_paths(
+            Some(dir.path()),
+            &compat,
+            is_claude_import_marked(),
+        );
         let global_strs = source_path_strs(&paths.global);
         assert!(
             global_strs
@@ -1623,7 +1635,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut compat = xai_grok_tools::types::compat::CompatConfig::default();
         compat.cursor.hooks = false;
-        let paths = crate::util::hooks::discover_hook_source_paths(Some(dir.path()), &compat);
+        let paths = xai_grok_hooks::discovery::discover_hook_source_paths(
+            Some(dir.path()),
+            &compat,
+            is_claude_import_marked(),
+        );
         let global_strs = source_path_strs(&paths.global);
         assert!(
             !global_strs.iter().any(|s| s.contains(".cursor")),
@@ -1647,7 +1663,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut compat = xai_grok_tools::types::compat::CompatConfig::default();
         compat.claude.hooks = false;
-        let paths = crate::util::hooks::discover_hook_source_paths(Some(dir.path()), &compat);
+        let paths = xai_grok_hooks::discovery::discover_hook_source_paths(
+            Some(dir.path()),
+            &compat,
+            is_claude_import_marked(),
+        );
         let global_strs = source_path_strs(&paths.global);
         assert!(
             !global_strs.iter().any(|s| s.contains("/.claude/")),
@@ -1671,7 +1691,11 @@ mod tests {
         refresh_marker_cache(false);
         let dir = tempfile::tempdir().unwrap();
         let compat = xai_grok_tools::types::compat::CompatConfig::default();
-        let paths = crate::util::hooks::discover_hook_source_paths(Some(dir.path()), &compat);
+        let paths = xai_grok_hooks::discovery::discover_hook_source_paths(
+            Some(dir.path()),
+            &compat,
+            is_claude_import_marked(),
+        );
         assert!(
             !paths.project.is_empty(),
             "project source paths should be non-empty for a git_root"

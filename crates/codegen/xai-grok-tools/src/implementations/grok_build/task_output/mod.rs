@@ -197,6 +197,7 @@ impl TaskOutputTool {
         timeout_ms: Option<u64>,
         ctx: &xai_tool_runtime::ToolCallContext,
         resources: SharedResources,
+        output_byte_limit: Option<usize>,
     ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
         let contract_version = ctx
             .extensions
@@ -240,17 +241,10 @@ impl TaskOutputTool {
                     .render("${{ tools.by_kind.read }}")
                     .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
             }
-            let max_output_bytes = resources
-                .lock()
-                .await
-                .get::<TruncationCfg>()
-                .map(|cfg| {
-                    cfg.0.max_output_bytes_for(
-                        "get_command_or_subagent_output",
-                        DEFAULT_TOOL_OUTPUT_BYTES,
-                    )
-                })
-                .unwrap_or(DEFAULT_TOOL_OUTPUT_BYTES);
+            let max_output_bytes = {
+                let res = resources.lock().await;
+                resolved_max_output_bytes(&res, "get_command_or_subagent_output", output_byte_limit)
+            };
             return Ok(TaskOutputOutput::Result(apply_running_wait_hint(
                 snapshot_to_result(snapshot, &read_file_name, max_output_bytes),
                 wait_hint,
@@ -316,6 +310,23 @@ impl TaskOutputTool {
         resources: SharedResources,
         tool_name_for_truncation: &str,
     ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+        Self::run_multi_tasks_limited(
+            task_ids,
+            timeout_ms,
+            resources,
+            tool_name_for_truncation,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn run_multi_tasks_limited(
+        task_ids: &[String],
+        timeout_ms: Option<u64>,
+        resources: SharedResources,
+        tool_name_for_truncation: &str,
+        output_byte_limit: Option<usize>,
+    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
         let waits = xai_tool_types::task_output_waits(timeout_ms);
         let requested = requested_wait_timeout(timeout_ms);
         let timeout = capped_wait_timeout(timeout_ms, max_wait_block());
@@ -328,13 +339,7 @@ impl TaskOutputTool {
             let rfn = renderer
                 .render("${{ tools.by_kind.read }}")
                 .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
-            let mob = res
-                .get::<TruncationCfg>()
-                .map(|cfg| {
-                    cfg.0
-                        .max_output_bytes_for(tool_name_for_truncation, DEFAULT_TOOL_OUTPUT_BYTES)
-                })
-                .unwrap_or(DEFAULT_TOOL_OUTPUT_BYTES);
+            let mob = resolved_max_output_bytes(&res, tool_name_for_truncation, output_byte_limit);
             (terminal, backend, rfn, mob)
         };
 
@@ -722,9 +727,9 @@ pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputRes
             worktree_path,
         } => {
             let mut output = format!(
-                "{output}\n\n<subagent_meta>id={}, type={}, tool_calls={tool_calls}, \
+                "{output}\n\n<subagent_meta>id={}, tool_calls={tool_calls}, \
                  turns={turns}, duration_ms={}</subagent_meta>",
-                snap.subagent_id, snap.subagent_type, snap.duration_ms,
+                snap.subagent_id, snap.duration_ms,
             );
             if let Some(wt) = &worktree_path {
                 output.push_str(&format!("\n<worktree_path>{wt}</worktree_path>"));
@@ -732,7 +737,6 @@ pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputRes
             output.push_str("\n\n");
             output.push_str(&xai_tool_types::format_resume_footer(
                 &snap.subagent_id,
-                &snap.subagent_type,
                 snap.persona.as_deref(),
             ));
             ("completed", Some(0), output)
@@ -902,6 +906,19 @@ impl xai_tool_runtime::Tool for TaskOutputTool {
         ctx: xai_tool_runtime::ToolCallContext,
         input: TaskOutputToolInput,
     ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+        self.run_with_output_byte_limit(ctx, input, None).await
+    }
+}
+
+impl TaskOutputTool {
+    /// `output_byte_limit` is set only by `get_terminal_command_output`. `None`
+    /// is `get_task_output`: the shared truncation lookup.
+    pub(crate) async fn run_with_output_byte_limit(
+        &self,
+        ctx: xai_tool_runtime::ToolCallContext,
+        input: TaskOutputToolInput,
+        output_byte_limit: Option<usize>,
+    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -924,18 +941,36 @@ impl xai_tool_runtime::Tool for TaskOutputTool {
                 ));
             };
             return self
-                .run_single_task(id, input.timeout_ms, &ctx, resources)
+                .run_single_task(id, input.timeout_ms, &ctx, resources, output_byte_limit)
                 .await;
         }
 
-        Self::run_multi_tasks(
+        Self::run_multi_tasks_limited(
             &ids,
             input.timeout_ms,
             resources,
             "get_command_or_subagent_output",
+            output_byte_limit,
         )
         .await
     }
+}
+
+/// `output_byte_limit` is `get_terminal_command_output`'s session param. `Some`
+/// is that tool's builtin cap, and `TruncationConfig` may override it under
+/// `get_terminal_command_output`. `None` keeps `lookup_name`.
+fn resolved_max_output_bytes(
+    res: &crate::types::resources::Resources,
+    lookup_name: &str,
+    output_byte_limit: Option<usize>,
+) -> usize {
+    let (name, builtin) = match output_byte_limit {
+        Some(limit) => ("get_terminal_command_output", limit),
+        None => (lookup_name, DEFAULT_TOOL_OUTPUT_BYTES),
+    };
+    res.get::<TruncationCfg>()
+        .map(|cfg| cfg.0.max_output_bytes_for(name, builtin))
+        .unwrap_or(builtin)
 }
 
 #[cfg(test)]

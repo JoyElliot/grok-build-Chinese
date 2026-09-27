@@ -178,13 +178,12 @@ fn set_coding_data_sharing_blocked_by_zdr_even_if_idempotent() {
     assert!(read_toast(&app).contains("Zero Data Retention"));
 }
 
-/// Non-admin team members are blocked from toggling (matches desktop).
+/// A member the server says cannot administer the team is blocked from toggling (matches desktop).
 /// The blocked path toasts and short-circuits.
 #[test]
 fn set_coding_data_sharing_blocked_non_admin() {
     let mut app = test_app_with_agent();
-    app.team_name = Some("Acme".into());
-    app.team_role = Some("Member".into());
+    app.can_administer_team = Some(false);
     app.coding_data_retention_opt_out = false;
     let effects = dispatch(Action::SetCodingDataSharing { opted_in: false }, &mut app);
     assert!(effects.is_empty());
@@ -195,37 +194,6 @@ fn set_coding_data_sharing_blocked_non_admin() {
         toast.contains("team admin"),
         "non-admin toast must mention team admin: {toast}",
     );
-}
-
-/// Admin team members can toggle.
-#[test]
-fn set_coding_data_sharing_allowed_for_admin() {
-    let mut app = test_app_with_agent();
-    app.team_name = Some("Acme".into());
-    app.team_role = Some("Admin".into());
-    app.coding_data_retention_opt_out = false; // currently opted-in
-    let effects = dispatch(Action::SetCodingDataSharing { opted_in: false }, &mut app);
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistPrivacyBannerAcked { .. })),
-        "rollout-off admin opt-out must not ack: {effects:?}"
-    );
-    match effects
-        .iter()
-        .find(|e| matches!(e, Effect::SetCodingDataSharing { .. }))
-    {
-        Some(Effect::SetCodingDataSharing { opted_in, .. }) => {
-            assert!(!*opted_in, "Effect must carry opted_in=false");
-        }
-        other => panic!("expected SetCodingDataSharing Effect, got {effects:?} ({other:?})"),
-    }
-    // Optimistic mutation already applied.
-    assert!(
-        app.coding_data_retention_opt_out,
-        "admin-allowed dispatch must optimistically flip state",
-    );
-    assert!(app.privacy_banner_acked.is_none());
 }
 
 /// Non-idempotent dispatch emits one Effect and mutates state optimistically.
@@ -488,7 +456,7 @@ fn set_coding_data_sharing_is_silent_in_both_directions() {
     }
 }
 
-/// The failure toast substitutes a generic placeholder when the error string is too long or contains control characters / newlines.
+/// An overlong failure message is cut to the toast budget rather than hidden; control characters still substitute the placeholder.
 /// Pins the scrub contract.
 #[test]
 fn coding_data_sharing_failed_scrubs_long_error_messages() {
@@ -509,12 +477,12 @@ fn coding_data_sharing_failed_scrubs_long_error_messages() {
     let toast = read_toast(&app);
     assert!(
         !toast.contains(&huge_error),
-        "long error MUST be scrubbed from the toast: {} chars",
+        "long error MUST be cut from the toast: {} chars",
         toast.len(),
     );
     assert!(
-        toast.contains("see logs"),
-        "scrubbed toast must point at the log for full details: {toast}",
+        toast.ends_with('\u{2026}') && toast.contains(&"a".repeat(119)),
+        "cut toast keeps the head of the real message: {toast}",
     );
 }
 
@@ -546,6 +514,30 @@ fn coding_data_sharing_failed_scrubs_control_chars_in_error() {
         toast.contains("see logs"),
         "control-char-scrubbed toast points at logs: {toast}",
     );
+}
+
+/// The denial as the pager receives it: the proxy body wrapped by the ACP error display, over the toast budget.
+#[test]
+fn coding_data_sharing_failed_names_the_team_admin_on_missing_acl() {
+    let denial = "Internal error: \"This operation requires `user-team:team-management:read-write` permission. \
+                  [WKE=permissions:team-member-missing-acl]\"";
+    for (error, expect_admin) in [(denial, true), ("[WKE=unauthorized:rw-required]", false)] {
+        let mut app = test_app_with_agent();
+        let _ = dispatch(
+            Action::TaskComplete(TaskResult::CodingDataSharingFailed {
+                agent_id: AgentId(0),
+                error: error.to_owned(),
+                seq: app.coding_data_write_seq,
+            }),
+            &mut app,
+        );
+        let toast = read_toast(&app);
+        assert_eq!(
+            expect_admin,
+            toast.contains("Ask a team admin to change this setting."),
+            "{error}: {toast}"
+        );
+    }
 }
 
 /// The scrub path preserves short, sanitised error messages verbatim.
@@ -586,11 +578,16 @@ fn scrub_error_for_toast_unit() {
     // At-threshold (120 chars) still passes through.
     let len_120 = "x".repeat(120);
     assert_eq!(scrub_error_for_toast(&len_120), len_120);
-    // Over-threshold (121 chars) triggers scrub.
+    // Over-threshold (121 chars) is cut, counting chars, not bytes.
     let len_121 = "x".repeat(121);
     assert_eq!(
         scrub_error_for_toast(&len_121),
-        "server error (see logs for details)"
+        format!("{}\u{2026}", "x".repeat(119))
+    );
+    let wide_121 = "\u{00E9}".repeat(121);
+    assert_eq!(
+        scrub_error_for_toast(&wide_121),
+        format!("{}\u{2026}", "\u{00E9}".repeat(119))
     );
     // Control chars trigger scrub even at short lengths.
     assert_eq!(
@@ -659,7 +656,7 @@ fn privacy_banner_ready_app() -> AppView {
     app.privacy_banner_reshow_days = None;
     app.coding_data_pending_write = None;
     app.is_zdr = false;
-    app.team_name = None;
+    app.can_administer_team = Some(true);
     app.coding_data_retention_opt_out = true;
     app
 }
@@ -692,6 +689,221 @@ fn privacy_banner_should_show_respects_gates() {
 
     app.privacy_notice_rollout = false;
     assert!(!app.privacy_banner_should_show(), "rollout off");
+}
+
+/// Team name and role are set on every row so the old heuristic cannot be what passes it.
+/// No row acks: an opt-in ack waits on the server reply, and a rollout-off pick never stamps one.
+#[test]
+fn capability_tri_state_gates_banner_row_and_write() {
+    use crate::settings::CodingDataSharingLock;
+    // Each row starts on the opposite side of `pick` so the pick is a real change.
+    for (capability, rollout, pick, banner, lock, writes) in [
+        (Some(true), true, true, true, None, true),
+        (
+            Some(false),
+            true,
+            true,
+            false,
+            Some(CodingDataSharingLock::TeamManaged),
+            false,
+        ),
+        (None, true, true, false, None, true),
+        (Some(true), false, false, false, None, true),
+    ] {
+        let mut app = privacy_banner_ready_app();
+        app.is_team_principal = true;
+        app.team_name = Some("Acme".into());
+        app.team_role = Some("Member".into());
+        app.can_administer_team = capability;
+        app.privacy_notice_rollout = rollout;
+        app.coding_data_retention_opt_out = pick;
+        let row = format!("{capability:?} rollout={rollout} pick={pick}");
+        assert_eq!(banner, app.privacy_banner_should_show(), "{row} banner");
+        assert_eq!(lock, app.coding_data_sharing_lock(), "{row} lock");
+        let effects = dispatch(Action::SetCodingDataSharing { opted_in: pick }, &mut app);
+        let wrote = effects
+            .iter()
+            .any(|e| matches!(e, Effect::SetCodingDataSharing { opted_in: o, .. } if *o == pick));
+        assert_eq!(writes, wrote, "{row} write: {effects:?}");
+        assert_eq!(
+            if writes { !pick } else { pick },
+            app.coding_data_retention_opt_out,
+            "{row} optimistic flip only alongside a write"
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::PersistPrivacyBannerAcked { .. })),
+            "{row} must not ack: {effects:?}"
+        );
+        assert!(app.privacy_banner_acked.is_none(), "{row} acked");
+    }
+}
+
+/// A team principal's claim lands at login while `team_name` waits on `/user`; the hide must not wait on the name.
+#[test]
+fn nameless_team_principal_hides_the_banner_while_the_capability_is_unknown() {
+    let mut app = privacy_banner_ready_app();
+    app.is_team_principal = true;
+    app.team_id = Some("6f1c1d3e-0000-4000-8000-000000000000".into());
+    app.team_name = None;
+    app.can_administer_team = None;
+
+    assert!(!app.privacy_banner_should_show());
+}
+
+/// A User principal's token carries its personal billing team id; that is not team context and `/user` never resolves the capability.
+#[test]
+fn personal_account_sees_the_banner_without_a_capability() {
+    let mut app = privacy_banner_ready_app();
+    app.is_team_principal = false;
+    app.team_id = Some("0b7e4c2a-0000-4000-8000-000000000000".into());
+    app.team_name = None;
+    app.can_administer_team = None;
+
+    assert!(
+        app.privacy_banner_should_show(),
+        "personal team id is not team context; an unresolved capability must not hide the ask"
+    );
+    assert_eq!(None, app.coding_data_sharing_lock());
+    let effects = dispatch(Action::SetCodingDataSharing { opted_in: true }, &mut app);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::SetCodingDataSharing { .. })),
+        "no team: the choice must still write: {effects:?}"
+    );
+}
+
+/// A personal account carries a `team_id` yet gets `null` from `/user` forever, so only the principal type decides; without an email there is no identity to bind the answer to.
+#[test]
+fn hydration_asks_only_for_unresolved_team_principals() {
+    let mut app = test_app_with_agent();
+    app.team_id = Some("team-a".into());
+    for (team_principal, capability, api_key, email, asks) in [
+        (false, None, false, Some("a@acme.test"), false),
+        (true, None, false, Some("a@acme.test"), true),
+        (true, Some(false), false, Some("a@acme.test"), false),
+        (true, None, true, Some("a@acme.test"), false),
+        (true, None, false, None, false),
+    ] {
+        app.is_team_principal = team_principal;
+        app.can_administer_team = capability;
+        app.is_api_key_auth = api_key;
+        app.account_email = email.map(str::to_owned);
+        assert_eq!(
+            asks,
+            app.needs_team_capability_hydration(),
+            "team_principal={team_principal} {capability:?} api_key={api_key} {email:?}"
+        );
+    }
+}
+
+/// The open modal renders from a copied snapshot: the row must lock there too and a chooser open on it must close; a slower answer after that changes nothing.
+#[test]
+fn hydrated_denial_locks_open_settings_row_and_closes_chooser() {
+    use crate::settings::CodingDataSharingLock;
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+
+    let mut app = test_app_with_agent();
+    app.account_email = Some("a@acme.test".into());
+    app.coding_data_retention_opt_out = true;
+    let _ = dispatch(
+        Action::OpenSettingsFocus {
+            key: "coding_data_sharing",
+        },
+        &mut app,
+    );
+    let chooser_open = |app: &AppView| {
+        let Some(ActiveModal::Settings { state }) =
+            &app.agents.get(&AgentId(0)).unwrap().active_modal
+        else {
+            panic!("settings modal must stay open")
+        };
+        (
+            state.row_lock("coding_data_sharing"),
+            matches!(state.mode(), SettingsModalMode::PickingEnum { .. }),
+        )
+    };
+    assert_eq!(chooser_open(&app), (None, true));
+
+    for late in [Some(false), Some(true)] {
+        let _ = dispatch(
+            Action::TaskComplete(TaskResult::TeamCapabilityHydrated {
+                identity: app.auth_identity(),
+                can_administer_team: late,
+            }),
+            &mut app,
+        );
+        assert_eq!(
+            chooser_open(&app),
+            (Some(CodingDataSharingLock::TeamManaged), false)
+        );
+    }
+    assert!(app.coding_data_retention_opt_out);
+}
+
+/// A late answer for the previous account must not land on the new one; two users without an email are not the same account, nor is the same user re-signed-in as a User principal.
+#[test]
+fn hydration_answer_for_another_account_is_dropped() {
+    for (asked_email, now_email, now_team_principal) in [
+        (Some("a@acme.test"), Some("b@acme.test"), true),
+        (None, None, true),
+        (Some("a@acme.test"), Some("a@acme.test"), false),
+    ] {
+        let mut app = test_app_with_agent();
+        app.is_team_principal = true;
+        app.account_email = asked_email.map(str::to_owned);
+        let asked_as = app.auth_identity();
+        app.account_email = now_email.map(str::to_owned);
+        app.is_team_principal = now_team_principal;
+        let _ = dispatch(
+            Action::TaskComplete(TaskResult::TeamCapabilityHydrated {
+                identity: asked_as,
+                can_administer_team: Some(false),
+            }),
+            &mut app,
+        );
+        assert_eq!(
+            app.can_administer_team, None,
+            "{asked_email:?} -> {now_email:?} team_principal={now_team_principal}"
+        );
+    }
+}
+
+/// A re-check snapshot built before hydration must not clear the capability for the same account and must replace it for another, or a personal account would inherit a team denial.
+#[test]
+fn recheck_keeps_hydrated_capability_only_for_the_same_account() {
+    let team = xai_grok_login::AuthMeta {
+        email: Some("a@acme.test".into()),
+        team_id: Some("team-a".into()),
+        is_team_principal: true,
+        ..xai_grok_login::AuthMeta::default()
+    };
+    let personal = xai_grok_login::AuthMeta {
+        is_team_principal: false,
+        ..team.clone()
+    };
+    for (snapshot, expected) in [(team, Some(false)), (personal, None)] {
+        let mut app = test_app_with_agent();
+        app.account_email = Some("a@acme.test".into());
+        app.team_id = Some("team-a".into());
+        app.is_team_principal = true;
+        app.can_administer_team = Some(false);
+        let _ = dispatch(
+            Action::TaskComplete(TaskResult::CheckSubscriptionComplete {
+                verify: None,
+                meta: Some(serde_json::to_value(&snapshot).unwrap()),
+            }),
+            &mut app,
+        );
+        assert_eq!(
+            app.can_administer_team, expected,
+            "team_principal={}",
+            snapshot.is_team_principal
+        );
+    }
 }
 
 /// `[Opt in]` success: ACP confirmation acks the banner.

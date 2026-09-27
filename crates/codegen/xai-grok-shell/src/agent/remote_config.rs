@@ -13,6 +13,7 @@ mod scope;
 mod settings_cache;
 pub mod settings_get;
 mod settings_refresh;
+pub(crate) mod task_model_policy;
 
 pub(in crate::agent::remote_config) use cache::ModelsCacheManager;
 pub(crate) use endpoint::{HttpModelsEndpoint, ModelsEndpoint};

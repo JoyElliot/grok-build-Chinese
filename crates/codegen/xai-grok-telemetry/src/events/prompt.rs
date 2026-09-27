@@ -64,8 +64,6 @@ pub struct PromptLatency {
     pub total_ms: u64,
     pub mcp_wait_ms: u64,
     pub tool_collection_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_status_wait_ms: Option<u64>,
     pub model_call_ms: u64,
     pub pre_model_ms: u64,
     pub mcp_server_count: u32,

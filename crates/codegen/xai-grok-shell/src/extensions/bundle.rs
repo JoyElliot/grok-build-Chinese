@@ -80,19 +80,6 @@ pub struct RoleDetail {
     pub name: String,
     pub description: String,
 }
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EntryGetRequest {
-    kind: String,
-    name: String,
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EntryGetResult {
-    pub kind: String,
-    pub name: String,
-    pub content: String,
-}
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/bundle/sync" => {
@@ -102,10 +89,6 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "x.ai/bundle/status" => {
             let _req: BundleStatusRequest = parse_params(args)?;
             to_ext_response(status_bundle())
-        }
-        "x.ai/bundle/entry/get" => {
-            let req: EntryGetRequest = parse_params(args)?;
-            to_ext_response(get_entry(&req.kind, &req.name))
         }
         _ => Err(acp::Error::method_not_found()),
     }
@@ -235,37 +218,6 @@ pub(crate) async fn sync_bundle_to_root(
             })
         }
     }
-}
-fn get_entry(kind: &str, name: &str) -> anyhow::Result<EntryGetResult> {
-    get_entry_at(&bundle::bundled_root(), kind, name)
-}
-fn validate_entry_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-        || name == "."
-    {
-        anyhow::bail!("invalid entry name: {name}");
-    }
-    Ok(())
-}
-fn get_entry_at(root: &Path, kind: &str, name: &str) -> anyhow::Result<EntryGetResult> {
-    validate_entry_name(name)?;
-    let (dir_name, ext) = match kind {
-        "persona" => ("personas", "toml"),
-        "role" => ("roles", "toml"),
-        "agent" => ("agents", "md"),
-        _ => anyhow::bail!("unknown entry kind: {kind}"),
-    };
-    let path = root.join(dir_name).join(format!("{name}.{ext}"));
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("{kind} '{name}' not found in bundle cache"))?;
-    Ok(EntryGetResult {
-        kind: kind.to_owned(),
-        name: name.to_owned(),
-        content,
-    })
 }
 fn status_bundle() -> anyhow::Result<BundleStatusResult> {
     status_bundle_at(&bundle::bundled_root())
@@ -443,29 +395,11 @@ mod tests {
     fn test_auth() -> xai_grok_login::GrokAuth {
         xai_grok_login::GrokAuth {
             key: "token".to_string(),
-            auth_mode: xai_grok_login::AuthMode::Oidc,
-            create_time: chrono::Utc::now(),
             user_id: "user-1".to_string(),
             email: Some("test@example.com".to_string()),
-            first_name: None,
-            last_name: None,
-            profile_image_asset_id: None,
-            principal_type: None,
-            principal_id: None,
-            team_id: None,
-            team_name: None,
-            team_role: None,
-            organization_id: None,
-            organization_name: None,
-            organization_role: None,
-            user_blocked_reason: None,
-            team_blocked_reasons: vec![],
             coding_data_retention_opt_out: false,
-            has_grok_code_access: None,
-            refresh_token: None,
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-            oidc_issuer: None,
-            oidc_client_id: None,
+            ..xai_grok_login::GrokAuth::default()
         }
     }
     fn test_auth_manager() -> Arc<xai_grok_login::AuthManager> {
@@ -682,7 +616,7 @@ mod tests {
         )
         .unwrap();
         let base = crate::config::SubagentsConfig::resolve_base_with_sources(
-            false,
+            None,
             &toml::Value::Table(Default::default()),
             None,
             &root,
@@ -725,50 +659,6 @@ mod tests {
         assert!(error
             .to_string()
             .contains("bundle sync requires either an authenticated cli-chat-proxy session or a deployment key"));
-    }
-    #[test]
-    fn get_entry_reads_persona_file() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        bundle::write_bundle_to_cache(&root, &sample_bundle()).unwrap();
-        let result = get_entry_at(&root, "persona", "researcher").unwrap();
-        assert_eq!(result.kind, "persona");
-        assert_eq!(result.name, "researcher");
-        assert!(result.content.contains("instructions"));
-    }
-    #[test]
-    fn get_entry_unknown_kind_returns_error() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        let err = get_entry_at(&root, "widget", "foo").unwrap_err();
-        assert!(err.to_string().contains("unknown entry kind: widget"));
-    }
-    #[test]
-    fn get_entry_missing_file_returns_error() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        bundle::write_bundle_to_cache(&root, &sample_bundle()).unwrap();
-        let err = get_entry_at(&root, "persona", "nonexistent").unwrap_err();
-        assert!(err.to_string().contains("not found in bundle cache"));
-    }
-    #[test]
-    fn get_entry_rejects_path_traversal() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        for bad_name in ["../../../etc/passwd", "foo/bar", "a\\b", "..", "."] {
-            let err = get_entry_at(&root, "persona", bad_name).unwrap_err();
-            assert!(
-                err.to_string().contains("invalid entry name"),
-                "expected rejection for {bad_name:?}, got: {err}"
-            );
-        }
-    }
-    #[test]
-    fn get_entry_rejects_empty_name() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        let err = get_entry_at(&root, "persona", "").unwrap_err();
-        assert!(err.to_string().contains("invalid entry name"));
     }
     #[test]
     fn status_includes_persona_and_role_details() {

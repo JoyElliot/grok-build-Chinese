@@ -27,6 +27,12 @@ pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
 pub mod mermaid_worker;
 pub(crate) mod prompt_ack;
+pub(crate) fn is_daemon_session_row(_source: &str) -> bool {
+    false
+}
+pub(crate) fn is_daemon_or_remote_control_row(_source: &str) -> bool {
+    false
+}
 pub use xai_prompt_queue as prompt_queue;
 mod acp_handler;
 mod connect_timeout;
@@ -54,7 +60,6 @@ mod event_loop_stall;
 mod exit_timeout;
 pub(crate) mod external_editor;
 mod foreign_sessions;
-mod inline_edit;
 #[cfg(all(test, unix))]
 mod leader_cluster;
 mod modals;
@@ -981,7 +986,7 @@ pub async fn run(
         xai_grok_shell::util::config::default_interactive_permission_mode(),
     );
     let mut connect_flags = crate::acp::ConnectFlags {
-        subagents: !args.no_subagents,
+        no_subagents: args.no_subagents,
         memory_enabled_override: args.memory_enabled_override(),
         memory_override_flag: args.memory_override_flag(),
         disable_web_search: args.disable_web_search,

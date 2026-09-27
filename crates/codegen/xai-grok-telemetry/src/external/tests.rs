@@ -213,6 +213,10 @@ fn metric_attr_keys_are_pinned() {
         !schema::METRIC_ALLOWED_ATTR_KEYS.contains(&"prompt.id"),
         "prompt.id is events-only (unbounded cardinality on metrics)"
     );
+    assert!(
+        !schema::METRIC_ALLOWED_ATTR_KEYS.contains(&"invocation_id"),
+        "invocation_id is not a tool.usage label"
+    );
 }
 
 #[test]
@@ -511,7 +515,6 @@ fn prompt_latency(ttft_ms: Option<u64>, ttfm_ms: Option<u64>) -> events::PromptL
         total_ms: 0,
         mcp_wait_ms: 0,
         tool_collection_ms: 0,
-        repo_status_wait_ms: None,
         model_call_ms: 0,
         pre_model_ms: 0,
         mcp_server_count: 0,
@@ -793,25 +796,14 @@ fn turn_completed_carries_event_session_id_without_ctx() {
 
 #[test]
 fn tool_result_hook_rewrote_is_content_free() {
-    use xai_grok_session_events::types::ToolOutcome;
     for (hook_rewrote, want) in [(true, "true"), (false, "false")] {
         let stream = build(gates_off());
-        emit_event_into(
-            &stream,
-            &events::ToolCallCompleted {
-                tool_name: "run_terminal_cmd".into(),
-                outcome: ToolOutcome::Success,
-                hook_rewrote,
-                duration_ms: 5,
-                tool_result_size_bytes: None,
-                model_id: "grok".into(),
-                file_path: None,
-                parameters: None,
-                tool_use_id: None,
-                tool_output: None,
-                error_message: None,
-            },
-        );
+        emit_event_into(&stream, &{
+            let mut event = events::completed_for_test("run_terminal_cmd", "grok");
+            event.hook_rewrote = hook_rewrote;
+            event.duration_ms = 5;
+            event
+        });
         let events = exported_events(&stream);
         assert_eq!(
             attr(
@@ -850,22 +842,13 @@ fn tool_usage_metric_model(stream: &TestStream) -> Option<String> {
 #[test]
 fn tool_result_gates_off_collapses_and_reduces() {
     let stream = build(gates_off());
-    emit_event_into(
-        &stream,
-        &events::ToolCallCompleted {
-            tool_name: "docs__post_message".into(),
-            outcome: xai_grok_session_events::types::ToolOutcome::Success,
-            hook_rewrote: false,
-            duration_ms: 42,
-            tool_result_size_bytes: None,
-            model_id: "grok".into(),
-            file_path: Some("/Users/alice/secret-project/main.rs".into()),
-            parameters: Some(serde_json::json!({"text": "CANARY_TOOL_ARGS"})),
-            tool_use_id: None,
-            tool_output: None,
-            error_message: None,
-        },
-    );
+    emit_event_into(&stream, &{
+        let mut event = events::completed_for_test("docs__post_message", "grok");
+        event.duration_ms = 42;
+        event.file_path = Some("/Users/alice/secret-project/main.rs".into());
+        event.parameters = Some(serde_json::json!({"text": "CANARY_TOOL_ARGS"}));
+        event
+    });
     let events = exported_events(&stream);
     let Some(ev) = events.first() else {
         panic!("expected an event: {events:?}");
@@ -877,6 +860,10 @@ fn tool_result_gates_off_collapses_and_reduces() {
         tool_usage_metric_model(&stream).as_deref(),
         Some("grok"),
         "tool.usage metric datapoint must carry model"
+    );
+    assert!(
+        !format!("{:?}", stream.metrics.get_finished_metrics()).contains("invocation_id"),
+        "invocation_id must not be a tool.usage label"
     );
     assert_eq!(attr(ev, "mcp_tool.name").as_deref(), Some("mcp_tool"));
     assert_eq!(attr(ev, "mcp_server.name").as_deref(), Some("mcp_server"));
@@ -906,22 +893,13 @@ fn tool_result_details_gate_exposes_verbatim_scrubbed() {
         .map(|h| h.to_string_lossy().into_owned())
         .unwrap_or_else(|| "/home/testuser".into());
     let path = format!("{home}/proj/main.rs");
-    emit_event_into(
-        &stream,
-        &events::ToolCallCompleted {
-            tool_name: "docs__post_message".into(),
-            outcome: xai_grok_session_events::types::ToolOutcome::Success,
-            hook_rewrote: false,
-            duration_ms: 42,
-            tool_result_size_bytes: None,
-            model_id: "grok".into(),
-            file_path: Some(path.clone()),
-            parameters: Some(serde_json::json!({"key": "sk-CANARYabcdefghij1234567890"})),
-            tool_use_id: None,
-            tool_output: None,
-            error_message: None,
-        },
-    );
+    emit_event_into(&stream, &{
+        let mut event = events::completed_for_test("docs__post_message", "grok");
+        event.duration_ms = 42;
+        event.file_path = Some(path.clone());
+        event.parameters = Some(serde_json::json!({"key": "sk-CANARYabcdefghij1234567890"}));
+        event
+    });
     let events = exported_events(&stream);
     let Some(ev) = events.first() else {
         panic!("expected an event: {events:?}");
@@ -1189,6 +1167,7 @@ fn skill_activated_name_gated() {
             plugin_source: None,
             trigger: events::SkillTrigger::SlashCommand,
             skill_source: Some("bundled".into()),
+            skill_origin: None,
         },
     );
     let events = exported_events(&stream);
@@ -1216,6 +1195,7 @@ fn skill_activated_exports_every_trigger() {
                 plugin_source: None,
                 trigger,
                 skill_source: None,
+                skill_origin: None,
             },
         );
         let events = exported_events(&stream);
@@ -1243,6 +1223,7 @@ fn skill_activated_does_not_infer_skill_source() {
                 plugin_source,
                 trigger: events::SkillTrigger::SlashCommand,
                 skill_source: None,
+                skill_origin: None,
             },
         );
         let events = exported_events(&stream);
@@ -1533,22 +1514,15 @@ fn lock_content_gates_drops_prompt_and_response_not_email() {
             response_text: Some("CANARY_REPLY".into()),
         },
     );
-    emit_event_into(
-        &stream,
-        &events::ToolCallCompleted {
-            tool_name: "run_terminal_cmd".into(),
-            outcome: xai_grok_session_events::types::ToolOutcome::Error,
-            hook_rewrote: false,
-            duration_ms: 1,
-            tool_result_size_bytes: None,
-            model_id: "grok".into(),
-            file_path: None,
-            parameters: Some(serde_json::json!({"command": "echo hi"})),
-            tool_use_id: Some("call-lock".into()),
-            tool_output: Some("CANARY_OUTPUT".into()),
-            error_message: Some("CANARY_ERR".into()),
-        },
-    );
+    emit_event_into(&stream, &{
+        let mut event = events::completed_for_test("run_terminal_cmd", "grok");
+        event.outcome = xai_grok_session_events::types::ToolOutcome::Error;
+        event.parameters = Some(serde_json::json!({"command": "echo hi"}));
+        event.tool_use_id = Some("call-lock".into());
+        event.tool_output = Some("CANARY_OUTPUT".into());
+        event.error_message = Some("CANARY_ERR".into());
+        event
+    });
     let exported = exported_events(&stream);
     let blob = format!("{exported:?}");
     assert!(!blob.contains("CANARY_PROMPT"));
@@ -1634,19 +1608,13 @@ fn deny_tool_decision_exports_gated_params_and_full_command() {
 
 #[test]
 fn details_without_content_exports_preview_not_bodies() {
-    let ev = events::ToolCallCompleted {
-        tool_name: "run_terminal_cmd".into(),
-        outcome: xai_grok_session_events::types::ToolOutcome::Error,
-        hook_rewrote: false,
-        duration_ms: 1,
-        tool_result_size_bytes: None,
-        model_id: "grok".into(),
-        file_path: Some("/tmp/x.rs".into()),
-        parameters: Some(serde_json::json!({"command": "ls -la /tmp"})),
-        tool_use_id: Some("call-d".into()),
-        tool_output: Some("CANARY_OUTPUT".into()),
-        error_message: Some("CANARY_ERR".into()),
-    };
+    let mut ev = events::completed_for_test("run_terminal_cmd", "grok");
+    ev.outcome = xai_grok_session_events::types::ToolOutcome::Error;
+    ev.file_path = Some("/tmp/x.rs".into());
+    ev.parameters = Some(serde_json::json!({"command": "ls -la /tmp"}));
+    ev.tool_use_id = Some("call-d".into());
+    ev.tool_output = Some("CANARY_OUTPUT".into());
+    ev.error_message = Some("CANARY_ERR".into());
     let stream = build(ContentGates {
         log_tool_details: true,
         ..ContentGates::default()
@@ -1668,19 +1636,13 @@ fn details_without_content_exports_preview_not_bodies() {
 
 #[test]
 fn content_without_details_exports_bodies_not_preview() {
-    let ev = events::ToolCallCompleted {
-        tool_name: "docs__post_message".into(),
-        outcome: xai_grok_session_events::types::ToolOutcome::Error,
-        hook_rewrote: false,
-        duration_ms: 1,
-        tool_result_size_bytes: None,
-        model_id: "grok".into(),
-        file_path: Some("/tmp/secret.rs".into()),
-        parameters: Some(serde_json::json!({"command": "echo hi", "body": "full"})),
-        tool_use_id: Some("call-c".into()),
-        tool_output: Some("CANARY_OUTPUT".into()),
-        error_message: Some("CANARY_ERR".into()),
-    };
+    let mut ev = events::completed_for_test("docs__post_message", "grok");
+    ev.outcome = xai_grok_session_events::types::ToolOutcome::Error;
+    ev.file_path = Some("/tmp/secret.rs".into());
+    ev.parameters = Some(serde_json::json!({"command": "echo hi", "body": "full"}));
+    ev.tool_use_id = Some("call-c".into());
+    ev.tool_output = Some("CANARY_OUTPUT".into());
+    ev.error_message = Some("CANARY_ERR".into());
     let mixpanel = serde_json::to_string(&ev).unwrap();
     assert!(
         !mixpanel.contains("CANARY_OUTPUT")
@@ -1788,19 +1750,9 @@ fn from_mode_is_always_on() {
 #[test]
 fn full_command_skips_512_collapse() {
     let long = "x".repeat(600);
-    let ev = events::ToolCallCompleted {
-        tool_name: "run_terminal_cmd".into(),
-        outcome: xai_grok_session_events::types::ToolOutcome::Success,
-        hook_rewrote: false,
-        duration_ms: 1,
-        tool_result_size_bytes: None,
-        model_id: "grok".into(),
-        file_path: None,
-        parameters: Some(serde_json::json!({"command": long})),
-        tool_use_id: Some("call-1".into()),
-        tool_output: None,
-        error_message: None,
-    };
+    let mut ev = events::completed_for_test("run_terminal_cmd", "grok");
+    ev.parameters = Some(serde_json::json!({"command": long}));
+    ev.tool_use_id = Some("call-1".into());
     let stream = build(gates_all_on());
     emit_event_into(&stream, &ev);
     let exported_list = exported_events(&stream);

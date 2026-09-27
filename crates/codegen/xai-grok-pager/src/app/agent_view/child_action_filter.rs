@@ -42,6 +42,7 @@ pub(crate) fn gate_child_action(action: &Action) -> ChildActionGate {
         | Action::FocusScrollback
         | Action::FocusPrompt
         | Action::CancelTurn
+        | Action::KillBgTask(_)
         | Action::CopyBlockContent
         | Action::CopyBlockMeta
         | Action::OpenBlockViewer

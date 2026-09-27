@@ -304,10 +304,10 @@
                 .tracker
                 .subagent_labels
                 .borrow_mut()
-                .record("sub-1", "Explore \u{201c}scan src/\u{201d}", "sub-1");
+                .record("sub-1", "Subagent \u{201c}scan src/\u{201d}", "sub-1");
             agent.begin_session_reload(1);
             let expected = SentMessageTarget::Named {
-                label: "Explore \u{201c}scan src/\u{201d}".into(),
+                label: "Subagent \u{201c}scan src/\u{201d}".into(),
                 child_session_id: "sub-1".into(),
             };
             assert_eq!(

@@ -29,7 +29,7 @@ copy while clone can stay on; `GROK_CLONE=0` keeps `grok clone` off while
 worktrees can stay on.
 
 ```bash
-grok clone <url> [dir] [--branch NAME] [--cone PATH]... [--full-history]
+grok clone <url> [dir] [--branch NAME] [--full-history]
 ```
 
 ## History
@@ -144,5 +144,7 @@ exist, and either this user can open it or a setuid `fusermount3` / `fusermount`
 error with install commands, not a hang. When a daemon is already running the
 check is skipped, since that daemon may hold privileges this process does not.
 
-Windows is not supported (no ProjFS backend). Use `git clone`, or run
-`grok clone` on macOS or Linux.
+On Windows, clone mounts through ProjFS (Windows Projected File System),
+whether it is enabled. Build-output directories such as `target` and
+`node_modules` are redirected out of the projected tree as NTFS junctions
+(`[redirects] windows_junction`, on by default).

@@ -65,12 +65,12 @@ struct ShellChildRunner {
     /// Owned: panics are logged, coordinator teardown aborts stragglers.
     presentations: std::cell::RefCell<Vec<tokio_util::task::AbortOnDropHandle<()>>>,
 }
-pub(crate) fn spawn_pipeline_parent(
-    root_span: Option<&tracing::Span>,
-) -> Option<tracing::span::Id> {
-    root_span
-        .and_then(|span| span.id())
-        .or_else(|| tracing::Span::current().id())
+/// A `Span` clone holds a registry ref across the `.await`s in `run`; a bare `Id` does not and panics in `Registry::clone_span` once the span closes.
+pub(crate) fn spawn_pipeline_parent(root_span: Option<&tracing::Span>) -> tracing::Span {
+    match root_span {
+        Some(span) if span.id().is_some() => span.clone(),
+        _ => tracing::Span::current(),
+    }
 }
 pub(crate) fn subagent_coordinator_channel() -> (
     xai_grok_tools::implementations::grok_build::task::backend::SubagentCoordinatorSender,
@@ -99,6 +99,14 @@ impl coordinator::ChildRunner for ShellChildRunner {
     type DescribeFuture = coordinator::LocalBoxFuture<
         xai_grok_tools::implementations::grok_build::task::types::SubagentDescribeOutcome,
     >;
+    fn durable_resume_type(&self, resume_id: &str, parent_session_id: &str) -> Option<String> {
+        let cwd = self
+            .agent_ref
+            .get()
+            .get_session_cwd(&acp::SessionId::new(parent_session_id))?;
+        super::durable_resume_source_for(resume_id, parent_session_id, &cwd)
+            .map(|source| source.subagent_type)
+    }
     fn run(&self, mut run: coordinator::ChildRunRequest<Self::Control>) -> Self::RunFuture {
         let agent_ref = self.agent_ref.clone();
         Box::pin(async move {
@@ -113,7 +121,7 @@ impl coordinator::ChildRunner for ShellChildRunner {
             let claim_reporter = run.reporter.clone();
             let ctx = {
                 let _region = Region::from_span(tracing::info_span!(
-                    parent: root_parent.clone(),
+                    parent: &root_parent,
                     "subagent.spawn_context",
                     parent_session_id = %parent_sid,
                     subagent_id = %run.request.id,
@@ -142,7 +150,7 @@ impl coordinator::ChildRunner for ShellChildRunner {
             let parent_handle = this.resident_handle(&acp::SessionId::new(parent_sid.clone()));
             if let Some(handle) = parent_handle {
                 let _region = Region::from_span(tracing::info_span!(
-                    parent: root_parent.clone(),
+                    parent: &root_parent,
                     "subagent.parent_snapshot",
                     parent_session_id = %parent_sid,
                 ));
@@ -153,7 +161,7 @@ impl coordinator::ChildRunner for ShellChildRunner {
                 );
                 ctx.parent_mcp_pool = pool;
                 ctx.client_hooks = hooks;
-                ctx.parent_tool_definitions = (!definitions.is_empty()).then_some(definitions);
+                ctx.parent_tool_definitions = definitions;
             }
             if let Some(spawner) = spawner_session_id.as_deref() {
                 if this.is_resident(&acp::SessionId::new(spawner)) {
@@ -199,7 +207,7 @@ impl coordinator::ChildRunner for ShellChildRunner {
             let panic_completion_data = completion_data.clone();
             let task = {
                 let _region = Region::from_span(tracing::info_span!(
-                    parent: root_parent,
+                    parent: &root_parent,
                     "subagent.worker_handoff",
                     parent_session_id = %parent_sid,
                     subagent_id = %run.request.id,
@@ -212,6 +220,7 @@ impl coordinator::ChildRunner for ShellChildRunner {
                     root_span,
                 ))
             };
+            drop(root_parent);
             join_worker_task(
                 task,
                 coordinator::ChildRunOutput {

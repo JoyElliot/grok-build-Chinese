@@ -257,6 +257,7 @@ pub async fn spawn_isolated_subagent_for_e2e(
         owner: SubagentOwner::Task,
         cancel_token: CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     };
     request.runtime_overrides.isolation = Some(SubagentIsolationMode::Worktree);
     let spawned = tokio::time::timeout(SPAWN_TIMEOUT, backend.spawn(request, None)).await;

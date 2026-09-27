@@ -153,9 +153,7 @@ pub(crate) fn task_model_error_for_catalog(
     available: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> Option<String> {
-    let is_available = |entry: &ModelEntry| {
-        entry.info.user_selectable && entry.info.visible_for_auth(is_session_auth)
-    };
+    let is_available = |entry: &ModelEntry| entry.info.is_picker_eligible(is_session_auth);
     if config::find_model_by_id(available, requested).is_some_and(&is_available) {
         return None;
     }

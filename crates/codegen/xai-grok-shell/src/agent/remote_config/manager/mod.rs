@@ -15,6 +15,9 @@ use super::{
     validate_selectable,
 };
 use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_config_for_model};
+use crate::agent::remote_config::task_model_policy::{
+    CatalogAuthority, EligibleTaskModel, TaskModelCatalogSnapshot,
+};
 use crate::sampling::SamplerConfig as SamplingConfig;
 use xai_grok_login::{AuthManager, GrokAuth, GrokComConfig};
 use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
@@ -403,20 +406,10 @@ impl ModelsManager {
             .is_some_and(|a| a.is_session_auth())
     }
 
-    /// ACP-visible (non-hidden) projection of the catalog.
+    /// The picker projection of the catalog (`ModelInfo::is_picker_eligible`) in ACP wire form.
     pub fn available(&self) -> IndexMap<acp::ModelId, acp::ModelInfo> {
-        let snapshot = {
-            let cat = self.inner.catalog.read();
-            let models = &cat.models;
-            models.clone()
-        };
-
-        let selectable: IndexMap<_, _> = snapshot
-            .into_iter()
-            .filter(|(_, e)| e.info.user_selectable)
-            .collect();
-
-        available_models(&selectable, self.is_session_auth())
+        let is_session_auth = self.is_session_auth();
+        available_models(&self.inner.catalog.read().models, is_session_auth)
     }
 
     pub(crate) fn task_model_error(&self, requested: &str) -> Option<String> {
@@ -424,6 +417,31 @@ impl ModelsManager {
         let cat = self.inner.catalog.read();
         let models = &cat.models;
         task_model_error_for_catalog(requested, models, is_session_auth)
+    }
+
+    /// One lock read, so ids, families, and the fetch state come from one catalog generation.
+    pub(crate) fn task_model_catalog_snapshot(
+        &self,
+        remote_fetch_enabled: bool,
+    ) -> TaskModelCatalogSnapshot {
+        let is_session_auth = self.is_session_auth();
+        let cat = self.inner.catalog.read();
+        TaskModelCatalogSnapshot {
+            eligible: cat
+                .models
+                .iter()
+                .filter(|(_, e)| e.info.is_picker_eligible(is_session_auth))
+                .map(|(id, e)| EligibleTaskModel {
+                    id: id.clone(),
+                    model_family: e.info.model_family.clone(),
+                })
+                .collect(),
+            authority: if cat.has_fetched_real_catalog || !remote_fetch_enabled {
+                CatalogAuthority::Complete
+            } else {
+                CatalogAuthority::Provisional
+            },
+        }
     }
 
     pub fn current_model_id(&self) -> acp::ModelId {
@@ -592,12 +610,7 @@ impl ModelsManager {
     }
 
     /// Wait, bounded by one auth refresh plus one fetch, for the first fetch outcome; never triggers a fetch.
-    pub(crate) async fn wait_for_first_catalog(&self) {
-        self.wait_for_first_catalog_inner(crate::util::config::resolve_remote_fetch_enabled())
-            .await;
-    }
-
-    async fn wait_for_first_catalog_inner(&self, remote_fetch_enabled: bool) -> bool {
+    pub(crate) async fn wait_for_first_catalog(&self, remote_fetch_enabled: bool) -> bool {
         const BUDGET: std::time::Duration = crate::http::STARTUP_AUTH_REFRESH_TIMEOUT
             .saturating_add(crate::http::STARTUP_FETCH_TIMEOUT);
         let mut progress = self.inner.catalog_progress.subscribe();

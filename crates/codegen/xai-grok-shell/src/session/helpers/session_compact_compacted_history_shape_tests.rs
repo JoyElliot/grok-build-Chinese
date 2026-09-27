@@ -324,6 +324,7 @@ fn fallback_minimal_history_has_no_tool_results() {
         scheduled_loops: vec![],
         workflows: vec![],
         workflow_tool_name: None,
+        images: Default::default(),
     };
     let fallback = build_compacted_history(
         "You are a helpful assistant.",
@@ -556,6 +557,7 @@ fn fallback_preserves_subagents() {
         scheduled_loops: vec![],
         workflows: vec![],
         workflow_tool_name: None,
+        images: Default::default(),
     };
     let fallback = CompactionStateContext {
         cwd_generation: original.cwd_generation,
@@ -571,6 +573,7 @@ fn fallback_preserves_subagents() {
         scheduled_loops: original.scheduled_loops.clone(),
         workflows: original.workflows.clone(),
         workflow_tool_name: original.workflow_tool_name.clone(),
+        images: original.images.clone(),
     };
     assert_eq!(
         fallback.running_subagents.len(),

@@ -14,8 +14,6 @@ pub use crate::grove_api::{
 #[allow(unused_imports)] // re-exported for discovery / execute when those modules are on
 pub(crate) use crate::grove_api::{default_grove_creation_mode, nfs_error_blocks_fallback};
 
-pub(crate) use crate::worktree::GroveTry;
-
 pub const WORKTREE_BACKING_DIR: &str = "worktree-backing";
 
 pub fn dest_is_nfs_mount(_path: &Path) -> bool {
@@ -99,12 +97,6 @@ pub fn source_keeps_grove_create(_opts: &NfsWorktreeOpts, _source: &Path) -> boo
 }
 
 pub fn try_nfs_remove(_worktree_path: &Path) -> Result<Option<crate::RemoveReport>> {
-    Ok(None)
-}
-
-pub(crate) fn try_grove_worktree(
-    _plan: &crate::worktree::plan::WorktreePlan,
-) -> Result<Option<GroveTry>> {
     Ok(None)
 }
 

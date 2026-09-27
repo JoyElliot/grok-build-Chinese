@@ -1819,21 +1819,6 @@ fn chat_mode_allows_conversation_entry_even_if_local_path() {
         xai_grok_shell::session::unified_list::SessionKind::Chat
     );
 }
-#[test]
-fn view_catalog_entry_emits_fetch_effect() {
-    let mut app = test_app_with_agent();
-    let effects = dispatch(
-        Action::ViewCatalogEntry {
-            kind: "persona".into(),
-            name: "researcher".into(),
-        },
-        &mut app,
-    );
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(effects.first(),Some(
-        Effect::FetchCatalogEntry { kind, name }) if kind == "persona" && name == "researcher"
-    ));
-}
 /// End-to-end regression test for the "always re-asks" requirement.
 /// dispatch(Action::Fork) -> modal MUST re-open.
 /// (a) "no persistence in dispatch_fork": whether the modal opens is decided only by the absence of `args.worktree_override`; and (b) "submit_question_answers clears question_view": open_fork_question refuses while a question is already on screen.
@@ -2304,7 +2289,7 @@ fn classify_top_level_branches() {
 /// Building the row twice in rapid succession against a fixed `last_active_at` yields nearly-identical `elapsed()` values (within tolerance).
 #[test]
 fn build_rows_idle_anchor_is_frozen_last_active_at() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     mark_agent_nonempty(&mut app, AgentId(0));
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
@@ -2312,13 +2297,14 @@ fn build_rows_idle_anchor_is_frozen_last_active_at() {
     agent.last_active_at = Some(anchor);
     agent.turn_started_at = None;
     agent.session.state = crate::app::agent::AgentState::Idle;
-    let rows1 = build_rows(
+    let rows1 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     let Some(row1) = rows1.first() else {
         panic!("expected an idle dashboard row: {rows1:?}");
@@ -2329,13 +2315,14 @@ fn build_rows_idle_anchor_is_frozen_last_active_at() {
         elapsed1 >= std::time::Duration::from_secs(299),
         "expected >= 299s, got {elapsed1:?}",
     );
-    let rows2 = build_rows(
+    let rows2 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     let Some(row2) = rows2.first() else {
         panic!("expected an idle dashboard row: {rows2:?}");
@@ -2350,7 +2337,7 @@ fn build_rows_idle_anchor_is_frozen_last_active_at() {
 /// The age column then shows the LIVE elapsed time within the current turn rather than the time since the previous turn ended.
 #[test]
 fn build_rows_working_anchor_is_turn_started_at() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     let turn_start = std::time::Instant::now() - std::time::Duration::from_secs(5);
@@ -2358,13 +2345,14 @@ fn build_rows_working_anchor_is_turn_started_at() {
     agent.turn_started_at = Some(turn_start);
     agent.last_active_at = Some(stale);
     agent.session.state = crate::app::agent::AgentState::TurnRunning;
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     let Some(row) = rows.first() else {
         panic!("expected a working dashboard row: {rows:?}");
@@ -2382,28 +2370,30 @@ fn build_rows_working_anchor_is_turn_started_at() {
 /// Two consecutive builds therefore yield stable values (within sampling jitter) rather than re-anchoring at `now` and showing "0s" every frame.
 #[test]
 fn build_rows_fallback_anchor_is_frozen_when_last_active_at_is_none() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     mark_agent_nonempty(&mut app, AgentId(0));
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     agent.last_active_at = None;
     agent.turn_started_at = None;
     agent.session.state = crate::app::agent::AgentState::Idle;
-    let rows1 = build_rows(
+    let rows1 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let rows2 = build_rows(
+    let rows2 = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     let (Some(r1), Some(r2)) = (rows1.first(), rows2.first()) else {
         panic!("expected dashboard rows: {rows1:?} {rows2:?}");
@@ -2457,19 +2447,20 @@ fn classify_top_level_question_view_some_is_needs_input() {
 /// ANSI escapes in `display_name` are stripped at row build time.
 #[test]
 fn top_level_label_strips_control_characters() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     agent.display_name = Some("a\x1b[31mevil\x1b[0m".to_string());
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
-    let top = rows.iter().find(|r| r.indent == 0).expect("top row");
+    let top = rows.first().expect("top row");
     assert!(
         !top.label.contains('\x1b'),
         "label must not retain \\x1b: {:?}",

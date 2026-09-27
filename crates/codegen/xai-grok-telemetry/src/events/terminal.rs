@@ -116,8 +116,11 @@ pub enum ClipboardProbeDropReason {
     PasteboardChangedBeforeRead,
     /// Whatever the read found, a raster or nothing, is discarded.
     PasteboardChangedAfterRead,
-    /// IME-as-paste terminals: the bracketed payload did not match the clipboard text.
+    /// The bracketed payload did not match the clipboard text.
     BracketedPayloadMismatch,
+    /// Bracketed paste whose clipboard-origin text could not be read. Fail-closed and silent:
+    /// the text already landed, so this is not a user-facing clipboard error.
+    BracketedOriginReadFailed,
     ReadFailed,
     Timeout,
     PersistFailed,

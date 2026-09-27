@@ -3716,7 +3716,7 @@ fn tool_media_overlay_exposes_filepath_click_rect() {
     );
 }
 
-/// Rewind / inline-edit dimming (`dim_from_entry`) must not erase text on the terminal theme: there `gray_dim` is
+/// Rewind dimming (`dim_from_entry`) must not erase text on the terminal theme: there `gray_dim` is
 /// the same bright black as the user-message band, so the pass applies the DIM attribute and leaves the fg alone.
 #[test]
 fn dim_from_entry_stays_visible_on_terminal_theme() {

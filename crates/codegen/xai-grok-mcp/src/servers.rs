@@ -17,7 +17,7 @@ use tokio::{
 use rmcp::{
     ClientHandler, ClientLifecycleMode, ClientServiceExt,
     model::{
-        CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation,
+        CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation,
         PaginatedRequestParams,
     },
     service::{
@@ -389,9 +389,41 @@ impl Drop for InitClaimGuard {
     }
 }
 
+/// Admitted server list shared with the session handle.
+///
+/// `update_configs` and `update_configs_diff` publish into this cell, so a
+/// handle that cloned it at spawn sees the current seat, including headers.
+/// A fork snapshots that list instead of the spawn-time overlay.
+#[derive(Clone)]
+pub struct AdmittedMcpServers(Arc<parking_lot::Mutex<Vec<acp::McpServer>>>);
+
+impl AdmittedMcpServers {
+    pub fn new(servers: Vec<acp::McpServer>) -> Self {
+        Self(Arc::new(parking_lot::Mutex::new(servers)))
+    }
+
+    /// Copy the list. Forks keep this copy; later seat switches do not rewrite it.
+    pub fn snapshot(&self) -> Vec<acp::McpServer> {
+        self.0.lock().clone()
+    }
+
+    pub fn replace(&self, servers: Vec<acp::McpServer>) {
+        *self.0.lock() = servers;
+    }
+}
+
+impl Default for AdmittedMcpServers {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
 /// Consolidated MCP state behind a single lock.
 pub struct McpState {
     pub configs: Vec<acp::McpServer>,
+    /// Shared with the session handle. Private so commits go through
+    /// [`Self::update_configs`] / [`Self::update_configs_diff`].
+    admitted: AdmittedMcpServers,
     pub meta_config_map: McpMetaConfigMap,
     pub owned_clients: crate::owned_clients::OwnedClients,
     /// Clients inherited from parent via `SharedMcpPool`; never cleared by config changes.
@@ -440,8 +472,10 @@ impl McpState {
     }
 
     pub fn new_with_meta(configs: Vec<acp::McpServer>, meta_config_map: McpMetaConfigMap) -> Self {
+        let admitted = AdmittedMcpServers::new(configs.clone());
         Self {
             configs,
+            admitted,
             meta_config_map,
             owned_clients: crate::owned_clients::OwnedClients::new(),
             shared_clients: HashMap::new(),
@@ -616,12 +650,22 @@ impl McpState {
         self.mcp_tool_icons.clear();
         self.disabled_tool_registrations.clear();
         self.configs = new_configs;
+        self.publish_admitted();
         self.cancel_any_init();
         self.auth_required.clear();
         self.init_failed.clear();
         self.unreachable_retry.clear();
         self.advance_generation(Replacement::ServerSetChange);
         true
+    }
+
+    /// Handle clones share this cell. Forks call [`AdmittedMcpServers::snapshot`].
+    pub fn admitted_servers(&self) -> AdmittedMcpServers {
+        self.admitted.clone()
+    }
+
+    fn publish_admitted(&self) {
+        self.admitted.replace(self.configs.clone());
     }
 
     fn advance_generation(&mut self, by: Replacement) {
@@ -722,6 +766,7 @@ impl McpState {
         );
 
         self.configs = new_configs;
+        self.publish_admitted();
         self.cancel_any_init();
         self.advance_generation(Replacement::ServerSetChange);
 
@@ -1598,6 +1643,8 @@ impl xai_tool_runtime::Tool for McpErasedTool {
                     success: reauth_ok,
                 });
                 if reauth_ok {
+                    // `try_call_tool` only sets the flag; telemetry must describe the retry.
+                    is_timeout = false;
                     self.try_call_tool(
                         &client,
                         &raw,
@@ -3976,7 +4023,7 @@ impl McpClient {
         Ok(mcp_http_client)
     }
 
-    fn make_client_info(server_name: &str, advertise_elicitation: bool) -> ClientInfo {
+    fn make_client_info(server_name: &str, advertise_elicitation: bool) -> ClientConfig {
         use rmcp::model::{
             ElicitationCapability, FormElicitationCapability, UrlElicitationCapability,
         };
@@ -3998,7 +4045,7 @@ impl McpClient {
                     .with_url(UrlElicitationCapability::new()),
             );
         }
-        ClientInfo::new(
+        ClientConfig::new(
             capabilities,
             Implementation::new(
                 format!("grok-shell-{server_name}"),
@@ -4990,8 +5037,8 @@ impl McpClient {
 /// rmcp must not see an error from a notification handler or the service loop tears down.
 #[derive(Debug)]
 pub struct GrokClientHandler {
-    /// Static `ClientInfo` returned by [`Self::get_info`]; built once at handshake time and stored to avoid re-allocating per call.
-    info: ClientInfo,
+    /// Static [`ClientConfig`] returned by [`Self::get_info`]; built once at handshake time and stored to avoid re-allocating per call.
+    info: ClientConfig,
     /// MCP server name this handler is bound to.
     /// Cloned into emitted events so the dispatcher can route per-server.
     server_name: McpServerName,
@@ -5099,7 +5146,7 @@ impl ClientHandler for GrokClientHandler {
         });
     }
 
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         self.info.clone()
     }
 }

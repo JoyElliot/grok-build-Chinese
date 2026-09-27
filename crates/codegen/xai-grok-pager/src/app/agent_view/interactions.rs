@@ -2039,7 +2039,6 @@ mod question_no_freeform_tests {
     pub(super) fn draw_frame(agent: &mut AgentView) {
         let area = Rect::new(0, 0, 80, 30);
         let reg = ActionRegistry::defaults();
-        let bundle = crate::app::bundle::BundleState::default();
         let mut buf = Buffer::empty(area);
         let mut scratch = crate::scrollback::render::ScratchBuffer::new();
         agent.last_terminal_size = (80, 30);
@@ -2051,7 +2050,6 @@ mod question_no_freeform_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &bundle,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),

@@ -1,4 +1,4 @@
-//! PTY: Enter and Ctrl+F on a `Message sent to General “sleeper”` row open the child's takeover, exactly as on its
+//! PTY: Enter and Ctrl+F on a `Message sent to Subagent “sleeper”` row open the child's takeover, exactly as on its
 //! `Subagent` row, and `q` comes back; Enter on the rejected row (an id no spawn named) stays in the parent.
 // Unix only: shares the `/bin/sleep`-held child of `send_subagent_message_row`.
 #![cfg(unix)]

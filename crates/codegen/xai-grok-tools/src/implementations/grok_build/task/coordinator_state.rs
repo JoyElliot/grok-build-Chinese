@@ -184,6 +184,11 @@ pub trait ChildRunner: 'static {
         false
     }
 
+    /// Type of a resume source that is only on disk. Default is none.
+    fn durable_resume_type(&self, _resume_id: &str, _parent_session_id: &str) -> Option<String> {
+        None
+    }
+
     fn resolve_root(
         &self,
         _agent_id: &xai_message_delivery_core::AgentId,
@@ -378,6 +383,37 @@ impl<C: 'static> ChildReporter<C> {
         });
     }
 
+    pub async fn set_resolved_subagent_type(&self, subagent_type: String) -> bool {
+        self.resolve_type(self.subagent_id.clone(), subagent_type)
+            .await
+    }
+
+    #[cfg(test)]
+    pub async fn set_resolved_subagent_type_for(
+        &self,
+        subagent_id: &str,
+        subagent_type: String,
+    ) -> bool {
+        self.resolve_type(subagent_id.to_owned(), subagent_type)
+            .await
+    }
+
+    async fn resolve_type(&self, subagent_id: String, subagent_type: String) -> bool {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(InternalEvent::ResolvedSubagentType {
+                subagent_id,
+                subagent_type,
+                respond_to,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        response_rx.await.unwrap_or(false)
+    }
+
     /// Resolve an in-memory resume source without sharing coordinator state.
     pub async fn resume_source(
         &self,
@@ -420,6 +456,11 @@ pub(super) enum InternalEvent<C> {
         source_id: String,
         parent_session_id: String,
         respond_to: oneshot::Sender<SubagentResumeLookup>,
+    },
+    ResolvedSubagentType {
+        subagent_id: String,
+        subagent_type: String,
+        respond_to: oneshot::Sender<bool>,
     },
     DropSpawnerClaim {
         subagent_id: String,
@@ -666,6 +707,7 @@ impl<C> ChildRecord<C> {
 
 pub(super) trait ForegroundChild {
     fn id(&self) -> &str;
+    fn request(&self) -> &SubagentRequest;
     fn child_session_id(&self) -> &str;
     fn deadline(&self) -> Option<tokio::time::Instant>;
     /// True when the spawn caller dropped its result receiver while this
@@ -681,6 +723,10 @@ pub(super) trait ForegroundChild {
 impl ForegroundChild for PendingChild {
     fn id(&self) -> &str {
         &self.request.id
+    }
+
+    fn request(&self) -> &SubagentRequest {
+        &self.request
     }
 
     fn child_session_id(&self) -> &str {
@@ -716,6 +762,10 @@ impl ForegroundChild for PendingChild {
 impl<C: ChildControl> ForegroundChild for ActiveChild<C> {
     fn id(&self) -> &str {
         &self.request.id
+    }
+
+    fn request(&self) -> &SubagentRequest {
+        &self.request
     }
 
     fn child_session_id(&self) -> &str {
@@ -795,6 +845,13 @@ pub(super) fn background_if_caller_gone(child: &mut impl ForegroundChild) {
         "foreground subagent caller gone; auto-backgrounding (child keeps running)",
     );
     child.mark_backgrounded();
+}
+
+// `background_if_caller_gone` minus its gate: deterministic before the aborted caller drops.
+pub(super) fn hand_off_to_background(child: &mut impl ForegroundChild) {
+    if child.take_reply().is_some() {
+        child.mark_backgrounded();
+    }
 }
 
 pub(super) async fn sleep_until(deadline: Option<tokio::time::Instant>) {

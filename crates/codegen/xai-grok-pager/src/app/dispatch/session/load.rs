@@ -2,7 +2,7 @@
 use super::foreign::{
     dispatch_fetch_session_list, invalidate_foreign_picker, next_picker_list_generation,
 };
-use super::fork::build_child_fork_marker_with_locale;
+use super::fork::build_child_fork_marker;
 use super::lifecycle::{
     abandon_unused_empty_for_load, clear_startup_actions, dispatch_new_session_inner,
     dispatch_new_worktree_session, refuse_chat_mode_build_agent,
@@ -30,20 +30,6 @@ use crate::scrollback::blocks::SessionEvent;
 use crate::scrollback::state::ScrollbackState;
 use crate::views::session_picker_surface::SessionPickerHost;
 use agent_client_protocol as acp;
-
-fn localized_template(
-    locale: &crate::locale::LocaleContext,
-    id: &str,
-    english: &str,
-    replacements: &[(&str, &str)],
-) -> String {
-    let mut message = locale.named_text(id, english).into_owned();
-    for (placeholder, value) in replacements {
-        message = message.replace(placeholder, value);
-    }
-    message
-}
-
 /// Create a placeholder agent and load an existing session by ID.
 /// `session_cwd` overrides the CWD in the `LoadSessionRequest`.
 /// This is needed when resuming a session that was created in a different CWD (e.g., a worktree).
@@ -167,8 +153,7 @@ fn dispatch_load_session_ungated(
         {
             app.welcome_history_load_as_build = false;
         }
-        let toast = crate::app::session_startup::chat_mode_local_build_refusal(app.locale.as_ref());
-        app.show_toast(&toast);
+        app.show_toast(crate::app::session_startup::CHAT_MODE_LOCAL_BUILD_REFUSAL);
         return vec![];
     }
     invalidate_picker_fetch_on_dismiss(app);
@@ -187,19 +172,9 @@ fn dispatch_load_session_ungated(
     let mut scrollback = ScrollbackState::new();
     scrollback.set_appearance(app.appearance.clone());
     let loading_msg = if matches!(app.restore_code, Some(true)) {
-        localized_template(
-            app.locale.as_ref(),
-            "session.load.restoring_code",
-            "Restoring code for session {session_id}...",
-            &[("{session_id}", &session_id)],
-        )
+        format!("Restoring code for session {}...", &session_id)
     } else {
-        localized_template(
-            app.locale.as_ref(),
-            "session.load.loading",
-            "Loading session {session_id}...",
-            &[("{session_id}", &session_id)],
-        )
+        format!("Loading session {}...", &session_id)
     };
     let loading_placeholder_id = scrollback.push_block(RenderBlock::system(loading_msg));
     let agent = AgentView::from_app(
@@ -308,7 +283,11 @@ fn dispatch_load_session_ungated(
         agent_mut.workspace_mode_cli_locked = cli_locked;
     }
     agent_mut.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-    agent_mut.set_plugins_visible_recursive(!app.appearance.disable_plugins);
+    agent_mut
+        .prompt
+        .slash_controller
+        .registry_mut()
+        .set_plugins_visible(!app.appearance.disable_plugins);
     switch_to_agent(app, agent_id, SwitchCause::Load);
     effects.push(Effect::LoadSession {
         agent_id,
@@ -428,6 +407,9 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
             app.welcome_history_load_as_build = true;
         }
     }
+    if crate::app::is_daemon_or_remote_control_row(&source) {
+        return dispatch_daemon_session_pick(app, session_id, cwd);
+    }
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
     }
@@ -452,27 +434,24 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
             }
             return vec![];
         }
-        let toast = app
-            .locale
-            .named_text(
-                "session.toast.restoring_remote",
-                "Restoring session from remote...",
-            )
-            .into_owned();
-        app.show_toast(&toast);
+        app.show_toast("Restoring session from remote...");
         dispatch_load_session_with_restore(app, session_id, cwd)
     } else {
         #[cfg(feature = "local-workspace")]
         {
             app.welcome_history_load_as_build = false;
         }
-        let toast = app
-            .locale
-            .named_text("session.toast.not_found_local", "Session not found locally")
-            .into_owned();
-        app.show_toast(&toast);
+        app.show_toast("Session not found locally");
         vec![]
     }
+}
+fn dispatch_daemon_session_pick(app: &mut AppView, session_id: String, cwd: String) -> Vec<Effect> {
+    #[cfg(feature = "local-workspace")]
+    {
+        app.welcome_history_load_as_build = true;
+    }
+    let session_cwd = (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd));
+    dispatch_load_session(app, session_id, session_cwd, false)
 }
 /// Pick a session from the picker and resume it in a new git worktree.
 pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
@@ -498,14 +477,7 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
         })
         .is_some_and(|entry| crate::app::foreign_sessions::is_foreign_picker_source(&entry.source));
     if is_foreign {
-        let toast = app
-            .locale
-            .named_text(
-                "session.toast.external_worktree_forbidden",
-                "External sessions can't be resumed in a worktree",
-            )
-            .into_owned();
-        app.show_toast(&toast);
+        app.show_toast("External sessions can't be resumed in a worktree");
         return vec![];
     }
     let mut picker_dismissed = false;
@@ -550,14 +522,11 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
         }
     };
     if source == "conversation" {
-        let toast = app
-            .locale
-            .named_text(
-                "session.toast.conversation_worktree_forbidden",
-                "Chat conversations can't be resumed in a worktree",
-            )
-            .into_owned();
-        app.show_toast(&toast);
+        app.show_toast("Chat conversations can't be resumed in a worktree");
+        return vec![];
+    }
+    if crate::app::is_daemon_or_remote_control_row(&source) {
+        app.show_toast("Daemon sessions can't be resumed in a worktree");
         return vec![];
     }
     #[cfg(feature = "local-workspace")]
@@ -1091,14 +1060,7 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session(
     if focus_if_session_already_open(app, &session_id, false).is_some() {
         return vec![];
     }
-    let toast = app
-        .locale
-        .named_text(
-            "session.toast.restoring_remote",
-            "Restoring session from remote...",
-        )
-        .into_owned();
-    app.show_toast(&toast);
+    app.show_toast("Restoring session from remote...");
     dispatch_load_session_with_restore(app, session_id, cwd)
 }
 /// Create a placeholder agent and restore a remote session before loading.
@@ -1124,8 +1086,7 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         {
             app.welcome_history_load_as_build = false;
         }
-        let toast = crate::app::session_startup::chat_mode_local_build_refusal(app.locale.as_ref());
-        app.show_toast(&toast);
+        app.show_toast(crate::app::session_startup::CHAT_MODE_LOCAL_BUILD_REFUSAL);
         return vec![];
     }
     if focus_if_session_already_open(app, &session_id, false).is_some() {
@@ -1139,13 +1100,9 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
     app.next_agent_id += 1;
     let mut scrollback = ScrollbackState::new();
     scrollback.set_appearance(app.appearance.clone());
-    let restoring_message = localized_template(
-        app.locale.as_ref(),
-        "session.load.restoring_remote",
-        "Restoring session {session_id} from remote...",
-        &[("{session_id}", &session_id)],
-    );
-    scrollback.push_block(RenderBlock::system(restoring_message));
+    scrollback.push_block(RenderBlock::system(format!(
+        "Restoring session {session_id} from remote..."
+    )));
     let agent = AgentView::from_app(
         app,
         AgentSession {
@@ -1238,7 +1195,11 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
             agent.workspace_mode_cli_locked = cli_locked;
         }
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-        agent.set_plugins_visible_recursive(!app.appearance.disable_plugins);
+        agent
+            .prompt
+            .slash_controller
+            .registry_mut()
+            .set_plugins_visible(!app.appearance.disable_plugins);
     }
     switch_to_agent(app, agent_id, SwitchCause::Load);
     vec![Effect::RestoreAndLoadSession {
@@ -1264,7 +1225,6 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         agent_id,
         session_id,
     );
-    let locale = app.locale.clone();
     if app
         .agents
         .get_mut(&agent_id)
@@ -1288,37 +1248,27 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         }
         if let Some(m) = new_models {
             app.models = Some(m).into();
-            app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
-        if agent.apply_session_modes(modes) {
-            app.default_yolo = false;
-            app.current_ui.permission_mode = Some("ask".into());
-        }
-        let deferred =
-            crate::app::dispatch::session::lifecycle::apply_deferred_model_switch_with_locale(
-                agent,
-                app.cli_effort_token.as_deref(),
-                Some(locale.as_ref()),
-            );
+        crate::app::dispatch::session::lifecycle::apply_session_modes_dropping_auto(
+            agent,
+            modes,
+            &mut app.current_ui.permission_mode,
+        );
+        let deferred = crate::app::dispatch::session::lifecycle::apply_deferred_model_switch(
+            agent,
+            app.cli_effort_token.as_deref(),
+        );
         match (code_restored, restore_summary.as_deref()) {
             (true, Some(s)) => {
-                let message = localized_template(
-                    locale.as_ref(),
-                    "session.load.code_restored",
-                    "\u{2713} Code restored: {summary}",
-                    &[("{summary}", s)],
-                );
-                agent.scrollback.push_block(RenderBlock::system(message));
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::system(format!("\u{2713} Code restored: {s}")));
             }
             (false, Some(s)) => {
-                let message = localized_template(
-                    locale.as_ref(),
-                    "session.load.code_restore_failed",
-                    "\u{26A0} Code restore failed: {summary}",
-                    &[("{summary}", s)],
-                );
-                agent.scrollback.push_block(RenderBlock::system(message));
+                agent.scrollback.push_block(RenderBlock::system(format!(
+                    "\u{26A0} Code restore failed: {s}"
+                )));
             }
             _ => {}
         }
@@ -1329,12 +1279,11 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
                 .as_ref()
                 .map(|s| s.0.as_ref())
                 .unwrap_or("???");
-            let banner = build_child_fork_marker_with_locale(
+            let banner = build_child_fork_marker(
                 sid,
                 &info.parent_sid,
                 info.worktree,
                 crate::views::dashboard::session_switch_hint_command(app.screen_mode.is_minimal()),
-                Some(locale.as_ref()),
             );
             agent.scrollback.push_block(RenderBlock::system(banner));
         }
@@ -1355,7 +1304,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         if let Some(directive) = agent.pending_first_prompt.take() {
             agent.session.enqueue_prompt_front(directive);
         }
-        let drain = maybe_drain_queue(agent);
+        let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
         let page_flip_entry = drain.page_flip_entry;
         effects.extend(drain.effects);
         let cwd = agent.session.cwd.clone();
@@ -1425,12 +1374,6 @@ pub(in crate::app::dispatch) fn handle_session_load_failed(
     error: String,
 ) -> Vec<Effect> {
     tracing::error!(agent = ?agent_id, session = ?session_id, error = %error, "Session load failed");
-    let localized_error = localized_template(
-        app.locale.as_ref(),
-        "session.load.failed",
-        "Couldn't load session: {error}",
-        &[("{error}", &error)],
-    );
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         if defer_to_open_reload_window(agent, agent_id, "SessionLoadFailed") {
             return vec![];
@@ -1446,7 +1389,7 @@ pub(in crate::app::dispatch) fn handle_session_load_failed(
         agent
             .scrollback
             .push_block(RenderBlock::session_event(SessionEvent::TurnFailed {
-                error: localized_error,
+                error: format!("Couldn't load session: {error}"),
                 elapsed: None,
             }));
     }
@@ -1546,12 +1489,6 @@ pub(in crate::app::dispatch) fn handle_session_restored(
         refuse_chat_mode_build_agent(app, agent_id);
         return vec![];
     }
-    let loading_message = localized_template(
-        app.locale.as_ref(),
-        "session.load.restored_loading",
-        "Session restored. Loading {session_id}...",
-        &[("{session_id}", &local_session_id)],
-    );
     let identity_rebind = super::super::dashboard::WorkspaceIdentityRebind::capture(app);
     let sid = clear_stale_session_id(app, &local_session_id);
     let conversation_entry = session_opens_as_chat(app, false);
@@ -1582,9 +1519,9 @@ pub(in crate::app::dispatch) fn handle_session_restored(
             agent.workspace_mode_cli_locked = cli_locked;
         }
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-        agent
-            .scrollback
-            .push_block(RenderBlock::system(loading_message));
+        agent.scrollback.push_block(RenderBlock::system(format!(
+            "Session restored. Loading {local_session_id}..."
+        )));
     }
     identity_rebind.apply(app);
     let cwd = app.cwd.clone();
@@ -1606,12 +1543,6 @@ pub(in crate::app::dispatch) fn handle_session_restore_failed(
     {
         app.welcome_history_load_as_build = false;
     }
-    let localized_error = localized_template(
-        app.locale.as_ref(),
-        "session.restore.failed",
-        "Couldn't restore session: {error}",
-        &[("{error}", &error)],
-    );
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         if defer_to_open_reload_window(agent, agent_id, "SessionRestoreFailed") {
             return vec![];
@@ -1622,7 +1553,7 @@ pub(in crate::app::dispatch) fn handle_session_restore_failed(
         agent
             .scrollback
             .push_block(RenderBlock::session_event(SessionEvent::TurnFailed {
-                error: localized_error,
+                error: format!("Couldn't restore session: {error}"),
                 elapsed: None,
             }));
     }
@@ -1690,14 +1621,7 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session_in_worktree(
         return vec![];
     }
     if session_picker_entry_is_conversation(app, &session_id) {
-        let toast = app
-            .locale
-            .named_text(
-                "session.toast.conversation_worktree_forbidden",
-                "Chat conversations can't be resumed in a worktree",
-            )
-            .into_owned();
-        app.show_toast(&toast);
+        app.show_toast("Chat conversations can't be resumed in a worktree");
         return vec![];
     }
     app.session_picker_entries = None;

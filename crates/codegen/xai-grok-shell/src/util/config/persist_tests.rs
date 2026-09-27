@@ -1,5 +1,6 @@
 use super::super::load::load_config_from_toml;
 use super::super::mcp::{McpConfig, parse_mcp_config_with_oauth};
+use super::super::settings_writes::{write_dashboard_preview, write_feature_override};
 use super::*;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
@@ -439,11 +440,194 @@ fn merge_section_empty_struct_preserves_existing_section() {
     );
 }
 #[test]
+fn dashboard_preview_writer_accepts_loader_syntax_and_preserves_other_fields() {
+    for input in [
+        "",
+        "ui = { dashboard_preview = true, custom = 42, }",
+        r#"
+ui = {
+    dashboard_preview = true,
+    custom = 42,
+}
+"#,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, input).unwrap();
+        for value in [false, true] {
+            write_dashboard_preview(&path, value, atomic_write_follow_bound).unwrap();
+            let saved: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                saved
+                    .get("ui")
+                    .and_then(|ui| ui.get("dashboard_preview"))
+                    .and_then(toml::Value::as_bool),
+                Some(value)
+            );
+            if !input.is_empty() {
+                assert_eq!(
+                    saved
+                        .get("ui")
+                        .and_then(|ui| ui.get("custom"))
+                        .and_then(toml::Value::as_integer),
+                    Some(42)
+                );
+            }
+        }
+    }
+}
+#[test]
+fn dashboard_preview_writer_preserves_invalid_files_and_identifies_the_error() {
+    for (input, operation) in [("[ui", "parse"), ("ui = false", "[ui] must be a table")] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, input).unwrap();
+        let error = write_dashboard_preview(&path, false, atomic_write_follow_bound)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(operation), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        if operation == "parse" {
+            assert!(error.contains("line 1, column"), "{error}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), input);
+    }
+}
+#[test]
+fn dashboard_preview_writer_read_error_names_the_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::create_dir(&path).unwrap();
+    let cause = read_follow_bound(&path).unwrap_err().to_string();
+    let error = write_dashboard_preview(&path, false, atomic_write_follow_bound)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("read"), "{error}");
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
+    assert!(error.contains(&cause), "{error}");
+    assert!(path.is_dir());
+}
+#[test]
+fn dashboard_preview_write_failure_preserves_existing_config() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    let input = "ui = { dashboard_preview = true }";
+    std::fs::write(&path, input).unwrap();
+    let error = write_dashboard_preview(&path, false, |destination, _bound, content| {
+        assert_eq!(destination, path);
+        let parsed: toml::Value = toml::from_str(content).unwrap();
+        assert_eq!(
+            parsed
+                .get("ui")
+                .and_then(|ui| ui.get("dashboard_preview"))
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        Err(std::io::Error::other("disk full"))
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("write"), "{error}");
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
+    assert!(error.contains("disk full"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), input);
+}
+#[cfg(unix)]
+#[test]
+fn dashboard_preview_writer_refuses_a_retargeted_symlink() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.toml");
+    let second = directory.path().join("second.toml");
+    let slot = directory.path().join("config.toml");
+    let first_content = "ui = { dashboard_preview = true, custom = 1 }";
+    let second_content = "ui = { dashboard_preview = true, custom = 2 }";
+    std::fs::write(&first, first_content).unwrap();
+    std::fs::write(&second, second_content).unwrap();
+    symlink(&first, &slot).unwrap();
+    let error = write_dashboard_preview(&slot, false, |slot, bound, content| {
+        std::fs::remove_file(slot).unwrap();
+        symlink(&second, slot).unwrap();
+        atomic_write_follow_bound(slot, bound, content)
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("changed"), "{error}");
+    assert_eq!(first_content, std::fs::read_to_string(&first).unwrap());
+    assert_eq!(second_content, std::fs::read_to_string(&second).unwrap());
+    assert_eq!(second, std::fs::read_link(&slot).unwrap());
+}
+/// `Some` inserts or replaces the key, `None` deletes it (and an emptied `[features]` table), and sibling keys survive every step.
+#[test]
+fn feature_override_writer_inserts_replaces_and_removes_the_key() {
+    use crate::agent::config::Feature;
+    let feature = Feature::SubagentModelInheritance;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "features = { web_fetch = true }\n").unwrap();
+    let read_features = |path: &std::path::Path| -> Option<TomlValue> {
+        toml::from_str::<TomlValue>(&std::fs::read_to_string(path).unwrap())
+            .unwrap()
+            .get("features")
+            .cloned()
+    };
+    for value in [Some(true), Some(false), None] {
+        write_feature_override(&path, feature, value, atomic_write_follow_bound).unwrap();
+        let features = read_features(&path).expect("sibling key keeps the table");
+        assert_eq!(
+            value,
+            features.get(feature.key()).and_then(TomlValue::as_bool)
+        );
+        assert_eq!(
+            Some(true),
+            features.get("web_fetch").and_then(TomlValue::as_bool)
+        );
+    }
+    std::fs::write(&path, "").unwrap();
+    write_feature_override(&path, feature, Some(true), atomic_write_follow_bound).unwrap();
+    assert_eq!(
+        Some(true),
+        read_features(&path).and_then(|f| f.get(feature.key()).and_then(TomlValue::as_bool))
+    );
+    write_feature_override(&path, feature, None, atomic_write_follow_bound).unwrap();
+    assert_eq!(
+        None,
+        read_features(&path),
+        "an emptied [features] table is dropped"
+    );
+}
+#[test]
+fn unrelated_ui_write_preserves_managed_dashboard_preview_default() {
+    let mut managed: TomlValue = toml::from_str(
+        r#"
+[ui]
+dashboard_preview = false
+"#,
+    )
+    .unwrap();
+    let mut user = TomlMap::new();
+    let mut config = load_config_from_toml(&TomlValue::Table(user.clone()));
+    assert!(config.ui.dashboard_preview.is_none());
+    config.ui.show_timestamps = Some(false);
+    merge_section(&mut user, "ui", &config.ui);
+    assert!(
+        user.get("ui")
+            .and_then(|ui| ui.get("dashboard_preview"))
+            .is_none()
+    );
+    merge_toml_tables(managed.as_table_mut().unwrap(), user);
+    let effective = load_config_from_toml(&managed);
+    assert!(!effective.ui.dashboard_preview_enabled());
+    assert_eq!(effective.ui.show_timestamps, Some(false));
+}
+#[test]
 fn ui_config_round_trip_preserves_pager_fields() {
     let toml_str = r#"
 [ui]
 yolo = true
 show_timestamps = false
+dashboard_preview = false
 auto_dark_theme = "tokyonight"
 auto_light_theme = "grokday"
 "#;
@@ -451,6 +635,7 @@ auto_light_theme = "grokday"
     let cfg = load_config_from_toml(&root);
     assert!(cfg.ui.yolo);
     assert_eq!(cfg.ui.show_timestamps, Some(false));
+    assert!(!cfg.ui.dashboard_preview_enabled());
     assert_eq!(cfg.ui.auto_dark_theme.as_deref(), Some("tokyonight"));
     assert_eq!(cfg.ui.auto_light_theme.as_deref(), Some("grokday"));
     let mut table = root.as_table().unwrap().clone();
@@ -469,6 +654,10 @@ auto_light_theme = "grokday"
         Some("grokday")
     );
     assert_eq!(ui.get("yolo").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        ui.get("dashboard_preview").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 }
 #[test]
 fn ui_config_hunk_tracker_mode_round_trips() {

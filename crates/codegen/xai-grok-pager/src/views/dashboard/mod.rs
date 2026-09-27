@@ -1,4 +1,4 @@
-//! The agent dashboard lists every top-level agent and its subagents, grouped by state, with peek, attach, and dispatch actions.
+//! The agent dashboard lists every top-level agent, grouped by state, with peek, attach, and dispatch actions.
 //!
 //! Owned by `AppView::dashboard` (`Option<DashboardState>`); active only when `app.active_view == ActiveView::AgentDashboard`.
 //! State survives the user closing and reopening the dashboard within a single pager process (the `Option` is reset only on shutdown).
@@ -6,7 +6,7 @@
 //! ## Module layout
 //!
 //! - [`state`]: public `DashboardState`, `DashboardRowId`, `RowState`, `Grouping`, `Filter`, `FilterValue`, `PersistedDashboard`.
-//! - [`row`]: `DashboardRow`, `build_rows()`, classifiers, sort.
+//! - [`row`]: `DashboardRow`, `build_rows_with_roster()`, classifiers, sort.
 //! - [`row_activity`]: parent activity, secondary-line text, and live-work badge counts.
 //! - [`row_title`]: title, subtitle, and chip painting for wide and narrow rows.
 //! - [`layout`]: pure rect computation.
@@ -27,6 +27,7 @@ mod chrome;
 pub mod layout;
 pub mod peek;
 pub mod peek_tail;
+mod preview;
 pub mod render;
 pub mod row;
 mod row_activity;
@@ -42,8 +43,8 @@ pub(crate) use render::render_dashboard;
 pub(crate) use render::render_dashboard_with_locale;
 pub use render::{popup_rect, render_popup_overlay, render_popup_overlay_with_locale};
 pub use row::{
-    DashboardRow, RowBadge, build_rows, build_rows_with_roster, classify_subagent,
-    classify_top_level, roster_activity_to_state, sort_rows,
+    DashboardRow, RowBadge, build_rows_with_roster, classify_top_level, roster_activity_to_state,
+    sort_rows,
 };
 pub(crate) use row::{WorkspaceRowInputs, build_rows_with_workspace};
 pub(crate) use state::DashboardStopAction;
@@ -93,17 +94,18 @@ pub fn overlay_cycle_order(
     agents: &indexmap::IndexMap<crate::app::agent::AgentId, crate::app::agent_view::AgentView>,
 ) -> Vec<crate::app::agent::AgentId> {
     let home = render::cached_home();
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         agents,
         &state.pinned,
         &state.reorder,
         state.grouping,
         &state.filter,
         home,
+        &[],
     );
     rows.iter()
         .filter_map(|r| match &r.id {
-            DashboardRowId::TopLevel(id) if !r.is_more_placeholder => Some(*id),
+            DashboardRowId::TopLevel(id) => Some(*id),
             _ => None,
         })
         .collect()

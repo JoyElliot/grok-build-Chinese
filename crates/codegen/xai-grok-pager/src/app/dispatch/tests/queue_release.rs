@@ -137,6 +137,7 @@ fn btw_response_does_not_flush_an_unrelated_queued_prompt() {
     let effects = dispatch_task_result(
         TaskResult::BtwResponse {
             image_notice: None,
+            skipped_image_numbers: Vec::new(),
             agent_id: AgentId(0),
             result: Ok("still waiting".into()),
             minimal_request_id: None,
@@ -635,6 +636,7 @@ fn send_now_does_not_interject_held_follow_ups_into_cancelled_turn() {
         Action::SendPromptNow {
             text: "just typed".into(),
             images: vec![],
+            image_notice: None,
         },
         &mut app,
     );

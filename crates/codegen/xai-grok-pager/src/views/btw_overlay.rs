@@ -269,7 +269,6 @@ pub fn render_btw_panel_with_locale(
     };
     let border_style = Style::default().fg(border_color).bg(bg);
 
-    // ── Clear area and draw rounded border ──
     Clear.render(area, buf);
     buf.set_style(area, Style::default().bg(bg));
     Block::default()
@@ -320,7 +319,6 @@ pub fn render_btw_panel_with_locale(
         hint_x = (area.x + area.width).saturating_sub(1 + hint_w);
     }
 
-    // ── Title in top border: " /btw <question> " ──
     // Reserve the hint's columns so a long question truncates instead of hiding the hint
     // The title may use everything left of `hint_x`, minus its own two padding spaces
     let question = state.question();
@@ -353,7 +351,6 @@ pub fn render_btw_panel_with_locale(
     let title_render_w = (title_text.width() as u16).min(hint_x.saturating_sub(title_x));
     buf.set_line(title_x, area.y, &title_line, title_render_w);
 
-    // ── Render the hint (always visible; its space was reserved above) ──
     if hint_w > 0 && hint_x >= title_x {
         let is_hovered = hit_close.as_ref().is_some_and(|h| h.hovered);
         let hint_style = if is_hovered {
@@ -379,7 +376,6 @@ pub fn render_btw_panel_with_locale(
         hit.clear();
     }
 
-    // ── Body (between borders) ──
     let body_y = area.y + 1;
     match state {
         BtwOverlayState::Loading { .. } => {

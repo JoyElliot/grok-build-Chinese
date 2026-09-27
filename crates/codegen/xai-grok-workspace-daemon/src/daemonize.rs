@@ -25,7 +25,7 @@ use prometheus::{IntCounterVec, register_int_counter_vec};
 use std::os::unix::io::{AsRawFd, RawFd};
 
 /// True if `e` reports that an advisory `flock` is held by another process: `WouldBlock` on Unix, `ERROR_LOCK_VIOLATION` (OS error 33) on Windows.
-/// This is a private copy of `xai_grok_workspace::util::is_lock_contended`, so this crate does not depend on `xai-grok-workspace`.
+/// Private flock-contention check; the bounded replacement lives in `xai-grok-file-lock` and this site migrates to it later.
 fn is_lock_contended(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::WouldBlock
         || (e.raw_os_error().is_some()

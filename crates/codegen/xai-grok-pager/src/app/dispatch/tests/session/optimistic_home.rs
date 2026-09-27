@@ -156,6 +156,51 @@ fn welcome_keystroke_reveals_home_session_and_types() {
 }
 
 #[test]
+fn welcome_ctrl_p_reveals_home_and_opens_command_palette() {
+    for focused in [true, false] {
+        let mut app = test_app();
+        maybe_create_home_session(&mut app);
+        let home = app.home_session_agent.expect("home session");
+        app.welcome_prompt_focused = focused;
+        app.welcome_menu_index = (!focused).then_some(0);
+
+        let effects = leave_home_with(
+            &mut app,
+            &key_event(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            !creates_session(&effects),
+            "focused={focused}: Ctrl+P must reuse the optimistic session, got {effects:?}"
+        );
+        assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
+        let agent = app.agents.get(&home).expect("home agent");
+        assert!(
+            matches!(
+                agent.active_modal,
+                Some(crate::views::modal::ActiveModal::CommandPalette { .. })
+            ),
+            "focused={focused}: Ctrl+P must open the command palette"
+        );
+        assert!(agent.prompt.text().is_empty());
+    }
+}
+
+#[test]
+fn welcome_question_mark_types_instead_of_opening_command_palette() {
+    let mut app = test_app();
+    maybe_create_home_session(&mut app);
+    let home = app.home_session_agent.expect("home session");
+    app.welcome_prompt_focused = true;
+
+    let effects = leave_home_with(&mut app, &key_event(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(!creates_session(&effects));
+    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == home));
+    let agent = app.agents.get(&home).expect("home agent");
+    assert!(agent.active_modal.is_none());
+    assert_eq!(agent.prompt.text(), "?");
+}
+
+#[test]
 fn welcome_paste_reveals_home_session() {
     let mut app = test_app();
     maybe_create_home_session(&mut app);

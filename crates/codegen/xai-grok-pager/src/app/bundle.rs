@@ -2,7 +2,7 @@
 //!
 //! Pager-side cache of what `xai-grok-shell` reports from `x.ai/bundle/status`.
 //! The shell downloads the bundle in the background after auth.
-//! The pager only reads the resulting on-disk catalog so it can populate the welcome-screen subagent pane.
+//! The pager reads that snapshot for the agents modal (`/config-agents`).
 
 use serde::Deserialize;
 
@@ -59,15 +59,6 @@ pub struct PersonaDetail {
 pub struct RoleDetail {
     pub name: String,
     pub description: String,
-}
-
-/// Deserialized response from `x.ai/bundle/entry/get`.
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct EntryGetResult {
-    pub kind: String,
-    pub name: String,
-    pub content: String,
 }
 
 #[cfg(test)]
@@ -188,18 +179,5 @@ mod tests {
         let r: BundleStatusResult = serde_json::from_str(json).expect("parse");
         assert!(!r.has_cache);
         assert!(r.version.is_none());
-    }
-
-    #[test]
-    fn deserialize_entry_get_result() {
-        let json = r#"{
-            "kind": "persona",
-            "name": "researcher",
-            "content": "instructions = \"dig deep\""
-        }"#;
-        let r: EntryGetResult = serde_json::from_str(json).expect("parse");
-        assert_eq!(r.kind, "persona");
-        assert_eq!(r.name, "researcher");
-        assert_eq!(r.content, "instructions = \"dig deep\"");
     }
 }

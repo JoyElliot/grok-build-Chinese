@@ -2676,3 +2676,50 @@
             "acknowledged; the child's turn keeps running"
         );
     }
+
+    /// A background session's update drains its own queue; the unreadable-image notice lands on the
+    /// visible session and the handler reports a change even though the updated session is off-screen.
+    #[test]
+    fn background_drain_notice_reaches_active_view_and_requests_redraw() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = make_app_two_agents();
+        let background = AgentId(0);
+        let foreground = AgentId(1);
+        {
+            let agent = app.agents.get_mut(&background).unwrap();
+            agent.session.enqueue_prompt("look at [Image #2]".into());
+            let mut image = crate::app::agent_view::test_fixtures::test_pasted_image();
+            image.display_number = 2;
+            image.encoded_bytes = None;
+            image.session_image_path = Some(dir.path().join("gone.png"));
+            agent.session.pending_prompts.back_mut().unwrap().images = vec![image];
+        }
+
+        // An info-only update on the background session: it changes nothing itself, but the
+        // idle session with a queued prompt drains afterwards.
+        let changed = handle(
+            make_ext_session_notification_with_method(
+                "sess-owner",
+                "x.ai/session/update",
+                XaiSessionUpdate::ImageCompressed {
+                    images: vec![compressed_entry(0)],
+                    message: "resized".into(),
+                },
+            ),
+            &mut app,
+        );
+
+        assert!(changed, "a notice on the visible view is a change");
+        assert!(
+            test_agent(&app, background).session.pending_prompts.is_empty(),
+            "the background queue must have drained"
+        );
+        assert_eq!(
+            test_agent(&app, foreground)
+                .toast
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
+            Some("Image #2 couldn't be read — not sent")
+        );
+        assert!(test_agent(&app, background).toast.is_none());
+    }

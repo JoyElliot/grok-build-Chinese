@@ -36,6 +36,7 @@ use super::storage::{
 use crate::backend::{ActiveAuthBackend, AuthBackend};
 use crate::config::GrokComConfig;
 use crate::error::AuthError;
+use crate::side_call_bearer::non_empty_key;
 use crate::token_type::TokenType;
 #[cfg(test)]
 use chrono::DateTime;
@@ -852,6 +853,25 @@ impl AuthManager {
     /// Blocking `/user` enrichment for login flows that exit before the background task lands.
     pub(crate) async fn enrich_auth_inline(&self, auth: &mut GrokAuth) {
         enrichment::enrich_inline(self, auth).await;
+    }
+    /// Answers only for the account the caller named (an absent email never matches) and fetches only for a Team principal: a User principal gets `null` from `/user` on every call.
+    pub async fn hydrate_can_administer_team(
+        &self,
+        email: Option<&str>,
+        team_id: Option<&str>,
+    ) -> Option<bool> {
+        let auth = self.current()?;
+        if email.is_none() || auth.email.as_deref() != email || auth.team_id.as_deref() != team_id {
+            return None;
+        }
+        if auth.can_administer_team.is_some()
+            || !auth.is_xai_auth()
+            || !auth.is_team_principal()
+            || !ActiveAuthBackend::default().is_xai_authority()
+        {
+            return auth.can_administer_team;
+        }
+        enrichment::hydrate_can_administer_team(self, &auth).await
     }
     /// Path to the `auth.json` this manager reads/writes (respects `GROK_AUTH_PATH` / constructor home).
     /// Prefer this over `grok_home()/auth.json` so temp-home tests and custom stores stay isolated.
@@ -1825,56 +1845,6 @@ pub fn compute_proactive_sleep(this: &AuthManager) -> StdDuration {
         None => BACKOFF_INTERVAL,
     }
 }
-/// Bearer for tools and pager voice. Static precedence: env, then process model key, then disk.
-/// Kill-switch / `preferred_method = oidc` block static keys.
-pub struct SharedAuthKeyProvider(pub Arc<AuthManager>);
-impl xai_grok_tools::types::ApiKeyProvider for SharedAuthKeyProvider {
-    fn current_api_key(&self) -> Option<String> {
-        if prefers_static_api_key(&self.0) {
-            return resolve_static_api_key(&self.0);
-        }
-        self.0
-            .current_wire_valid()
-            .map(|a| a.key)
-            .or_else(|| resolve_static_api_key(&self.0))
-            .or_else(|| self.0.current_or_expired().map(|a| a.key))
-    }
-    fn current_api_key_async(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + '_>> {
-        let am = self.0.clone();
-        Box::pin(async move {
-            if prefers_static_api_key(&am) {
-                return resolve_static_api_key(&am);
-            }
-            am.get_valid_token()
-                .await
-                .ok()
-                .or_else(|| resolve_static_api_key(&am))
-        })
-    }
-}
-fn prefers_static_api_key(am: &AuthManager) -> bool {
-    matches!(
-        am.grok_com_config.preferred_method,
-        Some(super::config::PreferredAuthMethod::ApiKey)
-    )
-}
-/// Precedence: env, then process model key, then disk. Off under kill-switch / oidc pin.
-fn resolve_static_api_key(am: &AuthManager) -> Option<String> {
-    if am.grok_com_config.api_key_auth_disabled() {
-        return None;
-    }
-    if matches!(
-        am.grok_com_config.preferred_method,
-        Some(super::config::PreferredAuthMethod::Oidc)
-    ) {
-        return None;
-    }
-    non_empty_key(crate::auth_method::read_xai_api_key_env().ok())
-        .or_else(|| non_empty_key(am.process_static_api_key.read().clone()))
-        .or_else(|| am.cached_disk_api_key())
-}
 fn api_key_from_auth_file(path: &Path) -> Option<String> {
     let map = read_auth_json(path).ok()?;
     non_empty_key(map.get(super::model::API_KEY_SCOPE).map(|a| a.key.clone()))
@@ -1899,7 +1869,7 @@ fn auth_file_stamp(path: &Path) -> Option<AuthFileStamp> {
 impl AuthManager {
     /// `xai::api_key` from this manager's auth file, memoized on [`AuthFileStamp`].
     /// Bearer resolution runs per tool call, so this costs a `stat` instead of a read and parse on the hot path.
-    fn cached_disk_api_key(&self) -> Option<String> {
+    pub(crate) fn cached_disk_api_key(&self) -> Option<String> {
         let stamp = auth_file_stamp(&self.path);
         let mut cache = self.static_key_cache.lock();
         match cache.as_ref() {
@@ -1922,20 +1892,14 @@ impl AuthManager {
         let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
         *self.process_static_api_key.write() = key;
     }
+    pub(crate) fn process_static_api_key(&self) -> Option<String> {
+        non_empty_key(self.process_static_api_key.read().clone())
+    }
     /// Static/BYOK key for export paths (e.g. desktop `getBearerToken`).
     /// Never a session JWT; respects kill-switch and preferred-method pin.
     pub fn static_api_key_for_export(&self) -> Option<String> {
-        resolve_static_api_key(self)
+        crate::side_call_bearer::resolve_static_api_key(self)
     }
-}
-fn non_empty_key(key: Option<String>) -> Option<String> {
-    key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
-}
-/// Per-request bearer for out-of-crate consumers (e.g. pager voice).
-pub fn shared_api_key_provider(
-    auth_manager: Arc<AuthManager>,
-) -> xai_grok_tools::types::SharedApiKeyProvider {
-    Arc::new(SharedAuthKeyProvider(auth_manager))
 }
 /// Compile-time check that `AuthManager` is `Send + Sync`. The proactive refresh task and arbitrary `Arc<AuthManager>` consumers can then safely cross a multi-threaded executor / thread boundary.
 /// A future refactor that adds a `!Send` field would otherwise fail to compile in `tokio::spawn(... this.clone() ...)`. The trait-bound error there is confusing and far from the offending field.

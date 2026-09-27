@@ -56,17 +56,16 @@ pub enum SessionEvent {
     },
     /// Agent turn was cancelled.
     TurnCancelled {
-        /// Wall-clock elapsed time before cancellation.
-        elapsed: Duration,
-        /// Named from `_meta.cancelTrigger` / `_meta.cancellationCategory`.
+        /// `None` when unknown: do not render `0.0s`.
+        elapsed: Option<Duration>,
         cause: crate::scrollback::blocks::CancelledBy,
     },
     /// Agent turn ended because a hook denied it, today only a `UserPromptSubmit` block (a `PreToolUse` deny feeds back and the turn continues).
     /// Distinct from [`SessionEvent::TurnCancelled`] so the marker never claims the USER cancelled a policy block.
     /// The warning annotation above the marker attributes the hook and reason.
     TurnBlockedByHook {
-        /// Wall-clock elapsed time before the block.
-        elapsed: Duration,
+        /// `None` when unknown: do not render `0.0s`.
+        elapsed: Option<Duration>,
     },
     /// Agent turn was halted by the system (e.g. doom loop detection).
     TurnHalted {
@@ -451,11 +450,23 @@ impl SessionEvent {
                 format!("Worked for {}", format_duration(*elapsed))
             }
             SessionEvent::TurnCompleted { elapsed: None } => "Turn completed.".to_string(),
-            SessionEvent::TurnCancelled { elapsed, cause } => {
+            SessionEvent::TurnCancelled {
+                elapsed: Some(elapsed),
+                cause,
+            } => {
                 format!("{} in {}.", cause.phrase(), format_duration(*elapsed))
             }
-            SessionEvent::TurnBlockedByHook { elapsed } => {
+            SessionEvent::TurnCancelled {
+                elapsed: None,
+                cause,
+            } => format!("{}.", cause.phrase()),
+            SessionEvent::TurnBlockedByHook {
+                elapsed: Some(elapsed),
+            } => {
                 format!("Turn blocked by a hook in {}.", format_duration(*elapsed))
+            }
+            SessionEvent::TurnBlockedByHook { elapsed: None } => {
+                "Turn blocked by a hook.".to_string()
             }
             SessionEvent::TurnHalted { elapsed } => {
                 format!(
@@ -1471,7 +1482,7 @@ mod tests {
     #[test]
     fn turn_cancelled_message() {
         let event = SessionEvent::TurnCancelled {
-            elapsed: Duration::from_secs(10),
+            elapsed: Some(Duration::from_secs(10)),
             cause: crate::scrollback::blocks::CancelledBy::User,
         };
         assert_eq!(event.message(), "Turn cancelled by user in 10s.");
@@ -1492,7 +1503,7 @@ mod tests {
     #[test]
     fn turn_cancelled_message_names_passive_cause() {
         let event = SessionEvent::TurnCancelled {
-            elapsed: Duration::from_secs(10),
+            elapsed: Some(Duration::from_secs(10)),
             cause: crate::scrollback::blocks::CancelledBy::SessionClosed,
         };
         assert_eq!(
@@ -1500,7 +1511,7 @@ mod tests {
             "Turn cancelled because the session closed in 10s."
         );
         let event = SessionEvent::TurnCancelled {
-            elapsed: Duration::from_secs(4),
+            elapsed: Some(Duration::from_secs(4)),
             cause: crate::scrollback::blocks::CancelledBy::Unspecified,
         };
         assert_eq!(event.message(), "Turn cancelled in 4.0s.");

@@ -290,6 +290,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         }
     }
 
@@ -339,6 +340,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         };
         let result = to_system_reminder_sync(&ctx, &[], &[], None, None, None);
         let text = result.expect("should produce a reminder");
@@ -374,6 +376,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         };
         let text = to_system_reminder_sync(&ctx, &[], &[], None, None, None)
             .expect("should produce a reminder");
@@ -414,6 +417,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         }
     }
 
@@ -498,6 +502,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         };
         let skills = [xai_grok_tools::implementations::skills::types::SkillInfo {
             name: "commit".into(),
@@ -552,6 +557,7 @@ mod tests {
                 elapsed_ms: 12_000,
             }],
             workflow_tool_name: Some("workflow".into()),
+            images: Default::default(),
         };
         let text = to_system_reminder_sync(&ctx, &[], &[], None, None, None)
             .expect("should produce a reminder");

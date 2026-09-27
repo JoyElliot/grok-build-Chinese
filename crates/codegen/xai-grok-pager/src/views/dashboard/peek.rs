@@ -12,56 +12,6 @@ use crate::app::agent_view::AgentView;
 use crate::render::line_utils::truncate_str;
 use crate::theme::Theme;
 
-fn peek_static(
-    locale: Option<&crate::locale::LocaleContext>,
-    id: &str,
-    english: &'static str,
-) -> &'static str {
-    locale
-        .map(|locale| locale.named_static_text(id, english))
-        .unwrap_or(english)
-}
-
-fn localized_response_type<'a>(
-    locale: Option<&crate::locale::LocaleContext>,
-    value: &'a str,
-) -> std::borrow::Cow<'a, str> {
-    let Some(locale) = locale else {
-        return std::borrow::Cow::Borrowed(value);
-    };
-    let key = match value {
-        "Thinking" => "dashboard.peek.status.thinking",
-        "Response" => "dashboard.peek.status.response",
-        "Compacting" => "dashboard.peek.status.compacting",
-        "Retrying" => "dashboard.peek.status.retrying",
-        "Preparing" => "dashboard.peek.status.preparing",
-        "Message" => "dashboard.peek.status.message",
-        "Working" => "dashboard.peek.status.working",
-        "Thought" => "dashboard.peek.status.thought",
-        "Idle" => "dashboard.peek.status.idle",
-        "Awaiting your input" => "dashboard.peek.status.awaiting_input",
-        "Bash" => "dashboard.peek.status.bash",
-        "Read" => "dashboard.peek.status.read",
-        "Edit" => "dashboard.peek.status.edit",
-        "List" => "dashboard.peek.status.list",
-        "Search" => "dashboard.peek.status.search",
-        "Fetch" => "dashboard.peek.status.fetch",
-        "Web search" => "dashboard.peek.status.web_search",
-        "Tool search" => "dashboard.peek.status.tool_search",
-        "Tool" => "dashboard.peek.status.tool",
-        "Memory" => "dashboard.peek.status.memory",
-        "Skill" => "dashboard.peek.status.skill",
-        "Subagent" => "dashboard.peek.status.subagent",
-        "Workflow" => "dashboard.peek.status.workflow",
-        "Task" => "dashboard.peek.status.task",
-        "Btw" => "dashboard.peek.status.btw",
-        "Context" => "dashboard.peek.status.context",
-        "Credit limit" => "dashboard.peek.status.credit_limit",
-        _ => return std::borrow::Cow::Borrowed(value),
-    };
-    locale.named_text(key, value)
-}
-
 /// Args for painting a dense bottom-pinned live tail in the peek middle.
 pub struct PeekLiveTailArgs<'a> {
     pub scrollback: &'a crate::scrollback::state::ScrollbackState,
@@ -221,41 +171,30 @@ impl PeekPanelState {
     }
 }
 
-/// Returns `None` when the row's owning agent (or subagent) no longer exists, signalling the caller
+/// Returns `None` when the row's owning agent no longer exists, signalling the caller
 /// to close the peek.
 pub fn compute_peek_fields(
     row: &DashboardRowId,
     agents: &indexmap::IndexMap<crate::app::agent::AgentId, AgentView>,
 ) -> Option<PeekFields> {
-    compute_peek_fields_with_locale(row, agents, None)
-}
-
-pub fn compute_peek_fields_with_locale(
-    row: &DashboardRowId,
-    agents: &indexmap::IndexMap<crate::app::agent::AgentId, AgentView>,
-    locale: Option<&crate::locale::LocaleContext>,
-) -> Option<PeekFields> {
-    use crate::views::session_title::{entry_title_with_locale, sanitize_display_text};
+    use crate::views::session_title::{entry_title, sanitize_display_text};
     match row {
         DashboardRowId::TopLevel(id) => {
             let agent = agents.get(id)?;
-            let label = sanitize_display_text(&entry_title_with_locale(agent, locale)).into_owned();
+            let label = sanitize_display_text(&entry_title(agent)).into_owned();
             let response_type = extract_last_response_type(agent);
             let last_user_message = extract_last_user_message(agent);
             let time_ago = agent
                 .last_active_at
-                .map(|t| super::format_time_ago_with_locale(t.elapsed(), locale))
+                .map(|t| crate::util::format_time_ago(t.elapsed()))
                 .unwrap_or_default();
             // A pending permission takes the question slot. Otherwise a single-question, single-select agent
             // `AskUserQuestion` (ext, not a local pager dialog) renders the same way.
             let (question, options, request_id, reject_option) =
                 if let Some(p) = agent.permission_queue.front() {
-                    let title =
-                        crate::views::permission_view::localized_permission_title(locale, &p.title);
-                    let q = sanitize_display_text(&title).into_owned();
-                    // Live scope-aware labels: the peek's answer path attaches
-                    // the same selection meta, so each row's label must match
-                    // its own count (allow and deny scopes are independent).
+                    let q = sanitize_display_text(&p.title).into_owned();
+                    // Live scope-aware labels: the peek's answer path attaches the same selection meta
+                    // Each row's label must therefore match its own count (allow and deny scopes are independent)
                     let selected_words = p.bash_highlights.as_ref().map(|h| {
                         crate::views::permission_view::allow_scope_label(
                             h,
@@ -284,12 +223,10 @@ pub fn compute_peek_fields_with_locale(
                             } else {
                                 selected_words.as_deref()
                             };
-                            let name =
-                            crate::views::permission_view::option_label_for_selection_with_locale(
+                            let name = crate::views::permission_view::option_label_for_selection(
                                 opt,
                                 row_words,
                                 p.mcp_scope.as_ref(),
-                                locale,
                             );
                             (
                                 opt.option_id.0.to_string(),
@@ -326,14 +263,7 @@ pub fn compute_peek_fields_with_locale(
                     let reject = if qv.no_freeform {
                         None
                     } else {
-                        opts.push((
-                            "__other__".to_string(),
-                            agent
-                                .scrollback
-                                .locale()
-                                .named_static_text("dashboard.peek.other", "Other")
-                                .to_string(),
-                        ));
+                        opts.push(("__other__".to_string(), "Other".to_string()));
                         Some(opts.len() - 1)
                     };
                     // Prefix a `(i/N)` position marker for multi-question forms so the user knows how many remain
@@ -359,38 +289,6 @@ pub fn compute_peek_fields_with_locale(
                 reject_option,
             })
         }
-        DashboardRowId::Subagent {
-            parent,
-            child_session_id,
-        } => {
-            let parent_agent = agents.get(parent)?;
-            let info = parent_agent.subagent_sessions.get(child_session_id)?;
-            let label = {
-                let (l, _) = crate::app::subagent::format_subagent_label_with_locale(
-                    info,
-                    Some(parent_agent.scrollback.locale()),
-                );
-                sanitize_display_text(&l).into_owned()
-            };
-            let child = parent_agent.subagent_view(child_session_id);
-            let response_type = child
-                .map(extract_last_response_type)
-                .unwrap_or_else(|| "Subagent".to_string());
-            let last_user_message = child.and_then(extract_last_user_message);
-            let time_ago =
-                super::format_time_ago_with_locale(info.attempt.last_progress_at.elapsed(), locale);
-            Some(PeekFields {
-                label,
-                time_ago,
-                response_type,
-                last_user_message,
-                // Subagents are driven by their parent; no direct permission prompts appear here
-                question: None,
-                options: Vec::new(),
-                request_id: None,
-                reject_option: None,
-            })
-        }
         // Roster-only rows are not locally hosted; there is no local `AgentView` to peek into
         DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => None,
     }
@@ -406,8 +304,7 @@ pub struct PeekModeBadge {
 }
 
 /// The peeked row's current config-badge state. Sourced live (not via [`PeekFields`]) so it always
-/// reflects a `/model` switch or a Shift+Tab mode change. Always-approve and auto follow the parent
-/// (subagents run under the parent's permission mode) and subagents have no plan mode of their own.
+/// reflects a `/model` switch or a Shift+Tab mode change.
 pub fn peek_model_and_mode(
     row: &DashboardRowId,
     agents: &indexmap::IndexMap<crate::app::agent::AgentId, AgentView>,
@@ -426,24 +323,6 @@ pub fn peek_model_and_mode(
                 auto: agent.session.is_auto(),
                 mode_label: agent.prompt_row_mode_label(),
             },
-            None => default(),
-        },
-        DashboardRowId::Subagent {
-            parent,
-            child_session_id,
-        } => match agents.get(parent) {
-            Some(parent_agent) => {
-                let model = parent_agent
-                    .subagent_view(child_session_id)
-                    .and_then(|c| c.session.models.current_model_name())
-                    .or_else(|| parent_agent.session.models.current_model_name());
-                PeekModeBadge {
-                    model,
-                    yolo: parent_agent.session.yolo_mode,
-                    auto: parent_agent.session.is_auto(),
-                    mode_label: None,
-                }
-            }
             None => default(),
         },
         DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => default(),
@@ -470,7 +349,6 @@ fn paint_peek_config_badge(
     panel: &PeekPanelState,
     reply: &crate::views::prompt_widget::PromptWidget,
     multiline: bool,
-    locale: Option<&crate::locale::LocaleContext>,
 ) {
     use crate::app::actions::PermissionLabel;
     use crate::views::prompt_widget::{PromptInfo, mode_flags};
@@ -486,21 +364,7 @@ fn paint_peek_config_badge(
     } else {
         PermissionLabel::Ask
     };
-    let mut flags = mode_flags(
-        panel.mode_label.map(|label| match label {
-            "plan" => peek_static(locale, "mode.plan.label", "plan"),
-            other => other,
-        }),
-        permission,
-        theme,
-    );
-    for flag in &mut flags {
-        flag.text = match flag.text {
-            "auto" => peek_static(locale, "mode.auto.label", "auto"),
-            "always-approve" => peek_static(locale, "mode.always_approve.label", "always-approve"),
-            other => other,
-        };
-    }
+    let flags = mode_flags(panel.mode_label, permission, theme);
     if model_label.is_empty() && flags.is_empty() && !multiline {
         return;
     }
@@ -518,15 +382,7 @@ fn paint_peek_config_badge(
         width: area.width.saturating_sub(2),
         height: 1,
     };
-    reply.render_info_line(
-        buf,
-        info_rect,
-        &info,
-        theme.bg_base,
-        theme,
-        panel.focused,
-        locale,
-    );
+    reply.render_info_line(buf, info_rect, &info, theme.bg_base, theme, panel.focused);
 }
 
 /// On a too-narrow / too-short area, paints nothing and returns an empty result; the caller can
@@ -544,37 +400,6 @@ pub fn render_peek_panel(
     overlay_area: Option<Rect>,
     live_tail: Option<PeekLiveTailArgs<'_>>,
     empty_hint: Option<&str>,
-) -> PeekRenderResult {
-    render_peek_panel_with_locale(
-        buf,
-        area,
-        panel,
-        reply,
-        theme,
-        voice_listening,
-        voice_interim,
-        multiline,
-        overlay_area,
-        live_tail,
-        empty_hint,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn render_peek_panel_with_locale(
-    buf: &mut Buffer,
-    area: Rect,
-    panel: &PeekPanelState,
-    reply: &mut crate::views::prompt_widget::PromptWidget,
-    theme: &Theme,
-    voice_listening: bool,
-    voice_interim: Option<&str>,
-    multiline: bool,
-    overlay_area: Option<Rect>,
-    live_tail: Option<PeekLiveTailArgs<'_>>,
-    empty_hint: Option<&str>,
-    locale: Option<&crate::locale::LocaleContext>,
 ) -> PeekRenderResult {
     use crate::views::prompt_widget::{PromptBg, PromptStyle};
     use ratatui::widgets::{Block, BorderType, Borders, Widget};
@@ -596,18 +421,12 @@ pub fn render_peek_panel_with_locale(
         .border_style(Style::default().fg(border_fg).bg(theme.bg_base));
     let frame_inner = block.inner(area);
     block.render(area, buf);
-    // Bottom-right model + always-approve indicator on the box's bottom
-    // border, painted through the same shared prompt info-line renderer
-    // as the dispatch box's config badge so style and position match.
-    // Covers every peek mode (summary, QA, approval) since it sits on the
-    // border, outside the content rows. Painted after the block so it
-    // overwrites the plain `╰──╯` fill.
-    paint_peek_config_badge(buf, area, theme, panel, reply, multiline, locale);
+    // Bottom-right model and always-approve indicator on the box's bottom border.
+    paint_peek_config_badge(buf, area, theme, panel, reply, multiline);
 
-    // Record badge on the top border while the mic is hot — the peek panel
-    // replaces the dispatch box, so without this a capture started with a row
-    // selected would show no indicator.
-    super::render::paint_record_badge(buf, area, theme, voice_listening, locale);
+    // Record badge on the top border while the mic is live
+    // The peek panel replaces the dispatch box, so without this a capture started with a row selected would show no indicator
+    super::render::paint_record_badge(buf, area, theme, voice_listening);
 
     // Add a 1-cell left and right inset inside the rounded chrome so content doesn't hug the border
     let inner = Rect {
@@ -686,17 +505,9 @@ pub fn render_peek_panel_with_locale(
                         // Permission reject vs. ask-tool "Other" free-text.
                         // Painted manually (not via the widget's unfocused-only placeholder) so the hint stays visible while the caret sits on the row
                         let placeholder_text = if panel.is_ask_question() {
-                            peek_static(
-                                locale,
-                                "dashboard.peek.other_placeholder",
-                                "Other (type your own answer)",
-                            )
+                            "Other (type your own answer)"
                         } else {
-                            peek_static(
-                                locale,
-                                "dashboard.peek.reject_placeholder",
-                                "No, reject (type to add feedback)",
-                            )
+                            "No, reject (type to add feedback)"
                         };
                         let placeholder = truncate_str(placeholder_text, avail as usize);
                         buf.set_string(text_x, y, placeholder, theme.dim().bg(theme.bg_base));
@@ -713,15 +524,7 @@ pub fn render_peek_panel_with_locale(
                             image_preview: false,
                             ..PromptStyle::default()
                         };
-                        let res = reply.draw_with_locale(
-                            buf,
-                            slot,
-                            overlay_area,
-                            &widget_style,
-                            None,
-                            None,
-                            locale,
-                        );
+                        let res = reply.draw(buf, slot, overlay_area, &widget_style, None, None);
                         if selected && panel.focused {
                             caret = res.cursor_pos;
                         }
@@ -764,8 +567,7 @@ pub fn render_peek_panel_with_locale(
             theme.dim()
         }
         .bg(theme.bg_base);
-        let response_type = localized_response_type(locale, &panel.response_type);
-        let label_trunc = truncate_str(response_type.as_ref(), label_avail);
+        let label_trunc = truncate_str(&panel.response_type, label_avail);
         buf.set_string(inner.x, inner.y, label_trunc, label_style);
         if time_w > 0 && time_w + 1 < inner.width {
             let time_x = inner.x + inner.width - time_w;
@@ -786,11 +588,7 @@ pub fn render_peek_panel_with_locale(
         if let Some(PeekLiveTailArgs { scrollback }) = live_tail {
             if middle_h > 0 {
                 if scrollback.is_empty() {
-                    if let Some(hint) = empty_hint.or(Some(peek_static(
-                        locale,
-                        "dashboard.peek.no_activity_yet",
-                        "No activity yet",
-                    ))) {
+                    if let Some(hint) = empty_hint.or(Some("No activity yet")) {
                         let trunc = truncate_str(hint, inner.width as usize);
                         buf.set_string(inner.x, middle_top, trunc, theme.dim().bg(theme.bg_base));
                     }
@@ -827,11 +625,7 @@ pub fn render_peek_panel_with_locale(
         vpad_top: 0,
         chrome: false,
         bg: PromptBg::Canvas(theme.bg_base),
-        placeholder_override: Some(peek_static(
-            locale,
-            "dashboard.peek.reply_placeholder",
-            "reply\u{2026}",
-        )),
+        placeholder_override: Some("reply\u{2026}"),
         image_preview: false,
         ..PromptStyle::default()
     };
@@ -843,14 +637,13 @@ pub fn render_peek_panel_with_locale(
         },
     );
     let caret = reply
-        .draw_with_locale(
+        .draw(
             buf,
             text_area,
             overlay_area,
             &widget_style,
             None,
             voice_overlay,
-            locale,
         )
         .cursor_pos;
     // The clickable reply rect spans all reply rows and includes the `❯ ` prefix column for a fatter mouse target
@@ -1123,66 +916,6 @@ mod tests {
     /// Fresh reply widget for render tests (the dashboard-owned `peek_reply` stand-in).
     fn test_reply() -> crate::views::prompt_widget::PromptWidget {
         crate::views::prompt_widget::PromptWidget::new()
-    }
-
-    #[test]
-    fn zh_localization_dashboard_peek_paints_localized_age_and_keeps_prompt() {
-        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
-            locale: crate::locale::UiLocale::ZhCn,
-            source: crate::locale::LocaleSource::Cli,
-        });
-        let mut agent = crate::app::agent_view::test_agent_view(Some("peek-id"), "/tmp".into());
-        agent.last_active_at =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(125));
-        agent
-            .scrollback
-            .push_block(crate::scrollback::block::RenderBlock::user_prompt(
-                "Keep this English prompt",
-            ));
-        let row = DashboardRowId::TopLevel(AgentId(0));
-        let agents = indexmap::IndexMap::from([(AgentId(0), agent)]);
-        assert_eq!(compute_peek_fields(&row, &agents).unwrap().time_ago, "2m");
-        let fields = compute_peek_fields_with_locale(&row, &agents, Some(&locale)).unwrap();
-        assert_eq!(fields.time_ago, "2分钟前");
-        assert_eq!(
-            fields.last_user_message.as_deref(),
-            Some("Keep this English prompt")
-        );
-        let panel = PeekPanelState::new(row, fields);
-        let area = Rect::new(0, 0, 100, 12);
-        let mut buf = Buffer::empty(area);
-        render_peek_panel_with_locale(
-            &mut buf,
-            area,
-            &panel,
-            &mut test_reply(),
-            &Theme::current(),
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
-            Some(&locale),
-        );
-        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
-        let compact = text.replace(' ', "");
-        assert!(compact.contains("2分钟前"), "{text}");
-        assert!(!text.contains("2m"), "{text}");
-    }
-
-    #[test]
-    fn chinese_localizes_preparing_and_message_response_types() {
-        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
-            locale: crate::locale::UiLocale::ZhCn,
-            source: crate::locale::LocaleSource::Cli,
-        });
-
-        assert_eq!(
-            localized_response_type(Some(&locale), "Preparing"),
-            "准备中"
-        );
-        assert_eq!(localized_response_type(Some(&locale), "Message"), "消息");
     }
 
     #[test]

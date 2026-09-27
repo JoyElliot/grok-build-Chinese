@@ -1,5 +1,20 @@
 use pretty_assertions::assert_eq;
 
+#[tokio::test(start_paused = true)]
+async fn signalled_exit_stops_waiting_on_a_log_flush_that_never_answers() {
+    let prompt_unacknowledged = false;
+    let started = tokio::time::Instant::now();
+    let flush =
+        super::flush_unified_log_at_exit(std::future::pending(), prompt_unacknowledged, Some(129));
+
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(60 * 60), flush)
+        .await
+        .ok()
+        .map(|()| started.elapsed());
+
+    assert_eq!(Some(super::prompt_ack::HEADLESS_ABORT_SEND_TIMEOUT), waited);
+}
+
 #[test]
 fn reap_request_for_task_kills_with_session_scope() {
     let session_id = acp::SessionId::new("sess-1");

@@ -1,6 +1,5 @@
 //! Tests for dashboard dispatchers: attach, overlays, rows, and permissions.
 use super::*;
-use crate::app::agent_view::ViewSurface;
 use crate::app::app_view::InputOutcome;
 use crate::app::dispatch::queue::maybe_drain_queue;
 use crate::app::workspace_test_fixtures::{
@@ -1681,7 +1680,9 @@ fn dashboard_image_dispatch_cancel_rewind_resends_attachment() {
         agent.session.session_id = Some(acp::SessionId::new("dashboard-image"));
         agent.session.state = AgentState::Idle;
         assert!(matches!(
-            maybe_drain_queue(agent).effects.as_slice(),
+            maybe_drain_queue(agent, &mut app.pending_image_notices)
+                .effects
+                .as_slice(),
             [Effect::SendPromptBlocks { .. }]
         ));
     }
@@ -3959,7 +3960,7 @@ fn dashboard_dispatch_always_approve_blocked_warns_on_dashboard() {
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
 fn dashboard_dispatch_new_agent_is_working_with_prompt_title() {
-    use crate::views::dashboard::row::{build_rows, classify_top_level};
+    use crate::views::dashboard::row::{build_rows_with_roster, classify_top_level};
     use crate::views::dashboard::{DashboardRowId, Filter, Grouping, RowState};
     let mut app = test_app();
     open_dashboard(&mut app);
@@ -3970,13 +3971,14 @@ fn dashboard_dispatch_new_agent_is_working_with_prompt_title() {
         RowState::Working,
         "a queued-prompt agent must classify as Working",
     );
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         Grouping::State,
         &Filter::None,
         None,
+        &[],
     );
     let row = rows
         .iter()
@@ -4286,28 +4288,6 @@ fn dashboard_enter_row_selected_empty_prompt_opens_detail() {
         "Enter + empty prompt must NOT enqueue anything",
     );
 }
-/// Selecting a SUBAGENT row falls through to the new-session path. Subagents have no user prompt channel, so "reply" doesn't apply. Belt-and-braces: a future regression that broadened the reply target match to all
-/// `DashboardRowId` variants would hijack the new-session path here.
-#[serial_test::serial(GROK_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_dispatch_with_subagent_selection_creates_new_session() {
-    let mut app = test_app_with_agent();
-    open_dashboard(&mut app);
-    if let Some(d) = app.dashboard.as_mut() {
-        d.selected = Some(crate::views::dashboard::DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child-1".into(),
-        });
-    }
-    let agents_before = app.agents.len();
-    let _ = dispatch_dashboard_dispatch(&mut app, "a fresh task for a new agent".into(), false);
-    assert_eq!(
-        app.agents.len(),
-        agents_before + 1,
-        "subagent selection must NOT redirect dispatch to its parent — \
-             reply only applies to top-level rows",
-    );
-}
 /// When nothing is selected, dispatch reaches the new-session path AND leaves selection at None. Combined with `dashboard_dispatch_4_chars_creates_session` this pins the post-dispatch state contract: the user can immediately press Enter again to spawn another session.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
@@ -4375,186 +4355,6 @@ fn dashboard_attach_clears_selected_section() {
         d.selected_section.is_none(),
         "attach must clear the section cursor",
     );
-}
-/// Attaching a subagent row switches to the parent agent's view AND sets the parent's `active_subagent` so the subagent's takeover is rendered immediately.
-/// parent agent's view AND sets the parent's `active_subagent`
-/// so the subagent's takeover is rendered immediately.
-#[serial_test::serial(GROK_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_attach_subagent_switches_to_parent_with_subagent_focused() {
-    let mut app = test_app_with_agent();
-    open_dashboard(&mut app);
-    let parent = AgentId(0);
-    let child_sid = "child-1".to_string();
-    {
-        let agent = app.agents.get_mut(&parent).unwrap();
-        agent
-            .subagent_sessions
-            .insert(child_sid.clone(), make_test_subagent(&child_sid, "sa-1"));
-    }
-    let child_session = make_test_agent_session(&app, AgentId(1), "child-session");
-    let mut child_view = AgentView::new(child_session, ScrollbackState::new());
-    crate::app::agent_view::test_fixtures::add_running_execute(&mut child_view);
-    assert_eq!(ViewSurface::Root, child_view.surface());
-    app.agents
-        .get_mut(&parent)
-        .unwrap()
-        .insert_test_child(child_sid.clone(), Box::new(child_view));
-    crate::app::agent_view::test_fixtures::add_running_execute(
-        app.agents.get_mut(&parent).unwrap(),
-    );
-    let _ = dispatch_dashboard_attach(
-        &mut app,
-        crate::views::dashboard::DashboardRowId::Subagent {
-            parent,
-            child_session_id: child_sid.clone(),
-        },
-    );
-    assert!(
-        matches!(app.active_view, ActiveView::Agent(a) if a == parent),
-        "expected ActiveView::Agent({parent:?}), got: {:?}",
-        app.active_view,
-    );
-    let parent_view = app.agents.get_mut(&parent).unwrap();
-    assert_eq!(parent_view.active_subagent, Some(child_sid.clone()));
-    assert!(
-        parent_view
-            .subagent_views
-            .get(&child_sid)
-            .is_some_and(|v| v.surface() == ViewSurface::ChildTakeover)
-    );
-    assert!(
-        parent_view.subagent_views.get(&child_sid).is_some_and(|v| v
-            .session
-            .tracker
-            .running_execute_tool_call_id()
-            .is_some())
-    );
-    let v = parent_view
-        .subagent_views
-        .get(&child_sid)
-        .unwrap_or_else(|| panic!("missing subagent {child_sid:?}"));
-    assert!(
-        !v.current_shortcut_hints(&app.registry)
-            .iter()
-            .any(|hint| hint.label == "send to bg")
-    );
-    let child = parent_view.subagent_views.get_mut(&child_sid).unwrap();
-    let area = ratatui::layout::Rect::new(0, 0, 80, 30);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    let mut scratch = crate::scrollback::render::ScratchBuffer::new();
-    let _ = child.draw(
-        area,
-        &mut buf,
-        &app.registry,
-        &mut scratch,
-        None,
-        false,
-        crate::app::agent_view::BannerSlotParams::none(),
-        &crate::app::bundle::BundleState::default(),
-        false,
-        &mut Vec::new(),
-        crate::app::agent_view::AppRenderParams::default(),
-    );
-    assert!(child.hit_bg_button.rect.is_none());
-    let parent_tool = parent_view
-        .session
-        .tracker
-        .running_execute_tool_call_id()
-        .map(str::to_owned);
-    let child_tool = parent_view
-        .subagent_views
-        .get(&child_sid)
-        .and_then(|v| v.session.tracker.running_execute_tool_call_id())
-        .map(str::to_owned);
-    let outcome = app.handle_input(&crossterm::event::Event::Key(
-        crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('b'),
-            crossterm::event::KeyModifiers::CONTROL,
-        ),
-    ));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    let parent_view = app.agents.get(&parent).unwrap();
-    assert_eq!(
-        parent_view
-            .session
-            .tracker
-            .running_execute_tool_call_id()
-            .map(str::to_owned),
-        parent_tool
-    );
-    assert_eq!(
-        parent_view
-            .subagent_views
-            .get(&child_sid)
-            .and_then(|v| v.session.tracker.running_execute_tool_call_id())
-            .map(str::to_owned),
-        child_tool
-    );
-    assert_eq!(app.dashboard.as_ref().unwrap().attached_agent, Some(parent),);
-}
-/// Regression: attaching to a subagent from the dashboard must lazily load
-/// its (resume-deferred) transcript, just like `open_subagent_fullscreen`.
-#[serial_test::serial(GROK_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_attach_subagent_lazily_replays_deferred_transcript() {
-    let child_sid = "child-dash-defer".to_string();
-    let home = tempfile::tempdir().unwrap();
-    let session_dir = home
-        .path()
-        .join("sessions")
-        .join(urlencoding::encode("/tmp").as_ref())
-        .join(&child_sid);
-    std::fs::create_dir_all(&session_dir).unwrap();
-    std::fs::write(session_dir.join("summary.json"), "{}").unwrap();
-    let tool_line = format!(
-        r#"{{"method":"session/update","params":{{"sessionId":"{child_sid}","update":{{"sessionUpdate":"tool_call","toolCallId":"tc1","title":"Read foo","kind":"read","locations":[{{"path":"/tmp/foo"}}]}}}}}}"#
-    );
-    std::fs::write(session_dir.join("updates.jsonl"), tool_line + "\n").unwrap();
-    crate::app::subagent::set_replay_grok_home_for_tests(Some(home.path().to_path_buf()));
-    let mut app = test_app_with_agent();
-    open_dashboard(&mut app);
-    let parent = AgentId(0);
-    app.agents
-        .get_mut(&parent)
-        .unwrap()
-        .subagent_sessions
-        .insert(child_sid.clone(), make_test_subagent(&child_sid, "sa-1"));
-    let child_session = make_test_agent_session(&app, AgentId(1), &child_sid);
-    let child_view = AgentView::new(child_session, ScrollbackState::new());
-    app.agents
-        .get_mut(&parent)
-        .unwrap()
-        .insert_test_child(child_sid.clone(), Box::new(child_view));
-    let _ = dispatch_dashboard_attach(
-        &mut app,
-        crate::views::dashboard::DashboardRowId::Subagent {
-            parent,
-            child_session_id: child_sid.clone(),
-        },
-    );
-    let agent = app.agents.get(&parent).unwrap();
-    let child = agent.subagent_views.get(&child_sid).unwrap();
-    let tool_calls = (0..child.scrollback.len())
-        .filter(|i| {
-            child
-                .scrollback
-                .entry(*i)
-                .is_some_and(|e| matches!(e.block, RenderBlock::ToolCall(_)))
-        })
-        .count();
-    assert_eq!(
-        tool_calls, 1,
-        "dashboard attach must lazily replay the deferred subagent transcript"
-    );
-    assert!(
-        agent
-            .subagent_sessions
-            .get(&child_sid)
-            .is_some_and(|i| !i.transcript.needs_replay()),
-        "dashboard attach must record the child transcript state"
-    );
-    crate::app::subagent::set_replay_grok_home_for_tests(None);
 }
 /// `/dashboard` opens the dashboard only: no auto-attached popup.
 /// Enter on a row reaches an agent's view. Opening from an agent lands in
@@ -4860,35 +4660,27 @@ fn dashboard_overlay_exit_then_exit_returns_to_attached_agent() {
         Some(id2)
     );
 }
-/// Subagent attach round-trip keeps child takeover and Subagent row cursor.
+/// Leaving the dashboard back into an overlay keeps a live subagent takeover and selects the
+/// parent's top-level row.
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
-fn dashboard_overlay_exit_then_exit_restores_subagent_row() {
+fn dashboard_overlay_return_keeps_takeover_on_top_level_row() {
     let mut app = test_app_with_agent();
     open_dashboard(&mut app);
     let parent = AgentId(0);
     mark_agent_nonempty(&mut app, parent);
     let child_sid = "child-return".to_string();
-    app.agents
-        .get_mut(&parent)
-        .unwrap()
-        .subagent_sessions
-        .insert(child_sid.clone(), make_test_subagent(&child_sid, "sa-ret"));
-    let child_view = AgentView::new(
-        make_test_agent_session(&app, AgentId(1), "child-session"),
-        ScrollbackState::new(),
-    );
-    app.agents
-        .get_mut(&parent)
-        .unwrap()
-        .insert_test_child(child_sid.clone(), Box::new(child_view));
-    let _ = dispatch_dashboard_attach(
-        &mut app,
-        crate::views::dashboard::DashboardRowId::Subagent {
-            parent,
-            child_session_id: child_sid.clone(),
-        },
-    );
+    {
+        let agent = app.agents.get_mut(&parent).unwrap();
+        agent
+            .subagent_sessions
+            .insert(child_sid.clone(), make_test_subagent(&child_sid, "sa-ret"));
+        agent.active_subagent = Some(child_sid.clone());
+    }
+    app.active_view = ActiveView::Agent(parent);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.attached_agent = Some(parent);
+    }
     let _ = dispatch_dashboard_overlay_exit(&mut app);
     let _ = dispatch_exit_dashboard(&mut app);
     assert_eq!(app.active_view, ActiveView::Agent(parent));
@@ -4902,10 +4694,32 @@ fn dashboard_overlay_exit_then_exit_restores_subagent_row() {
     );
     assert_eq!(
         app.dashboard.as_ref().and_then(|d| d.selected.clone()),
-        Some(crate::views::dashboard::DashboardRowId::Subagent {
-            parent,
-            child_session_id: child_sid,
-        })
+        Some(crate::views::dashboard::DashboardRowId::TopLevel(parent))
+    );
+}
+/// A stale takeover (child id absent from `subagent_sessions`) is cleared on the same overlay
+/// return, and the dashboard selection is still the parent's top-level row.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_overlay_return_clears_stale_takeover_on_top_level_row() {
+    let mut app = test_app_with_agent();
+    open_dashboard(&mut app);
+    let parent = AgentId(0);
+    mark_agent_nonempty(&mut app, parent);
+    {
+        let agent = app.agents.get_mut(&parent).unwrap();
+        agent.active_subagent = Some("missing-child".to_string());
+    }
+    app.active_view = ActiveView::Agent(parent);
+    if let Some(d) = app.dashboard.as_mut() {
+        d.attached_agent = Some(parent);
+    }
+    let _ = dispatch_dashboard_overlay_exit(&mut app);
+    let _ = dispatch_exit_dashboard(&mut app);
+    assert!(test_agent(&app, parent).active_subagent.is_none());
+    assert_eq!(
+        app.dashboard.as_ref().and_then(|d| d.selected.clone()),
+        Some(crate::views::dashboard::DashboardRowId::TopLevel(parent))
     );
 }
 /// Dead overlay return target: fall back without painting overlay chrome.
@@ -5988,23 +5802,6 @@ fn dashboard_commit_rename_empty_does_not_emit_effect() {
         "empty draft must not produce a RenameSession effect"
     );
     assert!(app.dashboard.as_ref().unwrap().rename.is_none());
-}
-/// Rename on subagent row toasts and refuses.
-#[serial_test::serial(GROK_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_begin_rename_on_subagent_row_sets_error_toast() {
-    let mut app = test_app_with_agent();
-    open_dashboard(&mut app);
-    if let Some(d) = app.dashboard.as_mut() {
-        d.selected = Some(crate::views::dashboard::DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child".into(),
-        });
-    }
-    dispatch_dashboard_begin_rename(&mut app);
-    let d = app.dashboard.as_ref().unwrap();
-    assert!(d.rename.is_none());
-    assert!(d.error_toast.is_some());
 }
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
@@ -7183,30 +6980,6 @@ fn dashboard_stop_double_press_after_2s_rearms() {
     assert_eq!(app.agents.len(), before_count);
     assert!(app.dashboard.as_ref().unwrap().delete_confirm.is_some());
 }
-/// Subagent Ctrl+X bypasses confirm and emits KillSubagent.
-#[serial_test::serial(GROK_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_stop_subagent_emits_kill_subagent_effect() {
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    let info = make_test_subagent("child-xyz", "sa-xyz");
-    agent
-        .subagent_sessions
-        .insert(info.child_session_id.to_string(), info);
-    open_dashboard(&mut app);
-    if let Some(d) = app.dashboard.as_mut() {
-        d.selected = Some(crate::views::dashboard::DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child-xyz".to_string(),
-        });
-    }
-    let effects = dispatch_dashboard_stop(&mut app);
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::KillSubagent { subagent_id, .. }] if subagent_id == "sa-xyz"
-    ));
-    assert!(app.dashboard.as_ref().unwrap().delete_confirm.is_none());
-}
 #[serial_test::serial(GROK_AGENT_DASHBOARD)]
 #[test]
 fn dashboard_delete_complete_returns_from_foreground_agent() {
@@ -7618,6 +7391,33 @@ fn dashboard_permission_select_for_missing_row_clears_peek() {
     assert!(d.peek.is_none());
     assert!(d.error_toast.is_some());
 }
+/// A workspace (or roster) row is not a loaded session, so a peek reply is refused.
+#[serial_test::serial(GROK_AGENT_DASHBOARD)]
+#[test]
+fn dashboard_peek_reply_to_non_top_level_row_toasts() {
+    let mut app = test_app_with_agent();
+    open_dashboard(&mut app);
+    let row = crate::views::dashboard::DashboardRowId::Workspace {
+        session_id: "ws-not-loaded".to_string(),
+    };
+    if let Some(d) = app.dashboard.as_mut() {
+        d.focus_row(row.clone());
+    }
+    let queued = test_agent(&app, AgentId(0)).session.queue_len();
+    let effects = dispatch_dashboard_peek_reply(&mut app, row, "hi".into(), false);
+    assert!(effects.is_empty());
+    assert_eq!(test_agent(&app, AgentId(0)).session.queue_len(), queued);
+    assert_eq!(
+        app.dashboard.as_ref().unwrap().error_toast.as_deref(),
+        Some(
+            format!(
+                "{} Load the session before replying",
+                crate::glyphs::ballot_x()
+            )
+            .as_str()
+        ),
+    );
+}
 /// Peek reply to an IDLE agent sends immediately: the prompt drains
 /// (one `SendPrompt` effect), the turn starts, and the reply draft
 /// is cleared.
@@ -7906,26 +7706,6 @@ fn dashboard_peek_reply_with_image_queues_images() {
     );
     assert!(app.dashboard.as_ref().unwrap().peek_reply.images.is_empty());
 }
-/// Replying to a subagent row is rejected with a toast (subagents are
-/// driven by their parent turn).
-#[serial_test::serial(GROK_AGENT_DASHBOARD)]
-#[test]
-fn dashboard_peek_reply_to_subagent_toasts() {
-    let mut app = test_app_with_agent();
-    open_dashboard(&mut app);
-    let effects = dispatch_dashboard_peek_reply(
-        &mut app,
-        crate::views::dashboard::DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child-1".to_string(),
-        },
-        "hi".into(),
-        false,
-    );
-    assert!(effects.is_empty());
-    assert_eq!(test_agent(&app, AgentId(0)).session.queue_len(), 0);
-    assert!(app.dashboard.as_ref().unwrap().error_toast.is_some());
-}
 /// Peek "No, type to add feedback" path: resolves the front
 /// permission with the `RejectOnce` option and attaches the typed
 /// text as `followup_message` meta.
@@ -8197,15 +7977,16 @@ fn dashboard_peek_box_grows_for_multiline_reply() {
 /// exactly the "New session" created on every pager launch.
 #[test]
 fn build_rows_hides_empty_idle_local_session() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let app = test_app_with_agent();
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     assert!(rows.is_empty(), "an empty idle session must not render");
 }
@@ -8213,32 +7994,34 @@ fn build_rows_hides_empty_idle_local_session() {
 /// user message may not be in scrollback yet, but it is doing real work.
 #[test]
 fn build_rows_keeps_empty_working_local_session() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     app.agents.get_mut(&AgentId(0)).unwrap().session.state = AgentState::TurnRunning;
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     assert_eq!(rows.len(), 1, "an actively-working session stays visible");
 }
 /// A session with a generated title renders normally.
 #[test]
 fn build_rows_keeps_titled_local_session() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let mut app = test_app_with_agent();
     mark_agent_nonempty(&mut app, AgentId(0));
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &std::collections::BTreeSet::new(),
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     assert_eq!(rows.len(), 1, "a titled session renders");
 }
@@ -8246,19 +8029,20 @@ fn build_rows_keeps_titled_local_session() {
 /// empty-session hide).
 #[test]
 fn build_rows_keeps_pinned_empty_local_session() {
-    use crate::views::dashboard::build_rows;
+    use crate::views::dashboard::build_rows_with_roster;
     let app = test_app_with_agent();
     let mut pinned = std::collections::BTreeSet::new();
     pinned.insert(crate::views::dashboard::DashboardRowId::TopLevel(AgentId(
         0,
     )));
-    let rows = build_rows(
+    let rows = build_rows_with_roster(
         &app.agents,
         &pinned,
         &[],
         crate::views::dashboard::Grouping::State,
         &crate::views::dashboard::Filter::None,
         None,
+        &[],
     );
     assert_eq!(rows.len(), 1, "a pinned empty session is kept");
 }

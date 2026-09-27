@@ -222,6 +222,9 @@ pub struct CreateWorktreeRequest {
     /// Gate source from `gate_grove_worktree_layers` (`request` / `env` / `local` / `enable_all` / `remote` / `remote_kill` / `default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grove_gate_source: Option<String>,
+    /// Pinned by prepare so streaming `Created.source_git_root` matches `Creating`.
+    #[serde(default, skip)]
+    pub resolved_source_git_root: Option<String>,
 }
 impl WorkspaceRpc for CreateWorktreeRequest {
     const METHOD: &'static str = "workspace.create_worktree";
@@ -532,6 +535,7 @@ mod tests {
             label: None,
             grove_worktree: None,
             grove_gate_source: None,
+            resolved_source_git_root: None,
         });
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json.get("sessionId").and_then(|v| v.as_str()), Some("s1"));

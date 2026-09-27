@@ -52,36 +52,6 @@ fn compose_turn_transient_retry(
     .value
 }
 
-/// Precedence: requirements > env > config.toml > remote > default (on).
-pub(crate) fn resolve_repo_status_in_system_prompt(remote: Option<&RemoteSettings>) -> bool {
-    use crate::agent::config::{Feature, FeatureSources};
-    let user_cfg = crate::config::load_effective_config().ok();
-    let requirements = crate::config::load_merged_requirements();
-    let env = FeatureSources::from_process_env(Feature::RepoStatusInSystemPrompt).env;
-    compose_repo_status_in_system_prompt(requirements.as_ref(), user_cfg.as_ref(), remote, env)
-}
-
-fn compose_repo_status_in_system_prompt(
-    requirements: Option<&TomlValue>,
-    user: Option<&TomlValue>,
-    remote: Option<&RemoteSettings>,
-    env: Option<bool>,
-) -> bool {
-    use crate::agent::config::{Feature, FeatureSources};
-    let feature = Feature::RepoStatusInSystemPrompt;
-    let from_toml = |v: Option<&TomlValue>| -> Option<bool> {
-        v?.get("features")?.get(feature.key())?.as_bool()
-    };
-    feature
-        .resolve(FeatureSources {
-            pin: from_toml(requirements),
-            env,
-            config: from_toml(user),
-            remote: feature.remote_value(remote),
-        })
-        .value
-}
-
 /// Whether model-catalog (`/v1/models`) and remote-settings (`/v1/settings`) fetches from xAI backends are allowed. That includes the deployment-config sync bundled into the startup prefetch.
 /// The background managed-config sync has its own `[features] managed_config` gate. Precedence: requirements (MDM > system > user) > managed (`managed_config.toml` > system managed) > user `config.toml` > default (true).
 /// This is an egress gate, so an overlay cannot re-enable a user's or a deployment's "never fetch" decision. Callable before an `AgentConfig` exists (startup prefetch runs pre-agent).
@@ -346,56 +316,5 @@ mod turn_transient_retry_toml_tests {
         let empty: toml::Value = toml::toml! { [features] }.into();
         assert_eq!(turn_transient_retry_from_toml(Some(&empty)), None);
         assert_eq!(turn_transient_retry_from_toml(None), None);
-    }
-}
-
-#[cfg(test)]
-mod repo_status_in_system_prompt_tests {
-    use super::compose_repo_status_in_system_prompt;
-    use crate::util::config::RemoteSettings;
-
-    fn features_toml(v: bool) -> toml::Value {
-        toml::from_str(&format!("[features]\nrepo_status_in_system_prompt = {v}\n")).unwrap()
-    }
-
-    fn remote(v: bool) -> RemoteSettings {
-        RemoteSettings {
-            repo_status_in_system_prompt: Some(v),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn precedence_requirements_over_env_over_config_over_remote_over_default() {
-        // Absent everywhere: defaults on.
-        assert!(compose_repo_status_in_system_prompt(None, None, None, None));
-        // remote off beats the default.
-        assert!(!compose_repo_status_in_system_prompt(
-            None,
-            None,
-            Some(&remote(false)),
-            None
-        ));
-        // config off beats remote on.
-        assert!(!compose_repo_status_in_system_prompt(
-            None,
-            Some(&features_toml(false)),
-            Some(&remote(true)),
-            None
-        ));
-        // env on beats config off and remote off.
-        assert!(compose_repo_status_in_system_prompt(
-            None,
-            Some(&features_toml(false)),
-            Some(&remote(false)),
-            Some(true)
-        ));
-        // requirements pin off beats env on, config on, remote on.
-        assert!(!compose_repo_status_in_system_prompt(
-            Some(&features_toml(false)),
-            Some(&features_toml(true)),
-            Some(&remote(true)),
-            Some(true)
-        ));
     }
 }

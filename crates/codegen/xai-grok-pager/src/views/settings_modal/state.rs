@@ -279,6 +279,12 @@ impl SettingsModalState {
         }
     }
 
+    /// The expanded-row text: a lock reason replaces the description.
+    pub fn detail_text(&self, key: SettingKey, meta: &SettingMeta) -> &'static str {
+        self.row_lock(key)
+            .map_or(meta.description, CodingDataSharingLock::reason)
+    }
+
     /// The currently-focused setting row, if any.
     pub fn focused_setting(&self) -> Option<(SettingKey, &SettingMeta)> {
         match self.rows.get(self.selected)? {
@@ -924,12 +930,14 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "toolset.ask_user_question.timeout_enabled" => {
             Some(Action::SetAskUserQuestionTimeoutEnabled(new))
         }
+        "subagent_model_inheritance" => Some(Action::SetSubagentModelInheritance(new)),
         "show_thinking_blocks" => Some(Action::SetShowThinkingBlocks(new)),
         "group_tool_verbs" => Some(Action::SetGroupToolVerbs(new)),
         "collapsed_edit_blocks" => Some(Action::SetCollapsedEditBlocks(new)),
         "prompt_suggestions" => Some(Action::SetPromptSuggestions(new)),
         "respect_manual_folds" => Some(Action::SetRespectManualFolds(new)),
         "page_flip_on_send" => Some(Action::SetPageFlipOnSend(new)),
+        "dashboard_preview" => Some(Action::SetDashboardPreview(new)),
         "confirm_before_rewind" => Some(Action::SetConfirmBeforeRewind(new)),
         "combine_queued_prompts" => Some(Action::SetCombineQueuedPrompts(new)),
 
