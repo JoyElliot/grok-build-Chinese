@@ -164,6 +164,18 @@ pub(crate) fn first_system_message(body: &Value) -> Option<String> {
     }
     content_text(first.get("content")?)
 }
+/// A route may send its own preamble and then the prompt, so one message is not enough to tell
+/// two children of one turn apart. A third can only be a later turn.
+const OPENING_USER_MESSAGES: usize = 2;
+/// Capped at [`OPENING_USER_MESSAGES`] so the answer cannot change as the history grows.
+pub(crate) fn opening_user_turn(body: &Value) -> Option<String> {
+    let texts: Vec<String> = items(body)
+        .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .filter_map(|item| content_text(item.get("content")?))
+        .take(OPENING_USER_MESSAGES)
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
+}
 pub(crate) fn last_user_message(body: &Value) -> Option<String> {
     last_message_text(body, "user")
 }

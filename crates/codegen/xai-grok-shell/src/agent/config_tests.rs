@@ -2147,6 +2147,70 @@ fn sampling_config_context_window_from_entry_or_default() {
     assert_eq!(config.context_window, 256_000);
 }
 #[test]
+fn unset_max_request_bytes_defaults_from_api_backend() {
+    let raw_config: toml::Value = toml::from_str(
+        r#"
+            [model.capped-messages]
+            model = "claude"
+            base_url = "https://api.example.com/v1"
+            api_backend = "messages"
+            context_window = 1000000
+            max_request_bytes = 20000000
+
+            [model.uncapped-messages]
+            model = "claude"
+            base_url = "https://api.example.com/v1"
+            api_backend = "messages"
+            context_window = 1000000
+
+            [model.uncapped-chat]
+            model = "m"
+            base_url = "https://api.example.com/v1"
+            api_backend = "chat_completions"
+            context_window = 1000000
+
+            [model.uncapped-responses]
+            model = "m"
+            base_url = "https://api.example.com/v1"
+            api_backend = "responses"
+            context_window = 1000000
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+    let resolved = resolve_model_list(&cfg, None);
+    let max_request_bytes = |key: &str| {
+        let model = resolved.get(key).expect("model should exist");
+        sampling_config_for_model(
+            model,
+            resolve_credentials(model, None),
+            None,
+            None,
+            None,
+            None,
+        )
+        .max_request_bytes
+    };
+    assert_eq!(
+        NonZeroU64::new(20_000_000),
+        max_request_bytes("capped-messages"),
+        "an explicit cap overrides the backend default"
+    );
+    assert_eq!(
+        NonZeroU64::new(30_000_000),
+        max_request_bytes("uncapped-messages"),
+        "a messages model budgets to the 30 MB Messages host cap"
+    );
+    assert_eq!(
+        NonZeroU64::new(50 * 1024 * 1024),
+        max_request_bytes("uncapped-chat")
+    );
+    assert_eq!(
+        NonZeroU64::new(50 * 1024 * 1024),
+        max_request_bytes("uncapped-responses")
+    );
+}
+#[test]
 fn parses_model_api_backend_responses() {
     let raw_config: toml::Value = toml::from_str(
         r#"
@@ -2230,12 +2294,13 @@ fn model_messages_backend_respects_explicit_supports_reasoning_effort_false() {
 }
 /// Non-Messages backends keep their existing default (false).
 /// Adaptive thinking is specific to the Messages backend, and other providers vary per upstream model.
+/// The row aliases a wire id with no catalog menu, so the assertion isolates the backend default from slug propagation.
 #[test]
 fn model_chat_completions_backend_does_not_auto_default_supports_reasoning_effort() {
     let raw_config: toml::Value = toml::from_str(
         r#"
             [model.my-openai]
-            model = "grok-4.5"
+            model = "upstream-model"
             base_url = "https://api.example.com/v1"
             context_window = 200000
             api_backend = "chat_completions"
@@ -4053,6 +4118,8 @@ enable_all_project_mcp_servers = false
 enableAllProjectMcpServers = false
 plugin_auto_update = false
 pluginAutoUpdate = false
+allow_managed_hooks_only = true
+allowManagedHooksOnly = true
 
 [[allowed_mcp_servers]]
 server_url = "https://mcp.example.com/*"
@@ -4191,6 +4258,101 @@ fn a_title_refresh_pin_outranks_the_environment() {
     let r = cfg.resolve_title_refresh();
     assert!(!r.value, "the pin lost to GROK_TITLE_REFRESH");
     assert_eq!(r.source, ConfigSource::Requirement);
+}
+#[test]
+#[serial]
+fn resolve_long_reasoning_reminder_precedence() {
+    use crate::session::long_reasoning_reminder::LongReasoningReminder;
+    use crate::util::config::LongReasoningReminderSettings;
+    let _env = EnvGuard::unset("GROK_LONG_REASONING_REMINDER");
+    assert_eq!(
+        LongReasoningReminder {
+            enabled: false,
+            tokens: 1000,
+            delay: 1
+        },
+        Config::default().resolve_long_reasoning_reminder(),
+        "default is OFF with default tuning"
+    );
+    let remote_on = Config {
+        remote_settings: Some(crate::util::config::RemoteSettings {
+            long_reasoning_reminder: Some(LongReasoningReminderSettings {
+                enabled: Some(true),
+                tokens: Some(3000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        LongReasoningReminder {
+            enabled: true,
+            tokens: 3000,
+            delay: 1
+        },
+        remote_on.resolve_long_reasoning_reminder(),
+        "remote gate enables; remote tokens apply, delay falls to the default"
+    );
+    let toml_off = Config {
+        long_reasoning_reminder: LongReasoningReminderSettings {
+            enabled: Some(false),
+            ..Default::default()
+        },
+        ..remote_on.clone()
+    };
+    assert_eq!(
+        LongReasoningReminder {
+            enabled: false,
+            tokens: 3000,
+            delay: 1
+        },
+        toml_off.resolve_long_reasoning_reminder(),
+        "TOML false beats a remote true; remote tuning still resolves for telemetry"
+    );
+    let toml_on = Config {
+        long_reasoning_reminder: LongReasoningReminderSettings {
+            enabled: Some(true),
+            tokens: Some(500),
+            ..Default::default()
+        },
+        remote_settings: Some(crate::util::config::RemoteSettings {
+            long_reasoning_reminder: Some(LongReasoningReminderSettings {
+                enabled: Some(false),
+                tokens: Some(3000),
+                delay: Some(4),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        LongReasoningReminder {
+            enabled: true,
+            tokens: 500,
+            delay: 4
+        },
+        toml_on.resolve_long_reasoning_reminder(),
+        "TOML true beats a remote false; TOML tokens beat remote, remote delay fills in"
+    );
+    let _env = EnvGuard::set("GROK_LONG_REASONING_REMINDER", "0");
+    assert!(
+        !toml_on.resolve_long_reasoning_reminder().enabled,
+        "env kill switch wins over TOML + remote"
+    );
+    let _env = EnvGuard::set(
+        "GROK_LONG_REASONING_REMINDER",
+        r#"{"enabled": true, "tokens": 9000}"#,
+    );
+    assert_eq!(
+        LongReasoningReminder {
+            enabled: true,
+            tokens: 9000,
+            delay: 1
+        },
+        toml_off.resolve_long_reasoning_reminder(),
+        "env JSON enables over a TOML false and its tokens win; delay falls through"
+    );
 }
 /// Gate precedence: env > `[doom_loop_recovery]` > remote settings > default(ON).
 /// The remote layer merges PER-FIELD from the nested `doom_loop_recovery` object, and each layer's `false` is an independent kill switch.
@@ -7199,6 +7361,50 @@ fn resolve_runtime_fields_cli_subagents_override() {
 }
 #[test]
 #[serial]
+fn resolve_runtime_fields_cli_no_subagents_disables_over_config() {
+    clear_runtime_env_vars();
+    let raw: toml::Value = toml::from_str("[subagents]\nenabled = true").unwrap();
+    let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
+    cfg.resolve_runtime_fields(&RuntimeResolutionContext {
+        raw_config: &raw,
+        remote_settings: None,
+        is_headless: false,
+        cli_subagents: Some(false),
+        cli_web_search_model: None,
+        cli_session_summary_model: None,
+        memory_enabled_override: None,
+        disable_web_search: false,
+        todo_gate: false,
+        laziness_debug_log: None,
+        storage_mode: None,
+    });
+    assert!(!cfg.subagents_enabled);
+    assert_eq!(Some(false), cfg.cli_subagents);
+}
+#[test]
+#[serial]
+fn resolve_runtime_fields_partial_subagents_table_stays_enabled() {
+    clear_runtime_env_vars();
+    let raw: toml::Value = toml::from_str("[subagents]\nmax_depth = 2\n").unwrap();
+    let mut cfg = Config::new_from_toml_cfg(&raw).unwrap();
+    cfg.resolve_runtime_fields(&RuntimeResolutionContext {
+        raw_config: &raw,
+        remote_settings: None,
+        is_headless: true,
+        cli_subagents: None,
+        cli_web_search_model: None,
+        cli_session_summary_model: None,
+        memory_enabled_override: None,
+        disable_web_search: false,
+        todo_gate: false,
+        laziness_debug_log: None,
+        storage_mode: None,
+    });
+    assert!(cfg.subagents_enabled);
+    assert_eq!(2, cfg.subagents_max_depth);
+}
+#[test]
+#[serial]
 fn resolve_runtime_fields_gitignore_from_env() {
     clear_runtime_env_vars();
     unsafe { std::env::set_var("GROK_RESPECT_GITIGNORE", "0") };
@@ -7940,6 +8146,157 @@ fn resolve_model_list_config_reasoning_efforts_beats_remote() {
         Some("low"),
         "config.toml list must override remote"
     );
+}
+/// The prefetched `grok-4.6-build` row: a `["low", "high"]` menu with `high` marked default plus the legacy `high` scalar.
+fn prefetched_menu_donor() -> ModelEntry {
+    let mut entry = prefetch_model_entry("grok-4.6-build", 200_000, ApiBackend::default());
+    entry.info.reasoning_efforts = ["low", "high"]
+        .into_iter()
+        .map(|id| ReasoningEffortOption {
+            id: id.to_string(),
+            value: id.parse().unwrap(),
+            label: id.to_string(),
+            description: None,
+            default: id == "high",
+        })
+        .collect();
+    entry.info.reasoning_effort = Some(ReasoningEffort::High);
+    entry
+}
+/// Resolves `config_toml` (rows pointing at `model = "grok-4.6-build"`) against `donor` prefetched under the wire id.
+/// A custom models endpoint keeps the built-in `grok-4.6` catalog row (which has its own menu) out of Layer 1.
+fn resolve_with_menu_donor(config_toml: &str, donor: ModelEntry) -> IndexMap<String, ModelEntry> {
+    let raw: toml::Value = toml::from_str(config_toml).unwrap();
+    let mut cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    cfg.endpoints.models_base_url = Some("https://test.example.com/v1".to_owned());
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("grok-4.6-build".to_owned(), donor);
+    resolve_model_list(&cfg, Some(prefetched))
+}
+/// Resolves a single `[model."{key}"]` row (`model = "grok-4.6-build"`, no menu) against `donor`; `key` is the
+/// wire id itself or an alias of it.
+fn resolve_row_with_menu_donor(key: &str, extra_toml: &str, donor: ModelEntry) -> ModelEntry {
+    let config_toml = format!(
+        r#"
+            [model."{key}"]
+            model = "grok-4.6-build"
+            base_url = "https://test.example.com/v1"
+            {extra_toml}
+            "#
+    );
+    resolve_with_menu_donor(&config_toml, donor)
+        .shift_remove(key)
+        .expect("config key must exist")
+}
+fn effort_ids(info: &ModelInfo) -> Vec<&str> {
+    info.reasoning_efforts
+        .iter()
+        .map(|o| o.id.as_str())
+        .collect()
+}
+#[test]
+fn slug_propagation_inherits_reasoning_efforts_and_derives_legacy_fields() {
+    let info = resolve_row_with_menu_donor("grok-4.6", "", prefetched_menu_donor()).info;
+    assert_eq!(effort_ids(&info), ["low", "high"]);
+    assert!(info.supports_reasoning_effort);
+    assert_eq!(info.reasoning_effort, Some(ReasoningEffort::High));
+}
+/// A config alias with its own restricted menu is that row's choice, not a donor: the same-key fetched row
+/// keeps feeding the other empty aliases of the wire id.
+#[test]
+fn slug_propagation_prefers_same_key_menu_donor_over_restricted_alias() {
+    let resolved = resolve_with_menu_donor(
+        r#"
+            [model."grok-4.6"]
+            model = "grok-4.6-build"
+            base_url = "https://test.example.com/v1"
+
+            [model."grok-4.6-cheap"]
+            model = "grok-4.6-build"
+            base_url = "https://test.example.com/v1"
+            reasoning_efforts = ["low"]
+            "#,
+        prefetched_menu_donor(),
+    );
+    let info = |key: &str| &resolved.get(key).expect(key).info;
+    assert_eq!(effort_ids(info("grok-4.6-build")), ["low", "high"]);
+    assert_eq!(effort_ids(info("grok-4.6")), ["low", "high"]);
+    assert_eq!(
+        info("grok-4.6").reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(effort_ids(info("grok-4.6-cheap")), ["low"]);
+}
+/// Inheriting an unmarked `capabilities` menu must carry the server-default flag along, or the alias would
+/// derive `.first()` (`low`) where the same-key row sends nothing.
+#[test]
+fn slug_inherited_unmarked_capabilities_menu_keeps_no_default_effort() {
+    let row = serde_json::json!({
+        "id": "grok-4.6-build",
+        "capabilities": { "reasoning_effort": ["low", "medium", "high", "xhigh"] }
+    });
+    let parsed =
+        crate::remote::client::parse_remote_model_value(&row, "https://test.example.com/v1")
+            .expect("row parses");
+    let entry = resolve_row_with_menu_donor("grok-4.6", "", ModelEntry::from_config_entry(&parsed));
+    assert_eq!(effort_ids(&entry.info), ["low", "medium", "high", "xhigh"]);
+    assert!(entry.info.supports_reasoning_effort);
+    assert!(entry.info.reasoning_effort_server_default);
+    assert_eq!(entry.info.reasoning_effort, None);
+    assert_eq!(resolve_sampling(&entry, None).reasoning_effort, None);
+}
+/// An explicit `supports_reasoning_effort = false` in config discards the menu whether it arrives through the
+/// same-key base (wire-id key) or through slug propagation (alias key), and the scalar whether it came from the
+/// catalog row or from the config row itself, so nothing reaches the wire.
+#[test]
+fn explicit_supports_reasoning_effort_false_discards_inherited_menu() {
+    for key in ["grok-4.6-build", "grok-4.6"] {
+        let mut donor = prefetched_menu_donor();
+        donor.info.reasoning_effort_server_default = true;
+        let entry = resolve_row_with_menu_donor(
+            key,
+            r#"
+            supports_reasoning_effort = false
+            reasoning_effort = "high"
+            "#,
+            donor,
+        );
+        assert!(entry.info.reasoning_efforts.is_empty(), "{key}");
+        assert!(!entry.info.supports_reasoning_effort, "{key}");
+        assert!(!entry.info.reasoning_effort_server_default, "{key}");
+        assert_eq!(entry.info.reasoning_effort, None, "{key}");
+        assert_eq!(
+            resolve_sampling(&entry, None).reasoning_effort,
+            None,
+            "{key}"
+        );
+    }
+}
+/// A `/v1/models` row whose `capabilities` names no default keeps the menu but sends no effort, so the
+/// server applies its own instead of the lowest listed tier.
+#[test]
+fn capabilities_menu_without_default_resolves_to_no_reasoning_effort() {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = Some("https://test.example.com/v1".to_owned());
+    let row = serde_json::json!({
+        "id": "grok-4.6-build",
+        "capabilities": { "reasoning_effort": ["low", "medium", "high", "xhigh"] }
+    });
+    let parsed =
+        crate::remote::client::parse_remote_model_value(&row, "https://test.example.com/v1")
+            .expect("row parses");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "grok-4.6-build".to_owned(),
+        ModelEntry::from_config_entry(&parsed),
+    );
+    let info = resolve_model_list(&cfg, Some(prefetched))
+        .shift_remove("grok-4.6-build")
+        .expect("grok-4.6-build key must exist")
+        .info;
+    assert_eq!(info.reasoning_efforts.len(), 4);
+    assert!(info.supports_reasoning_effort);
+    assert_eq!(info.reasoning_effort, None);
 }
 #[test]
 fn resolve_model_list_inherits_context_window_from_default_when_prefetched_has_fallback() {

@@ -28,40 +28,33 @@ pub fn list_trusted_projects_with_file(trust_file: &Path) -> std::io::Result<Vec
 
 // ── Hook enable/disable ─────────────────────────────────────────────────
 
-/// Disabled hooks are listed in `$GROK_HOME/disabled-hooks`, one hook name per line.
-pub fn is_hook_disabled(hook_name: &str) -> bool {
-    match disabled_hooks_file_path() {
-        Some(file) => is_hook_disabled_with_file(hook_name, &file),
-        None => false,
-    }
+/// Why a hook is skipped at dispatch and shown disabled in the modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookSkipReason {
+    /// Its `enabled` flag is off or its name is in `$GROK_HOME/disabled-hooks`.
+    UserDisabled,
+    /// `allow_managed_hooks_only` is pinned and the hook is not managed policy.
+    ManagedOnly,
 }
 
-/// What the hooks modal and status reports show as disabled; managed-policy hooks never do, since dispatch ignores their disable state.
-/// Keep this in lockstep with `dispatcher::eligible_or_record_skip` or the modal lies about what runs.
-pub fn hook_disabled_for_display(spec: &crate::config::HookSpec) -> bool {
-    hook_disabled_for_display_with(spec, &DisabledHooks::load())
-}
-
-/// The same rule as [`hook_disabled_for_display`], evaluated against a pre-loaded snapshot (bulk display passes and tests).
-pub fn hook_disabled_for_display_with(
-    spec: &crate::config::HookSpec,
-    disabled: &DisabledHooks,
-) -> bool {
-    !spec.is_managed_policy() && (!spec.enabled || disabled.contains(&spec.name))
-}
-
-/// One-shot snapshot of the disabled-hooks file, for callers that evaluate many specs per pass (dispatch loops, the stop-gate guard).
-/// One `load()` replaces a file read per spec.
+/// One-shot snapshot of the per-spec skip inputs: the disabled-hooks file and the `allow_managed_hooks_only` pin.
+/// [`Self::skip_reason`] is the one rule the dispatcher, the stop-gate guard, and the modal apply, so they cannot disagree about what runs.
 #[derive(Debug, Default)]
-pub struct DisabledHooks(std::collections::HashSet<String>);
+pub struct DisabledHooks {
+    names: std::collections::HashSet<String>,
+    managed_only: bool,
+}
 
 impl DisabledHooks {
-    /// Build from explicit names (tests; no filesystem or env dependence).
-    pub fn from_names<I: IntoIterator<Item = String>>(names: I) -> Self {
-        Self(names.into_iter().collect())
+    pub fn new<I: IntoIterator<Item = String>>(names: I, managed_only: bool) -> Self {
+        Self {
+            names: names.into_iter().collect(),
+            managed_only,
+        }
     }
 
-    pub fn load() -> Self {
+    /// Read the disabled-hooks file; `managed_only` is the resolved `allow_managed_hooks_only` pin, which the caller reads from managed settings.
+    pub fn load(managed_only: bool) -> Self {
         let names = disabled_hooks_file_path()
             .and_then(|file| std::fs::read_to_string(file).ok())
             .map(|content| {
@@ -70,14 +63,34 @@ impl DisabledHooks {
                     .map(str::trim)
                     .filter(|l| !l.is_empty() && !l.starts_with('#'))
                     .map(str::to_string)
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        Self(names)
+        Self::new(names, managed_only)
     }
 
     pub fn contains(&self, hook_name: &str) -> bool {
-        self.0.contains(hook_name)
+        self.names.contains(hook_name)
+    }
+
+    pub fn managed_only(&self) -> bool {
+        self.managed_only
+    }
+
+    /// Managed-policy hooks are never skipped; the lockdown outranks a user disable as the reported reason.
+    pub fn skip_reason(&self, spec: &crate::config::HookSpec) -> Option<HookSkipReason> {
+        if spec.is_managed_policy() {
+            return None;
+        }
+        if self.managed_only {
+            return Some(HookSkipReason::ManagedOnly);
+        }
+        (!spec.enabled || self.names.contains(&spec.name)).then_some(HookSkipReason::UserDisabled)
+    }
+
+    /// Whether dispatch skips `spec`; also what the modal shows as disabled.
+    pub fn blocks(&self, spec: &crate::config::HookSpec) -> bool {
+        self.skip_reason(spec).is_some()
     }
 }
 

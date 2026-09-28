@@ -14,7 +14,7 @@ use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
     COMPACT_FAILED_PREFIX, CompactOutput, CompactionOutcome, build_compaction_prompt,
-    generate_session_compact, is_context_length_error,
+    generate_session_compact, is_context_length_error, retain_session_asset_files,
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
@@ -23,6 +23,7 @@ use crate::session::two_pass::{
 };
 use agent_client_protocol as acp;
 use std::sync::Arc;
+use xai_chat_state::compaction_image_context::CompactionImageContext;
 use xai_chat_state::compaction_utils::{
     CompactedHistoryInput, CompactionAttempt, build_compacted_history, is_degenerate_summary,
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
@@ -424,7 +425,11 @@ async fn apply_turn_image_budget_and_prune(
     chat_state: &xai_chat_state::ChatStateHandle,
     items: Vec<ConversationItem>,
 ) -> Vec<ConversationItem> {
-    let items = xai_chat_state::image_budget::apply_image_budget(items).items;
+    let max_request_bytes = chat_state
+        .get_sampling_config()
+        .await
+        .and_then(|config| config.max_request_bytes);
+    let items = xai_chat_state::image_budget::apply_image_budget(items, max_request_bytes).items;
     chat_state.apply_turn_request_pruning(items).await
 }
 /// Start fitted when the (already image-budgeted and pruned) estimate cannot leave room for tools + summary.
@@ -1355,7 +1360,7 @@ impl SessionActor {
         let generate_session_compact = compact_output.content.clone();
         let user_message_prefix = self.build_user_message_prefix().await;
         let conversation = self.chat_state_handle.get_conversation().await;
-        let (discovered_agents_md, all_skills_for_compaction, _agent_edited_paths, state_context) =
+        let (discovered_agents_md, all_skills_for_compaction, _edited_paths, mut state_context) =
             if use_short_prompt {
                 let empty_edited: std::collections::BTreeSet<String> = Default::default();
                 let ctx = CompactionStateContext::build(
@@ -1567,6 +1572,38 @@ impl SessionActor {
                 };
                 (agents_md, skills, edited_paths, ctx)
             };
+        if self.is_cursor_harness() {
+            state_context.images = CompactionImageContext::default();
+        }
+        let harvested_paths = std::mem::take(&mut state_context.images.attached_paths);
+        let (kept, dropped_paths) = if harvested_paths.is_empty() {
+            (Vec::new(), 0)
+        } else {
+            match crate::session::persistence::ensure_owner_only_session_dir(&self.session_info) {
+                Ok(session_dir) => {
+                    retain_session_asset_files(
+                        harvested_paths,
+                        &crate::session::image_describe::session_assets_dir(&session_dir),
+                    )
+                    .await
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "compaction: session dir unavailable; attached image paths dropped"
+                    );
+                    (Vec::new(), harvested_paths.len())
+                }
+            }
+        };
+        state_context.images.attached_paths = kept;
+        if dropped_paths > 0 {
+            tracing::debug!(
+                session_id = %self.session_info.id.0,
+                dropped_paths,
+                "compaction: dropped attached image paths that are not session asset files"
+            );
+        }
         use crate::session::helpers::compaction_context::SubagentToolNames;
         let subagent_tool_names: Option<SubagentToolNames> =
             if use_short_prompt || state_context.running_subagents.is_empty() {
@@ -1804,6 +1841,16 @@ impl SessionActor {
         let agents_md_reminder = self.agent.borrow().agents_md_user_reminder();
         let compaction_context = state_context.for_compaction();
         let compaction_state_context: &CompactionStateContext = &compaction_context;
+        tracing::debug!(
+            session_id = %self.session_info.id.0,
+            has_last_user_query = compaction_state_context.last_user_query.is_some(),
+            last_turn_image_parts = compaction_state_context.images.last_turn_image_parts.len(),
+            has_last_turn_image_files = compaction_state_context
+                .images
+                .last_turn_image_files
+                .is_some(),
+            "compaction: last-turn image context"
+        );
         let transcript_hint = self.transcript_hint();
         let summary_count = self
             .compaction
@@ -1962,6 +2009,15 @@ impl SessionActor {
             .on_skill_discovery_compaction()
             .await;
         self.rearm_failed_server_announcements().await;
+        if self
+            .tool_bridge_handle()
+            .toolset()
+            .tool_name_for_kind(xai_grok_tools::types::tool::ToolKind::UseTool)
+            .is_some()
+            && let Some(hint) = self.rendered_mcp_hint().await
+        {
+            self.push_system_reminder_with_tag(&hint, self.reminder_wrapper_tag());
+        }
         self.plan_mode.lock().reset_after_compaction();
         self.persist_plan_mode_state();
         self.dispatch_hook(

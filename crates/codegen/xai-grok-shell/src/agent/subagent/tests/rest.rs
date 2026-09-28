@@ -3215,6 +3215,7 @@ fn make_test_skill(
         disable_model_invocation: false,
         has_user_specified_description: false,
         paths: None,
+        origin: None,
         body: None,
     }
 }

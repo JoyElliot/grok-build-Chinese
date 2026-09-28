@@ -18,19 +18,14 @@ fn dispatch_span(event: HookEventName, hook_count: usize) -> tracing::Span {
     )
 }
 
-/// The one per-spec disable rule: a user-disabled spec is skipped unless it is managed policy, which cannot be disabled.
-pub(crate) fn is_disabled(spec: &HookSpec, disabled: &DisabledHooks) -> bool {
-    (!spec.enabled || disabled.contains(&spec.name)) && !spec.is_managed_policy()
-}
-
 fn eligible_or_record_skip(
     spec: &HookSpec,
     match_value: Option<&str>,
     results: &mut Vec<HookRunResult>,
     disabled: &DisabledHooks,
 ) -> bool {
-    if is_disabled(spec, disabled) {
-        tracing::info!(hook_name = %spec.name, "hook skipped (disabled)");
+    if let Some(reason) = disabled.skip_reason(spec) {
+        tracing::info!(hook_name = %spec.name, skip_reason = ?reason, "hook skipped");
         results.push(HookRunResult::Skipped {
             hook_name: spec.name.clone(),
         });
@@ -50,7 +45,7 @@ pub fn runnable_count(
     registry
         .hooks_for_canonical(envelope.hook_event_name)
         .into_iter()
-        .filter(|spec| !is_disabled(spec, ctx.disabled()))
+        .filter(|spec| !ctx.disabled().blocks(spec))
         .filter(|spec| crate::matcher::matcher_allows(spec.matcher.as_ref(), match_value))
         .count()
 }
@@ -2222,10 +2217,13 @@ mod tests {
 
     #[test]
     fn disabled_hooks_file_cannot_skip_managed_policy_hook() {
-        let disabled = crate::trust::DisabledHooks::from_names([
-            "requirements/system:pre_tool_use[0].hooks[0]".to_string(),
-            "global/user-hook".to_string(),
-        ]);
+        let disabled = crate::trust::DisabledHooks::new(
+            [
+                "requirements/system:pre_tool_use[0].hooks[0]".to_string(),
+                "global/user-hook".to_string(),
+            ],
+            false,
+        );
 
         let mut results = Vec::new();
         let mut managed = make_command_spec(
@@ -2252,14 +2250,48 @@ mod tests {
                 .unwrap_or_else(|| panic!("expected results item 0: {results:?}")),
             HookRunResult::Skipped { .. }
         ));
+    }
 
-        assert!(
-            !crate::trust::hook_disabled_for_display_with(&managed, &disabled),
-            "managed-policy hooks must never display as disabled"
+    /// Under `allow_managed_hooks_only` every non-managed hook is skipped, whatever the disabled-hooks file says, and managed policy still runs.
+    #[test]
+    fn managed_only_lockdown_skips_every_non_managed_hook() {
+        use crate::config::HookProvenance;
+        use crate::trust::{DisabledHooks, HookSkipReason};
+        let lockdown = DisabledHooks::new([], true);
+
+        for layer in [HookProvenance::SystemManaged, HookProvenance::Requirements] {
+            let mut managed = make_command_spec("managed", None, true, "echo ok");
+            managed.layer = layer;
+            assert_eq!(lockdown.skip_reason(&managed), None, "{layer:?}");
+        }
+
+        for layer in [
+            HookProvenance::Managed,
+            HookProvenance::UserRequirements,
+            HookProvenance::User,
+            HookProvenance::File,
+            HookProvenance::Plugin,
+            HookProvenance::Unknown,
+        ] {
+            let mut spec = make_command_spec("non-managed", None, true, "echo ok");
+            spec.layer = layer;
+            assert_eq!(
+                lockdown.skip_reason(&spec),
+                Some(HookSkipReason::ManagedOnly),
+                "{layer:?}"
+            );
+        }
+
+        // The lockdown outranks a user disable as the reported reason; without it the user reason stands.
+        let user_disabled = make_command_spec("global/off", None, false, "echo ok");
+        assert_eq!(
+            lockdown.skip_reason(&user_disabled),
+            Some(HookSkipReason::ManagedOnly)
         );
-        assert!(crate::trust::hook_disabled_for_display_with(
-            &user, &disabled
-        ));
+        assert_eq!(
+            DisabledHooks::new([], false).skip_reason(&user_disabled),
+            Some(HookSkipReason::UserDisabled)
+        );
     }
 
     #[tokio::test]
@@ -2305,19 +2337,28 @@ mod tests {
             make_command_spec("e", None, true, "true"),
             managed,
         ]);
-        let ctx = RunContext {
-            disabled: std::sync::Arc::new(DisabledHooks::from_names(["e".to_string()])),
-            ..run_ctx()
-        };
-        // read_file: a, b, managed (flagged disabled but exempt); d is disabled, e is in the snapshot, c misses the matcher
-        for (tool, expected) in [("read_file", 3), ("grep", 2)] {
+        // read_file: a, b, managed (flagged disabled but exempt); d is disabled, e is in the snapshot, c misses the matcher.
+        // Under the managed-only lockdown only the managed hook is left.
+        for (managed_only, tool, expected) in [
+            (false, "read_file", 3),
+            (false, "grep", 2),
+            (true, "read_file", 1),
+        ] {
+            let ctx = RunContext {
+                disabled: std::sync::Arc::new(DisabledHooks::new(["e".to_string()], managed_only)),
+                ..run_ctx()
+            };
             let envelope = pre_tool_use_envelope(tool);
             let count = runnable_count(&registry, &envelope, &ctx);
-            assert_eq!(count, expected, "{tool}");
+            assert_eq!(count, expected, "{tool} managed_only={managed_only}");
             let result = dispatch_pre_tool_use(&registry, &envelope, &ctx).await;
-            assert_eq!(count, ran(&result.results), "{tool}");
+            assert_eq!(
+                count,
+                ran(&result.results),
+                "{tool} managed_only={managed_only}"
+            );
         }
-        assert_eq!(runnable_count(&registry, &stop_envelope(), &ctx), 0);
+        assert_eq!(runnable_count(&registry, &stop_envelope(), &run_ctx()), 0);
     }
 
     /// Non-tool events match on their own payload field, so a count that ignored the payload would over-announce.

@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
+use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer as _;
@@ -126,6 +126,8 @@ fn build_otlp_exporter(
     );
     opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        // Pin http/protobuf: Bazel feature unification of http-json flips `.with_http()` to JSON.
+        .with_protocol(Protocol::HttpBinary)
         .with_http_client(http_client)
         .with_endpoint(endpoint)
         .with_headers(headers)

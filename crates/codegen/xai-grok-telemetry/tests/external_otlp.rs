@@ -121,19 +121,12 @@ async fn external_stream_end_to_end() {
         context_tokens: None,
         cost_usd_ticks: None,
     });
-    xai_grok_telemetry::log_event(xai_grok_telemetry::events::ToolCallCompleted {
-        tool_name: "run_terminal_cmd".into(),
-        outcome: xai_grok_session_events::types::ToolOutcome::Success,
-        hook_rewrote: false,
-        duration_ms: 3,
-        tool_result_size_bytes: None,
-        model_id: "grok".into(),
-        file_path: None,
-        parameters: Some(serde_json::json!({ "command": CANARY_CMD })),
-        tool_use_id: Some("call-gates-off".into()),
-        tool_output: None,
-        error_message: None,
-    });
+    let mut tool_completed =
+        xai_grok_telemetry::events::completed_for_test("run_terminal_cmd", "grok");
+    tool_completed.duration_ms = 3;
+    tool_completed.parameters = Some(serde_json::json!({ "command": CANARY_CMD }));
+    tool_completed.tool_use_id = Some("call-gates-off".into());
+    xai_grok_telemetry::log_event(tool_completed);
     xai_grok_telemetry::log_event(deny_decision(CANARY_CMD, "call-deny-off"));
     xai_grok_telemetry::external::emit(&xai_grok_telemetry::events::AssistantResponse {
         response_length: CANARY_RESPONSE.len(),

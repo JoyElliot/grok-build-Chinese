@@ -135,6 +135,16 @@ pub(crate) struct MinimalState {
     /// Minimal prints the whole plan as a normal committed block (rather than under the prompt), so this de-dupes the per-frame push.
     /// Each revision is a fresh ExitPlanMode with a new id, so every revised plan still commits as its own block.
     pub(crate) committed_plan_tool_call_id: Option<String>,
+    /// Layout the history was printed in, and a pending reprint after a resize.
+    pub(crate) reprint: crate::minimal_reprint::ReprintState,
+}
+
+impl MinimalState {
+    /// The sliced `/transcript` build and a waiting reprint advance only inside a draw.
+    /// Ticks keep drawing while either is pending.
+    pub(crate) fn needs_frames(&self) -> bool {
+        self.transcript.is_some() || self.reprint.is_waiting()
+    }
 }
 
 /// `AppView::minimal_state.show_todos`.

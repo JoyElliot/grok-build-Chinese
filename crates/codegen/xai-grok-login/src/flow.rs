@@ -1548,28 +1548,9 @@ mod tests {
         GrokAuth {
             key: "k".into(),
             auth_mode: AuthMode::WebLogin,
-            create_time: Utc::now(),
             user_id: "u".into(),
-            email: None,
-            first_name: None,
-            last_name: None,
-            profile_image_asset_id: None,
-            principal_type: None,
-            principal_id: None,
-            team_id: None,
-            team_name: None,
-            team_role: None,
-            organization_id: None,
-            organization_name: None,
-            organization_role: None,
-            user_blocked_reason: None,
-            team_blocked_reasons: vec![],
             coding_data_retention_opt_out: false,
-            has_grok_code_access: None,
-            refresh_token: None,
-            expires_at: None,
-            oidc_issuer: None,
-            oidc_client_id: None,
+            ..GrokAuth::default()
         }
     }
     fn oidc_auth(issuer: &str) -> GrokAuth {

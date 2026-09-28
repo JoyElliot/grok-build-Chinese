@@ -3,6 +3,10 @@
 //! These are stateless functions that operate on conversation data only —
 //! no I/O, no actor state. They live in `xai-chat-state` so that both
 //! this crate and `xai-grok-shell` can share them without duplication.
+use crate::compaction_image_context::{
+    CompactionImageContext, collect_attached_image_paths, image_context_from_item, last_query_item,
+    parse_image_files_paths, render_attached_image_paths_note, tag_block_range,
+};
 use std::collections::BTreeSet;
 use xai_grok_sampling_types::{ContentPart, ConversationItem, SyntheticReason, ToolResultItem};
 pub const AGENT_MESSAGE_MODEL_LABEL: &str =
@@ -275,15 +279,8 @@ const SYSTEM_TAGS: &[&str] = &[
 fn strip_system_tags(text: &str) -> String {
     let mut result = text.to_string();
     for tag in SYSTEM_TAGS {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        while let Some(start) = result.find(&open) {
-            if let Some(rel_end) = result.get(start..).and_then(|rest| rest.find(&close)) {
-                let end_pos = start + rel_end + close.len();
-                result.replace_range(start..end_pos, "");
-            } else {
-                break;
-            }
+        while let Some(range) = tag_block_range(&result, tag) {
+            result.replace_range(range, "");
         }
     }
     result.trim().to_string()
@@ -366,15 +363,18 @@ pub fn extract_real_user_queries(conversation: &[ConversationItem]) -> Vec<Strin
         .map(|item| extract_user_query(&item.text_content()))
         .collect()
 }
-/// Extract the last real user query text, skipping synthetic turns.
-/// Unlike [`extract_last_user_query`], this returns only content the user actually typed.
-/// `None` when no real user query is found.
-pub fn extract_last_real_user_query(conversation: &[ConversationItem]) -> Option<String> {
+/// Last item for which [`is_real_user_turn`] holds.
+fn find_last_real_user_item(conversation: &[ConversationItem]) -> Option<&ConversationItem> {
     conversation
         .iter()
         .rev()
         .find(|item| is_real_user_turn(item))
-        .map(|item| extract_user_query(&item.text_content()))
+}
+/// Extract the last real user query text, skipping synthetic turns.
+/// Unlike [`extract_last_user_query`], this returns only content the user actually typed.
+/// `None` when no real user query is found.
+pub fn extract_last_real_user_query(conversation: &[ConversationItem]) -> Option<String> {
+    find_last_real_user_item(conversation).map(|item| extract_user_query(&item.text_content()))
 }
 /// Extract messages since the last user message. Tool results are placeholder-replaced.
 /// Uses the raw `User` boundary, which includes synthetics.
@@ -597,6 +597,8 @@ pub struct CompactionStateContext {
     /// The last real user query text (skips synthetic injections and
     /// auto-continue prompts).
     pub last_user_query: Option<String>,
+    /// Image parts and `<image_files>` block of the turn `last_user_query` came from; empty for a goal objective.
+    pub images: CompactionImageContext,
     /// Files the agent edited this session (from agent_edited_paths).
     pub agent_edited_paths: Vec<String>,
     /// Running background tasks.
@@ -636,15 +638,29 @@ impl CompactionStateContext {
     /// Build the state context from current session state.
     /// Uses a typed compaction boundary; `last_user_query` prefers `inputs.goal_objective` when set.
     pub async fn build(conversation: &[ConversationItem], inputs: CompactionInputs) -> Self {
+        let (last_user_query, mut images) = match inputs
+            .goal_objective
+            .filter(|objective| !objective.trim().is_empty())
+        {
+            Some(objective) => (Some(objective), CompactionImageContext::default()),
+            None => {
+                let last = find_last_real_user_item(conversation);
+                (
+                    last.map(|item| extract_user_query(&item.text_content())),
+                    last.map(image_context_from_item).unwrap_or_default(),
+                )
+            }
+        };
+        let last_turn_paths =
+            parse_image_files_paths(images.last_turn_image_files.as_deref().unwrap_or_default());
+        images.attached_paths = collect_attached_image_paths(conversation, &last_turn_paths);
         Self {
             cwd_generation: inputs.cwd_generation,
             destination_project_instructions: inputs.destination_project_instructions,
             agent_message_anchor: extract_latest_agent_message(conversation),
             recent_messages: extract_messages_since_last_compaction_anchor(conversation),
-            last_user_query: inputs
-                .goal_objective
-                .filter(|objective| !objective.trim().is_empty())
-                .or_else(|| extract_last_real_user_query(conversation)),
+            last_user_query,
+            images,
             agent_edited_paths: inputs.agent_edited_paths.into_iter().collect(),
             running_tasks: inputs.running_tasks,
             running_subagents: inputs.running_subagents,
@@ -682,6 +698,7 @@ impl CompactionStateContext {
                 .or_else(|| extract_latest_agent_message(&self.recent_messages)),
             recent_messages: Vec::new(),
             last_user_query: self.last_user_query.clone(),
+            images: self.images.clone(),
             agent_edited_paths: self.agent_edited_paths.clone(),
             running_tasks: self.running_tasks.clone(),
             running_subagents: self.running_subagents.clone(),
@@ -945,15 +962,19 @@ pub fn build_compacted_history(input: CompactedHistoryInput<'_>) -> Vec<Conversa
         compacted.push(anchor.item.clone());
     }
     if let Some(ref last_query) = input.state_context.last_user_query {
-        compacted.push(ConversationItem::user(wrap_user_query(last_query)));
+        compacted.push(last_query_item(&input.state_context.images, last_query));
     }
     if let Some(anchor) =
         anchor.filter(|anchor| !matches!(anchor.position, AgentMessagePosition::BeforeHuman))
     {
         compacted.push(anchor.item);
     }
+    let attached_paths = &input.state_context.images.attached_paths;
+    let paths_note = (!attached_paths.is_empty())
+        .then(|| ConversationItem::user_meta(render_attached_image_paths_note(attached_paths)));
+    let summary_block = std::iter::once(summary_item).chain(paths_note);
     if summary_first {
-        compacted.push(summary_item);
+        compacted.extend(summary_block);
         for msg in input.state_context.recent_messages.iter().cloned() {
             compacted.push(msg);
         }
@@ -961,7 +982,7 @@ pub fn build_compacted_history(input: CompactedHistoryInput<'_>) -> Vec<Conversa
         for msg in input.state_context.recent_messages.iter().cloned() {
             compacted.push(msg);
         }
-        compacted.push(summary_item);
+        compacted.extend(summary_block);
     }
     if let Some(ref reminder) = input.system_reminder {
         compacted.push(ConversationItem::system_reminder(reminder.clone()));

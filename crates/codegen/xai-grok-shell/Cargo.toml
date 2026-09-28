@@ -1,7 +1,7 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "1.0.35"
+version = "1.0.41"
 edition.workspace = true
 
 [features]
@@ -9,8 +9,9 @@ default = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
-# it via `required-features`. Forwards login, sampler, and workspace `test-support` so
-# downstream test builds see those crates' test seams.
+# it via `required-features`. Forwards login, sampler, and workspace
+# `test-support` so downstream test builds see those crates' test seams
+# (`isolated_spawn_e2e` uses `WorkspaceOps::for_test`).
 test-support = [
     "xai-grok-login/test-support",
     "xai-grok-sampler/test-support",
@@ -36,8 +37,6 @@ anyhow = { workspace = true }
 xai-grok-announcements = { workspace = true }
 xai-prompt-queue = { workspace = true }
 xai-grok-version = { workspace = true }
-xai-grok-locale = { path = "../xai-grok-locale" }
-xai-grok-product = { path = "../xai-grok-product" }
 
 async-openai = { workspace = true }
 async-trait = { workspace = true }
@@ -126,6 +125,8 @@ strum = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
 
 xai-grok-paths = { path = "../xai-grok-paths" }
+xai-grok-locale = { path = "../xai-grok-locale" }
+xai-grok-product = { path = "../xai-grok-product" }
 xai-grok-shell-base = { workspace = true }
 xai-grok-shell-session-support = { workspace = true }
 xai-grok-shell-terminal = { workspace = true }
@@ -144,6 +145,8 @@ xai-chat-state = { path = "../xai-chat-state" }
 xai-compaction-transcript = { workspace = true }
 xai-grok-compaction = { path = "../../common/xai-grok-compaction" }
 xai-grok-extra-ca = { workspace = true }
+# Leader lock: bounded flock polling behind the machine-local acquire slot.
+xai-grok-file-lock = { workspace = true }
 xai-grok-sampler = { path = "../xai-grok-sampler" }
 # Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
 xai-grok-session-search = { workspace = true }
@@ -200,7 +203,7 @@ nix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 siphasher = { workspace = true }
-windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+windows = { workspace = true }
 
 [dev-dependencies]
 xai-dirs = { workspace = true }
@@ -274,11 +277,70 @@ name = "test_startup_prefetch_policy"
 required-features = ["test-support"]
 
 [[test]]
+name = "test_startup_prefetch_repair_overlap"
+required-features = ["test-support"]
+
+[[test]]
 name = "test_startup_prefetch_repair_skip"
 required-features = ["test-support"]
 
 [[test]]
+name = "mcp_toggle_gateway_persist"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_policy_gate"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_hook_deferral"
+required-features = ["test-support"]
+
+[[test]]
+name = "e2e_grove_worktree"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_uninstall_data"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_subphase_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "sessions_active_gauge"
+required-features = ["test-support"]
+[[test]]
+name = "spawn_actor_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "subagent_bootstrap_regression"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_image_strip_recovery"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_boot_current_thread"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_settings_unpersisted_session"
+required-features = ["test-support"]
+
+[[test]]
 name = "test_startup_prefetch_shared"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace_off"
 required-features = ["test-support"]
 
 [lints]

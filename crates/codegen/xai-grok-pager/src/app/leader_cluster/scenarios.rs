@@ -13,12 +13,8 @@ const T2: &str = "CLUSTER_SENTINEL_T2";
 #[ignore = "leader-cluster: needs single-process isolation (process-global env + grok_home OnceLock in the shared lib test binary); run: cargo test -p xai-grok-pager --lib -- app::leader_cluster --ignored --test-threads=1"]
 #[serial_test::serial(GROK_HOME)]
 fn two_clients_share_session_and_stream_both_ways() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
-        let mut cluster = PagerLeaderCluster::start().await;
+    run_cluster_scenario(|agent_keepalives| async move {
+        let mut cluster = PagerLeaderCluster::start(agent_keepalives).await;
         let mut a = cluster.client("cluster-a", false).await;
 
         cluster.server.set_response(format!("{T1} first turn."));
@@ -75,12 +71,8 @@ fn two_clients_share_session_and_stream_both_ways() {
 #[ignore = "leader-cluster: needs single-process isolation (process-global env + grok_home OnceLock in the shared lib test binary); run: cargo test -p xai-grok-pager --lib -- app::leader_cluster --ignored --test-threads=1"]
 #[serial_test::serial(GROK_HOME)]
 fn n_client_fan_out_without_replay_duplication() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
-        let mut cluster = PagerLeaderCluster::start().await;
+    run_cluster_scenario(|agent_keepalives| async move {
+        let mut cluster = PagerLeaderCluster::start(agent_keepalives).await;
         let mut driver = cluster.client("cluster-driver", false).await;
 
         cluster.server.set_response(format!("{T1} fan-out seed."));
@@ -154,12 +146,8 @@ fn n_client_fan_out_without_replay_duplication() {
 #[ignore = "leader-cluster: needs single-process isolation (process-global env + grok_home OnceLock in the shared lib test binary); run: cargo test -p xai-grok-pager --lib -- app::leader_cluster --ignored --test-threads=1"]
 #[serial_test::serial(GROK_HOME)]
 fn reattach_completion_roundtrips_durable_log() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
-        let mut cluster = PagerLeaderCluster::start().await;
+    run_cluster_scenario(|agent_keepalives| async move {
+        let mut cluster = PagerLeaderCluster::start(agent_keepalives).await;
         let mut a = cluster.client("cluster-a", false).await;
 
         cluster.server.set_response(format!("{T1} durable turn."));
@@ -229,12 +217,8 @@ fn reattach_completion_roundtrips_durable_log() {
 #[ignore = "leader-cluster: needs single-process isolation (process-global env + grok_home OnceLock in the shared lib test binary); run: cargo test -p xai-grok-pager --lib -- app::leader_cluster --ignored --test-threads=1"]
 #[serial_test::serial(GROK_HOME)]
 fn leader_kill_reconnect_reloads_without_duplicating_history() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    tokio::task::LocalSet::new().block_on(&rt, async {
-        let mut cluster = PagerLeaderCluster::start().await;
+    run_cluster_scenario(|agent_keepalives| async move {
+        let mut cluster = PagerLeaderCluster::start(agent_keepalives).await;
         let mut a = cluster.client("cluster-reconnect", true).await;
 
         cluster.server.set_response(format!("{T1} pre-crash turn."));

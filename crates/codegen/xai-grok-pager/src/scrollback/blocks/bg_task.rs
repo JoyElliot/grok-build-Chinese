@@ -13,6 +13,9 @@ use crate::scrollback::types::{AccentStyle, BlockContext, BlockOutput, DisplayMo
 use crate::theme::Theme;
 use crate::util::format_duration;
 
+/// The signal recorded on a task the user stopped.
+pub(crate) const KILLED_SIGNAL: &str = "killed";
+
 #[derive(Debug, Clone)]
 pub enum BgTaskKind {
     /// Task was started (process is running).

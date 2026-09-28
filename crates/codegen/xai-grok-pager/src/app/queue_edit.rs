@@ -89,7 +89,6 @@ impl AgentView {
                     AgentPane::Queue => self.queue.overlay.focused = false,
                     AgentPane::Todo => self.todo.overlay.focused = false,
                     AgentPane::Tasks => self.tasks.overlay.focused = false,
-                    AgentPane::Catalog => self.catalog.overlay.focused = false,
                     _ => {}
                 }
                 let message = self
@@ -105,8 +104,15 @@ impl AgentView {
             }
             // Clean edit: silently exit editing mode
             // With a hook-block hold in place the card comes back (it stays on screen while the user works in the target pane)
+            // The exit refocuses the composer and clears the caller's overlay-focus flip; restore it for the target
             self.exit_editing_mode();
-            self.active_pane = target;
+            self.set_active_pane(target, true);
+            match target {
+                AgentPane::Queue => self.queue.overlay.focused = true,
+                AgentPane::Todo => self.todo.overlay.focused = true,
+                AgentPane::Tasks => self.tasks.overlay.focused = true,
+                _ => {}
+            }
             crate::app::turn_completion::reopen_blocked_card_if_held(self);
             return Some(true);
         }
@@ -635,7 +641,7 @@ impl AgentView {
         self.show_toast(&message);
     }
 
-    /// Exit editing mode: restore stashed text, clear mode, focus queue pane.
+    /// Exit editing mode: restore stashed text, clear mode, focus the composer.
     /// No-op unless `EditingQueued`. The default exit; releases the server-side combine hold (cancel, lost-row, modal paths).
     /// Always resets `prompt_input_mode` to `Normal` so it doesn't leak into subsequent normal prompt entry.
     pub(super) fn exit_editing_mode(&mut self) {
@@ -680,13 +686,9 @@ impl AgentView {
         if matches!(self.active_modal, Some(ActiveModal::EditConfirm { .. })) {
             self.active_modal = None;
         }
-        // Return focus to queue pane (if still visible).
-        // Force=true: we just cleared editing mode, no lock to check.
-        if self.queue.is_visible() {
-            self.set_active_pane(AgentPane::Queue, true);
-        } else {
-            self.set_active_pane(AgentPane::Scrollback, true);
-        }
+        // Focus the composer: on the queue pane the next Enter re-opens the row edit instead of sending
+        // Pane-switch exits (modal confirm, clean-edit pane switch) re-target their own pane right after this
+        self.set_active_pane(AgentPane::Prompt, true);
     }
 }
 
@@ -813,6 +815,15 @@ mod tests {
             front_nth(&agent.session.pending_prompts, 0).text,
             "line1 EDITED"
         );
+    }
+
+    /// Saving an edit focuses the composer: the next Enter sends instead of re-opening the row edit.
+    #[test]
+    fn save_returns_focus_to_the_composer() {
+        let mut agent = enter_edit_local_row();
+        agent.prompt.set_text("local one EDITED");
+        let _ = agent.handle_prompt_key_for_test(&enter_key());
+        assert_eq!(agent.active_pane, AgentPane::Prompt);
     }
 
     fn attach_image_to_local_row(agent: &mut AgentView) {
@@ -1613,6 +1624,19 @@ mod tests {
             !agent.queue.overlay.focused,
             "a blocked switch must not leave the queue overlay focused while input is in the prompt"
         );
+    }
+
+    /// Ctrl+; with an unchanged edit lands focused on the queue pane.
+    /// Without the restored flip, the next structural key bounces focus to scrollback.
+    #[test]
+    fn toggle_queue_pane_with_clean_edit_lands_focused_on_the_queue() {
+        let mut agent = enter_edit_local_row();
+
+        agent.toggle_queue_pane();
+
+        assert!(matches!(agent.prompt_mode, PromptMode::Normal));
+        assert_eq!(agent.active_pane, AgentPane::Queue);
+        assert!(agent.queue.overlay.focused);
     }
 
     /// Interject key while editing a LOCAL queued row mid-turn.

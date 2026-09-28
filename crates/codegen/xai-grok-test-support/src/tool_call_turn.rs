@@ -113,6 +113,61 @@ fn responses_api_cut_script(text: &str, model: &str) -> Vec<SseEvent> {
     ]
 }
 
+pub(crate) fn content_filter_events(
+    endpoint: InferenceEndpoint,
+    text: &str,
+    model: &str,
+) -> Vec<SseEvent> {
+    match endpoint {
+        InferenceEndpoint::ChatCompletions => chat_completion_script_from_deltas(
+            &chat_completion_deltas(text),
+            model,
+            "content_filter",
+        ),
+        InferenceEndpoint::Responses => responses_api_content_filter_script(text, model),
+        InferenceEndpoint::Messages => messages_api_script(text, model, "refusal"),
+    }
+}
+
+fn responses_api_content_filter_script(text: &str, model: &str) -> Vec<SseEvent> {
+    vec![
+        responses_api_created_frame(model),
+        SseEvent::data(
+            json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "item_test",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": text
+            })
+            .to_string(),
+        ),
+        SseEvent::data(
+            json!({
+                "type": "response.incomplete",
+                "sequence_number": 2,
+                "response": {
+                    "id": "resp_test", "object": "response", "created_at": 1234567890,
+                    "model": model, "status": "incomplete",
+                    "incomplete_details": { "reason": "content_filter" },
+                    "output": [{
+                        "type": "message", "id": "msg_test", "role": "assistant", "status": "incomplete",
+                        "content": [{ "type": "output_text", "text": text, "annotations": [] }]
+                    }],
+                    "usage": {
+                        "input_tokens": 10, "output_tokens": 3, "total_tokens": 13,
+                        "input_tokens_details": { "cached_tokens": 0 },
+                        "output_tokens_details": { "reasoning_tokens": 0 }
+                    }
+                }
+            })
+            .to_string(),
+        ),
+        SseEvent::data("[DONE]"),
+    ]
+}
+
 /// The error event alone, or after the frame that opens a reply when the position is `Midway`.
 pub(crate) fn stream_error_events(
     endpoint: InferenceEndpoint,

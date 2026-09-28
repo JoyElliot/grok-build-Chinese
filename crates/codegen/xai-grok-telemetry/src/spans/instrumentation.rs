@@ -180,9 +180,7 @@ impl<S> NoOpLayer<S> {
     }
 }
 
-impl<S: Subscriber> Layer<S> for NoOpLayer<S> {
-    // All methods use default implementations which do nothing
-}
+impl<S: Subscriber> Layer<S> for NoOpLayer<S> {}
 
 fn resolve_output_path(mode: InstrumentationMode) -> Option<PathBuf> {
     if mode == InstrumentationMode::Disabled {
@@ -247,7 +245,6 @@ where
 
     let writer = build_writer(resolve_log_path());
 
-    // Use TargetFilterLayer instead of .with_filter() to avoid the FilterId registration issue when the layer is boxed as Box<dyn Layer<S>>
     let fmt_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_current_span(false) // `spans` array already carries the full ancestor list
@@ -303,7 +300,6 @@ where
         *slot = Some(guard);
     }
 
-    // Use TargetFilterLayer instead of .with_filter() to avoid the FilterId registration issue when the layer is boxed as Box<dyn Layer<S>>
     Box::new(TargetFilterLayer::new(layer, TARGET))
 }
 
@@ -681,6 +677,93 @@ pub fn timer(name: &'static str) -> InstrumentationTimer {
     InstrumentationTimer::new(name)
 }
 
+/// Emit a startup gap timing whose region no live timer can wrap (it spans process init or the frame after the last phase).
+/// Mirrors [`InstrumentationTimer`]'s drop-time timing event so the local waterfall and chrome trace see the segment.
+pub fn emit_startup_timing(name: &'static str, elapsed: std::time::Duration) {
+    if matches!(
+        mode(),
+        InstrumentationMode::Disabled | InstrumentationMode::Chrome
+    ) {
+        return;
+    }
+    tracing::info!(
+        target: TARGET,
+        event = "timing",
+        name = name,
+        elapsed_us = elapsed.as_micros() as u64,
+    );
+}
+
+/// Builds a step timer from an already-read `is_active()`/`current_mode()`: picks the active vs idle name and,
+/// in Chrome mode, enters the matching span. Shared by the timer and grouped step macros so the name and the
+/// chrome-span selection have one source.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __startup_step_timer {
+    ($active:expr, $mode:expr, $active_name:expr, $idle_name:expr $(,)?) => {{
+        let active = $active;
+        let mode = $mode;
+        let name = if active { $active_name } else { $idle_name };
+        let chrome_span = match mode {
+            $crate::instrumentation::InstrumentationMode::Chrome if active => Some(
+                tracing::info_span!(target: $crate::instrumentation::TARGET, $active_name).entered(),
+            ),
+            $crate::instrumentation::InstrumentationMode::Chrome => Some(
+                tracing::info_span!(target: $crate::instrumentation::TARGET, $idle_name).entered(),
+            ),
+            _ => None,
+        };
+        $crate::instrumentation::InstrumentationTimer::new_with_span(name, mode, chrome_span)
+    }};
+}
+
+#[macro_export]
+macro_rules! startup_step_timer {
+    ($active_name:expr, $idle_name:expr $(,)?) => {
+        $crate::__startup_step_timer!(
+            $crate::startup::is_active(),
+            $crate::instrumentation::current_mode(),
+            $active_name,
+            $idle_name,
+        )
+    };
+}
+
+/// A [`startup_step_timer!`] whose active/neutral names share the `<prefix>.<group>.<step>` shape,
+/// so a call site names the group and step once and the two names cannot drift.
+#[macro_export]
+macro_rules! startup_step_timer_grouped {
+    ($group:literal, $step:literal $(,)?) => {
+        $crate::startup_step_timer!(
+            concat!("startup.", $group, ".", $step),
+            concat!("session.", $group, ".", $step),
+        )
+    };
+}
+
+/// Returns `(InstrumentationTimer, tracing::Span)` for the group/step from one `is_active()` read, so an
+/// awaiting step names the group and step once and its two names cannot pick opposite prefixes across a
+/// startup→done transition. `.instrument` the future with the span, then drop the timer once it resolves.
+#[macro_export]
+macro_rules! startup_step_grouped {
+    ($group:literal, $step:literal $(, $field:ident = $value:expr)* $(,)?) => {{
+        let active = $crate::startup::is_active();
+        let mode = $crate::instrumentation::current_mode();
+        let timer = $crate::__startup_step_timer!(
+            active,
+            mode,
+            concat!("startup.", $group, ".", $step),
+            concat!("session.", $group, ".", $step),
+        );
+        let span = if active {
+            tracing::info_span!(concat!("startup.", $group, ".", $step) $(, $field = $value)*)
+        } else {
+            tracing::info_span!(concat!("session.", $group, ".", $step) $(, $field = $value)*)
+        };
+        (timer, span)
+    }};
+}
+
 mod timer_parents {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -703,12 +786,16 @@ mod timer_parents {
             let Some(stack) = map.get_mut(&self.key) else {
                 return;
             };
-            if let Some(index) = stack.iter().rposition(|open| same_span(open, &self.span)) {
-                stack.remove(index);
-            }
+            // Take the removed span out and drop it after the lock: closing a span runs subscriber hooks.
+            let removed = stack
+                .iter()
+                .rposition(|open| same_span(open, &self.span))
+                .map(|index| stack.remove(index));
             if stack.is_empty() {
                 map.remove(&self.key);
             }
+            drop(map);
+            drop(removed);
         }
     }
 

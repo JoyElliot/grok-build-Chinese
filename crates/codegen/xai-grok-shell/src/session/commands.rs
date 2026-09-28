@@ -23,6 +23,12 @@ pub struct CancellationContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
 }
+/// The parent's exact tool schema paired with the selection mode it advertised.
+#[derive(Debug, Clone)]
+pub struct ForkedToolSnapshot {
+    pub specs: Vec<xai_grok_sampling_types::ToolSpec>,
+    pub task_model_selection: crate::agent::remote_config::task_model_policy::TaskModelSelection,
+}
 /// The ways a `/btw` side question can fail.
 /// Kept typed until the ACP boundary so model errors keep their typed rate-limit and auth codes instead of flattening to a string.
 /// `handle_btw` maps them with [`map_sampling_err_to_acp`](crate::sampling::error::map_sampling_err_to_acp).
@@ -463,7 +469,7 @@ pub enum SessionCommand {
     ReloadHooks,
     /// Re-discover skills from disk and update the session's skill baseline.
     RefreshSkillBaseline,
-    /// Capture every completed turn now for `x.ai/memory/flush`.
+    /// Capture every finished or stopped turn now for `x.ai/memory/flush`.
     FlushMemory {
         respond_to: oneshot::Sender<crate::extensions::memory::MemoryFlushResponse>,
     },
@@ -560,6 +566,10 @@ pub enum SessionCommand {
         next_trace_turn: u64,
         request_id: Option<String>,
     },
+    /// Tell the model, at its next prompt, that the turn a previous process was running never finished.
+    NoteInterruptedTurn {
+        turn: crate::session::interrupted_turn::InterruptedTurn,
+    },
     /// Flush pending writes and copy the current session directory contents to memory.
     /// The caller can then tar.gz and upload to GCS (or similar).
     CopyFile {
@@ -584,6 +594,9 @@ pub enum SessionCommand {
     /// The caller is notified via `respond_to` once MCP re-initialization completes (or immediately if configs are unchanged).
     UpdateMcpServers {
         mcp_servers: Vec<acp::McpServer>,
+        /// Admitted client list. `Some` replaces the actor seed; `None` leaves it
+        /// (disk/plugin rematerialize).
+        client_seed: Option<Vec<acp::McpServer>>,
         respond_to: oneshot::Sender<Result<(), acp::Error>>,
     },
     /// Re-apply per-attachment policy (MCP init strategy, delivery tools) from a resident `session/load` that carried explicit `startupHints`.
@@ -632,7 +645,7 @@ pub enum SessionCommand {
     /// Snapshot the session's resolved tool schema (the same list the parent's own turn sends).
     /// A verbatim-fork child can then present a byte-identical tool prefix.
     SnapshotToolDefinitions {
-        respond_to: oneshot::Sender<Vec<xai_grok_sampling_types::ToolSpec>>,
+        respond_to: oneshot::Sender<ForkedToolSnapshot>,
     },
     /// Replace the session's client-registered hooks.
     /// Sent on `load_session` reconnect to a live actor so a client can re-register (or clear) its hooks without a fresh session.

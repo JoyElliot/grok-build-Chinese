@@ -16,6 +16,8 @@ class WindowsValidationTests(unittest.TestCase):
         common = {
             ('-p', 'xai-grok-update', '--features', 'community-build', '--lib'),
             ('-p', 'xai-grok-locale'),
+            ('-p', 'xai-grok-agent', '--lib', 'prompt::'),
+            ('-p', 'xai-grok-tools', '--lib', 'implementations::use_tool'),
             ('-p', 'xai-grok-shell', '--lib', 'session_summary'),
             ('-p', 'xai-grok-shell', '--lib', 'builtin::tests::'),
             ('-p', 'xai-grok-shell', '--lib', 'bundled_model_provenance_survives_acp_but_config_override_clears_it'),

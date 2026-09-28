@@ -167,11 +167,7 @@ pub(super) fn probe_clipboard_attachment_blocking(
         change_count,
         crate::clipboard::clipboard_change_count,
         || {
-            if probe_bracketed
-                && crate::terminal::terminal_context()
-                    .brand
-                    .delivers_ime_as_bracketed_paste()
-            {
+            if probe_bracketed {
                 match crate::clipboard::bracketed_payload_came_from_clipboard_result(
                     probe_text.as_deref().unwrap_or(""),
                 ) {
@@ -179,7 +175,9 @@ pub(super) fn probe_clipboard_attachment_blocking(
                     Ok(false) => {
                         return Err(ClipboardProbeDropReason::BracketedPayloadMismatch);
                     }
-                    Err(_) => return Err(ClipboardProbeDropReason::ReadFailed),
+                    Err(_) => {
+                        return Err(ClipboardProbeDropReason::BracketedOriginReadFailed);
+                    }
                 }
             }
             crate::clipboard::system_clipboard_probe_attachments(probe_text.as_deref())
@@ -248,7 +246,8 @@ pub(super) async fn bounded_clipboard_probe(
                 }
                 ClipboardProbeDropReason::PasteboardChangedBeforeRead
                 | ClipboardProbeDropReason::PasteboardChangedAfterRead
-                | ClipboardProbeDropReason::BracketedPayloadMismatch => {
+                | ClipboardProbeDropReason::BracketedPayloadMismatch
+                | ClipboardProbeDropReason::BracketedOriginReadFailed => {
                     ProbedAttachment::ProbeDropped
                 }
             };
@@ -944,6 +943,52 @@ pub(super) async fn send_check_subscription(
         }
     }
 }
+/// Any failure answers unresolved; the next launch asks again.
+pub(super) async fn send_hydrate_team_capability(
+    tx: &AcpAgentTx,
+    identity: crate::app::app_view::AuthIdentity,
+) -> TaskResult {
+    use xai_grok_shell::extensions::auth::{
+        HydrateTeamCapabilityRequest, HydrateTeamCapabilityResponse,
+    };
+    let params = HydrateTeamCapabilityRequest {
+        email: identity.email.clone(),
+        team_id: identity.team_id.clone(),
+    };
+    let can_administer_team = match serde_json::value::to_raw_value(&params) {
+        Ok(raw) => {
+            let req = acp::ExtRequest::new(
+                "x.ai/auth/hydrate_team_capability",
+                raw.into(),
+            );
+            match acp_send(req, tx).await {
+                Ok(resp) => {
+                    match serde_json::from_str::<
+                        HydrateTeamCapabilityResponse,
+                    >(resp.0.get()) {
+                        Ok(resp) => resp.can_administer_team,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "team capability hydration: bad response");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "team capability hydration failed");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "team capability hydration: request did not serialize");
+            None
+        }
+    };
+    TaskResult::TeamCapabilityHydrated {
+        identity,
+        can_administer_team,
+    }
+}
 /// One-shot subscription re-check for the credit-limit retry flow.
 /// Same ACP call as `send_check_subscription` but returns a `CreditLimitRecheckComplete`.
 /// The dispatch layer then decides whether to retry the stashed prompt or show the upsell.
@@ -1056,6 +1101,14 @@ pub(crate) async fn persist_setting(
             xai_grok_shell::util::config::set_show_timestamps(b)
                 .await
                 .map_err(|e| e.to_string())
+        }
+        "dashboard_preview" => {
+            let SettingValue::Bool(enabled) = value else {
+                return Err(kind_mismatch("dashboard_preview", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_dashboard_preview(enabled)
+                .await
+                .map_err(|error| error.to_string())
         }
         "page_flip_on_send" => {
             let SettingValue::Bool(b) = value else {
@@ -1445,26 +1498,10 @@ pub(crate) async fn persist_permission_mode_and_notify(
     tx: AcpAgentTx,
 ) -> TaskResult {
     let config_str: &'static str = canonical;
-    let notify = |tx: AcpAgentTx| async move {
-        let params = serde_json::json!({
-            "yolo_mode": canonical == "always-approve",
-            "auto_mode": canonical == "auto",
-            "permission_mode": config_str,
-        });
-        let notification = acp::ExtNotification::new(
-            "x.ai/yolo_mode_changed",
-            serde_json::value::to_raw_value(&params)
-                .expect("serialize yolo_mode_changed params")
-                .into(),
-        );
-        if let Err(e) = acp_send(notification, &tx).await {
-            tracing::warn!("Failed to send yolo_mode_changed notification: {e}");
-        }
-    };
     let notify_first = session_id.is_some()
         && matches!(persist, PermissionModePersist::BestEffort);
     if notify_first {
-        notify(tx.clone()).await;
+        notify_permission_mode(config_str, session_id.clone(), tx.clone()).await;
     }
     let disk_result = xai_grok_shell::util::config::update_config(|cfg| {
             cfg.ui.permission_mode = Some(config_str.to_string());
@@ -1474,9 +1511,30 @@ pub(crate) async fn persist_permission_mode_and_notify(
     if !notify_first && session_id.is_some()
         && should_send_yolo_acp_notification(&disk_outcome, persist)
     {
-        notify(tx).await;
+        notify_permission_mode(config_str, session_id, tx).await;
     }
     route_permission_mode_result(disk_outcome, persist, config_str)
+}
+pub(crate) async fn notify_permission_mode(
+    canonical: &'static str,
+    session_id: Option<acp::SessionId>,
+    tx: AcpAgentTx,
+) {
+    let params = serde_json::json!({
+        "sessionId": session_id,
+        "yolo_mode": canonical == "always-approve",
+        "auto_mode": canonical == "auto",
+        "permission_mode": canonical,
+    });
+    let notification = acp::ExtNotification::new(
+        "x.ai/yolo_mode_changed",
+        serde_json::value::to_raw_value(&params)
+            .expect("serialize yolo_mode_changed params")
+            .into(),
+    );
+    if let Err(error) = acp_send(notification, &tx).await {
+        tracing::warn!(%error, "failed to send yolo_mode_changed notification");
+    }
 }
 /// Whether to fire the ACP `x.ai/yolo_mode_changed` notification.
 /// `WithRollback` suppresses on disk failure (the agent must not see the optimistic value); `BestEffort` always fires.
@@ -1731,7 +1789,7 @@ pub(super) fn unregister_active_session_best_effort_in(
             tracing::debug!(
             session_id = %session_id.0,
             "Skipped active-session unregister under lock contention; \
-             reaped by collect_crashed on next launch"
+             pruned by the next register"
         )
         }
         Err(e) => tracing::warn!(?e, "Failed to unregister active session"),

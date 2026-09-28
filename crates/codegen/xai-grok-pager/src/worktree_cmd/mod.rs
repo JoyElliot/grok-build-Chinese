@@ -14,11 +14,15 @@ fn localized_named(
     english: &str,
     arguments: &[(&str, &str)],
 ) -> String {
-    let mut output = locale.named_text(id, english).into_owned();
-    for (name, value) in arguments {
-        output = output.replace(&format!("{{{name}}}"), value);
-    }
-    output
+    let placeholders: Vec<_> = arguments
+        .iter()
+        .map(|(name, value)| (format!("{{{name}}}"), *value))
+        .collect();
+    let replacements: Vec<_> = placeholders
+        .iter()
+        .map(|(placeholder, value)| (placeholder.as_str(), *value))
+        .collect();
+    crate::localized_text::format_template(&locale.named_text(id, english), &replacements)
 }
 /// Read the agent's own report types rather than copies, so a field added
 /// there cannot go missing here.
@@ -91,6 +95,7 @@ pub async fn run_with_locale(
     agent_config: &AgentConfig,
     locale: &crate::locale::LocaleContext,
 ) -> Result<()> {
+    let command = args.command;
     let cancel = CancellationToken::new();
     xai_grok_telemetry::startup::mark_utility_process();
     let spawned = crate::acp::spawn::spawn_grok_shell(agent_config.clone(), &cancel, None).await?;
@@ -118,7 +123,7 @@ pub async fn run_with_locale(
         &spawned.channel.tx,
     )
     .await?;
-    dispatch(args.command, &spawned.channel.tx, locale).await
+    dispatch(command, &spawned.channel.tx, locale).await
 }
 
 async fn dispatch(
@@ -210,16 +215,22 @@ async fn cmd_show(
     id_or_path: &str,
     locale: &crate::locale::LocaleContext,
 ) -> Result<()> {
-    let rec: Option<WorktreeRecord> = ext_call(
+    let result: Result<Option<WorktreeRecord>> = ext_call(
         tx,
         "x.ai/git/worktree/show",
         &serde_json::json!({ "idOrPath" : id_or_path }),
     )
-    .await?;
+    .await;
+    let rec = result?;
     match rec {
         Some(r) => {
-            let written =
-                display::print_show_with_locale(&r, &mut std::io::stdout().lock(), locale);
+            let redirections_bytes = None;
+            let written = display::print_show_with_locale(
+                &r,
+                redirections_bytes,
+                &mut std::io::stdout().lock(),
+                locale,
+            );
             Ok(crate::util::ignore_broken_pipe(written)?)
         }
         None => bail!(localized_named(
@@ -316,7 +327,7 @@ async fn cmd_gc(
             writeln!(
                 out,
                 "{}",
-                locale.named_text("worktree.gc.dry_run", "Dry run \u{2014} no changes made.",)
+                locale.named_text("worktree.gc.dry_run", "Dry run: no changes made.",)
             )?;
         }
         display::print_gc_with_locale(&report, &mut out, locale)

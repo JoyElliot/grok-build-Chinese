@@ -12,7 +12,7 @@ mod skill_path_suggestion;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use crate::implementations::skills::types::SkillInfo;
 use crate::types::compat::CompatConfig;
@@ -146,6 +146,22 @@ pub struct SkillManager {
 /// files or symlink-resolution failures.
 fn canonical_path(path: &str) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn lexical_path(path: &Path) -> Vec<std::ffi::OsString> {
+    let mut stack = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                stack.pop();
+            }
+            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                stack.push(component.as_os_str().to_owned());
+            }
+        }
+    }
+    stack
 }
 
 fn listing_content_hash(text: &str) -> u64 {
@@ -645,6 +661,38 @@ impl SkillManager {
     /// Get the current startup skills baseline.
     pub fn startup_skills(&self) -> &[SkillInfo] {
         &self.startup_skills
+    }
+
+    /// Already-loaded registry match. Lexical only: no filesystem scan and no skill name.
+    pub fn registered_scope(
+        &self,
+        path: &Path,
+    ) -> Option<crate::implementations::skills::types::SkillScope> {
+        let requested = lexical_path(path);
+        let mut best: Option<(usize, crate::implementations::skills::types::SkillScope)> = None;
+        for skill in self
+            .startup_skills
+            .iter()
+            .chain(self.conditional.held())
+            .chain(&self.discovered_skills)
+        {
+            let skill_path = lexical_path(Path::new(&skill.path));
+            if skill_path == requested {
+                return Some(skill.scope);
+            }
+            let Some(parent_len) = skill_path.len().checked_sub(1) else {
+                continue;
+            };
+            if parent_len == 0 || requested.len() <= parent_len {
+                continue;
+            }
+            if requested.get(..parent_len) == skill_path.get(..parent_len)
+                && best.as_ref().is_none_or(|(len, _)| parent_len > *len)
+            {
+                best = Some((parent_len, skill.scope));
+            }
+        }
+        best.map(|(_, scope)| scope)
     }
 
     /// Reset discovery state for compaction. Clears `announced_names` so the reminder will re-announce on the next file access after compaction,

@@ -105,8 +105,6 @@ struct TraceEvent<'a> {
     version: Option<&'a str>,
 }
 
-// ─── Seams (installed by the composition-root binary) ────────────────────
-
 static STATS_PROVIDER: OnceLock<fn() -> Option<AllocatorStats>> = OnceLock::new();
 static DUMP_PROVIDER: OnceLock<fn() -> String> = OnceLock::new();
 static THRESHOLD_HOOK: OnceLock<fn(&Path, u64)> = OnceLock::new();
@@ -129,8 +127,6 @@ pub fn install_allocator_dump_provider(provider: fn() -> String) {
 pub fn install_threshold_hook(hook: fn(&Path, u64)) {
     let _ = THRESHOLD_HOOK.set(hook);
 }
-
-// ─── Threshold state (pure; unit-tested) ──────────────────────────────────
 
 /// Threshold buckets that fire exactly once per growth cycle.
 /// A bucket fires when the footprint reaches it while armed, then stays disarmed until the footprint drops below half the bucket.
@@ -166,8 +162,6 @@ impl Thresholds {
         fired
     }
 }
-
-// ─── Sink ──────────────────────────────────────────────────────────────────
 
 const ROTATE_BYTES_DEFAULT: u64 = 4 << 20; // 4 MiB, then one .1 rotation.
 static DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -381,8 +375,6 @@ pub(crate) fn record_purge(
         );
     });
 }
-
-// ─── Startup ───────────────────────────────────────────────────────────────
 
 /// Env: disable with `GROK_MEMTRACE=0|false|off`.
 fn enabled_by_env() -> bool {
@@ -627,8 +619,6 @@ pub fn collect_for_export(dir: &Path, limits: ExportLimits) -> Vec<ExportedTrace
     }
     exported
 }
-
-// ─── Test support ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 pub(crate) mod test_support {

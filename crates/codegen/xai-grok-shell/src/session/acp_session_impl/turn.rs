@@ -525,6 +525,8 @@ impl SessionActor {
         } = request;
         let prompt_id = prompt_id.as_str();
         let handle_prompt_start = std::time::Instant::now();
+        self.chat_state_handle
+            .record_turn_start(chrono::Utc::now().timestamp_millis());
         *self.active_skill.lock() = None;
         xai_grok_telemetry::unified_log::info(
             "shell.handle_prompt.start",
@@ -789,6 +791,7 @@ impl SessionActor {
                             plugin_source: sk.plugin_name.clone(),
                             trigger: xai_grok_telemetry::events::SkillTrigger::SlashCommand,
                             skill_source: Some(skill_source.to_owned()),
+                            skill_origin: sk.origin.clone(),
                         },
                     );
                     xai_grok_telemetry::event_span!(
@@ -830,6 +833,9 @@ impl SessionActor {
         let model_id = self.current_model_id().await;
         let turn_number = self.chat_state_handle.get_prompt_index().await as u64;
         self.current_turn_number.set(turn_number);
+        self.long_reasoning_turn_state
+            .lock()
+            .begin_turn(turn_number, model_id.clone());
         self.transient_retries_prompt_total.set(0);
         self.transient_episode_start.set(None);
         let yolo_mode = self.permissions.is_yolo_mode();
@@ -1647,10 +1653,11 @@ impl SessionActor {
                     attempts: doom_tally.attempts,
                     accepted_after_budget: doom_tally.accepted_after_budget,
                     top_trigger: doom_tally.top_trigger,
-                    model: doom_event_model,
+                    model: doom_event_model.clone(),
                 },
             );
         }
+        self.emit_long_reasoning_turn_event();
         match &result {
             Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::StationarityEnded) => {
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
@@ -2434,22 +2441,28 @@ impl SessionActor {
         if signals.turn_count == 0 {
             return;
         }
-        match self.chat_state_handle.try_get_session_usage().await {
-            Ok(ledger) => {
-                let _ = self
-                    .notifications
-                    .persistence_tx
-                    .send(PersistenceMsg::UsageTurn {
-                        turn_number: signals.turn_count,
-                        live: crate::session::usage_file::UsageSummary::from_ledger(&ledger),
-                    });
-            }
-            Err(()) => {
-                tracing::warn!(
-                    turn_number = signals.turn_count,
-                    "failed to snapshot session usage for persist"
-                );
-            }
+        let Ok(ledger) = self.chat_state_handle.try_get_session_usage().await else {
+            tracing::warn!(
+                turn_number = signals.turn_count,
+                "failed to snapshot session usage for persist"
+            );
+            return;
+        };
+        let (respond_to, ack) = oneshot::channel();
+        if self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::UsageTurn {
+                turn_number: signals.turn_count,
+                live: crate::session::usage_file::UsageSummary::from_ledger(&ledger),
+                respond_to,
+            })
+            .is_err()
+        {
+            return;
+        }
+        if let Ok(Err(e)) = ack.await {
+            tracing::warn!(?e, "session usage persist failed");
         }
     }
     /// Shared round-completion bookkeeping (plan cleanup, cancel-streak reset, token sums, feedback prompt).
@@ -2515,6 +2528,32 @@ impl SessionActor {
                 turn_outcome,
             )
             .await;
+    }
+    /// Emitted whether or not the reminder is armed, so cohorts compare on identical properties.
+    /// Runs at turn end and when a cancel aborts the turn task (under the state lock, before a
+    /// replacement turn can be promoted); a second call after `finish_turn` is a no-op.
+    pub(super) fn emit_long_reasoning_turn_event(&self) {
+        let tally = self.long_reasoning_turn_state.lock().finish_turn();
+        if tally.model_calls == 0 {
+            return;
+        }
+        let policy = self.long_reasoning_reminder;
+        xai_grok_telemetry::session_ctx::log_session_event(
+            crate::agent::session_metrics::LongReasoningReminderTurn {
+                session_id: self.session_info.id.0.to_string(),
+                turn_number: tally.turn_number,
+                enabled: policy.enabled,
+                threshold_tokens: policy.tokens,
+                delay: policy.delay,
+                model_calls: tally.model_calls,
+                reasoning_tokens: tally.reasoning_tokens,
+                completion_tokens: tally.completion_tokens,
+                max_call_reasoning_tokens: tally.max_call_reasoning_tokens,
+                long_calls: tally.long_calls,
+                reminders_fired: tally.reminders_fired,
+                model: tally.model,
+            },
+        );
     }
     async fn process_conversation_turn(
         self: &Arc<Self>,
@@ -2669,8 +2708,7 @@ impl SessionActor {
                 .and_then(|config| config.rate_limit_retry_threshold),
         );
         let mut transient_retry_attempts: u32 = 0;
-        let transient_retry_enabled =
-            self.transient_retry_enabled && !self.attach_non_interactive.get();
+        let transient_retry_enabled = self.transient_retry_enabled;
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut structured_output_retries: u32 = 0;
         let mut media_gen_resamples: u32 = 0;
@@ -2833,6 +2871,28 @@ impl SessionActor {
                     return Err(self.surface_compact_auth_failure(e).await);
                 }
             }
+            let due_reminder = {
+                let mut state = self.long_reasoning_turn_state.lock();
+                if salvage.awaiting_continuation() {
+                    state.defer_due_reminder(self.long_reasoning_reminder);
+                    None
+                } else {
+                    state.take_due_reminder(self.long_reasoning_reminder)
+                }
+            };
+            if let Some(long_call_tokens) = due_reminder {
+                xai_grok_telemetry::unified_log::info(
+                    "shell.turn.long_reasoning_reminder",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "loop_index": loop_index,
+                        "reasoning_tokens": long_call_tokens,
+                        "threshold": self.long_reasoning_reminder.tokens,
+                        "delay": self.long_reasoning_reminder.delay,
+                    })),
+                );
+                self.push_system_reminder(crate::session::long_reasoning_reminder::REMINDER);
+            }
             let backend_search_active = self.backend_search_active();
             tracing::debug!(
                 backend_search_active,
@@ -2977,6 +3037,8 @@ impl SessionActor {
                     "transient_retry_attempts": transient_retry_attempts,
                 })),
             );
+            let requested_model =
+                crate::session::telemetry::requested_model_snapshot(request.model.as_deref());
             let model_timer = std::time::Instant::now();
             let model_sampler_outcome = self
                 .run_turn_via_sampler(
@@ -3246,6 +3308,11 @@ impl SessionActor {
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);
+            self.long_reasoning_turn_state.lock().record_call(
+                self.long_reasoning_reminder,
+                reasoning_tokens.unwrap_or(0),
+                completion_tokens.unwrap_or(0),
+            );
             let ttft_ms = latency.time_to_first_token_ms;
             let tokens_per_sec = match completion_tokens {
                 Some(ct) if ct > 0 => {
@@ -3341,11 +3408,6 @@ impl SessionActor {
                     .get_prompt_index()
                     .await
                     .saturating_sub(1) as u32;
-                if turn_index == 0
-                    && let Some(repo_status_wait_ms) = self.repo_status_prefetch.take_wait_ms()
-                {
-                    pt.record_repo_status_wait(repo_status_wait_ms);
-                }
                 turn_phases.arm_latency(pt.build(
                     model_duration_ms,
                     turn_index,
@@ -3748,7 +3810,8 @@ impl SessionActor {
                 .await;
             let execute_tool_calls_result = {
                 let _tool_phase = turn_phases.begin_tool_blocking();
-                self.execute_tool_calls(tool_call_responses).await
+                self.execute_tool_calls(tool_call_responses, requested_model)
+                    .await
             };
             match execute_tool_calls_result {
                 Ok(ToolLoop::PermissionReject { tool_name, reason }) => {

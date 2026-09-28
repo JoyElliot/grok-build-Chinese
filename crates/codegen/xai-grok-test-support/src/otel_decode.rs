@@ -4,6 +4,7 @@
 use base64::Engine as _;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
 use opentelemetry_proto::tonic::metrics::v1::{
     AggregationTemporality, Metric, metric, number_data_point,
@@ -14,7 +15,7 @@ use serde_json::Value;
 
 use crate::otel_event::{
     OtelAttributes, OtelDecodeError, OtelEvent, OtelLogRecord, OtelMetricData, OtelMetricPoint,
-    OtelNumber, OtelSignal, OtelTemporality,
+    OtelNumber, OtelSignal, OtelSpan, OtelTemporality,
 };
 
 /// OTLP/HTTP allows protobuf or JSON; both grok exporters post protobuf, so only it is decoded.
@@ -38,6 +39,50 @@ pub(crate) fn decode_post(
     decode_protobuf(signal, body)
 }
 
+pub(crate) fn decode_trace_post(
+    content_type: &str,
+    body: &[u8],
+) -> Result<Vec<OtelSpan>, OtelDecodeError> {
+    let media_type = content_type
+        .split_once(';')
+        .map_or(content_type, |(media_type, _)| media_type)
+        .trim()
+        .to_ascii_lowercase();
+    if !PROTOBUF_MEDIA_TYPES.contains(&media_type.as_str()) {
+        return Err(OtelDecodeError::UnsupportedContentType {
+            content_type: content_type.to_owned(),
+        });
+    }
+    decode_trace_protobuf(body)
+}
+
+pub(crate) fn decode_trace_protobuf(message: &[u8]) -> Result<Vec<OtelSpan>, OtelDecodeError> {
+    ExportTraceServiceRequest::decode(message)
+        .map(|request| trace_spans(&request))
+        .map_err(|error| OtelDecodeError::Protobuf {
+            error: error.to_string(),
+        })
+}
+
+fn trace_spans(request: &ExportTraceServiceRequest) -> Vec<OtelSpan> {
+    let mut spans = Vec::new();
+    for resource_spans in &request.resource_spans {
+        let resource = resource_attributes(resource_spans.resource.as_ref());
+        for scope_spans in &resource_spans.scope_spans {
+            let scope = scope_name(scope_spans.scope.as_ref());
+            for span in &scope_spans.spans {
+                spans.push(OtelSpan {
+                    name: span.name.clone(),
+                    attributes: attributes_to_json(&span.attributes),
+                    resource: resource.clone(),
+                    scope: scope.clone(),
+                });
+            }
+        }
+    }
+    spans
+}
+
 pub(crate) fn decode_protobuf(
     signal: OtelSignal,
     message: &[u8],
@@ -48,6 +93,11 @@ pub(crate) fn decode_protobuf(
         }
         OtelSignal::Metrics => {
             ExportMetricsServiceRequest::decode(message).map(|request| metric_points(&request))
+        }
+        OtelSignal::Traces => {
+            return Err(OtelDecodeError::Protobuf {
+                error: "trace exports are decoded as spans".to_owned(),
+            });
         }
     };
     decoded.map_err(|error| OtelDecodeError::Protobuf {

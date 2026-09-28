@@ -41,7 +41,11 @@ impl MvpAgent {
         let model = match self.resolve_model_id(&args.model_id) {
             Ok(model) => model,
             Err(_) => {
-                self.models_manager.wait_for_first_catalog().await;
+                self.models_manager
+                    .wait_for_first_catalog(
+                        crate::util::config::resolve_remote_fetch_enabled(),
+                    )
+                    .await;
                 self.resolve_model_id(&args.model_id)?
             }
         };
@@ -295,7 +299,7 @@ impl acp::Agent for MvpAgent {
                 &crate::util::grok_home::grok_home(),
             )
         {
-            unsafe { std::env::set_var("XAI_API_KEY", &api_key) };
+            xai_grok_login::auth_method::set_runtime_xai_api_key(&api_key);
             tracing::info!("auth: loaded API key from auth.json (xai::api_key scope)");
             xai_grok_telemetry::unified_log::info(
                 "auth: loaded API key from auth.json (xai::api_key scope)",
@@ -2014,7 +2018,7 @@ impl acp::Agent for MvpAgent {
             "x.ai/session/usage" => crate::extensions::usage::handle(self, &args).await,
             crate::extensions::memory::MEMORY_FLUSH_METHOD
             | crate::extensions::memory::MEMORY_DREAM_METHOD
-            | "x.ai/memory/rewrite"
+            | crate::extensions::memory::MEMORY_REWRITE_METHOD
             | crate::extensions::memory::MEMORY_LIST_METHOD
             | crate::extensions::memory::MEMORY_TOGGLE_METHOD
             | crate::extensions::memory::MEMORY_FORGET_METHOD => {

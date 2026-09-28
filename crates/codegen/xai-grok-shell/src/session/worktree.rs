@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
-use xai_grok_workspace::session::git::find_git_root_from_path;
 pub use xai_grok_workspace::worktree::*;
 const WORKTREE_LOG: &str = "xai_worktree";
 impl From<ShellWorktreeType> for WorktreeType {
@@ -56,12 +55,10 @@ async fn create_worktree_for_resume(
         grove_gate_source: Some(grove_gate_source.into()),
         cancellation_token: None,
         resolved_dest_path: None,
+        resolved_source_git_root: None,
     };
     let source = std::path::Path::new(source_cwd);
-    if find_git_root_from_path(source)
-        .ok()
-        .is_some_and(|root| xai_grok_workspace::session::git::detect_vcs_kind(&root).is_jj())
-    {
+    if git_or_grove_is_jj_async(source, grove_worktree).await {
         create_jj_workspace(&wt_req).await
     } else {
         create_worktree_from_worktree_sync(&wt_req).await
@@ -334,9 +331,9 @@ async fn resume_local_session_in_worktree(
         restore_degree: None,
     };
     if req.restore_code.unwrap_or(restore_code_default) {
-        let is_jj = find_git_root_from_path(std::path::Path::new(resolved_source_cwd))
-            .ok()
-            .is_some_and(|root| xai_grok_workspace::session::git::detect_vcs_kind(&root).is_jj());
+        let is_jj =
+            git_or_grove_is_jj_async(std::path::Path::new(resolved_source_cwd), grove_worktree)
+                .await;
         if !is_jj {
             if xai_grok_workspace::session::git::should_warn_registry_disabled(
                 is_jj,

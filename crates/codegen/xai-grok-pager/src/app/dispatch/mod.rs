@@ -44,9 +44,9 @@ pub(crate) use billing::{
 pub(crate) use dashboard::{DashboardStopReadiness, dashboard_stop_readiness};
 pub(crate) use modes::{downgrade_displayed_auto_if_gated, effective_auto};
 pub(crate) use notes::FEEDBACK_TRACE_UPLOAD_TIMEOUT_MS;
-#[cfg(test)]
-pub(crate) use notes::recap_unavailable_toast;
-pub(crate) use notes::{recap_unavailable_toast_with_locale, scrollback_has_user_messages};
+pub(crate) use notes::{
+    recap_unavailable_toast, recap_unavailable_toast_with_locale, scrollback_has_user_messages,
+};
 pub(crate) use permissions::resolve_permission_queue_transition;
 pub(crate) use prompt::dispatch_initial_prompt;
 pub(in crate::app) use prompt::{
@@ -57,8 +57,8 @@ pub(super) use queue::{
     apply_turn_start_shim, arm_send_now_and_paint, flush_held_local_queue_into_wait,
     maybe_drain_queue_and_note_peek, note_peek_page_flip, shim_renders_own_user_block,
 };
-pub(in crate::app) use rewind::{find_user_prompt_entry_for_shell_index, shell_prompt_index_at};
-pub(crate) use router::dispatch;
+pub(in crate::app) use rewind::find_user_prompt_entry_for_shell_index;
+pub(crate) use router::{dispatch, flush_image_notices};
 pub(crate) use session::lifecycle::{abandon_unused_home_session, maybe_create_home_session};
 pub(crate) use settings::ui::refresh_open_settings_modals;
 pub(crate) use status::commit_minimal_update_notice;

@@ -299,7 +299,7 @@ impl MarkdownContent {
 
         let frozen_count = state.renderer.frozen_lines_count();
 
-        // --- Incremental wrapping ---. Only two ranges need wrapping. We clone the line slices we need *before* mutating
+        // Only two ranges need wrapping. We clone the line slices we need *before* mutating
         // cache_lines, because view() borrows the renderer immutably.
 
         // Step 1: Wrap any newly frozen lines

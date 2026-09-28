@@ -672,6 +672,14 @@ impl AgentView {
                         if let Some(effort_items) = cmd.suggest_args(&ctx, &next_query)
                             && Self::arg_items_look_like_effort_phase(&effort_items)
                         {
+                            let selected = cmd
+                                .preselected_arg(&ctx, &next_query)
+                                .and_then(|target| {
+                                    effort_items
+                                        .iter()
+                                        .position(|row| row.insert_text == target)
+                                })
+                                .unwrap_or(0);
                             if let Some(ActiveModal::ArgPicker {
                                 args_query,
                                 items,
@@ -686,6 +694,7 @@ impl AgentView {
                                 // Effort sub-step is part of the type-to-find /model picker
                                 // Open input-focused (cursor and type-to-filter), matching the rest of the flow
                                 *state = crate::views::picker::PickerState::input_active();
+                                state.selected = selected;
                             }
                             return InputOutcome::Changed;
                         }
@@ -2545,6 +2554,10 @@ impl AgentView {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "modals_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 mod session_picker_delete_tests {

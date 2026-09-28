@@ -1,4 +1,4 @@
-use super::{DbStats, GcReport, RebuildReport};
+use super::{DbStats, GcReport, RebuildReport, localized_named};
 use crate::fs_size::{Volume, physical_dir_size};
 use crate::locale::LocaleContext;
 use crate::util::{format_bytes, pad_to_width, truncate_to_width, unix_now};
@@ -16,19 +16,6 @@ const GC_LABEL_WIDTH: usize = 26;
 fn cell(s: &str, width: usize) -> String {
     pad_to_width(&truncate_to_width(s, width), width)
 }
-fn localized_named(
-    locale: &LocaleContext,
-    id: &str,
-    english: &str,
-    arguments: &[(&str, &str)],
-) -> String {
-    let mut output = locale.named_text(id, english).into_owned();
-    for (name, value) in arguments {
-        output = output.replace(&format!("{{{name}}}"), value);
-    }
-    output
-}
-
 fn kind_label(kind: &str, locale: &LocaleContext) -> String {
     let id = match kind {
         "session" => "du.kind.session",
@@ -132,17 +119,15 @@ pub fn print_table_with_locale(
         let label = rec.label().unwrap_or("");
         let path = abbreviate_home(&rec.path);
         let kind = kind_label(rec.kind.as_ref(), locale);
-        // AGE is ASCII, so format-width padding is width-true; every other
-        // cell pads by display width.
         writeln!(
             out,
-            "  {} {} {} {} {} {:<AGE_WIDTH$} {}",
+            "  {} {} {} {} {} {} {}",
             pad_to_width(&rec.id, id_width),
             cell(&kind, type_width),
             cell(&rec.repo_name, REPO_WIDTH),
             cell(label, label_width),
             cell(branch, BRANCH_WIDTH),
-            age,
+            pad_to_width(&age, AGE_WIDTH),
             path,
         )?;
     }
@@ -183,8 +168,12 @@ pub fn print_json(records: &[WorktreeRecord], out: &mut impl Write) -> std::io::
     let json = serde_json::to_string_pretty(records).unwrap_or_else(|_| "[]".to_string());
     writeln!(out, "{json}")
 }
-pub fn print_show(rec: &WorktreeRecord, out: &mut impl Write) -> std::io::Result<()> {
-    print_show_with_locale(rec, out, &LocaleContext::default())
+pub fn print_show(
+    rec: &WorktreeRecord,
+    redirections_bytes: Option<u64>,
+    out: &mut impl Write,
+) -> std::io::Result<()> {
+    print_show_with_locale(rec, redirections_bytes, out, &LocaleContext::default())
 }
 
 fn write_show_field(
@@ -200,6 +189,7 @@ fn write_show_field(
 
 pub fn print_show_with_locale(
     rec: &WorktreeRecord,
+    redirections_bytes: Option<u64>,
     out: &mut impl Write,
     locale: &LocaleContext,
 ) -> std::io::Result<()> {
@@ -286,6 +276,8 @@ pub fn print_show_with_locale(
         )?;
         let skipped = size.issues.skipped();
         if skipped > 0 {
+            let noun = if skipped == 1 { "entry" } else { "entries" };
+            let english = format!("({{count}} {noun} skipped)");
             let skipped = skipped.to_string();
             write!(
                 out,
@@ -293,13 +285,14 @@ pub fn print_show_with_locale(
                 localized_named(
                     locale,
                     "worktree.disk_usage.skipped",
-                    "({count} entries skipped)",
+                    &english,
                     &[("count", &skipped)],
                 )
             )?;
         }
         writeln!(out)?;
     }
+    let _ = redirections_bytes;
     Ok(())
 }
 pub fn print_stats(stats: &DbStats, out: &mut impl Write) -> std::io::Result<()> {
@@ -565,7 +558,7 @@ mod tests {
     fn print_show_non_nfs_omits_nfs_block() {
         let rec = make_record("wt-copy", "c");
         let mut out = Vec::new();
-        print_show(&rec, &mut out).unwrap();
+        print_show(&rec, None, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(!text.contains("Strategy:       nfs"), "{text}");
         assert!(!text.contains("clean-artifacts"), "{text}");

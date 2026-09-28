@@ -73,6 +73,7 @@ impl SessionActor {
                 query_params: sampling_config.query_params.clone(),
                 env_http_headers: sampling_config.env_http_headers.clone(),
                 context_window: new_context_window,
+                max_request_bytes: sampling_config.max_request_bytes,
                 reasoning_effort: sampling_config.reasoning_effort,
                 reasoning_summary: sampling_config.reasoning_summary,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
@@ -140,7 +141,7 @@ impl SessionActor {
             .persistence_tx
             .send(PersistenceMsg::CurrentModel {
                 model_id: model_id.clone(),
-                agent_name: Some(agent_name),
+                agent: crate::session::persistence::PersistedAgent::Named(agent_name),
                 reasoning_effort: Some(sampling_config.reasoning_effort),
             });
         self.emit_status_snapshot_detached();
@@ -239,7 +240,7 @@ impl SessionActor {
             .persistence_tx
             .send(PersistenceMsg::CurrentModel {
                 model_id: model_id.clone(),
-                agent_name: Some(agent_name),
+                agent: crate::session::persistence::PersistedAgent::Named(agent_name),
                 reasoning_effort: Some(Some(effort)),
             });
         self.emit_status_snapshot_detached();
@@ -266,6 +267,7 @@ impl SessionActor {
             }
         }
         let new_agent_name = definition.name.clone();
+        let previous_mcp_servers = self.agent.borrow().definition().mcp_servers.clone();
         tracing::info!(
             session_id = %self.session_info.id.0,
             new_agent_type = %new_agent_name,
@@ -351,7 +353,41 @@ impl SessionActor {
             }
             self.inject_deny_read_globs().await;
         }
-        let claim = self.restart_mcp_init(&mut *self.mcp_state.lock().await);
+        let overlay_definition = self.agent.borrow().definition().clone();
+        let both_seats_empty =
+            previous_mcp_servers.is_empty() && overlay_definition.mcp_servers.is_empty();
+        let plugin_registry = self.plugin_registry.borrow().clone();
+        let session_cwd = self.tool_context.cwd.as_path();
+        let desired = if both_seats_empty {
+            None
+        } else {
+            let client_seed = self.initial_client_mcp_servers.borrow().clone();
+            let live = self.mcp_state.lock().await.configs.clone();
+            Some(
+                crate::session::agent_mcp::rematerialize_live_for_agent_seat(
+                    &live,
+                    &previous_mcp_servers,
+                    crate::session::agent_mcp::RematerializeParams {
+                        initial_client_mcp_servers: client_seed,
+                        cwd: session_cwd,
+                        parent_cwd: self.startup_hints.parent_cwd.as_deref(),
+                        plugin_registry: plugin_registry.as_deref(),
+                        compat: &self.rebuild_spec.compat,
+                        definition: &overlay_definition,
+                    },
+                ),
+            )
+        };
+        let (claim, config_diff, dispatch_event_tx) = {
+            let mut mcp_state = self.mcp_state.lock().await;
+            let config_diff = desired.and_then(|servers| mcp_state.update_configs_diff(servers));
+            let dispatch_event_tx = mcp_state.client_event_tx();
+            let claim = self.restart_mcp_init(&mut mcp_state);
+            (claim, config_diff, dispatch_event_tx)
+        };
+        if let Some(diff) = config_diff {
+            self.apply_mcp_config_diff(&diff, dispatch_event_tx);
+        }
         self.re_register_mcp_tools_on_rebuilt_bridge().await;
         self.run_mcp_init_with_claim(claim).await;
         self.deferred_prefix.cancel();

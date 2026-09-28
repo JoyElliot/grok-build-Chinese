@@ -34,10 +34,6 @@ mod selection;
 pub(crate) use selection::format_blockquote;
 pub use selection::{TextDrag, TextEndpoint};
 
-// ---------------------------------------------------------------------------
-// ContentLine: generic ListItem for the viewer
-// ---------------------------------------------------------------------------
-
 /// A single line of content displayed in the block viewer's ListPane.
 #[derive(Clone)]
 pub struct ContentLine {
@@ -108,10 +104,6 @@ impl ListItem for ContentLine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DiffLineMeta: per-item diff metadata for edit viewer patch copy
-// ---------------------------------------------------------------------------
-
 /// Metadata for a single diff line, stored parallel to `items` in the edit viewer.
 pub struct DiffLineMeta {
     pub tag: similar::ChangeTag,
@@ -119,10 +111,6 @@ pub struct DiffLineMeta {
     pub lo: usize,
     pub ln: usize,
 }
-
-// ---------------------------------------------------------------------------
-// BlockViewerPane
-// ---------------------------------------------------------------------------
 
 /// What kind of block content the viewer is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

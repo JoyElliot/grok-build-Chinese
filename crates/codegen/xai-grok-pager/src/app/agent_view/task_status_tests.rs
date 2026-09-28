@@ -1,7 +1,6 @@
 use super::{AgentPane, AgentView, AppRenderParams, BannerSlotParams, test_fixtures};
 use crate::actions::ActionRegistry;
 use crate::app::app_view::InputOutcome;
-use crate::app::bundle::BundleState;
 use crate::scrollback::render::ScratchBuffer;
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -32,7 +31,6 @@ fn workflow_run(status: &str) -> crate::views::workflows::WorkflowRunSnapshot {
 }
 fn draw_frame(agent: &mut AgentView, registry: &ActionRegistry) -> Buffer {
     let area = Rect::new(0, 0, 80, 30);
-    let bundle = BundleState::default();
     let mut buf = Buffer::empty(area);
     let mut scratch = ScratchBuffer::new();
     agent.draw(
@@ -50,7 +48,6 @@ fn draw_frame(agent: &mut AgentView, registry: &ActionRegistry) -> Buffer {
             mouse_pos: None,
             tip: None,
         },
-        &bundle,
         false,
         &mut Vec::new(),
         AppRenderParams::default(),

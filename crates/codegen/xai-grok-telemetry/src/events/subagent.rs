@@ -28,12 +28,69 @@ pub enum SubagentLimitDisposition {
     Failed,
 }
 
+/// Whether the parent's task tool advertised an explicit child-model argument.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentModelSelectionKind {
+    Selectable,
+    Inherited,
+}
+
+/// How the eligible model catalog classified when a task tool was constructed.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentModelCatalogKind {
+    Provisional,
+    Empty,
+    UnknownFamily,
+    FirstPartyOnly,
+    ThirdPartyOnly,
+    Mixed,
+}
+
+/// Which agent the presentation was latched for.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentPresentationAudience {
+    Primary,
+    Subagent,
+}
+
+/// One task-tool construction: what the catalog looked like and what the model was shown.
+#[derive(Serialize)]
+pub struct SubagentModelPresentationApplied {
+    pub selection: SubagentModelSelectionKind,
+    pub classification: SubagentModelCatalogKind,
+    pub eligible_count: u32,
+    pub inheritance_enabled: bool,
+    /// Tier that resolved the feature: `requirement` | `env` | `config` | `remote` | `default`.
+    pub feature_source: String,
+    pub audience: SubagentPresentationAudience,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentModelRejectionReason {
+    HiddenSelection,
+}
+
+/// An explicit child-model argument was refused; no child work ran.
+#[derive(Serialize)]
+pub struct SubagentModelOverrideRejected {
+    pub parent_session_id: String,
+    pub owner: SubagentOwnerKind,
+    pub reason: SubagentModelRejectionReason,
+}
+
 #[derive(Serialize)]
 pub struct SubagentLaunched {
     pub subagent_id: String,
     pub parent_session_id: String,
     pub subagent_type: String,
     pub owner: SubagentOwnerKind,
+    /// The selection mode of the originating task call; absent for harness-origin spawns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<SubagentModelSelectionKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_run_id: Option<String>,
     /// Time parked in the admission queue; absent if admitted immediately.
@@ -162,6 +219,7 @@ pub struct SubagentRateLimitWaited {
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowSourceKind {
     Builtin,
+    Bundled,
     File,
     Inline,
 }
@@ -204,6 +262,10 @@ pub enum WorkflowRunEndStatus {
 pub struct WorkflowRunEnded {
     pub run_id: String,
     pub parent_session_id: String,
+    pub source: WorkflowSourceKind,
+    /// Built-in workflow names only; user script names stay local.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_name: Option<String>,
     pub status: WorkflowRunEndStatus,
     /// Cumulative across the run's episodes.
     pub duration_ms: u64,

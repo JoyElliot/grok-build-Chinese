@@ -338,6 +338,9 @@ impl xai_tool_runtime::Tool for ImageEditTool {
             ));
         }
 
+        // Before the attachments are read: a refused bearer must not cost the image encoding
+        let sent_bearer = client.current_bearer().await?;
+
         // Snapshot the per-turn attachment registry so `[Image #N]` tokens
         // resolve to the real attachment (see `resolve_attachment_reference`).
         let attached_images = {
@@ -392,8 +395,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
             );
         }
 
-        let sent_bearer = client.current_bearer().await;
-        let req = client.post_json(&url, &payload, sent_bearer.as_deref());
+        let req = client.post_json(&url, &payload, &sent_bearer);
 
         let response = req.send().await.map_err(|e| {
             xai_tool_runtime::ToolError::invalid_arguments(format!(
@@ -403,7 +405,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
 
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            client.record_401_attribution(ToolConsumer::ImageGen, sent_bearer.as_deref());
+            client.record_401_attribution(ToolConsumer::ImageGen, Some(&sent_bearer));
         }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

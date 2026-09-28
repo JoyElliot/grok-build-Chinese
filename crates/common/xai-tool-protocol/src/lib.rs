@@ -29,21 +29,23 @@ pub mod turn_hook;
 pub use bot_relay::{
     BOT_EVENT_ENVELOPE_V, BOT_RELAY_CAPABILITIES, BotBindConversationParams,
     BotBindConversationResult, BotCommandParams, BotCommandResult, BotEmptyParams, BotEmptyResult,
-    BotEventChannel, BotEventEnvelope, BotRelayError, BotRelayErrorCode, BotRelayErrorDetail,
-    BotRelaySiblingAccount, BotRelaySignIn, BotRosterEntry, BotRosterParams, BotRosterResult,
-    BotRunState, BotStatusParams, BotStatusResult, BotSubscribeParams, BotSubscribeResult,
-    BotTranscriptEntryStamp, BotTranscriptOffboxParams, BotTranscriptOffboxResult,
-    BotUnsubscribeParams, BotUnsubscribeResult, BotUsageParams, BotUsageResult,
-    BotVncDescriptorParams, BotVncDescriptorResult, COMMAND_REJECTED_AGENT_ID_MISMATCH,
-    COMMAND_REJECTED_ARGS_INVALID, COMMAND_REJECTED_ARGS_TOO_LARGE,
-    COMMAND_REJECTED_ATTACHMENT_CREDENTIAL_UNAVAILABLE, COMMAND_REJECTED_ATTACHMENT_NOT_FOUND,
-    COMMAND_REJECTED_ATTACHMENT_NOT_READY, COMMAND_REJECTED_ATTACHMENT_TOO_LARGE,
-    COMMAND_REJECTED_ATTACHMENT_WRONG_SOURCE, COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE,
-    COMMAND_REJECTED_AUDIENCE_UNSUPPORTED, COMMAND_REJECTED_BOX_REFUSED,
-    COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD, COMMAND_REJECTED_HARNESS_REFUSED,
+    BotEventChannel, BotEventEnvelope, BotPresenceParams, BotPresenceResult, BotRelayError,
+    BotRelayErrorCode, BotRelayErrorDetail, BotRelaySiblingAccount, BotRelaySignIn, BotRosterEntry,
+    BotRosterParams, BotRosterResult, BotRunState, BotStatusParams, BotStatusResult,
+    BotSubscribeParams, BotSubscribeResult, BotTranscriptEntryStamp, BotTranscriptOffboxParams,
+    BotTranscriptOffboxResult, BotUnsubscribeParams, BotUnsubscribeResult, BotUsageParams,
+    BotUsageResult, BotVncDescriptorParams, BotVncDescriptorResult,
+    COMMAND_REJECTED_AGENT_ID_MISMATCH, COMMAND_REJECTED_ARGS_INVALID,
+    COMMAND_REJECTED_ARGS_TOO_LARGE, COMMAND_REJECTED_ATTACHMENT_CREDENTIAL_UNAVAILABLE,
+    COMMAND_REJECTED_ATTACHMENT_NOT_FOUND, COMMAND_REJECTED_ATTACHMENT_NOT_READY,
+    COMMAND_REJECTED_ATTACHMENT_TOO_LARGE, COMMAND_REJECTED_ATTACHMENT_WRONG_SOURCE,
+    COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE, COMMAND_REJECTED_AUDIENCE_UNSUPPORTED,
+    COMMAND_REJECTED_BOX_REFUSED, COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD,
+    COMMAND_REJECTED_HARNESS_REFUSED, COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED,
     COMMAND_REJECTED_NOT_SUPPORTED_IN_LIVE, COMMAND_REJECTED_NOT_YET_ENABLED,
-    COMMAND_REJECTED_REASONS, COMMAND_REJECTED_TEMPORAL_UNSUPPORTED, HubChannel,
-    HubResyncRequiredEvent, HubTurnFinishedEvent, HubUnknownChannel, UpstreamChannel,
+    COMMAND_REJECTED_REASONS, COMMAND_REJECTED_TEMPORAL_UNSUPPORTED,
+    COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE, HubChannel, HubResyncRequiredEvent,
+    HubTurnFinishedEvent, HubTurnStartedEvent, HubUnknownChannel, UpstreamChannel,
     is_gateway_method_unsupported,
 };
 pub use capabilities::{HookKind, NotificationSchemas, StreamingSpec, ToolCapabilities, ToolScope};
@@ -60,7 +62,7 @@ pub use error_codes::{
 pub use error_wire::ToolErrorWire;
 pub use frames::{
     AttachRoute, HOST_KIND_DAEMON, HOST_KIND_DESKTOP, HOST_KIND_SANDBOX,
-    HUB_KIND_BOT_AGENT_TURN_COMPLETED, HookFrame, HookReplyFrame, IMAGE_CAPABILITIES_V1,
+    HUB_KIND_BOT_AGENT_TURN_COMPLETED, HookFrame, HookReplyFrame, HostKind, IMAGE_CAPABILITIES_V1,
     IdleWithholdReason, LastSeq, LogsDonateParams, MAX_DONATION_BYTES, MAX_IMAGE_CAPABILITIES,
     MAX_IMAGE_CAPABILITY_LEN, MAX_LOG_RECORDS_PER_DONATION, MAX_METRICS_PER_DONATION,
     MAX_SPANS_PER_DONATION, MAX_SYSTEM_NOTIFY_PAYLOAD_BYTES, MetricsDonateParams,
@@ -78,7 +80,9 @@ pub use frames::{
     ToolsSearchResultBody, TracesDonateParams, UnsubscribeAck, UnsubscribeNotificationsParams,
     UnsubscribeOutcome, is_image_capability_token,
 };
-pub use handshake::{HelloAckMsg, HelloMsg, PROTOCOL_VERSION};
+pub use handshake::{
+    AuthRefreshParams, AuthRefreshResult, HelloAckMsg, HelloMsg, PROTOCOL_VERSION,
+};
 pub use hook::HookEvent;
 pub use ids::{
     ConnectionId, FrameSeq, HUB_RESERVED_SESSION_PREFIX, IdError, RequestId, ServerId, SessionId,

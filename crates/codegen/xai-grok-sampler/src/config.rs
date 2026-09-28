@@ -2,6 +2,7 @@
 //! It deliberately does **not** alias `xai_grok_sampling_types::SamplingConfig`.
 //! Aliasing would pull transitive dependencies on shell-specific types (`xai-grok-tools`, etc.) into the sampler crate.
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
@@ -64,6 +65,9 @@ pub struct SamplerConfig {
     /// Total context window size in tokens.
     /// The sampler does not enforce it; the session uses it for compaction decisions.
     pub context_window: u64,
+    /// Provider request-body cap, already defaulted from `api_backend` by model resolution; `None` budgets to 50 MiB.
+    #[serde(default)]
+    pub max_request_bytes: Option<NonZeroU64>,
     pub force_http1: bool,
     pub max_retries: Option<u32>,
     /// Total-attempt ceiling for rate-limited requests.
@@ -139,6 +143,7 @@ impl Default for SamplerConfig {
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: 0,
+            max_request_bytes: None,
             force_http1: false,
             max_retries: None,
             rate_limit_retry_threshold: None,

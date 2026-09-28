@@ -30,6 +30,7 @@ pub mod oidc;
 pub mod pre_tui;
 pub mod recovery;
 pub mod refresh;
+pub mod side_call_bearer;
 pub mod single_flight;
 pub mod storage;
 pub mod token_output;
@@ -61,7 +62,7 @@ pub use flow::{
     ensure_authenticated_or_noninteractive, ensure_authenticated_with_override, perform_logout,
     run_cli_login, run_cli_login_with_locale, try_ensure_fresh_auth,
 };
-pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration};
+pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration, parse_jwt_subject};
 pub use pre_tui::{
     PreTuiLoginOutcome, maybe_run_pre_tui_external_login,
     maybe_run_pre_tui_external_login_with_locale,
@@ -69,11 +70,12 @@ pub use pre_tui::{
 pub use xai_grok_config_types::AuthProviderConfig;
 pub mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
-pub use manager::{AuthManager, shared_api_key_provider};
+pub use manager::AuthManager;
 pub use manager::{AuthRemedy, CachedTokenState, SilentRefresh};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
 pub use refresh::DiagnosticUploader;
+pub use side_call_bearer::{SharedAuthKeyProvider, shared_api_key_provider};
 pub use storage::auth_json_path;
 pub use storage::{clear_api_key, read_api_key, read_auth_json, store_api_key};

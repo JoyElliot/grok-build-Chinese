@@ -51,24 +51,6 @@ fn polled_fields(settings: &crate::util::config::RemoteSettings) -> PolledFields
     (settings.announcements.clone(), settings.accept_request_encodings.clone())
 }
 impl MvpAgent {
-    /// Announce a session's new title over ACP.
-    /// ACP scopes `session/update` to sessions the client established, and a rename can name a history row it never loaded.
-    /// So the liveness check belongs here rather than at each call site.
-    pub(crate) fn notify_session_info_update(
-        &self,
-        session_id: &agent_client_protocol::SessionId,
-        title: &str,
-    ) {
-        if self.is_resident(session_id) {
-            self.gateway
-                .forward_fire_and_forget(
-                    crate::session::summary::session_info_update_manual(
-                        session_id.clone(),
-                        title,
-                    ),
-                );
-        }
-    }
     pub fn reload_skills_all_sessions(&self) -> usize {
         let session_ids = self.resident_ids();
         for sid in &session_ids {
@@ -2222,42 +2204,28 @@ impl MvpAgent {
             .or_else(|| jwt_tier_claim(&auth.key));
         tier.as_deref().is_some_and(crate::tier::is_restricted_tier_name)
     }
-    /// Both BYOK and session (OAuth) users go direct to `xai_api_base_url`.
-    /// `sampling_config.api_key` carries the OAuth bearer for session users (the `api_key_provider` refreshes it per request).
-    /// So IC authenticates and meters Imagine usage per-user.
+    /// Direct to `xai_api_base_url` so IC authenticates and meters Imagine per user; the bearer rule lives in
+    /// `media_tool_config`.
     pub(super) fn prepare_image_gen_config(
         &self,
     ) -> xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig {
         use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
-        let sampling_config = self.sampling_config.borrow();
-        let Some(ref api_key) = sampling_config.api_key else {
+        if self.sampling_config.borrow().api_key.is_none() {
             return ImageGenConfig::Disabled;
-        };
-        let tier_restricted = self.is_tier_restricted_capability();
-        let cfg = self.cfg.borrow();
-        let base_url = cfg.endpoints.xai_api_base_url.clone();
-        let version = cfg
-            .client_version
-            .clone()
-            .unwrap_or_else(|| xai_grok_version::VERSION.to_string());
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let mut headers = indexmap::IndexMap::new();
-        headers.insert("user-agent".to_string(), format!("xai-grok-build/{version}"));
-        inject_proxy_headers(
-            &mut headers,
-            cfg.client_version.as_deref(),
-            alpha_test_key.as_deref(),
-            &base_url,
-        );
-        ImageGenConfig::Enabled {
-            api_key: api_key.clone(),
-            base_url,
-            extra_headers: headers,
-            image_gen_enabled: cfg.resolve_image_gen().value,
-            image_edit_enabled: cfg.resolve_image_edit().value,
-            model_override: cfg.resolve_image_gen_model_override(),
-            edit_model_override: cfg.resolve_image_edit_model_override(),
-            tier_restricted,
+        }
+        crate::agent::media_tool_config::image_gen_config(
+            &self.cfg.borrow(),
+            &self.media_tool_credentials(),
+        )
+    }
+    /// `tier_restricted` keeps the tools advertised so the model can nudge; the call short-circuits with the SuperGrok
+    /// upsell. Fails open; see `is_tier_restricted_capability`.
+    fn media_tool_credentials(
+        &self,
+    ) -> crate::agent::media_tool_config::MediaToolCredentials {
+        crate::agent::media_tool_config::MediaToolCredentials {
+            static_bearer: self.auth_manager.side_call_bearer().ok(),
+            tier_restricted: self.is_tier_restricted_capability(),
         }
     }
     /// The tool talks directly to the deployer service.
@@ -2267,51 +2235,18 @@ impl MvpAgent {
         use xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig;
         AppBuilderDeployerConfig::Disabled
     }
-    /// Video tools call the xAI API directly.
+    /// See [`Self::prepare_image_gen_config`] for the bearer rule.
     pub(super) fn prepare_video_gen_config(
         &self,
     ) -> xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig {
         use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
-        let cfg = self.cfg.borrow();
-        if !cfg.resolve_video_gen().value {
+        if self.sampling_config.borrow().api_key.is_none() {
             return VideoGenConfig::Disabled;
         }
-        let Some(api_key) = self.sampling_config.borrow().api_key.clone() else {
-            return VideoGenConfig::Disabled;
-        };
-        let tier_restricted = self.is_tier_restricted_capability();
-        let zdr_video_output_s3 = cfg
-            .disable_zdr_incompatible_tools
-            .then(|| cfg.zdr_video_output_s3.clone())
-            .flatten()
-            .filter(|s3| s3.is_valid());
-        let zdr_restricted = cfg.disable_zdr_incompatible_tools
-            && zdr_video_output_s3.is_none();
-        if zdr_restricted {
-            tracing::info!("video_gen zdr-restricted by tools.disable_zdr_incompatible_tools");
-        }
-        let base_url = cfg.endpoints.xai_api_base_url.clone();
-        let version = cfg
-            .client_version
-            .clone()
-            .unwrap_or_else(|| xai_grok_version::VERSION.to_string());
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let mut headers = indexmap::IndexMap::new();
-        headers.insert("user-agent".to_string(), format!("xai-grok-build/{version}"));
-        inject_proxy_headers(
-            &mut headers,
-            cfg.client_version.as_deref(),
-            alpha_test_key.as_deref(),
-            &base_url,
-        );
-        VideoGenConfig::Enabled {
-            api_key,
-            base_url,
-            extra_headers: headers,
-            zdr_video_output_s3: zdr_video_output_s3.map(Box::new),
-            tier_restricted,
-            zdr_restricted,
-        }
+        crate::agent::media_tool_config::video_gen_config(
+            &self.cfg.borrow(),
+            &self.media_tool_credentials(),
+        )
     }
     pub(super) fn prepare_web_search_sampling_config(&self) -> Option<SamplingConfig> {
         let model_id = self.cfg.borrow().web_search_model.clone();
@@ -2328,7 +2263,7 @@ impl MvpAgent {
             client_version,
             &self.cfg.borrow().endpoints,
         )?;
-        inject_proxy_headers(
+        crate::agent::proxy_headers::inject_proxy_headers(
             &mut cfg.extra_headers,
             cfg.client_version.as_deref(),
             alpha_test_key.as_deref(),
@@ -4201,6 +4136,7 @@ impl MvpAgent {
             persisted_workflow_runs,
             persisted_announcement_state,
             session_meta,
+            persisted_agent_profile,
             model_agent_type,
             session_model_id,
             initial_reasoning_effort,
@@ -4457,6 +4393,10 @@ impl MvpAgent {
             .cfg
             .borrow()
             .is_feature_enabled(crate::agent::config::Feature::CompactionVerbatimInput);
+        let long_reasoning_reminder = self
+            .cfg
+            .borrow()
+            .resolve_long_reasoning_reminder();
         let compaction_tool_choice = self.cfg.borrow().resolve_compaction_tool_choice();
         let auto_update = self.cfg.borrow().cli.auto_update;
         let client_type = *self.client_type.borrow();
@@ -4480,7 +4420,8 @@ impl MvpAgent {
         let skills = self.cfg.borrow().skills.clone();
         let compat = self.cfg.borrow().compat_resolved;
         let paths_config = self.cfg.borrow().paths.clone();
-        let acp_agent_profile = parse_agent_profile_from_meta(session_meta);
+        let acp_agent_profile = parse_agent_profile_from_meta(session_meta)
+            .or(persisted_agent_profile);
         let session_default_agent_profile = acp_agent_profile
             .as_ref()
             .map(|d| d.name.clone());
@@ -4862,7 +4803,9 @@ impl MvpAgent {
                 .tx
                 .send(crate::session::persistence::PersistenceMsg::CurrentModel {
                     model_id: session_model_id.clone(),
-                    agent_name: Some(agent_definition.name.clone()),
+                    agent: crate::session::persistence::PersistedAgent::from(
+                        &agent_definition,
+                    ),
                     reasoning_effort: reasoning_effort_to_persist,
                 });
             let acp_mcp_servers = crate::session::acp_mcp::parse_acp_mcp_servers(
@@ -4916,6 +4859,7 @@ impl MvpAgent {
                     system_prompt_label,
                     compaction_mode,
                     compaction_verbatim_input,
+                    long_reasoning_reminder,
                     compaction_tool_choice,
                     two_pass_enabled,
                     buffering_settings,
@@ -4989,7 +4933,7 @@ impl MvpAgent {
                     None,
                     Some(
                         Arc::new(
-                            xai_grok_login::manager::SharedAuthKeyProvider(
+                            xai_grok_login::SharedAuthKeyProvider(
                                 self.auth_manager.clone(),
                             ),
                         ),
@@ -5008,6 +4952,12 @@ impl MvpAgent {
                     None,
                     max_turns,
                     None,
+                    {
+                        let cfg = self.cfg.borrow();
+                        cfg.feature(
+                            crate::agent::config::Feature::SubagentModelInheritance,
+                        )
+                    },
                     is_chat_kind,
                     None,
                     None,

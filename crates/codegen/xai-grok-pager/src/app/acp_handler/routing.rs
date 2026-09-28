@@ -22,6 +22,19 @@ impl SessionMatch {
     }
 }
 
+/// The session and scrollback that own the task rows for `session_id`.
+/// A subagent's `session_id` returns its child view.
+pub(crate) fn task_view_by_session_id<'a>(
+    app: &'a mut AppView,
+    session_id: &str,
+) -> Option<(
+    &'a mut AgentSession,
+    &'a mut crate::scrollback::state::ScrollbackState,
+)> {
+    let (matched, _, agent) = resolve_notif_agent(app, &acp::SessionId::new(session_id))?;
+    resolve_target_view(agent, matched, session_id)
+}
+
 /// Resolve the agent that owns a notification's `session_id` and whether the active view is affected.
 ///
 /// Convenience wrapper around `find_session_match`, `is_matched_agent_active`, and `agents.get_mut()`, used by the bg-task notification handlers.

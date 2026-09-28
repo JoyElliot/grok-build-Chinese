@@ -105,44 +105,15 @@ fn persisted_row_id_round_trip_top_level() {
 }
 
 #[test]
-fn persisted_row_id_round_trip_subagent() {
-    let id = PersistedRowId::Subagent {
-        parent_session_id: "p-1".into(),
-        child_session_id: "c-1".into(),
-    };
-    let key = id.to_key();
-    assert_eq!(key, "sub:p-1:c-1");
-    assert_eq!(PersistedRowId::from_key(&key), Some(id));
-}
-
-#[test]
-fn persisted_row_id_subagent_with_colon_in_child_id() {
-    // The child session id portion may itself contain colons; we
-    // only split on the first colon after `sub:<parent>:`.
-    let raw = "sub:parent-x:abc:def:ghi";
-    let parsed = PersistedRowId::from_key(raw).unwrap();
-    match parsed {
-        PersistedRowId::Subagent {
-            parent_session_id,
-            child_session_id,
-        } => {
-            assert_eq!(parent_session_id, "parent-x");
-            assert_eq!(child_session_id, "abc:def:ghi");
-        }
-        _ => panic!("expected subagent variant"),
-    }
-}
-
-#[test]
 fn persisted_row_id_invalid() {
     assert!(PersistedRowId::from_key("garbage").is_none());
     // top:<empty> rejected.
     assert!(PersistedRowId::from_key("top:").is_none());
-    // sub: with no parent rejected.
+    // Stale subagent-row keys are ignored, including ones that used to parse.
+    assert!(PersistedRowId::from_key("sub:p-1:c-1").is_none());
+    assert!(PersistedRowId::from_key("sub:parent-x:abc:def:ghi").is_none());
     assert!(PersistedRowId::from_key("sub::child").is_none());
-    // sub:<parent> with no child rejected.
     assert!(PersistedRowId::from_key("sub:parent:").is_none());
-    // sub: with no colon between parent/child rejected.
     assert!(PersistedRowId::from_key("sub:foo").is_none());
 }
 
@@ -321,10 +292,6 @@ fn reanchor_selection_keeps_existing_id() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }];
     state.reanchor_selection(&rows);
     assert_eq!(state.selected, Some(id1));
@@ -351,10 +318,6 @@ fn reanchor_selection_drops_to_none_when_previous_disappeared() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }];
     state.reanchor_selection(&rows);
     assert_eq!(
@@ -375,9 +338,8 @@ fn persisted_on_disk_round_trip() {
     pinned.insert(PersistedRowId::TopLevel {
         session_id: "sess-3".into(),
     });
-    let reorder = vec![PersistedRowId::Subagent {
-        parent_session_id: "sess-3".into(),
-        child_session_id: "child-1".into(),
+    let reorder = vec![PersistedRowId::TopLevel {
+        session_id: "sess-9".into(),
     }];
     let p = PersistedDashboard {
         enabled: false,
@@ -391,6 +353,35 @@ fn persisted_on_disk_round_trip() {
     assert_eq!(loaded.grouping, Grouping::Directory);
     assert_eq!(loaded.pinned, pinned);
     assert_eq!(loaded.reorder, reorder);
+}
+
+/// A config written when the dashboard still pinned subagent rows must load. The `sub:` keys are
+/// dropped; the sibling `top:` keys and the rest of the table stay.
+#[test]
+fn load_persisted_drops_stale_subagent_row_ids() {
+    use std::collections::BTreeSet;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "\
+[dashboard]
+enabled = true
+grouping = \"state\"
+pinned = [\"top:sess-keep\", \"sub:parent:child\"]
+reorder = [\"sub:parent:child:with:colons\", \"top:sess-keep\"]
+",
+    )
+    .unwrap();
+    let loaded =
+        load_persisted_from_path(&path).expect("stale subagent ids must not fail the load");
+    let keep = PersistedRowId::TopLevel {
+        session_id: "sess-keep".into(),
+    };
+    assert!(loaded.enabled);
+    assert_eq!(loaded.grouping, Grouping::State);
+    assert_eq!(loaded.pinned, BTreeSet::from([keep.clone()]));
+    assert_eq!(loaded.reorder, vec![keep]);
 }
 
 /// The onboarding hint was removed — a stale `[dashboard.onboarding]`
@@ -3514,7 +3505,7 @@ fn dispatch_bracketed_image_paste_defers_probe() {
     );
 }
 
-/// Regression: an IME commit delivered as bracketed paste (Otty)
+/// Regression: a bracketed paste whose text is not the clipboard text
 /// must not attach the unrelated clipboard image.
 #[test]
 fn dispatch_bracketed_paste_stamps_ctx_bracketed() {
@@ -5490,10 +5481,6 @@ fn reanchor_test_row(id: usize, state: RowState) -> super::super::row::Dashboard
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }
 
@@ -5588,31 +5575,6 @@ fn reanchor_moves_collapse_hidden_pinned_row_to_pinned_header() {
         state.selected_section,
         Some(SectionKey::Pinned),
         "a collapse-hidden pinned row must re-anchor to the Pinned header",
-    );
-}
-
-/// A subagent row hidden by its PARENT's collapsed section
-/// re-anchors to the parent's state header (subagents render under
-/// the parent's group).
-#[test]
-fn reanchor_moves_collapse_hidden_subagent_to_parent_header() {
-    let mut state = DashboardState::new();
-    state.set_section_collapsed(SectionKey::State(RowState::Working), true);
-    let child_id = DashboardRowId::Subagent {
-        parent: AgentId(1),
-        child_session_id: "child-1".into(),
-    };
-    state.focus_row(child_id.clone());
-    let parent = reanchor_test_row(1, RowState::Working);
-    let mut child = reanchor_test_row(2, RowState::Working);
-    child.id = child_id;
-    child.indent = 1;
-    state.reanchor_selection(&[parent, child]);
-    assert!(state.selected.is_none());
-    assert_eq!(
-        state.selected_section,
-        Some(SectionKey::State(RowState::Working)),
-        "a hidden subagent must re-anchor to its parent's header",
     );
 }
 
@@ -6896,68 +6858,6 @@ fn restore_ignores_page_flip_entry_removed_during_lease() {
         agent(&agents, id).scrollback.is_follow_mode(),
         pre.follow_mode
     );
-}
-
-#[test]
-fn note_page_flip_ignores_subagent_lease_on_parent_agent() {
-    let (id, mut agents) = lease_fixture_agent();
-    let child = crate::test_util::make_agent_view(Some("child"), "/tmp");
-    agents
-        .get_mut(&id)
-        .unwrap()
-        .insert_test_child("child".into(), Box::new(child));
-    let mut dash = DashboardState::new();
-    dash.begin_peek_viewport(
-        DashboardRowId::Subagent {
-            parent: id,
-            child_session_id: "child".into(),
-        },
-        &mut agents,
-    );
-    let entry_id = agent(&agents, id).scrollback.entry(3).unwrap().id;
-    dash.note_page_flip_for_lease(id, entry_id, &agents);
-    assert!(
-        dash.peek_viewport
-            .as_ref()
-            .unwrap()
-            .page_flip_entry
-            .is_none(),
-        "parent drain must not write parent entries onto a subagent lease"
-    );
-    agents
-        .get_mut(&id)
-        .unwrap()
-        .scrollback
-        .enable_follow_with_preserve();
-    dash.note_page_flip_for_lease(id, entry_id, &agents);
-    assert!(
-        dash.peek_viewport
-            .as_ref()
-            .unwrap()
-            .page_flip_entry
-            .is_none()
-    );
-}
-
-#[test]
-fn prepare_agent_unbind_restores_subagent_peek_lease() {
-    let (parent, mut agents) = lease_fixture_agent();
-    let child = crate::test_util::make_agent_view(Some("child"), "/tmp");
-    agents
-        .get_mut(&parent)
-        .unwrap()
-        .insert_test_child("child".into(), Box::new(child));
-    let row = DashboardRowId::Subagent {
-        parent,
-        child_session_id: "child".into(),
-    };
-    let mut dashboard = DashboardState::new();
-    dashboard.begin_peek_viewport(row, &mut agents);
-    assert!(dashboard.peek_viewport.is_some());
-
-    dashboard.prepare_agent_unbind(&std::collections::HashSet::from([parent]), &mut agents);
-
-    assert!(dashboard.peek_viewport.is_none());
 }
 
 #[test]

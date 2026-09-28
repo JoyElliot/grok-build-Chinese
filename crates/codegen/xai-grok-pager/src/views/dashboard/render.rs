@@ -7,8 +7,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::animation::{Animation, NEEDS_INPUT_BLINK_DIVISOR, PaintedAnimations, SPINNER_DIVISOR};
 pub use super::chrome::HeaderUpgradeCta;
-use super::layout::{MIN_DASHBOARD_WIDTH, compute_layout};
-use super::row::{DashboardRow, build_rows_with_roster_and_locale, build_rows_with_workspace};
+use super::layout::MIN_DASHBOARD_WIDTH;
+use super::row::{
+    DashboardRow, build_rows_with_roster_and_locale, build_rows_with_workspace_and_locale,
+};
 use super::state::{
     DashboardRowId, DashboardState, DashboardStopAction, Filter, Focusable, Grouping,
     LocationPickerState, RenameDraft, RowState, SectionKey,
@@ -59,32 +61,6 @@ fn localized_row_state(
 // sibling activity views (which use circles). Filled marks the non-working states that
 // need a strong visual presence (needs-input, completed, failed, blocked);
 // hollow marks idle rows.
-
-fn ensure_peek_viewport_lifecycle(
-    state: &mut DashboardState,
-    agents: &mut IndexMap<AgentId, AgentView>,
-) {
-    if state.attached_agent.is_some() {
-        return;
-    }
-    // When a peek row exists, begin or keep the viewport lease; otherwise restore the agent viewport
-    let Some(row) = state.peek.as_ref().map(|p| p.row.clone()) else {
-        state.restore_peek_viewport(agents);
-        return;
-    };
-    if state
-        .peek_viewport
-        .as_ref()
-        .is_some_and(|lease| lease.row == row)
-    {
-        return;
-    }
-    if super::state::scrollback_available_for_row(&row, agents) {
-        state.begin_peek_viewport(row, agents);
-    } else {
-        state.restore_peek_viewport(agents);
-    }
-}
 
 // The thin left bar marking the selected row is `crate::glyphs::selection_bar()`, with a `│` fallback on legacy CP437 consoles
 // It is painted on every content line of a selected row so it spans the row's full visual height
@@ -186,7 +162,7 @@ pub(crate) fn render_dashboard_with_locale(
         state.grouping
     };
     let rows = if workspace_dashboard_enabled {
-        build_rows_with_workspace(
+        build_rows_with_workspace_and_locale(
             agents,
             row_inputs,
             &state.filter,
@@ -243,91 +219,7 @@ pub(crate) fn render_dashboard_with_locale(
         return None;
     }
 
-    // Peek: list-first allocation (see layout::allocate_peek and docs/internal/33-dashboard-peek-responsive-layout.md)
-    // The provisional layout gives the dispatch width for reply wrapping before we decide whether peek fits
-    let mut layout = compute_layout(area, false);
-    let fixed = super::layout::chrome_overhead(area);
-    let reply_text_w = layout.dispatch.width.saturating_sub(6);
-
-    if !state.search_mode {
-        match state.selected.clone() {
-            Some(sel) => match super::peek::compute_peek_fields_with_locale(&sel, agents, locale) {
-                Some(fields) => {
-                    let question = fields.question.is_some();
-                    let peek_min = if question {
-                        super::layout::PEEK_MIN_BOX_QUESTION
-                    } else {
-                        super::layout::PEEK_MIN_BOX_LIVE_TAIL
-                    };
-                    let content_rows = if question {
-                        1 + fields.options.len().min(9) as u16
-                    } else {
-                        let reply_rows = super::peek::reply_row_count(
-                            &state.peek_reply,
-                            reply_text_w,
-                            super::peek::MAX_REPLY_ROWS,
-                        );
-                        let max_content = super::layout::max_peek_content_rows(area);
-                        // The middle content width is the dispatch box width minus borders and insets
-                        let middle_w = layout.dispatch.width.saturating_sub(4);
-                        let (body_measured, pin_user) =
-                            super::state::scrollback_mut_for_row(&sel, agents)
-                                .map(|sb| {
-                                    (
-                                        super::peek_tail::densified_body_line_count(sb, middle_w),
-                                        super::peek_tail::scrollback_has_last_user(sb),
-                                    )
-                                })
-                                .unwrap_or((0, false));
-                        super::layout::peek_live_tail_desired_content(
-                            max_content,
-                            reply_rows,
-                            body_measured,
-                            pin_user,
-                        )
-                        .content_rows
-                    };
-                    let alloc =
-                        super::layout::allocate_peek(area.height, fixed, content_rows, peek_min);
-                    if alloc.show_peek {
-                        state.set_peek_reply_target_cwd(peeked_agent_cwd(&sel, agents));
-                        let badge = super::peek::peek_model_and_mode(&sel, agents);
-                        match state.peek.as_mut() {
-                            Some(p) => {
-                                if p.apply_fields(sel, fields) {
-                                    state.clear_peek_reply();
-                                }
-                            }
-                            None => {
-                                state.set_peek(Some(super::peek::PeekPanelState::new(sel, fields)))
-                            }
-                        }
-                        if let Some(p) = state.peek.as_mut() {
-                            p.model_name = badge.model;
-                            p.auto_approve = badge.yolo;
-                            p.auto = badge.auto;
-                            p.mode_label = badge.mode_label;
-                        }
-                        layout =
-                            super::layout::compute_layout_with_peek_box(area, alloc.peek_box_h);
-                    } else {
-                        state.set_peek_reply_target_cwd(None);
-                        state.set_peek(None);
-                    }
-                }
-                None => {
-                    state.set_peek_reply_target_cwd(None);
-                    state.set_peek(None);
-                }
-            },
-            None => {
-                state.set_peek_reply_target_cwd(None);
-                state.set_peek(None);
-            }
-        }
-    }
-
-    ensure_peek_viewport_lifecycle(state, agents);
+    let mut layout = state.layout_with_preview(area, agents);
 
     if state.peek.is_none() && area.height > 8 && !state.dispatch.text().is_empty() {
         let rows = dispatch_text_rows(state, layout.dispatch.width, area.height);
@@ -384,7 +276,7 @@ pub(crate) fn render_dashboard_with_locale(
                 .get(id)
                 .map(|agent| crate::app::dashboard_stop_readiness(agent).action()),
             Some(DashboardRowId::Workspace { .. }) => Some(DashboardStopAction::Archive),
-            Some(DashboardRowId::Subagent { .. } | DashboardRowId::Roster { .. }) | None => None,
+            Some(DashboardRowId::Roster { .. }) | None => None,
         })
         .flatten();
     let peek_active = state.peek_owns_input();
@@ -403,29 +295,6 @@ pub(crate) fn render_dashboard_with_locale(
         let peeked_row = state.peek.as_ref().map(|p| p.row.clone());
         let question_pending = state.peek.as_ref().is_some_and(|p| p.question.is_some());
         let (empty_hint, has_scrollback) = match peeked_row.as_ref() {
-            Some(DashboardRowId::Subagent {
-                parent,
-                child_session_id,
-            }) => {
-                let parent_ok = agents
-                    .get(parent)
-                    .is_some_and(|p| p.subagent_sessions.contains_key(child_session_id));
-                let loaded = agents
-                    .get(parent)
-                    .is_some_and(|p| p.has_subagent_view(child_session_id));
-                if parent_ok && !loaded {
-                    (
-                        Some(dashboard_static(
-                            locale,
-                            "dashboard.peek.subagent_not_loaded",
-                            "Subagent not loaded",
-                        )),
-                        false,
-                    )
-                } else {
-                    (None, loaded)
-                }
-            }
             Some(row) => (
                 None,
                 super::state::scrollback_available_for_row(row, agents),
@@ -658,16 +527,15 @@ fn rename_cursor_pos(state: &DashboardState, rows: &[DashboardRow]) -> Option<(u
     let rn = state.rename.as_ref()?;
     let (_, rect) = state.row_rects.iter().find(|(id, _)| *id == rn.row)?;
     let row = rows.iter().find(|r| r.id == rn.row);
-    let (marker_width, indent_width, icon_width) = row
+    let (marker_width, icon_width) = row
         .map(|r| {
             (
                 UnicodeWidthStr::width(crate::glyphs::selection_bar()) as u16,
-                (r.indent as u16) * 2,
                 UnicodeWidthStr::width(state_icon(r.state, state.spinner_tick)) as u16,
             )
         })
-        .unwrap_or((1, 0, 1));
-    let chrome_width = marker_width + 1 + indent_width + icon_width + 1;
+        .unwrap_or((1, 1));
+    let chrome_width = marker_width + 1 + icon_width + 1;
     let content_x = rect.x.saturating_add(chrome_width);
     let content_width = rect.x.saturating_add(rect.width).saturating_sub(content_x);
     let prefix = dashboard_static(
@@ -707,7 +575,7 @@ fn render_dashboard_banner(
     let mut total = 0usize;
     let mut working = 0usize;
     let mut needs_input = 0usize;
-    for r in rows.iter().filter(|r| r.indent == 0) {
+    for r in rows {
         total += 1;
         if r.state == RowState::Working {
             working += 1;
@@ -1036,7 +904,7 @@ fn render_location_picker_with_locale(
 
 /// One line in the dashboard's vertical stack: either a state-group header or a content row. The
 /// per-row dot and state colour alone don't show at a glance how many sessions are awaiting input,
-/// working, idle, or done. Subagent rows inherit their parent's group and never trigger a header.
+/// working, idle, or done.
 enum DashboardLine<'a> {
     /// Cross-cutting "Pinned" section header (with count), emitted above the pinned block when grouping is ON.
     PinnedHeader {
@@ -1072,20 +940,16 @@ fn build_dashboard_lines<'a>(
     let groups_on = matches!(grouping, Grouping::State);
     let emit_state_headers = groups_on && !matches!(filter, Filter::State(_));
 
-    // Pinned top-level agents are sorted to the front (see `sort_rows`), so they form a contiguous prefix of clusters
+    // Pinned top-level agents are sorted to the front (see `sort_rows`), so they form a contiguous prefix
     // Split that prefix off as a dedicated "Pinned" section above the state / directory groups
     // That way a pinned (say) idle agent reads as pinned rather than landing under an "Idle" header
     let mut pinned_end = 0usize;
     let mut pinned_count = 0usize;
     {
         let mut i = 0usize;
-        while i < rows.len() && rows.get(i).is_some_and(|r| r.indent == 0 && r.pinned) {
+        while i < rows.len() && rows.get(i).is_some_and(|r| r.pinned) {
             pinned_count += 1;
             i += 1;
-            // Glue the pinned parent's subagents into the section.
-            while i < rows.len() && rows.get(i).is_some_and(|r| r.indent != 0) {
-                i += 1;
-            }
             pinned_end = i;
         }
     }
@@ -1116,7 +980,7 @@ fn build_dashboard_lines<'a>(
         return out;
     }
     let mut last_top_state: Option<RowState> = None;
-    // Whether the section currently being emitted is collapsed; when so its rows (and their subagents) are skipped but the header stays
+    // Whether the section currently being emitted is collapsed; when so its rows are skipped but the header stays
     let mut current_collapsed = false;
     // Idle-overflow cap bookkeeping for the group currently being emitted. Without the `search_active`
     // check, an empty search query would leave old idle agents folded.
@@ -1124,23 +988,17 @@ fn build_dashboard_lines<'a>(
     let now = std::time::SystemTime::now();
     let mut idle_limit: Option<usize> = None;
     let mut idle_top_seen = 0usize;
-    let mut idle_capping = false;
     let mut pending_overflow: Option<(usize, bool)> = None;
     for (i, row) in rest.iter().enumerate() {
-        if row.indent == 0 && Some(row.state) != last_top_state {
+        if Some(row.state) != last_top_state {
             // Emit the overflow row of the group we're leaving before the new header, so it lands at the bottom of the Idle group
             if let Some((hidden, expanded)) = pending_overflow.take() {
                 out.push(DashboardLine::IdleOverflow { hidden, expanded });
             }
-            // Subagents are skipped over rather than breaking the count, since they share their parent's
-            // group. The count reflects the true group size even when collapsed or capped `recent` tracks how
-            // many are inside the freshness window (Idle only).
+            // `recent` tracks how many Idle rows are inside the freshness window.
             let mut count = 0usize;
             let mut recent = 0usize;
             for r in rest.iter().skip(i) {
-                if r.indent != 0 {
-                    continue;
-                }
                 if r.state == row.state {
                     count += 1;
                     if idle_row_is_recent(r, now) {
@@ -1159,7 +1017,6 @@ fn build_dashboard_lines<'a>(
             // Reset or set the Idle cap for the new group
             idle_limit = None;
             idle_top_seen = 0;
-            idle_capping = false;
             if row.state == RowState::Idle && idle_cap_active && !current_collapsed {
                 // Keep the freshest agents: at least MAX_VISIBLE_IDLE, extended to cover everything still inside the freshness window
                 // Only fold when it hides at least MIN_IDLE_FOLD rows (a single folded row saves no space)
@@ -1174,13 +1031,10 @@ fn build_dashboard_lines<'a>(
         if current_collapsed {
             continue;
         }
-        // Idle cap: once past the limit, skip over-cap top-level rows and their subagents (idle_capping latches until the next group)
+        // Idle cap: once past the limit, skip the rest of the group until the next header resets the count.
         if let Some(limit) = idle_limit {
-            if row.indent == 0 {
-                idle_top_seen += 1;
-                idle_capping = idle_top_seen > limit;
-            }
-            if idle_capping {
+            idle_top_seen += 1;
+            if idle_top_seen > limit {
                 continue;
             }
         }
@@ -1234,7 +1088,7 @@ pub(crate) fn focusables(
     .filter_map(|line| match line {
         DashboardLine::PinnedHeader { .. } => Some(Focusable::Section(SectionKey::Pinned)),
         DashboardLine::Header { state, .. } => Some(Focusable::Section(SectionKey::State(state))),
-        DashboardLine::Row(row) if !row.is_more_placeholder => Some(Focusable::Row(row.id.clone())),
+        DashboardLine::Row(row) => Some(Focusable::Row(row.id.clone())),
         DashboardLine::IdleOverflow { .. } => Some(Focusable::IdleOverflow),
         _ => None,
     })
@@ -1459,17 +1313,15 @@ fn render_rows_with_grouping(
                 for dy in content_top..(content_top + content_h).min(render_h) {
                     mark(&mut line_bg, dy, bg);
                 }
-                if !row.is_more_placeholder {
-                    // Full-height hit rect (content and spacer lines): no hover/click dead zone between items
-                    // The highlight covers the content plus half-cell halos on the neighbouring spacer lines
-                    let hit = Rect {
-                        x: area.x,
-                        y,
-                        width: body_width,
-                        height: render_h,
-                    };
-                    state.row_rects.push((row.id.clone(), hit));
-                }
+                // Full-height hit rect (content and spacer lines): no hover/click dead zone between items
+                // The highlight covers the content plus half-cell halos on the neighbouring spacer lines
+                let hit = Rect {
+                    x: area.x,
+                    y,
+                    width: body_width,
+                    height: render_h,
+                };
+                state.row_rects.push((row.id.clone(), hit));
             }
             DashboardLine::IdleOverflow { hidden, expanded } => {
                 render_idle_overflow(
@@ -1672,7 +1524,7 @@ fn render_idle_overflow(
             .replace("{count}", &hidden.to_string())
     };
     // A `+` / `-` expand indicator in the icon column and the label in the agent-name column, so the row aligns with the Idle rows above
-    // Columns: marker (1) + gap (1) + icon + gap (1); the Idle group is top-level, so indent is 0
+    // Columns: marker (1) + gap (1) + icon + gap (1)
     let indicator = if expanded { "-" } else { "+" };
     let icon_w = unicode_width::UnicodeWidthStr::width(state_icon(RowState::Idle, 0)) as u16;
     let indicator_x = rect.x.saturating_add(2);
@@ -1831,15 +1683,13 @@ fn render_row(
         buf.set_string(rect.x, rect.y + dy, &fill, Style::default().bg(bg));
     }
 
-    // Layout columns: marker (1) | gap (1) | indent (2*n) | icon (1-2)
-    //                | gap (1) | label/secondary start.
+    // Layout columns: marker (1) | gap (1) | icon (1-2) | gap (1) | label/secondary start.
     let marker = if selected {
         crate::glyphs::selection_bar()
     } else {
         " "
     };
     let marker_w = UnicodeWidthStr::width(marker) as u16;
-    let indent_w = (row.indent as u16) * 2;
     let icon = state_icon(row.state, state.spinner_tick);
     let icon_color = if row.state == RowState::NeedsInput {
         needs_input_bullet_color(state.spinner_tick, theme)
@@ -1857,7 +1707,7 @@ fn render_row(
     // Title-row paint cursor. Title-only rows sit padded above and below, while 2-line rows stay
     // top-aligned (2 lines cannot center in a 3-cell row).
     let title_y = rect.y + row_content_offset(rect.height, row);
-    let content_start_x = rect.x + marker_w + 1 + indent_w + icon_w + 1;
+    let content_start_x = rect.x + marker_w + 1 + icon_w + 1;
 
     // Rename overlay: keep the row's chrome (marker and state icon) in place and swap ONLY the title text for `rename: {draft}`
     // It is painted at the title's own column so the row stays visually aligned with its neighbours while editing
@@ -1888,7 +1738,7 @@ fn render_row(
         }
         // State icon stays put (same column and colour as the normal row)
         buf.set_string(
-            rect.x + marker_w + 1 + indent_w,
+            rect.x + marker_w + 1,
             title_y,
             icon,
             Style::default().fg(icon_color).bg(bg),
@@ -1942,7 +1792,7 @@ fn render_row(
         }
     }
 
-    let icon_x = rect.x + marker_w + 1 + indent_w;
+    let icon_x = rect.x + marker_w + 1;
     buf.set_string(
         icon_x,
         title_y,
@@ -1951,9 +1801,7 @@ fn render_row(
     );
 
     let armed_delete = state.armed_delete_row_ref();
-    let show_delete = !row.is_more_placeholder
-        && !row.id.is_subagent()
-        && (!row.id.is_workspace() || state.workspace_membership_mode)
+    let show_delete = (!row.id.is_workspace() || state.workspace_membership_mode)
         && row.state.allows_delete()
         && !state.row_is_conversation(&row.id)
         && (state.hovered_row.as_ref() == Some(&row.id) || armed_delete == Some(&row.id));
@@ -2246,8 +2094,7 @@ fn render_narrow_rows_with_grouping(
                 " "
             };
             let icon = state_icon(row.state, state.spinner_tick);
-            let indent = "  ".repeat(row.indent as usize);
-            let chrome = format!("{marker} {indent}{icon} ");
+            let chrome = format!("{marker} {icon} ");
             let chrome_w = UnicodeWidthStr::width(chrome.as_str()) as u16;
             buf.set_string(
                 area.x,
@@ -2280,14 +2127,10 @@ fn render_narrow_rows_with_grouping(
             let marker_w = UnicodeWidthStr::width(marker) as u16;
             let icon = state_icon(row.state, state.spinner_tick);
             let icon_w = UnicodeWidthStr::width(icon) as u16;
-            let indent = "  ".repeat(row.indent as usize);
-            let indent_w = UnicodeWidthStr::width(indent.as_str()) as u16;
             let gap_after_marker = 1u16;
-            let chrome = marker_w + gap_after_marker + indent_w + icon_w + 1;
+            let chrome = marker_w + gap_after_marker + icon_w + 1;
             let armed_here = state.armed_delete_row_ref() == Some(&row.id);
-            let show_delete = !row.is_more_placeholder
-                && !row.id.is_subagent()
-                && (!row.id.is_workspace() || state.workspace_membership_mode)
+            let show_delete = (!row.id.is_workspace() || state.workspace_membership_mode)
                 && row.state.allows_delete()
                 && !state.row_is_conversation(&row.id)
                 && (hovered || armed_here);
@@ -2296,7 +2139,7 @@ fn render_narrow_rows_with_grouping(
             let label_budget = body_width
                 .saturating_sub(chrome)
                 .saturating_sub(if show_delete { delete_w + 1 } else { 0 });
-            let line = format!("{marker} {indent}{icon} ");
+            let line = format!("{marker} {icon} ");
             buf.set_string(
                 area.x,
                 y,
@@ -2330,9 +2173,7 @@ fn render_narrow_rows_with_grouping(
                 Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
             );
         }
-        if !row.is_more_placeholder {
-            state.row_rects.push((row.id.clone(), line_rect));
-        }
+        state.row_rects.push((row.id.clone(), line_rect));
         y += 1;
     }
 
@@ -2911,23 +2752,6 @@ fn render_slash_dropdown(
         theme,
     );
     state.slash_dropdown_items_area = Some(items_area);
-}
-
-/// Working directory of the agent owning the peeked `row`, used to root the reply's `@` file picker.
-/// Top-level rows use their own cwd; subagent rows reply to (and resolve `@paths` against) their parent; roster rows have no local agent (`None`).
-/// `None` too when the agent has since vanished.
-fn peeked_agent_cwd(
-    row: &super::DashboardRowId,
-    agents: &IndexMap<AgentId, AgentView>,
-) -> Option<std::path::PathBuf> {
-    let id = match row {
-        super::DashboardRowId::TopLevel(id) => *id,
-        super::DashboardRowId::Subagent { parent, .. } => *parent,
-        super::DashboardRowId::Roster { .. } | super::DashboardRowId::Workspace { .. } => {
-            return None;
-        }
-    };
-    agents.get(&id).map(|a| a.session.cwd.clone())
 }
 
 /// Render the session-less `@` file-context picker dropdown above the dispatch box.

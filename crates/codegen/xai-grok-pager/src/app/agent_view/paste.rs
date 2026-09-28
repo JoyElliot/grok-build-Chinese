@@ -350,10 +350,15 @@ impl AgentView {
                 if !ActionRegistry::interjection_possible(self.can_send_now(), !text.is_empty()) {
                     return None;
                 }
+                let image_notice = self.unbound_image_placeholder_notice();
                 let images = self.prompt.drain_images();
                 self.prompt.set_text("");
                 self.note_draft_consumed();
-                Some(Action::SendPromptNow { text, images })
+                Some(Action::SendPromptNow {
+                    text,
+                    images,
+                    image_notice,
+                })
             }
             AgentDeferredSend::Stash => {
                 self.handle_stash_prompt_key();
@@ -2041,6 +2046,40 @@ pub(super) mod paste_key_tests {
             "the reload must repopulate the byte cache"
         );
     }
+    /// A full clear (`ESC[2J`) drops Kitty image data in Ghostty, so the frame after it must re-transmit. A place-only frame would draw a blank card.
+    #[test]
+    fn tool_media_retransmits_after_forgetting_transmitted_media() {
+        use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+        let _g = set_protocol_for_test(GraphicsProtocol::Kitty);
+        let path = std::path::PathBuf::from("/tmp/tool-media.png");
+        let placement = tool_media_placement(path.clone());
+        let mut agent = make_agent();
+        agent
+            .inline_media_cache
+            .insert(path.clone(), make_test_png(40, 20));
+        let mut child = make_agent();
+        child.inline_media_cache.insert(path, make_test_png(40, 20));
+        agent.insert_test_child("child-sid".into(), Box::new(child));
+        let paint_twice = |view: &mut AgentView| {
+            let first = view.build_inline_media_escapes(&placement).unwrap();
+            assert!(first.contains("a=t"), "first frame transmits: {first:?}");
+            let second = view.build_inline_media_escapes(&placement).unwrap();
+            assert!(!second.contains("a=t"), "then places only: {second:?}");
+        };
+        let paint_after_clear = |view: &mut AgentView| {
+            let after_clear = view.build_inline_media_escapes(&placement).unwrap();
+            assert!(
+                after_clear.contains("a=t"),
+                "the frame after a clear re-transmits: {after_clear:?}"
+            );
+            assert!(after_clear.contains("a=p"), "and places: {after_clear:?}");
+        };
+        paint_twice(&mut agent);
+        paint_twice(agent.subagent_views.get_mut("child-sid").unwrap());
+        agent.forget_transmitted_inline_media();
+        paint_after_clear(&mut agent);
+        paint_after_clear(agent.subagent_views.get_mut("child-sid").unwrap());
+    }
     /// A file that is present but won't decode is negative-cached by its `(len, mtime)`.
     /// Decode work therefore doesn't re-run every frame while the file is unchanged.
     /// A rewrite (e.g. a file caught mid-write, finished later) self-heals without needing an eviction.
@@ -2192,7 +2231,6 @@ pub(super) mod paste_key_tests {
         let area = ratatui::layout::Rect::new(0, 0, 80, 30);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         let mut scratch = crate::scrollback::render::ScratchBuffer::new();
-        let bundle = crate::app::bundle::BundleState::default();
         agent.draw(
             area,
             &mut buf,
@@ -2201,7 +2239,6 @@ pub(super) mod paste_key_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &bundle,
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
@@ -2422,7 +2459,7 @@ pub(super) mod paste_key_tests {
             "Cmd+V source must remain a CLIPBOARD-key read"
         );
     }
-    /// Regression: an IME commit delivered as bracketed paste (Otty) must not attach the unrelated clipboard image.
+    /// Regression: a bracketed paste whose text is not the clipboard text must not attach the unrelated clipboard image.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn agent_bracketed_paste_stamps_ctx_bracketed() {

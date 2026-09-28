@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use xai_grok_hooks::discovery::HookSource;
+pub use xai_grok_hooks::discovery::HookSourceConfig;
 use xai_grok_tools::registry::types::{SessionContext, ToolRegistryBuilder, ToolServerConfig};
 use xai_tool_runtime::ToolApprovalPolicy;
 /// Default capacity for the workspace event broadcast channel.
@@ -1026,23 +1026,6 @@ impl std::fmt::Debug for AgentSessionConfig {
             .field("extra_env", &self.extra_env)
             .field("parent_session_id", &self.parent_session_id)
             .finish()
-    }
-}
-/// A single hook source: either a JSON settings file or a directory of `*.json` hook files.
-/// Maps 1:1 to [`xai_grok_hooks::discovery::HookSource`] but uses owned `PathBuf` so the config struct is `'static`.
-#[derive(Debug, Clone)]
-pub enum HookSourceConfig {
-    /// A single JSON settings file (e.g. `~/.claude/settings.json`).
-    SettingsFile(PathBuf),
-    /// A directory of `*.json` hook files (e.g. `~/.grok/hooks/`).
-    Directory(PathBuf),
-}
-impl HookSourceConfig {
-    pub fn as_hook_source(&self) -> HookSource<'_> {
-        match self {
-            Self::SettingsFile(path) => HookSource::SettingsFile(path),
-            Self::Directory(path) => HookSource::Directory(path),
-        }
     }
 }
 /// Filesystem isolation strategy for a forked session.

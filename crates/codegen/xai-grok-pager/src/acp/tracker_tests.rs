@@ -316,13 +316,6 @@ fn finish_turn_clears_state() {
     );
 }
 #[test]
-fn user_message_replay() {
-    let mut sb = ScrollbackState::new();
-    let mut tracker = AcpUpdateTracker::new();
-    tracker.handle_update(user_message("What is Rust?"), &meta(), &mut sb);
-    assert_eq!(sb.len(), 1);
-}
-#[test]
 fn empty_chunks_ignored() {
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
@@ -1280,7 +1273,7 @@ fn test_search_tool_call_flow() {
         );
     }
 }
-/// ScrollbackState with an explicit `expanded_by_default` shape override (flag-independent: the `Some` beats the `collapsed_edit_blocks` cache).
+/// Scrollback with pager.toml `expanded_by_default` set. Does not touch the flag cache.
 fn edit_config_scrollback(expanded_by_default: bool) -> ScrollbackState {
     use crate::appearance::AppearanceConfig;
     let mut sb = ScrollbackState::new();
@@ -1307,6 +1300,11 @@ fn pending_other_tool_call(tc_id: &Arc<str>) -> acp::SessionUpdate {
 /// leave a stale mode in place.
 #[test]
 fn edit_tool_upgrade_resets_display_mode_to_default() {
+    std::thread::spawn(edit_tool_upgrade_resets_display_mode_to_default_body)
+        .join()
+        .unwrap();
+}
+fn edit_tool_upgrade_resets_display_mode_to_default_body() {
     use crate::scrollback::types::DisplayMode;
     /// Drive Pending(Other) through InProgress(Edit) to Completed.
     /// Returns the display mode observed after the InProgress upgrade and after completion.
@@ -1357,6 +1355,7 @@ fn edit_tool_upgrade_resets_display_mode_to_default() {
         );
         entry.display_mode
     }
+    crate::appearance::cache::set_collapsed_edit_blocks(false);
     let (upgraded, completed) = upgrade_path("toolu_edit_001", false);
     assert_eq!(
         upgraded,
@@ -4672,6 +4671,24 @@ fn meta_with_prompt_id(prompt_id: &str) -> NotificationMeta {
     m.prompt_id = Some(prompt_id.to_string());
     m
 }
+#[test]
+fn hidden_user_message_keeps_the_pending_echo_skip() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    tracker.expect_user_echo();
+    let mut hide_meta = acp::Meta::new();
+    hide_meta.insert("hideFromScrollback".into(), serde_json::json!(true));
+    assert!(!tracker.handle_update(
+        user_message_with_chunk_meta(
+            "<timestamp>Wed</timestamp>\n<system_notification>done</system_notification>",
+            hide_meta,
+        ),
+        &meta(),
+        &mut sb,
+    ));
+    assert!(!tracker.handle_update(user_message("Reply with SECOND"), &meta(), &mut sb));
+    assert!(!tracker.expects_user_echo());
+}
 /// Scrollback hide is type-driven.
 /// Chunk meta `hideFromScrollback` or notification `promptId` routes to [`PromptOrigin::hide_user_echo_from_scrollback`].
 #[test]
@@ -4839,16 +4856,14 @@ fn replay_malformed_skill_token_ranges_degrade_to_plain() {
     }
 }
 /// A persisted interjection chunk as the shell writes it: the model-facing frame as text,
-/// the typed text in `displayText`, and the `interjection` chunk flag (wire literals pinned here).
+/// the typed text in `displayText`, and the `interjection` chunk flag.
 fn interjection_user_message(typed: &str) -> acp::SessionUpdate {
     let mut chunk_meta = serde_json::Map::new();
     chunk_meta.insert("modelId".into(), serde_json::json!("test-model"));
     chunk_meta.insert("interjection".into(), serde_json::Value::Bool(true));
     let mut text_meta = serde_json::Map::new();
     text_meta.insert("displayText".into(), serde_json::json!(typed));
-    let framed = format!(
-        "The user sent a message while you were working:\n<user_query>\n{typed}\n</user_query>\nMake sure to complete any unfinished tasks from previous turns."
-    );
+    let framed = xai_interjection_core::format_interjection(typed.to_string());
     acp::SessionUpdate::UserMessageChunk(
         acp::ContentChunk::new(acp::ContentBlock::Text(
             acp::TextContent::new(framed).meta(Some(text_meta)),
@@ -5195,6 +5210,81 @@ fn tier_restricted_media_shows_upsell_text_not_error() {
         "upsell text must be shown in the card body, got: {:?}",
         block.output
     );
+}
+/// The daemon client hand-builds the media card's JSON (it cannot depend on `MediaGenOutput`); this pins that the
+/// exact shape it sends — `type` + `path` only — renders as a media ref for both spellings, and that the fuller
+/// shape the built-in tools send does too.
+#[test]
+fn daemon_generate_image_output_shape_renders_as_a_media_ref() {
+    let outputs = [
+        (
+            "ImageGen",
+            serde_json::json!({ "type": "ImageGen", "path": "/work/proj/assets/cat.png" }),
+        ),
+        (
+            "ImageEdit",
+            serde_json::json!({ "type": "ImageEdit", "path": "/work/proj/assets/cat.png" }),
+        ),
+        (
+            "ImageGen",
+            serde_json::json!({
+                "type": "ImageGen",
+                "path": "/work/proj/assets/cat.png",
+                "filename": "cat.png",
+                "session_folder": "assets",
+            }),
+        ),
+    ];
+    for (variant, output) in outputs {
+        let tc = acp::ToolCall::new(
+            acp::ToolCallId::new(Arc::from("daemon-image")),
+            "Generate image: \"a cat\"",
+        )
+        .kind(acp::ToolKind::Other)
+        .status(acp::ToolCallStatus::Completed)
+        .raw_input(Some(serde_json::json!({
+            "variant": variant, "prompt": "a cat", "aspect_ratio": "16:9",
+        })))
+        .raw_output(Some(output.clone()))
+        .locations(vec![]);
+        assert_eq!(
+            media_gen_ref(&tc),
+            Some((std::path::PathBuf::from("/work/proj/assets/cat.png"), false)),
+            "{output}"
+        );
+        let RenderBlock::ToolCall(ToolCallBlock::Other(block)) =
+            tool_call_to_block(&tc, None, &SubagentLabelRegistry::default())
+        else {
+            panic!("expected an Other tool-call block for {output}");
+        };
+        assert!(block.is_success(), "{output}");
+    }
+}
+/// A refused generation (the server's access error) fails the card with the reason, and draws no image.
+#[test]
+fn daemon_generate_image_refusal_is_a_failed_card_with_the_reason() {
+    let reason = "Developer, Sand, or training access required";
+    let tc = acp::ToolCall::new(
+        acp::ToolCallId::new(Arc::from("daemon-image")),
+        "Generate image: \"a cat\"",
+    )
+    .kind(acp::ToolKind::Other)
+    .status(acp::ToolCallStatus::Failed)
+    .raw_input(Some(serde_json::json!({
+        "variant": "ImageGen", "prompt": "a cat", "aspect_ratio": "auto",
+    })))
+    .content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+        acp::TextContent::new(reason.to_string()),
+    ))])
+    .locations(vec![]);
+    assert_eq!(media_gen_ref(&tc), None);
+    let RenderBlock::ToolCall(ToolCallBlock::Other(block)) =
+        tool_call_to_block(&tc, None, &SubagentLabelRegistry::default())
+    else {
+        panic!("expected an Other tool-call block");
+    };
+    assert!(!block.is_success());
+    assert_eq!(block.error.as_deref(), Some(reason));
 }
 /// A hook batch younger than the reveal delay is invisible; once it outlives the delay it outranks the phase it blocks.
 #[test]

@@ -347,7 +347,8 @@ thread_local! {
     static COLLAPSED_EDIT_BLOCKS_LOADED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Seeds from `[ui]`; consulted only when `[scrollback.blocks.edit]` shape keys are unset. Startup settings may override.
+/// Read cached `collapsed_edit_blocks`, seeding from `[ui]` on first call.
+/// Settings resolution at startup may override the seeded value.
 pub fn load_collapsed_edit_blocks() -> bool {
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|loaded| {
         if !loaded.get() {

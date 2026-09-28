@@ -1653,9 +1653,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.43"
+version = "1.2.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "739eb0f94557554b3ca9a86d2d37bebd49c5e6d0c1d2bda35ba5bdac830befc2"
+checksum = "c481bdbf0ed3b892f6f806287d72acd515b352a4ec27a208489b8c1bc839633a"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -3425,9 +3425,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.4"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
+checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "findshlibs"
@@ -9019,9 +9019,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.2.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5"
+checksum = "b23c62fe489ac1d401ab32688cfacac3737a8978dc3343e5361464c7724fd3cb"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -9050,9 +9050,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.2.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdf1c49bd4d52014b94db0877410db273c2008f01628b0252a2e9460ad9b7fda"
+checksum = "cd740c45d66ceb87e5579082abc27bd771665e464e9660a17a048c721b2a6025"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",
@@ -11416,9 +11416,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.25.10"
+version = "0.26.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78f873475d258561b06f1c595d93308a7ed124d9977cb26b148c2084a4a3cc87"
+checksum = "17ebdd3a5a7e28a1890b876fdbd0c3c0fe0a6336cffaa104f11b9f720c9daa29"
 dependencies = [
  "cc",
  "regex",
@@ -13574,7 +13574,6 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "chrono",
- "fs2",
  "libc",
  "serde",
  "serde_json",
@@ -13609,6 +13608,7 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-hooks",
  "xai-grok-sampling-types",
+ "xai-grok-telemetry",
  "xai-grok-tools",
  "xai-token-estimation",
  "xai-tool-types",
@@ -13785,6 +13785,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "xai-grok-file-lock"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "xai-grok-foreign-sessions"
 version = "0.1.0"
 dependencies = [
@@ -13829,6 +13840,7 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+ "xai-dirs",
  "xai-grok-config",
  "xai-grok-extra-ca",
  "xai-grok-sandbox",
@@ -13888,11 +13900,13 @@ dependencies = [
  "chrono",
  "filetime",
  "fs2",
+ "indexmap",
  "jsonwebtoken",
  "libc",
  "loom",
  "obfstr",
  "parking_lot",
+ "pretty_assertions",
  "prost",
  "rand 0.9.5",
  "reqwest 0.12.24",
@@ -13916,6 +13930,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "webbrowser",
+ "wiremock",
  "xai-file-utils",
  "xai-grok-auth",
  "xai-grok-config",
@@ -14101,7 +14116,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager"
-version = "1.0.35"
+version = "1.0.41"
 dependencies = [
  "agent-client-protocol",
  "ansi-to-tui",
@@ -14199,6 +14214,7 @@ dependencies = [
  "xai-grok-voice",
  "xai-grok-workspace",
  "xai-hooks-plugins-types",
+ "xai-interjection-core",
  "xai-prompt-queue",
  "xai-ratatui-inline",
  "xai-ratatui-textarea",
@@ -14209,7 +14225,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-pager-bin"
-version = "1.0.35"
+version = "1.0.41"
 dependencies = [
  "anyhow",
  "clap",
@@ -14229,7 +14245,6 @@ dependencies = [
  "tracing-subscriber",
  "xai-acp-lib",
  "xai-crash-handler",
- "xai-grok-active-sessions",
  "xai-grok-config",
  "xai-grok-extra-ca",
  "xai-grok-login",
@@ -14304,6 +14319,7 @@ dependencies = [
  "unicode-width 0.2.0",
  "xai-grok-product",
  "xai-grok-test-support",
+ "xai-interjection-core",
  "xai-tty-utils",
 ]
 
@@ -14551,7 +14567,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-shell"
-version = "1.0.35"
+version = "1.0.41"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -14649,6 +14665,7 @@ dependencies = [
  "xai-grok-env",
  "xai-grok-extra-ca",
  "xai-grok-feedback",
+ "xai-grok-file-lock",
  "xai-grok-foreign-sessions",
  "xai-grok-hooks",
  "xai-grok-http",
@@ -15036,7 +15053,7 @@ dependencies = [
 
 [[package]]
 name = "xai-grok-version"
-version = "1.0.35"
+version = "1.0.41"
 dependencies = [
  "semver",
 ]
@@ -15260,6 +15277,8 @@ dependencies = [
  "reqwest 0.12.24",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "wiremock",
  "xai-grok-secrets",
 ]
 

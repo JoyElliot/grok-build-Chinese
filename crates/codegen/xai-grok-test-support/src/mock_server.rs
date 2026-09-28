@@ -159,6 +159,40 @@ struct RouterState {
     startup_fetch_stall: Arc<std::sync::RwLock<StartupFetchStall>>,
     startup_stalls_served: Arc<AtomicU32>,
     user_tier: Arc<std::sync::RwLock<Option<String>>>,
+    user_team: Arc<std::sync::RwLock<Option<MockUserTeam>>>,
+    user_can_administer_team: Arc<std::sync::RwLock<MockCanAdministerTeam>>,
+    user_coding_data_retention_opt_out: Arc<std::sync::RwLock<Option<bool>>>,
+    user_info_released: Arc<tokio::sync::watch::Sender<bool>>,
+    user_info_arrivals: Arc<tokio::sync::watch::Sender<usize>>,
+}
+
+/// `teamId`, `teamName`, and `teamRole` on `GET /v1/user`.
+#[derive(Debug, Clone)]
+pub struct MockUserTeam {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+}
+
+/// `canAdministerTeam` on `GET /v1/user`. `Omitted` leaves the key out; `Unresolved` is `null`,
+/// the proxy's answer when it could not resolve the caller's team-administration capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MockCanAdministerTeam {
+    Omitted,
+    Unresolved,
+    Allowed,
+    Denied,
+}
+
+impl MockCanAdministerTeam {
+    pub fn wire_value(self) -> Option<Value> {
+        match self {
+            Self::Omitted => None,
+            Self::Unresolved => Some(Value::Null),
+            Self::Allowed => Some(Value::Bool(true)),
+            Self::Denied => Some(Value::Bool(false)),
+        }
+    }
 }
 
 impl RouterState {
@@ -239,6 +273,13 @@ impl MockInferenceServer {
             startup_fetch_stall: Arc::new(std::sync::RwLock::new(StartupFetchStall::None)),
             startup_stalls_served: Arc::new(AtomicU32::new(0)),
             user_tier: Arc::new(std::sync::RwLock::new(None)),
+            user_team: Arc::new(std::sync::RwLock::new(None)),
+            user_can_administer_team: Arc::new(std::sync::RwLock::new(
+                MockCanAdministerTeam::Omitted,
+            )),
+            user_coding_data_retention_opt_out: Arc::new(std::sync::RwLock::new(None)),
+            user_info_released: Arc::new(tokio::sync::watch::Sender::new(true)),
+            user_info_arrivals: Arc::new(tokio::sync::watch::Sender::new(0)),
         };
         let app = Self::build_router(state.clone());
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -433,6 +474,47 @@ impl MockInferenceServer {
     /// `None`, the default, omits the field, which the shell reads as the free tier.
     pub fn set_user_subscription_tier(&self, tier: Option<&str>) {
         *self.state.user_tier.write().unwrap() = tier.map(str::to_owned);
+    }
+
+    pub fn set_user_team(&self, team: MockUserTeam) {
+        *self.state.user_team.write().unwrap() = Some(team);
+    }
+
+    pub fn set_user_can_administer_team(&self, can_administer: MockCanAdministerTeam) {
+        *self.state.user_can_administer_team.write().unwrap() = can_administer;
+    }
+
+    /// `codingDataRetentionOptOut` on `GET /v1/user`. `None`, the default, omits the field.
+    pub fn set_user_coding_data_retention_opt_out(&self, opt_out: Option<bool>) {
+        *self
+            .state
+            .user_coding_data_retention_opt_out
+            .write()
+            .unwrap() = opt_out;
+    }
+
+    /// Park every `GET /v1/user` after logging it, until [`Self::release_user_info`].
+    pub fn hold_user_info(&self) {
+        self.state.user_info_released.send_replace(false);
+    }
+
+    pub fn release_user_info(&self) {
+        self.state.user_info_released.send_replace(true);
+    }
+
+    /// Resolves once `n` `GET /v1/user` have arrived, parked ones included; panics after 5s rather than hang.
+    pub async fn user_info_arrived(&self, n: usize) {
+        let mut arrivals = self.state.user_info_arrivals.subscribe();
+        let waited = tokio::time::timeout(
+            Duration::from_secs(5),
+            arrivals.wait_for(|count| *count >= n),
+        )
+        .await;
+        assert!(
+            waited.is_ok(),
+            "expected {n} GET /v1/user, saw {} within 5s",
+            *self.state.user_info_arrivals.borrow()
+        );
     }
 
     /// Defaults to `"end_turn"`.
@@ -649,15 +731,35 @@ impl MockInferenceServer {
                                 _ => "/v1/user".to_owned(),
                             };
                             state.log.record_get(&path);
+                            state.user_info_arrivals.send_modify(|count| *count += 1);
+                            let mut released = state.user_info_released.subscribe();
+                            if !*released.borrow_and_update() {
+                                let _ = released.wait_for(|r| *r).await;
+                            }
                             let tier = state.user_tier.read().unwrap().clone();
+                            let team = state.user_team.read().unwrap().clone();
+                            let can_administer =
+                                state.user_can_administer_team.read().unwrap().wire_value();
+                            let opt_out = *state.user_coding_data_retention_opt_out.read().unwrap();
                             let mut body = json!({
                                 "userId": "mock-user",
                                 "email": "mock-user@test.invalid",
                             });
-                            if let Some(t) = tier
-                                && let Some(obj) = body.as_object_mut()
-                            {
-                                obj.insert("subscriptionTier".into(), json!(t));
+                            if let Some(obj) = body.as_object_mut() {
+                                if let Some(opt_out) = opt_out {
+                                    obj.insert("codingDataRetentionOptOut".into(), json!(opt_out));
+                                }
+                                if let Some(t) = tier {
+                                    obj.insert("subscriptionTier".into(), json!(t));
+                                }
+                                if let Some(team) = team {
+                                    obj.insert("teamId".into(), json!(team.id));
+                                    obj.insert("teamName".into(), json!(team.name));
+                                    obj.insert("teamRole".into(), json!(team.role));
+                                }
+                                if let Some(can_administer) = can_administer {
+                                    obj.insert("canAdministerTeam".into(), can_administer);
+                                }
                             }
                             Json(body).into_response()
                         }

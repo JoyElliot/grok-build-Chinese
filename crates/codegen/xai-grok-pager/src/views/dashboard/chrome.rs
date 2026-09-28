@@ -47,13 +47,12 @@ pub(super) fn render_header(
     let dim = theme.dim().bg(theme.bg_base);
     buf.set_style(area, bg);
 
-    // Subagents inherit the parent's group; skip `indent > 0` so they are not counted twice.
     let mut awaiting = 0usize;
     let mut working = 0usize;
     let mut idle = 0usize;
     let mut done = 0usize;
     let mut failed = 0usize;
-    for r in rows.iter().filter(|r| r.indent == 0) {
+    for r in rows {
         match r.state {
             RowState::NeedsInput => awaiting += 1,
             RowState::Working => working += 1,

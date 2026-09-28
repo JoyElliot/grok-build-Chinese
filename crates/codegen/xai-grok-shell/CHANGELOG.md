@@ -2,6 +2,104 @@
 
 [1.0.35 简体中文更新说明](changelogs/1.0.35.zh-CN.md) · [1.0.24 简体中文更新说明](changelogs/1.0.24.zh-CN.md) · [1.0.16 简体中文更新说明](changelogs/1.0.16.zh-CN.md) · [1.0.15 简体中文更新说明](changelogs/1.0.15.zh-CN.md) · [1.0.14 简体中文更新说明](changelogs/1.0.14.zh-CN.md) · [1.0.13 简体中文更新说明](changelogs/1.0.13.zh-CN.md) · [1.0.12 简体中文更新说明](changelogs/1.0.12.zh-CN.md) · [1.0.11 简体中文更新说明](changelogs/1.0.11.zh-CN.md) · [1.0.10 简体中文更新说明](changelogs/1.0.10.zh-CN.md) · [1.0.9 简体中文更新说明](changelogs/1.0.9.zh-CN.md) · [1.0.8 简体中文更新说明](changelogs/1.0.8.zh-CN.md) · [1.0.7 简体中文更新说明](changelogs/1.0.7.zh-CN.md) · [1.0.6 简体中文更新说明](changelogs/1.0.6.zh-CN.md) · [1.0.5 简体中文更新说明](changelogs/1.0.5.zh-CN.md) · [1.0.3 简体中文更新说明](changelogs/1.0.3.zh-CN.md)
 
+# 1.0.41 — 2026-09-22
+
+## Features
+
+- **Subagent model inheritance** setting added to /settings; persists in config.toml and respects managed/overlay layers.
+- **Per-model request size limits** can now be configured to match provider HTTP body caps and control inline image eviction.
+
+## Bug Fixes
+
+- **Fixed** the subagent fullscreen view so it no longer shows a stray [Dashboard] button in the header.
+- **Fixed** agent frontmatter `mcpServers` so that headers and URLs from the active agent's agent.md now correctly override config.toml and survive config reloads or agent switches.
+- **Ctrl+P** now opens the command palette immediately from the welcome screen.
+- **Dashboard** now focuses the "+ New Agent" row instead of leaving the previous session selected.
+- Sessions that were interrupted by a crash now show a clear marker instead of silently dropping the turn.
+- **Ctrl+Z** right after stashing a prompt now restores it.
+- **Collapsed edit blocks** setting now correctly collapses edits even if `expanded_by_default` was pinned true.
+- Interjections now receive a visible reply before the agent resumes prior tasks.
+- Canceling a turn that blocked on spawn_subagent now tells the model the child moved to the background instead of claiming it was never executed.
+- Saving a queued-prompt edit now returns focus to the composer so the next keys type the next message.
+- Subagent activation is now consistent between the TUI and `grok agent stdio`; tables that only set limits or models no longer disable subagents.
+- **Effort level selection** now accepts menu labels in addition to IDs.
+
+
+# 1.0.40 — 2026-09-20
+
+## Bug Fixes
+
+- **Miscellaneous bug fixes and updates**.
+
+
+# 1.0.39 — 2026-09-20
+
+## Features
+
+- **Subagents** can always use the parent model, with that choice locked in when the session starts.
+- Earlier image attachments now survive multiple compactions via a persisted path list.
+- **Subagent spawning** no longer requires choosing a type; omitted calls default to general-purpose.
+- The agent now keeps helper scripts, logs, and PR drafts in the system temp directory instead of the repository.
+- read_file descriptions now tell the model when offset/limit are ignored for SKILL.md and instruction files.
+- Effort levels for models now come from the API instead of hard-coded lists, and config aliases inherit the menu.
+- MCP tools that receive the wrong JSON shape are now automatically fixed when the mismatch is unambiguous.
+
+## Bug Fixes
+
+- Local worktree capture no longer refuses repositories that contain uninitialized submodules.
+- **Memory captures** no longer include opaque model reasoning blobs.
+- Idle timeouts now show a clear message instead of raw internal text.
+- Images attached to the last user prompt now survive compaction.
+- **Custom agent profiles** now persist correctly across session resume and reload.
+- **Subagent labels** now appear as "Subagent" instead of "General" in transcripts and the tasks pane.
+
+
+# 1.0.38 — 2026-09-19
+
+## Features
+
+- **Long agent replies** in prompt-suggestion transcripts are no longer cut off mid-sentence.
+- **read_file** on skill and instruction files can now be configured per deployment.
+- **Pasted images** survive yank/undo/history recall and the user is notified when any cannot be sent.
+
+## Bug Fixes
+
+- **Subagent overlays** no longer stay stuck showing "Cancelling" after the child turn ends.
+- **Long quoted arguments** in permission prompts now wrap instead of clipping.
+- **Fixed tool-calling errors** by sending inline-only use_tool schema.
+
+
+# 1.0.37 — 2026-09-18
+
+## Bug Fixes
+
+- **Mermaid flowcharts** with complex labels or large sizes now render and open correctly.
+- **`/context`** legend now shows accurate percentages that always add up to 100%.
+- **Pressing `y`** on a queue row now copies the prompt text to the clipboard.
+- **`/model`** effort picker now defaults to the model's recommended effort level.
+- **Bash commands** using quoted filename variables now respect configured permission rules instead of always prompting.
+
+
+# 1.0.36 — 2026-09-17
+
+## Features
+
+- **New Dashboard preview setting** lets you hide the selected-session preview panel on the dashboard.
+- **New policy setting** allows organizations to disable hooks that are not from managed policy.
+- **Background shell commands** now appear as live task rows with streaming output.
+
+## Bug Fixes
+
+- **`grok --sandbox`** no longer exits when accepting folder trust.
+- **Pinned agents** in the dashboard no longer jump when their activity changes.
+- **Swift code** with triple-quoted strings now highlights correctly in the pager.
+- **Mixed-case reasoning_effort** values (e.g. "xHigh") are now accepted in config.toml.
+- **Fixed accidental empty agent sessions** when pressing Enter right after sending from the dashboard.
+- **Fixed default TUI sessions** so an [agent] set in config.toml is respected instead of always using a builtin plan.
+- **MCP plugin authentication** now succeeds for servers that declare a client ID in their manifest.
+- **Shell command approvals** from background subagents are now shown instead of being silently rejected.
+
+
 # 1.0.35 — 2026-09-16
 
 ## Bug Fixes
@@ -422,8 +520,6 @@
 
 ## Bug Fixes
 
-- **Linux automatic updates** now ship a binary with debug information removed, fixing post-download failures caused by exceeding the updater's extraction safety limits.
-- The Linux release pipeline now checks per-file and total extracted sizes before packaging and again after extraction, preventing incompatible artifacts from being published.
 - **Transient inference failures** (stalls, drops, 5xx) now retry automatically instead of ending the turn.
 - **Windows users** can now correctly open ~/.grok and worktree sessions.
 - **Session data** is now more reliably saved after prompts and on power loss.

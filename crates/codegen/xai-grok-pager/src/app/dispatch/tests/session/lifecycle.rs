@@ -1125,7 +1125,7 @@ fn new_session_falls_back_to_app_cwd_on_welcome_screen() {
         .find(|e| matches!(e, Effect::CreateSession { .. }));
     assert!(create.is_some(), "expected CreateSession effect");
     match create.unwrap() {
-        Effect::CreateSession { cwd, .. } => assert_eq!(cwd, &PathBuf::from("/tmp")),
+        Effect::CreateSession { cwd, .. } => assert_eq!(cwd, &std::env::temp_dir()),
         _ => unreachable!(),
     }
     let new_id = AgentId(0);
@@ -3289,32 +3289,6 @@ fn session_id_resolver_round_trip_top_level() {
         session_id: "no-such-session".into(),
     };
     assert!(resolver.resolve(&absent).is_none());
-}
-/// Subagent resolver round-trip.
-#[test]
-fn session_id_resolver_round_trip_subagent() {
-    use crate::views::dashboard::{DashboardRowId, PersistedRowId, SessionIdResolver};
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    let info = make_test_subagent("child-1", "sa-1");
-    agent
-        .subagent_sessions
-        .insert(info.child_session_id.to_string(), info);
-    let resolver = SessionIdResolver::from_agents(&app.agents);
-    let pid = PersistedRowId::Subagent {
-        parent_session_id: "test-session".into(),
-        child_session_id: "child-1".into(),
-    };
-    let live = resolver.resolve(&pid).expect("must resolve");
-    assert_eq!(
-        live,
-        DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child-1".into(),
-        }
-    );
-    let back = resolver.to_persisted(&live).expect("must reverse");
-    assert_eq!(back, pid);
 }
 #[cfg(feature = "local-workspace")]
 mod welcome_workspace_mode {

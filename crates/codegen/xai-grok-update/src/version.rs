@@ -60,6 +60,11 @@ fn is_loopback_base(base: &str) -> bool {
     }
 }
 
+/// An empty or `"stable"` channel means stable, the installers' default.
+pub(crate) fn is_stable_channel(channel: &str) -> bool {
+    channel.is_empty() || channel == "stable"
+}
+
 /// Minimal configuration the update system needs from the environment. Constructed once from `GrokBuildEnvironment` at
 /// startup and threaded through the update call chain. `auto_update` and `version` never need to know about the
 /// `GrokBuildEnvironment` enum directly.

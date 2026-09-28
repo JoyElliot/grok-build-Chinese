@@ -751,12 +751,7 @@ pub(super) fn available_commands(
         catalog.builtins.len() + catalog.skills.commands.len() + catalog.workflows.len(),
     );
     commands.extend(catalog.builtins.iter().map(|builtin| {
-        acp::AvailableCommand::new(builtin.name.to_string(), builtin.description.to_string())
-            .input(builtin.argument_hint.map(|hint| {
-                acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
-                    hint.to_string(),
-                ))
-            }))
+        available_command(builtin)
             .meta(exact_workflow_projection(builtin, workflows).map(workflow_meta))
     }));
     commands.extend(catalog.skills.commands.iter().map(|command| {
@@ -824,16 +819,25 @@ pub(crate) fn builtin_commands(availability: CommandAvailability) -> Vec<acp::Av
     BUILTIN_COMMANDS
         .iter()
         .filter(|cmd| availability.allows(cmd.gate))
-        .map(|cmd| {
-            acp::AvailableCommand::new(cmd.name.to_string(), cmd.description.to_string()).input(
-                cmd.argument_hint.map(|hint| {
-                    acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
-                        hint.to_string(),
-                    ))
-                }),
-            )
-        })
+        .map(available_command)
         .collect()
+}
+/// One builtin by name, as `builtin_commands` would advertise it. For backends that serve a
+/// subset of the shell's commands and must describe them identically.
+pub fn builtin_command(name: &str) -> Option<acp::AvailableCommand> {
+    BUILTIN_COMMANDS
+        .iter()
+        .find(|cmd| cmd.name == name)
+        .map(available_command)
+}
+fn available_command(cmd: &BuiltinCommand) -> acp::AvailableCommand {
+    acp::AvailableCommand::new(cmd.name.to_string(), cmd.description.to_string()).input(
+        cmd.argument_hint.map(|hint| {
+            acp::AvailableCommandInput::Unstructured(acp::UnstructuredCommandInput::new(
+                hint.to_string(),
+            ))
+        }),
+    )
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1190,6 +1194,8 @@ pub(crate) struct ParsedSkillRef {
     /// Plugin name if this is a plugin skill.
     pub plugin_name: Option<String>,
     pub scope: SkillScope,
+    /// Validated frontmatter `origin` slug, used for telemetry.
+    pub origin: Option<String>,
 }
 #[derive(Debug)]
 pub(super) enum SlashCommandOutcome {
@@ -1438,6 +1444,7 @@ fn parse_skill_references_with_catalog(
                     qualified_name: format_skill_name(hit.skill),
                     plugin_name: hit.skill.plugin_name.clone(),
                     scope: hit.skill.scope,
+                    origin: hit.skill.origin.clone(),
                 }
             })
             .collect(),
@@ -1552,6 +1559,7 @@ pub(super) fn resolve_model_authored_skill(
             qualified_name: format_skill_name(skill),
             plugin_name: skill.plugin_name.clone(),
             scope: skill.scope,
+            origin: skill.origin.clone(),
         }],
     })
 }

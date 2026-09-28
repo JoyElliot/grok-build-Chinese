@@ -41,17 +41,18 @@ use super::session::load::{
 };
 use super::session::modal::remove_agent_and_cleanup;
 use super::session::picker_routing::PickerRequest;
-use super::settings::ui::apply_setting_rollback;
+use super::settings::ui::{apply_setting_rollback, refresh_open_settings_modals};
 use super::status::{
     handle_coding_data_sharing_failed, handle_coding_data_sharing_updated,
-    handle_context_info_complete, handle_session_usage_result, scrub_error_for_toast_with_locale,
+    handle_context_info_complete, handle_session_usage_result, toast_persist_failure,
     usage_modal_state_mut,
 };
 use super::transcript::{
     handle_hooks_list_loaded, handle_marketplace_list_loaded, handle_marketplace_updates_available,
     handle_mcp_toggle_done, handle_plugins_list_loaded, handle_skills_toggle_done,
 };
-use super::turn::handle_bg_task_killed;
+use super::turn::{clear_pending_kill, handle_bg_task_killed};
+use crate::app::acp_handler::task_view_by_session_id;
 use crate::app::actions::{
     Action, ClipboardPasteCompletion, ClipboardPasteContext, ClipboardPasteFailure,
     ClipboardPasteTarget, DoctorFixTarget, DoctorPlanningOutcome, Effect, ProbedAttachment,
@@ -61,6 +62,7 @@ use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentDeferredSend;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::app::command_catalog::CommandCatalogSource;
+use crate::app::dispatch::settings;
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::MemoryCommandKind;
 use agent_client_protocol as acp;
@@ -71,11 +73,7 @@ fn localized_template(
     english: &str,
     replacements: &[(&str, &str)],
 ) -> String {
-    let mut message = locale.named_text(id, english).into_owned();
-    for (placeholder, value) in replacements {
-        message = message.replace(placeholder, value);
-    }
-    message
+    crate::localized_text::format_template(&locale.named_text(id, english), replacements)
 }
 
 pub(super) fn unregister_session_effect(session_id: Option<acp::SessionId>) -> Vec<Effect> {
@@ -904,7 +902,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let failure_message = localized_template(
                 locale.as_ref(),
                 "turn.send_now.failed_requeued",
-                "Send now failed — requeued: {error}",
+                "Send now failed. Requeued: {error}",
                 &[("{error}", &error)],
             );
             if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -1039,11 +1037,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             error,
         } => {
             tracing::warn!(task_id = %task_id, error = %error, "Failed to kill bg task");
-            if let Some(agent) = find_agent_by_session_id(&mut app.agents, &session_id)
-                && let Some(task) = agent.session.bg_tasks.get_mut(&task_id)
-            {
-                task.pending_kill = false;
-                task.kill_requested_at = None;
+            if let Some((session, _)) = task_view_by_session_id(app, &session_id) {
+                clear_pending_kill(session, &task_id);
             }
             vec![]
         }
@@ -1644,7 +1639,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let delete_notice = if membership_removal_failed {
                 "Session deleted, but dashboard membership could not be removed"
             } else {
-                "Session deleted"
+                deleted_toast.as_str()
             };
             if after == AfterSessionDelete::Stay {
                 app.dashboard_local_sessions
@@ -2152,42 +2147,20 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             tracing::warn!(error = %error, "bundle status fetch failed");
             vec![]
         }
-        TaskResult::CatalogEntryReady {
-            kind,
-            name,
-            content,
-        } => {
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                let title = format!("{kind}: {name}");
-                agent.show_block_viewer(
-                    crate::views::block_viewer::BlockViewerPane::for_plain_text(&title, &content),
-                );
-            }
-            vec![]
-        }
-        TaskResult::CatalogEntryFailed { error } => {
-            tracing::warn!(error = %error, "catalog entry fetch failed");
-            let message = localized_template(
-                locale.as_ref(),
-                "catalog.entry.load_failed",
-                "Couldn't load entry: {error}",
-                &[("{error}", &error)],
-            );
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                agent.scrollback.push_block(RenderBlock::system(message));
-            }
-            vec![]
-        }
         TaskResult::BtwResponse {
             agent_id,
             result,
             minimal_request_id,
             image_notice,
-        } => handle_btw_response(app, agent_id, result, minimal_request_id, image_notice),
+            skipped_image_numbers,
+        } => handle_btw_response(
+            app,
+            agent_id,
+            result,
+            minimal_request_id,
+            image_notice,
+            &skipped_image_numbers,
+        ),
         TaskResult::InterjectQueued { .. } => vec![],
         TaskResult::RecapRequested {
             session_id,
@@ -2219,7 +2192,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let failure_message = localized_template(
                 locale.as_ref(),
                 "turn.interject.failed_requeued",
-                "Interjection failed — requeued: {error}",
+                "Interjection failed. Requeued: {error}",
                 &[("{error}", &error)],
             );
             if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -2291,6 +2264,19 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::CheckSubscriptionComplete { verify, meta } => {
             handle_check_subscription_complete(app, verify, meta)
+        }
+        TaskResult::TeamCapabilityHydrated {
+            identity,
+            can_administer_team,
+        } => {
+            if can_administer_team.is_some()
+                && app.can_administer_team.is_none()
+                && identity.matches(&app.auth_identity())
+            {
+                app.can_administer_team = can_administer_team;
+                refresh_open_settings_modals(app);
+            }
+            vec![]
         }
         TaskResult::GateVerifyTimeout { generation } => handle_gate_verify_timeout(app, generation),
         TaskResult::CreditLimitRecheckComplete { agent_id, meta } => {
@@ -2397,6 +2383,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::SettingPersisted { key, value } => {
             tracing::trace!(target: "settings", ?key, ?value, "setting persisted");
+            settings::handle_setting_persisted(app, key, value);
             vec![]
         }
         TaskResult::SettingPersistFailed {
@@ -2406,14 +2393,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         } => {
             let rollback_effects = apply_setting_rollback(app, key, &rollback_value);
             tracing::warn!(target: "settings", ?key, ?rollback_value, %error, "setting persist failed; rolled back");
-            let scrubbed = scrub_error_for_toast_with_locale(&error, locale.as_ref());
-            let message = localized_template(
-                locale.as_ref(),
-                "settings.persist.save_failed",
-                "\u{2717} Could not save {key}: {error}",
-                &[("{key}", key), ("{error}", &scrubbed)],
-            );
-            app.show_toast(&message);
+            toast_persist_failure(app, key, &error);
             rollback_effects
         }
         TaskResult::SettingPersistFailedBestEffort { key, error } => {
@@ -2422,15 +2402,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 ?key, %error,
                 "setting persist failed (best-effort); in-memory state stays at optimistic value",
             );
-            let scrubbed = scrub_error_for_toast_with_locale(&error, locale.as_ref());
-            let message = localized_template(
-                locale.as_ref(),
-                "settings.persist.save_failed",
-                "\u{2717} Could not save {key}: {error}",
-                &[("{key}", key), ("{error}", &scrubbed)],
-            );
-            app.show_toast(&message);
+            toast_persist_failure(app, key, &error);
             vec![]
+        }
+        TaskResult::FeatureOverridePersisted { feature, result } => {
+            settings::handle_feature_override_persisted(app, feature, result)
         }
     }
 }

@@ -131,7 +131,6 @@ use crate::views::plan_approval_view::{PlanApprovalViewState, PlanComment};
 use crate::views::prompt_widget::{PromptWidget, StashedPrompt};
 use crate::views::question_view::QuestionViewState;
 use crate::views::queue_pane::QueuePane;
-use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
 use ratatui::buffer::Buffer;
@@ -155,6 +154,7 @@ mod links;
 mod media;
 mod modals;
 mod notices;
+pub(crate) use notices::ImagesDroppedBy;
 mod panes;
 mod paste;
 pub(crate) use kept_plan::KeptPlan;
@@ -778,7 +778,6 @@ pub struct AgentView {
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,
     pub tasks: TasksPane,
-    pub catalog: SubagentCatalogPane,
     pub queue: QueuePane,
     /// Per-agent mirror of the server-authoritative shared prompt queue
     /// (`AppView::shared_prompt_queues[sid]`), kept in sync by `handle_queue_changed` and the immediate-send path. The queue pane renders the union of this and the local `pending_prompts`; the edit handlers read it to route remove/reorder by origin. Empty unless a plain prompt was queued server-side while a turn was running.
@@ -835,6 +834,14 @@ pub struct AgentView {
     pub(crate) failed_wake_marker_for: Option<String>,
     /// Wake prompts whose terminals landed; a late delta for one must not revive the stop affordance (see `note_streaming_wake_turn`). Cleared at replay-window entry; a queue broadcast naming one as running again removes that entry.
     pub(crate) finished_wake_prompts: std::collections::HashSet<String>,
+    /// Child prompt ids whose terminal marker was already applied.
+    pub(crate) ended_child_prompt_ids: std::collections::HashSet<String>,
+    /// Child prompt ids left for a newer turn. Not yet marked: the terminal still pushes a marker.
+    pub(crate) superseded_child_prompt_ids: std::collections::HashSet<String>,
+    /// `turnStartMs` of a child turn that ended with no prompt id. `None` if that turn had no start.
+    pub(crate) unidentified_child_turn_closed_ms: Option<i64>,
+    /// Prompt id that start belonged to. `None` when the closed turn had no id.
+    pub(crate) unidentified_child_turn_closed_prompt: Option<String>,
     /// The wake turn currently streaming, if any. See [`RunningWakeTurn`].
     pub(crate) running_wake_turn: Option<RunningWakeTurn>,
     pub active_pane: AgentPane,
@@ -1086,7 +1093,6 @@ pub struct AgentView {
     pub hit_todo_close: HitArea,
     pub hit_bg_close: HitArea,
     pub hit_subagent_close: HitArea,
-    pub hit_catalog_close: HitArea,
     pub hit_bg_status: HitArea,
     pub hit_goal_status: HitArea,
     pub hit_goal_close: HitArea,
@@ -1401,12 +1407,6 @@ pub struct AgentView {
     pub(crate) cancel_trigger_hint: Option<crate::app::actions::CancelTrigger>,
     pub(crate) rewind_state: Option<crate::views::rewind::RewindState>,
     pub(crate) rewind_points: Option<Vec<crate::views::rewind::RewindPointInfo>>,
-    /// In-place edit of a previous user prompt. See `inline_edit.rs`.
-    pub(crate) inline_edit: Option<crate::app::inline_edit::InlineEditState>,
-    /// Edited text awaiting its rewind; `dispatch_rewind_success` resubmits it.
-    /// Set only when the rewind flow emits `Effect::RewindExecute` while the inline editor is open (see `stash_inline_resubmit_if_editing`).
-    /// inline editor is open (see `stash_inline_resubmit_if_editing`).
-    pub(crate) pending_inline_resubmit: Option<String>,
     /// `/jump` picker overlay (pure client-side turn navigation).
     pub(crate) jump_state: Option<crate::views::jump::JumpState>,
     /// Timeline sidebar rail geometry for the current frame (`None` means
@@ -3502,10 +3502,6 @@ mod prompt_input_mode_tests {
     use crate::app::actions::Action;
     use crate::theme::Theme;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    #[test]
-    fn default_is_normal() {
-        assert_eq!(PromptInputMode::default(), PromptInputMode::Normal);
-    }
     #[test]
     fn accent_color_returns_expected_for_each_variant() {
         let theme = Theme::current();

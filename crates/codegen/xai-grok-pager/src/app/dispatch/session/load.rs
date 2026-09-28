@@ -428,6 +428,9 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
             app.welcome_history_load_as_build = true;
         }
     }
+    if crate::app::is_daemon_or_remote_control_row(&source) {
+        return dispatch_daemon_session_pick(app, session_id, cwd);
+    }
     if chat_kind {
         return dispatch_load_session(app, session_id, None, true);
     }
@@ -473,6 +476,14 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
         app.show_toast(&toast);
         vec![]
     }
+}
+fn dispatch_daemon_session_pick(app: &mut AppView, session_id: String, cwd: String) -> Vec<Effect> {
+    #[cfg(feature = "local-workspace")]
+    {
+        app.welcome_history_load_as_build = true;
+    }
+    let session_cwd = (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd));
+    dispatch_load_session(app, session_id, session_cwd, false)
 }
 /// Pick a session from the picker and resume it in a new git worktree.
 pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
@@ -555,6 +566,17 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
             .named_text(
                 "session.toast.conversation_worktree_forbidden",
                 "Chat conversations can't be resumed in a worktree",
+            )
+            .into_owned();
+        app.show_toast(&toast);
+        return vec![];
+    }
+    if crate::app::is_daemon_or_remote_control_row(&source) {
+        let toast = app
+            .locale
+            .named_text(
+                "session.toast.daemon_worktree_forbidden",
+                "Daemon sessions can't be resumed in a worktree",
             )
             .into_owned();
         app.show_toast(&toast);
@@ -1291,10 +1313,11 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
-        if agent.apply_session_modes(modes) {
-            app.default_yolo = false;
-            app.current_ui.permission_mode = Some("ask".into());
-        }
+        crate::app::dispatch::session::lifecycle::apply_session_modes_dropping_auto(
+            agent,
+            modes,
+            &mut app.current_ui.permission_mode,
+        );
         let deferred =
             crate::app::dispatch::session::lifecycle::apply_deferred_model_switch_with_locale(
                 agent,
@@ -1355,7 +1378,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         if let Some(directive) = agent.pending_first_prompt.take() {
             agent.session.enqueue_prompt_front(directive);
         }
-        let drain = maybe_drain_queue(agent);
+        let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
         let page_flip_entry = drain.page_flip_entry;
         effects.extend(drain.effects);
         let cwd = agent.session.cwd.clone();

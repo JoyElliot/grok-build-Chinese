@@ -1,4 +1,4 @@
-//! Secondary pane input: scrollback keys and search, todo/tool-usage panes, background tasks, subagent catalog, and the pane-aware scroll router.
+//! Secondary pane input: scrollback keys and search, todo/tool-usage panes, background tasks, and the pane-aware scroll router.
 use super::{ActivePane, AgentPane, AgentView, overlay_action_to_outcome, resolve_action};
 use crate::actions::{ActionId, ActionRegistry, When};
 use crate::app::actions::Action;
@@ -60,18 +60,6 @@ impl AgentView {
         {
             self.highlighted_link_idx = None;
             return InputOutcome::Action(Action::OpenLink(target));
-        }
-        if crate::app::inline_edit::INLINE_EDIT_ENABLED
-            && key!(Enter).matches(key)
-            && !self.scrollback.is_selected_group_header()
-            && let Some(idx) = self.scrollback.selected()
-            && self
-                .scrollback
-                .entry(idx)
-                .is_some_and(|e| e.block.is_user_prompt())
-            && self.enter_inline_edit(idx)
-        {
-            return InputOutcome::Changed;
         }
         let action = registry.lookup_with_mode(key, When::ScrollbackFocused, self.vim_mode);
         if action == Some(ActionId::OpenBlockViewer) && self.try_open_child_from_selected_row() {
@@ -1000,6 +988,18 @@ impl AgentView {
                 .copied()
                 .and_then(|item| self.dock_stop_action(item))
                 .map_or(InputOutcome::Unchanged, InputOutcome::Action),
+            KeyCode::Char('y') => {
+                let (col, row) = self.last_mouse_pos;
+                if self.pane_areas.queue.area() > 0
+                    && self.pane_areas.queue.contains((col, row).into())
+                    && let Some((_, text)) = self.queue.yank_copy_target()
+                {
+                    self.copy_to_clipboard(&text);
+                    InputOutcome::Changed
+                } else {
+                    InputOutcome::Unchanged
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.set_active_pane(AgentPane::Scrollback, false);
                 InputOutcome::Changed
@@ -1137,45 +1137,6 @@ impl AgentView {
             return overlay_action_to_outcome(action);
         }
         if self.tasks.handle_key(key) {
-            InputOutcome::Changed
-        } else {
-            InputOutcome::Unchanged
-        }
-    }
-    /// Subagent-pane-focused key handling.
-    pub(super) fn handle_catalog_key(
-        &mut self,
-        key: &KeyEvent,
-        _registry: &ActionRegistry,
-    ) -> InputOutcome {
-        use crate::views::overlay::{handle_overlay_key, handle_overlay_nav_key};
-        let has_input = self.catalog.list_state.input_mode().is_some();
-        let action = handle_overlay_key(&mut self.catalog.overlay, key).or_else(|| {
-            if !has_input {
-                handle_overlay_nav_key(&mut self.catalog.overlay, key)
-            } else {
-                None
-            }
-        });
-        if let Some(action) = action {
-            self.catalog.on_state_change();
-            if !self.catalog.overlay.visible || !self.catalog.overlay.focused {
-                self.set_active_pane(AgentPane::Scrollback, false);
-            }
-            return overlay_action_to_outcome(action);
-        }
-        if key.code == crossterm::event::KeyCode::Enter
-            && key.modifiers == crossterm::event::KeyModifiers::NONE
-        {
-            if let Some((kind, name)) = self.catalog.selected_entry() {
-                return InputOutcome::Action(Action::ViewCatalogEntry {
-                    kind: kind.to_owned(),
-                    name: name.to_owned(),
-                });
-            }
-            return InputOutcome::Unchanged;
-        }
-        if self.catalog.handle_key(key) {
             InputOutcome::Changed
         } else {
             InputOutcome::Unchanged
@@ -1347,9 +1308,6 @@ impl AgentView {
             }
             ActivePane::Tasks => {
                 self.tasks.handle_scroll(lines, col, row);
-            }
-            ActivePane::Catalog => {
-                self.catalog.handle_scroll(lines, col, row);
             }
             ActivePane::Dock => match self.dock_section_at(self.pane_areas.dock, row) {
                 Some(crate::views::dock::Section::Queued) | None => {

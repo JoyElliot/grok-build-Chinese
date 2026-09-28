@@ -297,8 +297,6 @@ fn value_column_caps_survive_long_titles() {
     assert!(form_value_column(fields, 20) <= 19);
 }
 
-// ── viewport ────────────────────────────────────────────────────────────────
-
 fn many_field_req(n: usize) -> McpElicitExtRequest {
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
@@ -360,8 +358,6 @@ fn failed_accept_error_is_visible_on_clipped_form() {
     assert!(text.contains("field10"), "cursor field visible:\n{text}");
     assert!(text.contains("required"), "its error row visible:\n{text}");
 }
-
-// ── URL mode ───────────────────────────────────────────────────────────────
 
 #[test]
 fn url_check_rejects_unsafe_and_malformed() {
@@ -471,8 +467,6 @@ fn url_accept_transitions_to_waiting_and_keeps_id() {
     assert!(state.take_response_tx().is_none());
 }
 
-// ── multi-select ───────────────────────────────────────────────────────────
-
 fn multi_select_req() -> McpElicitExtRequest {
     let mut req = form_req();
     req.mode = McpElicitModeFields::Form {
@@ -542,8 +536,6 @@ fn multi_select_options_render_when_expanded() {
     );
     assert!(text.contains("[ ] Germany"), "untoggled option:\n{text}");
 }
-
-// ── typed content ──────────────────────────────────────────────────────────
 
 #[test]
 fn integer_field_submits_lossless_i64() {

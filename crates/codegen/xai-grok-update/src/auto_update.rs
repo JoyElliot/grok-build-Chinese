@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use crate::cleanup_downloads::cleanup_old_downloads;
 use crate::version::{
     UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
-    is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
+    is_stable_channel, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
 use semver::Version;
 use xai_grok_shell::util::config;
@@ -80,11 +80,6 @@ fn announce_update_failed(error: &dyn std::fmt::Display) {
     } else {
         eprintln!("Update failed: {error}");
     }
-}
-
-/// An empty or `"stable"` channel means stable, the installers' default.
-fn is_stable_channel(channel: &str) -> bool {
-    channel.is_empty() || channel == "stable"
 }
 
 /// Manual-install one-liner for this platform's bootstrap installer. On Unix the variable must prefix `bash` (which runs

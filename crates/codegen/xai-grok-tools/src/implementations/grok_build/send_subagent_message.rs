@@ -19,8 +19,7 @@ pub enum SendSubagentMessageDelivery {
     Steer,
     /// Wait as a later turn.
     Queue,
-    /// Urgent: delivered ahead of pending steers at the earliest safe point; also interrupts a
-    /// wait on background work.
+    /// Arrives before a pending steer. It interrupts a subagent waiting on background work.
     Interject,
 }
 
@@ -48,7 +47,7 @@ pub fn resolve_delivery(
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SendSubagentMessageInput {
-    /// `parent` or the durable agent ID of the target subagent.
+    /// The durable agent ID of the target subagent.
     pub subagent_id: String,
     /// Text to send to the subagent.
     pub text: String,
@@ -207,7 +206,12 @@ impl crate::types::tool_metadata::ToolMetadata for SendSubagentMessageTool {
     }
 
     fn description_template(&self) -> &str {
-        "Send a follow-up message to a subagent owned by this session. When called by a subagent, `parent` targets an active parent subagent, and a known agent ID targets another local subagent; an eligible completed subagent resumes with the same identity. For an active target, `delivery` selects how the message lands: `steer` (default) joins the current turn at its next safe point; `queue` waits as a later turn; `interject` is urgent — it is delivered ahead of pending steers at the earliest safe point and interrupts a subagent blocked waiting on background work."
+        "Send a message to a subagent that this session owns. \
+         An eligible completed subagent resumes with the same identity. \
+         Use this tool to add a fact or correct a wrong target. \
+         Do not use this tool to tell a subagent to stop, send its result now, or stop reading and start writing. \
+         There is no time limit, whatever the subagent shows. \
+         Trust the subagent and let it run to completion, unless it needs guidance or more information."
     }
 }
 
@@ -264,7 +268,7 @@ impl xai_tool_runtime::Tool for SendSubagentMessageTool {
                 let agent_id = xai_message_delivery_core::AgentId::parse(&input.subagent_id)
                     .ok_or_else(|| {
                         xai_tool_runtime::ToolError::invalid_arguments(
-                            "subagent_id must be `parent` or a valid agent ID",
+                            "subagent_id must be a valid agent ID",
                         )
                     })?;
                 ActiveMessageTarget::Agent { agent_id }

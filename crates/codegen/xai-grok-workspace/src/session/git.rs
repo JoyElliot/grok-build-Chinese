@@ -381,7 +381,7 @@ pub(crate) fn strip_url_credentials(url_str: &str) -> String {
     url_str.to_string()
 }
 /// Scrub credentials from any URL embedded in free-form git output before it is returned to a caller or logged. The token would otherwise leak to the FE and logs.
-pub(crate) fn scrub_git_output(text: &str) -> String {
+pub fn scrub_git_output(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
     while let Some(pos) = remaining.find("://") {

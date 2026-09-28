@@ -10,7 +10,6 @@ use super::{AgentView, BannerSlotParams};
 use crate::actions::ActionRegistry;
 use crate::app::actions::Action;
 use crate::app::app_view::InputOutcome;
-use crate::app::bundle::BundleState;
 use crate::scrollback::render::ScratchBuffer;
 use crate::views::tasks_pane::TaskEntryId;
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -40,7 +39,6 @@ fn draw_frame(agent: &mut AgentView, area: Rect) -> Buffer {
         None,
         false,
         BannerSlotParams::none(),
-        &BundleState::default(),
         false,
         &mut Vec::new(),
         super::AppRenderParams::default(),
@@ -222,7 +220,7 @@ fn dock_subagent_icons_hover_and_click_where_painted() {
         .collect::<Vec<_>>()
         .concat();
     assert!(
-        row.contains("General test"),
+        row.contains("Subagent test"),
         "subagent row painted: {row:?}"
     );
     let _ = agent.handle_mouse(&mouse(MouseEventKind::Moved, dock.x + 5, row_y));

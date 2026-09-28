@@ -799,7 +799,7 @@ pub fn paste_payload_needs_clipboard_attachment_probe(payload: &str) -> bool {
 }
 
 /// Terminals rewrite `\n` to `\r` on paste. A mismatch is an IME commit or a diverged tmux buffer, not a clipboard paste.
-/// Reads `pbpaste`; call only off the event loop.
+/// Reads clipboard text; call only off the event loop.
 pub fn bracketed_payload_came_from_clipboard(payload: &str) -> bool {
     bracketed_payload_came_from_clipboard_result(payload).unwrap_or(false)
 }

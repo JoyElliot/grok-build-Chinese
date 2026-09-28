@@ -107,7 +107,7 @@ async fn first_k_tail_rejects_get_pending_then_failed() {
 
             tokio::time::timeout(
                 std::time::Duration::from_secs(15),
-                actor.execute_tool_calls(batch),
+                actor.execute_tool_calls(batch, None),
             )
             .await
             .expect("execute_tool_calls must not hang")

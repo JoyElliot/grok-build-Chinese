@@ -828,6 +828,13 @@ impl AgentView {
             }
             return InputOutcome::Changed;
         }
+        if is_commenting && self.ctrl_c_cancels_empty_draft(key) {
+            if let Some(ref mut pav) = self.plan_approval_view {
+                pav.focus = PlanApprovalFocus::Preview;
+            }
+            self.discard_in_progress_comment();
+            return InputOutcome::Changed;
+        }
         if !is_commenting
             && key.code == KeyCode::Char('a')
             && key.modifiers.is_empty()
@@ -900,6 +907,11 @@ impl AgentView {
             }
             PromptEvent::Ignored => InputOutcome::Changed,
         }
+    }
+    /// True when the key is Ctrl+C and the draft is empty.
+    /// The is_empty() check must match the prompt's own Ctrl+C clear in `prompt.handle_key`.
+    fn ctrl_c_cancels_empty_draft(&self, key: &KeyEvent) -> bool {
+        crate::key!('c', CONTROL).matches(key) && self.prompt.text().is_empty()
     }
     pub(super) fn enter_plan_commenting(&mut self) -> InputOutcome {
         let viewer = match self.line_viewer.as_mut() {
@@ -1118,6 +1130,9 @@ impl AgentView {
                 self.prompt.file_search.clear_context();
                 return InputOutcome::Changed;
             }
+            return self.cancel_casual_plan_commenting();
+        }
+        if self.ctrl_c_cancels_empty_draft(key) {
             return self.cancel_casual_plan_commenting();
         }
         match self.prompt.route_enter(key) {
@@ -1382,6 +1397,9 @@ mod plan_approval_enter_tests {
     fn enter_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
     }
+    fn ctrl_c() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
     fn stashed_text(text: &str) -> crate::views::prompt_widget::StashedPrompt {
         let mut stash = crate::views::prompt_widget::StashedPrompt::default();
         stash.text = text.to_owned();
@@ -1526,6 +1544,94 @@ mod plan_approval_enter_tests {
         assert_eq!(
             agent.plan_approval_view.as_ref().map(|p| p.focus),
             Some(PlanApprovalFocus::Preview)
+        );
+    }
+    #[test]
+    fn ctrl_c_clears_comment_then_cancels_and_keeps_saved_comment() {
+        let mut agent = agent_with_revise_prompt();
+        agent.prompt.set_text("keep my freeform notes");
+        if let Some(ref mut pav) = agent.plan_approval_view {
+            pav.comments.push(PlanComment {
+                id: 7,
+                line_range: 0..1,
+                text: "keep me".into(),
+            });
+            pav.stashed_feedback_prompt = Some(agent.prompt.stash());
+            pav.editing_comment_id = Some(7);
+            pav.commenting_range = Some(0..1);
+            pav.focus = PlanApprovalFocus::Commenting;
+        }
+        agent.prompt.set_text("keep me, edited");
+        let _ = agent.handle_plan_feedback_key(&ctrl_c());
+        assert_eq!(agent.prompt.text(), "");
+        assert_eq!(
+            agent.plan_approval_view.as_ref().map(|p| p.focus),
+            Some(PlanApprovalFocus::Commenting),
+            "first Ctrl+C only clears the draft"
+        );
+        let outcome = agent.handle_plan_feedback_key(&ctrl_c());
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert_eq!(agent.prompt.text(), "keep my freeform notes");
+        let pav = agent
+            .plan_approval_view
+            .as_ref()
+            .expect("cancelling a comment must leave plan approval open");
+        assert_eq!(pav.focus, PlanApprovalFocus::Preview);
+        assert_eq!(pav.commenting_range, None);
+        assert_eq!(pav.editing_comment_id, None);
+        assert_eq!(
+            pav.comments
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["keep me"],
+            "cancelling an edit must not delete the saved comment"
+        );
+    }
+    #[test]
+    fn ctrl_c_on_empty_prompt_focus_does_not_cancel() {
+        let mut agent = agent_with_revise_prompt();
+        agent.prompt.set_text("");
+        let outcome = agent.handle_plan_feedback_key(&ctrl_c());
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert_eq!(
+            agent.plan_approval_view.as_ref().map(|p| p.focus),
+            Some(PlanApprovalFocus::Prompt),
+            "Ctrl+C in the revision-notes box must not change focus"
+        );
+    }
+    #[test]
+    fn ctrl_c_clears_casual_comment_then_cancels_and_keeps_saved_comment() {
+        let mut agent = make_agent();
+        agent.plan_comments.push(PlanComment {
+            id: 3,
+            line_range: 0..1,
+            text: "keep me".into(),
+        });
+        agent.prompt.set_text("keep my session draft");
+        agent.casual_stashed_prompt = Some(agent.prompt.stash());
+        agent.enter_casual_commenting_for_test();
+        agent.casual_editing_comment_id = Some(3);
+        agent.prompt.set_text("keep me, edited");
+        let _ = agent.handle_casual_plan_feedback_key(&ctrl_c());
+        assert_eq!(agent.prompt.text(), "");
+        assert!(
+            agent.casual_commenting_range.is_some(),
+            "first Ctrl+C only clears the draft"
+        );
+        let outcome = agent.handle_casual_plan_feedback_key(&ctrl_c());
+        assert!(matches!(outcome, InputOutcome::Changed));
+        assert_eq!(agent.prompt.text(), "keep my session draft");
+        assert_eq!(agent.casual_commenting_range, None);
+        assert_eq!(agent.casual_editing_comment_id, None);
+        assert_eq!(
+            agent
+                .plan_comments
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["keep me"],
+            "cancelling an edit must not delete the saved comment"
         );
     }
     #[test]

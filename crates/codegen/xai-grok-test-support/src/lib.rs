@@ -22,7 +22,7 @@
 //! - [`spawn_counting_server`]: Connection-counting HTTP/1.1 server for wire/pooling tests
 //! - [`uds_proxy::UdsProxy`]: Frame-aware fault-injection proxy for leader IPC sockets (unix)
 //! - [`ResourceSnapshot`]: RSS/threads/fds sampling for soak tests
-//! - [`MockOtelServer`]: OTLP/HTTP collector recording the shell's exported logs and metrics as typed events in its [`OtelRecorder`]
+//! - [`MockOtelServer`]: OTLP/HTTP collector recording the shell's exported logs, metrics, and traces
 //! - [`OtelRecorder`]: the mock OTLP server's log, which a test reads and waits on, or fills from its own OTLP transport
 //! - [`MockManagedConfigServer`]: mock of the server the managed configuration supervisor fetches policy from
 //! - [`ManagedPolicy`]: the configuration row the mock server serves for one principal, signed by a [`TestSigningKey`] or not
@@ -105,7 +105,10 @@ pub use acp_transcript::TranscriptEntry;
 pub use conversation::ReadConversation;
 pub use conversation_script::{Conversation, MockToolCall, ScriptViolation, mock_call_id};
 pub use counting_server::spawn_counting_server;
-pub use env::{EnvGuard, git_workdir, grok_binary, isolate_grok_env};
+pub use env::{
+    EnvGuard, ensure_cargo_bin_with_features, git_workdir, grok_binary, isolate_grok_env,
+    set_grok_binary_override,
+};
 pub use failure::{
     CUT_REPLY, DOOM_LOOP_CHECK_HEADER, DOOM_LOOP_TRIGGER, ErrorPosition, LOOPING_REPLY,
     ObservedFailure, StatusFailure, StreamError,
@@ -122,12 +125,13 @@ pub use inference_request::{DEFAULT_MODEL, InferenceEndpoint};
 pub use leader::LeaderFixture;
 pub use mock_otel_server::MockOtelServer;
 pub use mock_server::{
-    FeedbackPost, GatedUploadProxy, MockInferenceServer, MockModelEntry, ScriptedResponse,
-    SseEvent, StorageUpload,
+    FeedbackPost, GatedUploadProxy, MockCanAdministerTeam, MockInferenceServer, MockModelEntry,
+    MockUserTeam, ScriptedResponse, SseEvent, StorageUpload,
 };
 pub use otel_event::{
     OtelAttributes, OtelBody, OtelDecodeError, OtelEvent, OtelExport, OtelFault, OtelLogRecord,
-    OtelMetricData, OtelMetricPoint, OtelNumber, OtelSignal, OtelTemporality, OtelUnreadBody,
+    OtelMetricData, OtelMetricPoint, OtelNumber, OtelSignal, OtelSpan, OtelTemporality,
+    OtelUnreadBody,
 };
 pub use otel_recorder::{OtelRecorder, OtelRecorderError};
 #[cfg(unix)]
@@ -138,4 +142,4 @@ pub use process::{
 };
 pub use resources::{ResourceGrowth, ResourceSnapshot, RssMeasurement, RssOutcome, RssSampler};
 pub use sandbox::{TestSandbox, TestSandboxBuilder};
-pub use tools::Tool;
+pub use tools::{DAEMON_SPAWN_TOOL, GROK_BUILD_SPAWN_TOOL, Tool};

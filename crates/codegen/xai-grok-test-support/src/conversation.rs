@@ -7,7 +7,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::inference_request::{
-    first_system_message, history_tool_calls, last_assistant_message, tool_results,
+    first_system_message, history_tool_calls, last_assistant_message, offered_tools,
+    opening_user_turn, tool_results,
 };
 use crate::request_log::LogEntry;
 use crate::tools::Tool;
@@ -41,7 +42,14 @@ impl fmt::Display for ConversationId {
 pub(crate) enum ConversationKey {
     /// Sent for every session, so a prompt re rendered mid session stays in its conversation.
     SessionId(String),
-    SystemMessage(String),
+    /// What a route that sends no session id opens every request with. A subagent child can
+    /// inherit its parent's system prompt, so the tools and the opening message are in the key
+    /// too: they are all that tells a child from its parent, and two children from each other.
+    Opening {
+        system_message: String,
+        tools: Vec<String>,
+        opening_turn: Option<String>,
+    },
     /// Every request with neither shares one conversation.
     Unkeyed,
 }
@@ -52,7 +60,11 @@ impl ConversationKey {
             return ConversationKey::SessionId(session_id.to_owned());
         }
         match first_system_message(body) {
-            Some(message) => ConversationKey::SystemMessage(message),
+            Some(system_message) => ConversationKey::Opening {
+                system_message,
+                tools: offered_tools(body).names(),
+                opening_turn: opening_user_turn(body),
+            },
             None => ConversationKey::Unkeyed,
         }
     }
@@ -62,11 +74,21 @@ impl fmt::Display for ConversationKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConversationKey::SessionId(session_id) => write!(f, "session {session_id}"),
-            ConversationKey::SystemMessage(message) => {
-                let mut chars = message.chars();
+            ConversationKey::Opening {
+                system_message,
+                tools,
+                opening_turn,
+            } => {
+                let mut chars = system_message.chars();
                 let preview: String = chars.by_ref().take(SYSTEM_MESSAGE_PREVIEW_CHARS).collect();
                 let cut = if chars.next().is_some() { "..." } else { "" };
-                write!(f, "system message {preview:?}{cut}")
+                let opening = opening_turn.as_deref().unwrap_or_default();
+                let opening: String = opening.chars().take(SYSTEM_MESSAGE_PREVIEW_CHARS).collect();
+                write!(
+                    f,
+                    "system message {preview:?}{cut} with {} tools opening {opening:?}",
+                    tools.len()
+                )
             }
             ConversationKey::Unkeyed => f.write_str("unkeyed"),
         }

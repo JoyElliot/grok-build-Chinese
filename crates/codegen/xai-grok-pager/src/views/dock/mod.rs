@@ -614,8 +614,8 @@ mod tests {
                     openable: true,
                     spinning: false,
                 },
-                row("General", "fix flaky pty scroll test", "12s", true),
-                row("General", "third", "1s", true),
+                row("Subagent", "fix flaky pty scroll test", "12s", true),
+                row("Subagent", "third", "1s", true),
             ],
             tasks: vec![row("Run", "cargo test -p theme (bg)", "12s", true)],
             watchers: vec![row("Monitor", "watch build log", "3m01s", true), {
@@ -705,7 +705,7 @@ mod tests {
         );
         assert!(first.trim_end().ends_with("grok-4.5 2m14s"), "{first}");
         assert!(
-            row_text(&buf, 3).contains("General third"),
+            row_text(&buf, 3).contains("Subagent third"),
             "third row is in the preview, not folded: {}",
             row_text(&buf, 3)
         );
@@ -1425,7 +1425,7 @@ mod tests {
         // Watchers section that still has one row it cannot show.
         let data = DockData {
             subagents: (0..10)
-                .map(|i| row("General", &format!("agent {i}"), "1s", true))
+                .map(|i| row("Subagent", &format!("agent {i}"), "1s", true))
                 .collect(),
             tasks: (0..3)
                 .map(|i| row("Run", &format!("task {i}"), "1s", true))

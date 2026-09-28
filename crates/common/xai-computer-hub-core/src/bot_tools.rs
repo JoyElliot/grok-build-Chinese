@@ -17,6 +17,7 @@ pub const GROK_BOT_TOOL_IDS: &[&str] = &[
     "bot_transcript_offbox",
     "bot_await_turn",
     "bot_search_agents",
+    "bot_voice_call_plan",
 ];
 
 /// Whether `name` is a hub-synthesized Grok Bot harness tool.
@@ -107,6 +108,12 @@ pub const GROK_BOT_TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
         "Find Grok Bot agents by name or description when you know what you \
          want. Returns the best matches only; bot_list_agents shows every bot. \
          Wakes the box.",
+    ),
+    (
+        "bot_voice_call_plan",
+        "Plan a voice call with a Grok Bot agent: its spoken instructions, \
+         voice-side tools, greeting, and task receipt. For a voice backend at \
+         dial time; sends nothing to the agent.",
     ),
 ];
 
@@ -317,6 +324,25 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
                 }
             }
         }),
+        "bot_voice_call_plan" => serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["agent_id"],
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent id."
+                },
+                "user_name": {
+                    "type": "string",
+                    "description": "What the bot should call the user."
+                },
+                "spoken_language": {
+                    "type": "string",
+                    "description": "Language the call is spoken in."
+                }
+            }
+        }),
         _ => return None,
     })
 }
@@ -399,6 +425,14 @@ mod tests {
     fn search_agents_is_a_default_tool() {
         assert!(is_grok_bot_default_tool("bot_search_agents"));
         assert!(!is_grok_bot_default_tool("bot_future_tool"));
+    }
+
+    /// A voice backend opts in per toolbox; an ordinary agent must not see
+    /// the tool on an empty allowlist.
+    #[test]
+    fn voice_call_plan_is_declared_but_not_a_default_tool() {
+        assert!(is_grok_bot_tool("bot_voice_call_plan"));
+        assert!(!is_grok_bot_default_tool("bot_voice_call_plan"));
     }
 
     /// Clients advertise this schema from the shared table before the

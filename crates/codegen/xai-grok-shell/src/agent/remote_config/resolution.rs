@@ -150,14 +150,14 @@ pub(crate) fn resolve_default_model(
     }
 }
 
-/// Filter hidden and auth-gated entries out of `catalog` and convert to ACP wire format.
+/// Keep the picker projection of `catalog` (`ModelInfo::is_picker_eligible`) in ACP wire format.
 pub(crate) fn available_models(
     catalog: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> IndexMap<acp::ModelId, acp::ModelInfo> {
     let visible: IndexMap<String, ModelEntry> = catalog
         .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth))
+        .filter(|(_, e)| e.info.is_picker_eligible(is_session_auth))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     config::to_acp_model_info(&visible)

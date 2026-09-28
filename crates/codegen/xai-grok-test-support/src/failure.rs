@@ -11,6 +11,7 @@ use crate::scripted::ScriptedResponse;
 
 /// The text of a reply cut short at the output token limit.
 pub const CUT_REPLY: &str = "MOCK-CUT-PART-ONE";
+pub(crate) const CONTENT_FILTER_REPLY: &str = "MOCK-CONTENT-FILTER";
 /// The text of a reply from a model caught looping.
 pub const LOOPING_REPLY: &str = "MOCK-LOOP MOCK-LOOP MOCK-LOOP MOCK-LOOP";
 /// The header a client sends to opt into the inference API's loop detector.
@@ -141,6 +142,9 @@ pub(crate) enum Failure {
     Cut {
         count: usize,
     },
+    ContentFilter {
+        count: usize,
+    },
     /// The entry's first tool call again, or the looping reply.
     DoomLoop {
         count: usize,
@@ -165,6 +169,7 @@ impl Failure {
             Failure::Status(failure) => failure.count,
             Failure::StreamError(stream_error) => stream_error.count,
             Failure::Cut { count }
+            | Failure::ContentFilter { count }
             | Failure::DoomLoop { count }
             | Failure::Dropped { count }
             | Failure::MalformedBody { count }
@@ -177,6 +182,7 @@ impl Failure {
             Failure::Status(failure) => ObservedFailure::Status(failure.status),
             Failure::StreamError(_) => ObservedFailure::StreamError,
             Failure::Cut { .. } => ObservedFailure::Cut,
+            Failure::ContentFilter { .. } => ObservedFailure::ContentFiltered,
             Failure::DoomLoop { .. } => ObservedFailure::DoomLoop,
             Failure::Dropped { .. } => ObservedFailure::Dropped,
             Failure::MalformedBody { .. } => ObservedFailure::Malformed,
@@ -196,6 +202,7 @@ pub enum ObservedFailure {
     Dropped,
     /// Answered short at the output token limit.
     Cut,
+    ContentFiltered,
     /// Accepted, then failed with an error event inside the stream.
     StreamError,
     /// Answered with the entry's first tool call again, or with the looping reply.

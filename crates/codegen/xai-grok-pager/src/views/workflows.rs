@@ -860,7 +860,8 @@ fn render_detail(
         inner.right(),
     );
 
-    let mut body_y = inner.y + 2;
+    // Blank row between the objective and the phase/roster body
+    let mut body_y = inner.y + 3;
     let status_line = if run.status == "budget_limited" {
         let body = if run.agents_used >= 1_024 {
             workflow_text(
@@ -1557,7 +1558,11 @@ mod tests {
         let text = buf_text(&buf, area);
         assert!(text.contains("deep-research"), "{text}");
         assert!(text.contains("count-v2"), "{text}");
-        assert!(text.contains("1/2 agents"), "{text}");
+        assert!(text.contains("1/3 phases"), "{text}");
+        assert!(
+            !text.contains("agent"),
+            "list rows omit agent counts: {text}"
+        );
         assert!(!text.contains("128"), "budget cap is not shown: {text}");
         assert!(!text.contains(" · out "), "{text}");
         assert!(text.contains("enter open"), "{text}");

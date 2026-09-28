@@ -48,6 +48,33 @@ fn logs_request(record: LogRecord) -> ExportLogsServiceRequest {
     }
 }
 
+#[test]
+fn trace_span_decodes_string_attributes() {
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    let request = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            scope_spans: vec![ScopeSpans {
+                spans: vec![Span {
+                    name: "tool.execution".to_owned(),
+                    attributes: vec![attribute("tool_id", string("GrokBuild:grep"))],
+                    ..Span::default()
+                }],
+                ..ScopeSpans::default()
+            }],
+            ..ResourceSpans::default()
+        }],
+    };
+    let spans = decode_trace_protobuf(&request.encode_to_vec()).unwrap();
+    assert_eq!(spans.len(), 1);
+    let span = spans.first().expect("decoded one span");
+    assert_eq!(span.name, "tool.execution");
+    assert_eq!(
+        span.attributes.get("tool_id").and_then(Value::as_str),
+        Some("GrokBuild:grep")
+    );
+}
+
 fn events_of(signal: OtelSignal, request: &impl prost::Message) -> Vec<OtelEvent> {
     decode_protobuf(signal, &request.encode_to_vec()).unwrap()
 }

@@ -155,6 +155,15 @@ impl NfsStatusView {
             .get("nfs_transport")
             .and_then(|v| v.as_str())
     }
+    /// Kernel dest (`MountStatus.mountpoint`). Backing `worktree` / `git_dir` / `store_id` are not dests.
+    #[must_use]
+    pub fn slug_root(&self) -> Option<std::path::PathBuf> {
+        self.sole_mount()?
+            .get("mountpoint")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+    }
 }
 #[derive(Debug, Clone)]
 pub struct NfsAdopted {
@@ -387,5 +396,33 @@ mod tests {
         assert!(fork.keeps_grove_create());
         assert!(!fork.is_linked_local_view());
         assert!(!view(serde_json::json!({"mounts":[{"kind":"store"}]})).keeps_grove_create());
+    }
+    #[test]
+    fn slug_root_is_kernel_mountpoint_not_backing() {
+        assert_eq!(
+            view(serde_json::json!({
+                "mounts":[{
+                    "mountpoint": "/mnt/grove/acme",
+                    "worktree": "/var/grove/store/abc/worktree",
+                    "git_dir": "/var/grove/store/abc/git",
+                    "store_id": "abc"
+                }]
+            }))
+            .slug_root()
+            .as_deref(),
+            Some(std::path::Path::new("/mnt/grove/acme"))
+        );
+        assert_eq!(
+            view(serde_json::json!({
+                "mounts":[{
+                    "worktree": "/var/grove/store/abc/worktree",
+                    "git_dir": "/var/grove/store/abc/git",
+                    "store_id": "abc"
+                }]
+            }))
+            .slug_root(),
+            None
+        );
+        assert_eq!(view(serde_json::json!({"mounts":[{}]})).slug_root(), None);
     }
 }

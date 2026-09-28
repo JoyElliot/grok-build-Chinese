@@ -1552,6 +1552,62 @@ fn reconcile_finishes_cancelling_turn_after_grace() {
     );
 }
 
+/// The tick-arm reconcile drains the queue outside any dispatched action; the flush that follows it in
+/// the event loop must deliver a queued image's read failure on the active view and request a redraw.
+#[test]
+fn reconcile_drain_notice_is_flushed_from_the_tick_arm() {
+    use crate::app::dispatch::tests::enqueue_local;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.session.current_prompt_id = Some("pid-stuck".into());
+    }
+    enqueue_local(&mut app, id, "look at [Image #2]");
+    {
+        let mut image = crate::app::agent_view::test_fixtures::test_pasted_image();
+        image.display_number = 2;
+        image.encoded_bytes = None;
+        image.session_image_path = Some(dir.path().join("gone.png"));
+        app.agents
+            .get_mut(&id)
+            .unwrap()
+            .session
+            .pending_prompts
+            .back_mut()
+            .unwrap()
+            .images = vec![image];
+    }
+    arm_reconcile(
+        &mut app,
+        id,
+        "pid-stuck",
+        "end_turn",
+        TURN_END_RECONCILE_GRACE + std::time::Duration::from_secs(1),
+    );
+
+    let fired = reconcile_overdue_turn_ends(&mut app);
+    let shown = app.flush_image_notices_if_root();
+
+    assert!(
+        fired.is_some_and(|effects| effects
+            .iter()
+            .any(|e| matches!(e, Effect::SendPromptBlocks { .. }))),
+        "the reconcile must drain the queued prompt"
+    );
+    assert!(shown, "the flush must report the visible change");
+    assert_eq!(
+        get_agent(&app, id)
+            .toast
+            .as_ref()
+            .map(|(message, _)| message.as_str()),
+        Some("Image #2 couldn't be read — not sent")
+    );
+}
+
 #[test]
 fn reconcile_clears_stale_execute_plan_id() {
     let mut app = test_app_with_agent();
@@ -2390,6 +2446,82 @@ fn kill_bg_task_action_emits_client_ui_source() {
 }
 
 #[test]
+fn kill_bg_task_in_subagent_view_names_the_childs_session() {
+    let mut app = test_app_with_agent();
+    let root_id = AgentId(0);
+    let child_sid = "child-1";
+    let mut child = AgentView::new(
+        make_test_agent_session(&app, AgentId(1), child_sid),
+        ScrollbackState::new(),
+    );
+    child
+        .session
+        .bg_tasks
+        .insert("bg-child".into(), super::make_bg_task("bg-child"));
+    {
+        let root = app.agents.get_mut(&root_id).expect("root agent must exist");
+        root.insert_test_child(child_sid.to_string(), Box::new(child));
+        root.active_subagent = Some(child_sid.to_string());
+    }
+
+    let effects = dispatch(Action::KillBgTask("bg-child".into()), &mut app);
+
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::KillBgTask { session_id, task_id, .. }]
+                if session_id.0.as_ref() == child_sid && task_id == "bg-child"
+        ),
+        "the kill must name the child's session, got {effects:?}"
+    );
+    assert!(
+        child_task_pending_kill(&app, root_id, child_sid, "bg-child"),
+        "the kill must mark the child's row"
+    );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BgTaskKillFailed {
+            session_id: child_sid.into(),
+            task_id: "bg-child".into(),
+            error: "connection lost".into(),
+        }),
+        &mut app,
+    );
+
+    assert!(
+        !child_task_pending_kill(&app, root_id, child_sid, "bg-child"),
+        "a failed kill must clear the child's row"
+    );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BgTaskKilled {
+            session_id: child_sid.into(),
+            task_id: "bg-child".into(),
+            outcome: Some(xai_grok_tools::types::KillOutcome::NotFound),
+        }),
+        &mut app,
+    );
+
+    let child_has_row = get_agent(&app, root_id)
+        .subagent_view(child_sid)
+        .is_some_and(|view| view.session.bg_tasks.contains_key("bg-child"));
+    assert!(!child_has_row, "an unknown task must drop the child's row");
+}
+
+fn child_task_pending_kill(
+    app: &AppView,
+    root_id: AgentId,
+    child_sid: &str,
+    task_id: &str,
+) -> bool {
+    get_agent(app, root_id)
+        .subagent_view(child_sid)
+        .and_then(|view| view.session.bg_tasks.get(task_id))
+        .map(|task| task.pending_kill)
+        .unwrap_or_else(|| panic!("missing the child's task {task_id}"))
+}
+
+#[test]
 fn bg_task_kill_failed_clears_pending_kill_on_inactive_agent() {
     let mut app = two_agent_app_with_bg_task();
 
@@ -2409,188 +2541,6 @@ fn bg_task_kill_failed_clears_pending_kill_on_inactive_agent() {
         .unwrap_or_else(|| panic!("missing task-B-1"));
     assert!(!task.pending_kill);
     assert!(task.kill_requested_at.is_none());
-}
-
-/// build_rows handles many subagents (placeholder).
-#[test]
-fn build_rows_collapses_many_subagents() {
-    use crate::views::dashboard::build_rows;
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    // Insert 9 subagents.
-    for i in 0..9 {
-        let info = make_test_subagent(&format!("c{i}"), &format!("sa{i}"));
-        agent
-            .subagent_sessions
-            .insert(info.child_session_id.to_string(), info);
-    }
-    let rows = build_rows(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-    );
-    // 1 parent + 8 subagents + 1 placeholder = 10.
-    assert_eq!(rows.len(), 10);
-    assert!(rows.last().unwrap().is_more_placeholder);
-    assert_eq!(rows.last().unwrap().more_count, 1);
-}
-
-/// Pin the threshold neighbour just BELOW the `MAX_VISIBLE_SUBAGENTS = 8` cap.
-/// 7 subagents fit without a placeholder.
-#[test]
-fn build_rows_seven_subagents_no_placeholder() {
-    use crate::views::dashboard::build_rows;
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    for i in 0..7 {
-        let info = make_test_subagent(&format!("c{i}"), &format!("sa{i}"));
-        agent
-            .subagent_sessions
-            .insert(info.child_session_id.to_string(), info);
-    }
-    let rows = build_rows(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-    );
-    // 1 parent + 7 subagents + 0 placeholder = 8.
-    assert_eq!(rows.len(), 8);
-    assert!(!rows.last().unwrap().is_more_placeholder);
-}
-
-/// At the threshold (exactly 8), no placeholder.
-#[test]
-fn build_rows_eight_subagents_no_placeholder() {
-    use crate::views::dashboard::build_rows;
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    for i in 0..8 {
-        let info = make_test_subagent(&format!("c{i}"), &format!("sa{i}"));
-        agent
-            .subagent_sessions
-            .insert(info.child_session_id.to_string(), info);
-    }
-    let rows = build_rows(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-    );
-    // 1 parent + 8 subagents + 0 placeholder = 9.
-    assert_eq!(rows.len(), 9);
-    assert!(!rows.last().unwrap().is_more_placeholder);
-}
-
-/// Well over the threshold (16), the placeholder counts the trailing 8 hidden rows.
-#[test]
-fn build_rows_sixteen_subagents_placeholder_counts_remainder() {
-    use crate::views::dashboard::build_rows;
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    for i in 0..16 {
-        let info = make_test_subagent(&format!("c{i}"), &format!("sa{i}"));
-        agent
-            .subagent_sessions
-            .insert(info.child_session_id.to_string(), info);
-    }
-    let rows = build_rows(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-    );
-    // 1 parent + 8 subagents + 1 placeholder = 10.
-    assert_eq!(rows.len(), 10);
-    assert!(rows.last().unwrap().is_more_placeholder);
-    // 16 total - 8 shown = 8 hidden.
-    assert_eq!(rows.last().unwrap().more_count, 8);
-}
-
-/// The live dashboard builder (`build_rows_with_roster`, used by both rendering and keyboard navigation) hides subagents.
-/// Only the parent row is listed; the full-tree `build_rows` still emits them.
-#[test]
-fn build_rows_with_roster_hides_subagent_rows() {
-    use crate::views::dashboard::{build_rows, build_rows_with_roster};
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    for i in 0..3 {
-        let info = make_test_subagent(&format!("c{i}"), &format!("sa{i}"));
-        agent
-            .subagent_sessions
-            .insert(info.child_session_id.to_string(), info);
-    }
-    let live = build_rows_with_roster(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-        &[],
-    );
-    assert_eq!(live.len(), 1, "only the parent row shows in the dashboard");
-    assert!(
-        live.iter().all(|r| r.indent == 0),
-        "no nested subagent rows in the live dashboard"
-    );
-    // `build_rows` keeps the full tree (1 parent + 3 subagents).
-    let full = build_rows(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-    );
-    assert_eq!(full.len(), 4, "build_rows still emits subagent rows");
-    assert!(full.iter().any(|r| r.indent == 1));
-}
-
-/// Subagent labels also sanitise ANSI escapes out of the persona.
-#[test]
-fn subagent_label_strips_control_characters() {
-    use crate::views::dashboard::build_rows;
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    let mut info = make_test_subagent("child-evil", "sa-evil");
-    // Inject an ANSI escape into the persona: this is what flows through `format_subagent_label` into the row builder sanitisation
-    info.attempt.persona = Some(Arc::from("a\x1b[31mevil\x1b[0m"));
-    agent
-        .subagent_sessions
-        .insert(info.child_session_id.to_string(), info);
-    let rows = build_rows(
-        &app.agents,
-        &std::collections::BTreeSet::new(),
-        &[],
-        crate::views::dashboard::Grouping::State,
-        &crate::views::dashboard::Filter::None,
-        None,
-    );
-    let sub = rows
-        .iter()
-        .find(|r| r.indent > 0)
-        .expect("subagent row expected");
-    assert!(
-        !sub.label.contains('\x1b'),
-        "subagent label must not retain \\x1b: {:?}",
-        sub.label
-    );
-    // Visible characters survive.
-    assert!(
-        sub.label.contains("evil"),
-        "sanitised label should preserve printable characters, got {:?}",
-        sub.label
-    );
 }
 
 /// Sticky must land on parent and subagent, and remain on the parent after leaving the subagent view (Esc clears `active_subagent` only).

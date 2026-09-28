@@ -88,6 +88,7 @@ pub enum RedirectFailureReason {
     DemoteBudget,
     InFlight,
     LiveDir,
+    Residue,
     ForeignObject,
     ForeignLink,
     ForeignMount,

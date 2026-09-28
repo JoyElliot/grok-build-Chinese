@@ -193,6 +193,7 @@ impl xai_tool_runtime::Tool for HashlineReadTool {
             resources.clone(),
             None,
             &invoking,
+            None,
         )
         .await?;
 

@@ -716,8 +716,6 @@ mod tests {
         assert_eq!(span_at(line1, 1).style.fg, Some(theme.text_primary));
     }
 
-    // --- Mid-text skill token styling (with_skill_tokens) ---
-
     #[test]
     fn mid_text_token_only_token_is_teal() {
         let _guard = crate::theme::cache::pin_theme();
@@ -819,8 +817,6 @@ mod tests {
             Some(theme.text_primary)
         );
     }
-
-    // --- Token styling across soft-wrap and collapsed truncation ---
 
     /// Concatenated content of a line's skill-accent spans.
     fn teal_text(line: &Line, theme: &Theme) -> String {
@@ -973,8 +969,6 @@ mod tests {
         }
     }
 
-    // --- Selection metadata tests ---
-
     #[test]
     fn test_prompt_lines_have_selection_range() {
         let _guard = crate::theme::cache::pin_theme();
@@ -1076,8 +1070,6 @@ mod tests {
             }
         }
     }
-
-    // --- Fold behavior tests ---
 
     #[test]
     fn test_short_prompt_not_foldable() {

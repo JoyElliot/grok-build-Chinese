@@ -7,6 +7,18 @@
       ],
       [
         "-p",
+        "xai-grok-agent",
+        "--lib",
+        "prompt::"
+      ],
+      [
+        "-p",
+        "xai-grok-tools",
+        "--lib",
+        "implementations::use_tool"
+      ],
+      [
+        "-p",
         "xai-grok-update",
         "--features",
         "community-build",
@@ -96,6 +108,18 @@
       [
         "-p",
         "xai-grok-locale"
+      ],
+      [
+        "-p",
+        "xai-grok-agent",
+        "--lib",
+        "prompt::"
+      ],
+      [
+        "-p",
+        "xai-grok-tools",
+        "--lib",
+        "implementations::use_tool"
       ],
       [
         "-p",

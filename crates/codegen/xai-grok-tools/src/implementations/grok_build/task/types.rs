@@ -23,7 +23,9 @@ use std::sync::Arc;
 use educe::Educe;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode, WaitMode};
+use xai_tool_types::{
+    HandedOffSubagentState, SubagentCapabilityMode, SubagentIsolationMode, WaitMode,
+};
 
 use crate::register_resource;
 
@@ -103,6 +105,8 @@ pub struct SubagentRequest {
     pub owner: SubagentOwner,
     pub cancel_token: CancellationToken,
     pub spawn_root: SpawnRootSpan,
+    /// Model tool call that issued this spawn; `None` for harness-internal spawns.
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -199,8 +203,10 @@ pub enum ModelOverrideProvenance {
     /// Internal harness, role, persona, or config resolution.
     #[default]
     Harness,
-    /// A model-facing `Task.model` argument.
-    Tool,
+    /// A model-facing task call, carrying the selection mode its tool schema advertised.
+    Tool {
+        selection: super::model_policy::TaskModelSelection,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -444,6 +450,9 @@ pub struct SubagentResult {
     pub output_usage_incomplete: bool,
     /// Path to the isolated worktree if one was created.
     pub worktree_path: Option<String>,
+    /// Type the child actually ran as, after resume inheritance. Empty when the
+    /// coordinator did not stamp it.
+    pub subagent_type: String,
     /// Set when a blocking caller was handed a still-running child after the foreground await budget (queued or in-flight
     /// auto-background). Not a completion — `success` stays false so `status()` is not `"completed"`; branch on this before
     /// `success`. Task `run_in_background` start is a separate registration signal, not this flag on `spawn()`.
@@ -467,6 +476,7 @@ impl Default for SubagentResult {
             total_tokens_used: 0,
             output_usage_incomplete: false,
             worktree_path: None,
+            subagent_type: String::new(),
             backgrounded: false,
         }
     }
@@ -820,6 +830,23 @@ pub struct SubagentSpawnedRefsRequest {
     pub respond_to: oneshot::Sender<Vec<SpawnedSubagentRef>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandedOffForegroundSubagent {
+    pub subagent_id: String,
+    pub tool_call_id: String,
+    pub description: String,
+    pub state: HandedOffSubagentState,
+}
+
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentHandOffForegroundRequest {
+    pub parent_session_id: String,
+    pub prompt_id: String,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<Vec<HandedOffForegroundSubagent>>,
+}
+
 /// In-memory source data used by a runtime adapter to resume a child.
 #[derive(Debug, Clone)]
 pub struct SubagentResumeSource {
@@ -962,6 +989,7 @@ pub enum SubagentEvent {
     RegistryCounts(SubagentRegistryCountsRequest),
     Inspect(SubagentInspectRequest),
     SpawnedRefs(SubagentSpawnedRefsRequest),
+    HandOffForeground(SubagentHandOffForegroundRequest),
     ValidateType(SubagentValidateTypeRequest),
     DescribeType(SubagentDescribeRequest),
     LoopUnitActive(SubagentLoopUnitActiveRequest),

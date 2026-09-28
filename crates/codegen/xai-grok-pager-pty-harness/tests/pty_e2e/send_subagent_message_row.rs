@@ -12,7 +12,7 @@ use xai_grok_test_support::{Conversation, MockToolCall, Tool};
 /// Spawn rejects an injected id that is not a UUIDv7; the bogus one shares its shape and ends in a readable tail.
 const CHILD_ID: &str = "01a06b44-0000-7000-8000-00000000c41d";
 const BOGUS_ID: &str = "01a06b44-0000-7000-8000-0000deadbeef";
-pub(crate) const CHILD_LABEL: &str = "General \u{201c}sleeper\u{201d}";
+pub(crate) const CHILD_LABEL: &str = "Subagent \u{201c}sleeper\u{201d}";
 const STEER_TEXT: &str = "STEER_MARKER re-check the arm64 job";
 const QUEUE_TEXT: &str = "QUEUE_MARKER then summarize";
 const INTERJECT_TEXT: &str = "INTERJECT_MARKER stop after this step";

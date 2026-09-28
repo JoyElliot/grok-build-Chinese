@@ -352,7 +352,7 @@ pub(super) fn test_summary(
         generated_title: None,
         title_is_manual: false,
         worktree_label: None,
-        agent_name: None,
+        agent: Default::default(),
         sandbox_profile: None,
         reasoning_effort: None,
         last_turn_summary: None,

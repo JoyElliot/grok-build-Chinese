@@ -532,7 +532,7 @@ impl SessionActor {
         );
     }
 
-    /// `x.ai/memory/flush`: capture every completed turn now and wait for it to land.
+    /// `x.ai/memory/flush`: capture every finished or stopped turn now and wait for it to land.
     pub(crate) async fn memory_flush_command(self: &Arc<Self>) -> MemoryFlushResponse {
         use crate::session::memory::v2_capture::FlushResult;
         if !self.memory.is_enabled() {

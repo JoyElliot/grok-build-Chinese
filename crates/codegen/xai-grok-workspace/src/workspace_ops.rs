@@ -37,9 +37,9 @@ pub use xai_grok_workspace_types::rpc::code_nav::{
 pub use xai_grok_workspace_types::rpc::export_github::ExportGithubReq;
 pub use xai_grok_workspace_types::rpc::fs::{
     ClientFsListNode, ClientFsListReq, ClientFsListRes, ClientFsReadFileReq, ClientFsReadFileRes,
-    ClientFsStatReq, ClientFsStatRes, GetFileEntry, GetFileResult, GetFilesReq, GetFilesRes,
-    PutFileEntry, PutFileResult, PutFilesReq, PutFilesRes, StoreSessionImageReq,
-    StoreSessionImageRes,
+    ClientFsStatReq, ClientFsStatRes, ClientFsWriteFileReq, ClientFsWriteFileRes, GetFileEntry,
+    GetFileResult, GetFilesReq, GetFilesRes, PutFileEntry, PutFileResult, PutFilesReq, PutFilesRes,
+    StoreSessionImageReq, StoreSessionImageRes,
 };
 pub use xai_grok_workspace_types::rpc::git::{
     BinaryFileInfoData, CheckoutCommitResponse, CommitWithPatchData, DetectVcsKindReq,
@@ -1170,6 +1170,16 @@ impl WorkspaceOp for ClientFsReadFileReq {
         crate::file_system::client_fs::read_file(ws, session_id, self).await
     }
 }
+#[async_trait]
+impl WorkspaceOp for ClientFsWriteFileReq {
+    async fn execute(
+        &self,
+        ws: &WorkspaceHandle,
+        session_id: Option<&str>,
+    ) -> WorkspaceResult<Self::Response> {
+        crate::file_system::client_fs::write_file(ws, session_id, self).await
+    }
+}
 /// Resolve the index root for a code-nav op: the explicit per-session `root` (the cwd the client sends per window), else the workspace root.
 /// The per-window `root` keeps code nav in a non-primary window on its own repo's index rather than the launch directory's.
 fn index_root_for(
@@ -1748,6 +1758,19 @@ impl WorkspaceOps {
         call_id: &str,
         session_id: Option<&str>,
     ) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+        let mut ctx = xai_tool_runtime::ToolCallContext::default();
+        ctx.call_id = xai_tool_protocol::ToolCallId::new(call_id.to_owned()).unwrap_or(ctx.call_id);
+        self.call_tool_with_context(name, args, session_id, ctx)
+            .await
+    }
+    /// Local dispatch keeps the caller's context. The proxy hop cannot carry a slot, so it is not serialized.
+    pub async fn call_tool_with_context(
+        &self,
+        name: &str,
+        args: Value,
+        session_id: Option<&str>,
+        ctx: xai_tool_runtime::ToolCallContext,
+    ) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
         match self {
             Self::Local { handle } => {
                 let session_id = session_id.ok_or_else(|| {
@@ -1765,7 +1788,7 @@ impl WorkspaceOps {
                         ),
                     )
                 })?;
-                session.toolset().call(name, args, call_id, None).await
+                session.toolset().call_with_context(name, args, ctx).await
             }
             Self::Proxy { client } => {
                 if !client.is_connected() {
@@ -1780,10 +1803,8 @@ impl WorkspaceOps {
                         format!("invalid tool name: {e}"),
                     )
                 })?;
-                let mut ctx = xai_tool_runtime::ToolCallContext::default();
-                ctx.call_id =
-                    xai_tool_protocol::ToolCallId::new(call_id.to_owned()).unwrap_or(ctx.call_id);
-                let mut stream = client.harness().call(tool_id, args, ctx).await;
+                let proxy_ctx = xai_tool_runtime::ToolCallContext::new(ctx.call_id.clone());
+                let mut stream = client.harness().call(tool_id, args, proxy_ctx).await;
                 let typed = crate::hub_channel::consume_stream_terminal(&mut stream)
                     .await
                     .inspect_err(|e| {
@@ -2384,7 +2405,7 @@ mod tests {
             "HookSpecWire serde shape drifted from upstream HookSpec"
         );
     }
-    /// The worktree-fork request projects onto / rebuilds from its wire mirror; the two `#[serde(skip)]` runtime fields are never serialized.
+    /// The worktree-fork request projects onto / rebuilds from its wire mirror; `#[serde(skip)]` runtime fields are never serialized.
     #[test]
     fn create_worktree_from_worktree_request_wire_round_trip() {
         let req = crate::worktree::CreateWorktreeFromWorktreeRequest {
@@ -2398,6 +2419,7 @@ mod tests {
             grove_gate_source: None,
             cancellation_token: None,
             resolved_dest_path: None,
+            resolved_source_git_root: None,
         };
         assert_eq!(
             serde_json::to_value(&req).unwrap(),
@@ -2407,6 +2429,7 @@ mod tests {
         assert_eq!(back.source_worktree_path, "/src");
         assert!(back.cancellation_token.is_none());
         assert!(back.resolved_dest_path.is_none());
+        assert!(back.resolved_source_git_root.is_none());
     }
     use crate::handle::tests::make_handle;
     #[tokio::test]

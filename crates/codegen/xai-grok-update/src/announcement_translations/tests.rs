@@ -571,7 +571,7 @@ async fn cache_commit_lock_serializes_writers_and_rejects_reused_versions() {
 async fn stalled_refresh_leaves_snapshot_available_and_does_not_retry_immediately() {
     let server = MockServer::start().await;
     Mock::given(path("/manifest.json"))
-        .respond_with(ResponseTemplate::new(403).set_delay(Duration::from_millis(300)))
+        .respond_with(ResponseTemplate::new(403).set_delay(Duration::from_secs(30)))
         .mount(&server)
         .await;
     let current = TranslationCatalog::bundled();
@@ -585,10 +585,13 @@ async fn stalled_refresh_leaves_snapshot_available_and_does_not_retry_immediatel
         RefreshSource {
             client: Some(client()),
             base_url: server.uri(),
-            timeout: Duration::from_millis(50),
+            timeout: Duration::from_secs(10),
         },
         load_started,
     ));
+    // Observe an in-flight request before controlling its timeout with virtual time.
+    wait_for_request_count(&server, 1).await;
+    tokio::time::pause();
     // A UI/input task remains schedulable while the network request is stalled.
     tokio::time::timeout(Duration::from_millis(100), tokio::task::yield_now())
         .await
@@ -599,7 +602,12 @@ async fn stalled_refresh_leaves_snapshot_available_and_does_not_retry_immediatel
             .lookup(TranslationField::Title, "From the team"),
         Some("团队寄语")
     );
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::advance(Duration::from_secs(11)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert!(!receiver.has_changed().unwrap());
+    tokio::time::advance(Duration::from_secs(30 * 60)).await;
+    tokio::task::yield_now().await;
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert!(!receiver.has_changed().unwrap());
     drop(receiver);
@@ -808,7 +816,7 @@ async fn worker_stops_while_waiting_when_load_source_closes() {
 
 async fn wait_for_request_count(server: &MockServer, count: usize) {
     // Also bounded while a test has paused Tokio's clock.
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while server.received_requests().await.unwrap().len() < count {
         assert!(
             std::time::Instant::now() < deadline,

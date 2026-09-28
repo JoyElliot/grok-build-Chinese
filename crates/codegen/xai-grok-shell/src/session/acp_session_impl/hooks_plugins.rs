@@ -1,5 +1,8 @@
 use super::*;
 
+pub(super) const MANAGED_HOOKS_ONLY_REFUSAL: &str =
+    "Hooks outside managed policy are disabled by your organization.";
+
 /// Path written (or the session key on auto-trust), never the raw git root.
 fn hooks_trust_key(
     outcome: &xai_grok_workspace::folder_trust::GrantOutcome,
@@ -101,6 +104,26 @@ impl SessionActor {
                 registry
                     .find_by_name(name)
                     .is_some_and(|spec| spec.is_managed_policy())
+            })
+    }
+
+    /// Under `allow_managed_hooks_only`, enabling anything outside managed policy is refused; the one rule for the per-hook and per-source enable.
+    /// Managed hooks pass: the pin never blocks them, so enabling one changes nothing at dispatch.
+    fn refuse_enable_under_managed_only<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
+        if !self.hook_disabled.borrow().managed_only() {
+            return None;
+        }
+        names
+            .into_iter()
+            .any(|name| !self.is_managed_policy_hook(name))
+            .then(|| xai_hooks_plugins_types::ActionOutcome {
+                status: xai_hooks_plugins_types::OutcomeStatus::ValidationError,
+                message: MANAGED_HOOKS_ONLY_REFUSAL.to_owned(),
+                requires_reload: false,
+                requires_restart: false,
             })
     }
 
@@ -260,6 +283,9 @@ impl SessionActor {
                 }
             }
             HooksAction::Enable { hook_name } => {
+                if let Some(refused) = self.refuse_enable_under_managed_only([hook_name.as_str()]) {
+                    return refused;
+                }
                 match xai_grok_hooks::trust::enable_hook(&hook_name) {
                     Ok(true) => {
                         self.refresh_hook_disabled();
@@ -288,6 +314,12 @@ impl SessionActor {
                 hook_names,
                 disable,
             } => {
+                if !disable
+                    && let Some(refused) =
+                        self.refuse_enable_under_managed_only(hook_names.iter().map(String::as_str))
+                {
+                    return refused;
+                }
                 let mut toggled = 0usize;
                 let mut managed_skipped = 0usize;
                 for name in &hook_names {
@@ -958,11 +990,16 @@ impl SessionActor {
         // Unchanged servers stay connected; only added, changed, or removed ones are re-initialized.
         // The order-sensitive `update_configs` would tear everything down instead, because merge order is non-deterministic.
         let t_mcp = std::time::Instant::now();
-        let new_mcp_servers = crate::session::managed_mcp::merge_managed_mcp_servers(
-            self.initial_client_mcp_servers.clone(),
-            session_cwd,
-            new_registry_snapshot.as_deref(),
-            &self.rebuild_spec.compat,
+        let client_seed = self.initial_client_mcp_servers.borrow().clone();
+        let new_mcp_servers = crate::session::agent_mcp::rematerialize_with_agent_overlay(
+            crate::session::agent_mcp::RematerializeParams {
+                initial_client_mcp_servers: client_seed,
+                cwd: session_cwd,
+                parent_cwd: self.startup_hints.parent_cwd.as_deref(),
+                plugin_registry: new_registry_snapshot.as_deref(),
+                compat: &self.rebuild_spec.compat,
+                definition: self.agent.borrow().definition(),
+            },
         );
         let (mcp_change, dispatch_event_tx) = {
             let mut mcp_state = self.mcp_state.lock().await;

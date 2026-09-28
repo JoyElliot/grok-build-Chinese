@@ -205,6 +205,7 @@ fn request(id: &str, parent_session_id: &str, owner: SubagentOwner) -> SubagentR
         owner,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     }
 }
 
@@ -462,10 +463,7 @@ async fn child_sender_parses_targets_at_any_depth() {
         error.kind,
         xai_tool_runtime::ToolErrorKind::InvalidArguments
     );
-    assert_eq!(
-        error.detail,
-        "subagent_id must be `parent` or a valid agent ID"
-    );
+    assert_eq!(error.detail, "subagent_id must be a valid agent ID");
 
     coordinator_task.abort();
     spawn.abort();

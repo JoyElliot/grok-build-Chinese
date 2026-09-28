@@ -15,7 +15,7 @@ axum-server = { workspace = true, features = ["tls-rustls"] }
 base64 = { workspace = true }
 clap = { workspace = true }
 futures-util = { workspace = true }
-opentelemetry-proto = { workspace = true, features = ["logs", "metrics"] }
+opentelemetry-proto = { workspace = true, features = ["logs", "metrics", "trace"] }
 portable-pty = { workspace = true }
 prost = { workspace = true }
 rcgen = { workspace = true }

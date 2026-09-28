@@ -367,7 +367,7 @@ pub(super) fn handle_auth_complete(
                         .scrollback
                         .push_block(RenderBlock::system(retry_message.clone()));
                     agent.session.enqueue_in_flight_prompt_front(prompt);
-                    let drain = maybe_drain_queue(agent);
+                    let drain = maybe_drain_queue(agent, &mut app.pending_image_notices);
                     retry_effects.extend(drain.effects);
                     page_flips.push((agent.session.id, drain.page_flip_entry));
                 }

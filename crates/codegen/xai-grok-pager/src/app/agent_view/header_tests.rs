@@ -4,7 +4,6 @@ use super::{AgentView, AppRenderParams, BannerSlotParams, OverlayHeader, test_fi
 use crate::actions::ActionRegistry;
 use crate::app::actions::Action;
 use crate::app::app_view::InputOutcome;
-use crate::app::bundle::BundleState;
 use crate::scrollback::render::ScratchBuffer;
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -36,7 +35,6 @@ fn draw_with_locale(
 ) -> Buffer {
     let (width, height) = agent.last_terminal_size;
     let area = Rect::new(0, 0, width, height);
-    let bundle = BundleState::default();
     let mut buf = Buffer::empty(area);
     let mut scratch = ScratchBuffer::new();
     agent.draw(
@@ -47,7 +45,6 @@ fn draw_with_locale(
         None,
         false,
         BannerSlotParams::none(),
-        &bundle,
         in_overlay,
         &mut Vec::new(),
         AppRenderParams {

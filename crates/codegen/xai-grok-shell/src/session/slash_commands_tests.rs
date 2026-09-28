@@ -151,6 +151,7 @@ fn make_skill(name: &str, user_invocable: bool) -> SkillInfo {
         disable_model_invocation: false,
         has_user_specified_description: false,
         paths: None,
+        origin: None,
         enabled: true,
         body: None,
     }
@@ -1044,6 +1045,7 @@ fn make_scoped_skill(name: &str, scope: SkillScope) -> SkillInfo {
         disable_model_invocation: false,
         has_user_specified_description: false,
         paths: None,
+        origin: None,
         enabled: true,
         body: None,
     }
@@ -1630,6 +1632,19 @@ fn parse_skill_refs_qualified_name() {
     assert_eq!(r0.name, "local:commit");
     assert_eq!(r0.args, "fix typo");
     assert_eq!(r0.qualified_name, "local:commit");
+}
+
+#[test]
+fn parse_skill_refs_carry_the_skill_origin() {
+    let mut generated = make_skill("triage", true);
+    generated.origin = Some("learn".into());
+    let skills = vec![generated, make_skill("commit", true)];
+    let refs = parse_skill_references("/triage then /commit", &skills, all_gated()).unwrap();
+    let [generated_ref, hand_written_ref] = refs.as_slice() else {
+        panic!("expected two skill refs: {refs:?}");
+    };
+    assert_eq!(Some("learn"), generated_ref.origin.as_deref());
+    assert_eq!(None, hand_written_ref.origin);
 }
 
 #[test]

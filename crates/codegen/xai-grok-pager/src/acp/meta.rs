@@ -3,6 +3,7 @@
 //! Parses the `_meta` JSON from `SessionNotification` into a struct with typed fields.
 //! All fields are `Option`, so parsing degrades gracefully when grok-shell hasn't been updated or meta is absent.
 
+use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
 /// Parsed fields from `SessionNotification._meta`.
@@ -48,6 +49,14 @@ impl ReplayMetaStamp {
     /// `_meta` value for a replayed (`session/load`) notification.
     pub fn replayed() -> serde_json::Value {
         serde_json::to_value(Self { is_replay: true }).expect("serialize replay meta stamp")
+    }
+
+    /// The replay stamp as an ACP `Meta`.
+    pub fn replayed_meta() -> acp::Meta {
+        Self::replayed()
+            .as_object()
+            .cloned()
+            .expect("replay meta stamp is an object")
     }
 }
 

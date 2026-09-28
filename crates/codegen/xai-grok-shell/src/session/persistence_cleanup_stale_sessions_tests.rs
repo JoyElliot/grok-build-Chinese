@@ -4,7 +4,10 @@ use std::time::{Duration, SystemTime};
 use filetime::FileTime;
 use tempfile::TempDir;
 
-use super::{CleanupLevel, CleanupStats, cleanup_stale_sessions_inner, mark_session_live};
+use super::{
+    CleanupLevel, CleanupStats, cleanup_stale_sessions_inner, cleanup_ttl_days_from_effective,
+    mark_session_live,
+};
 
 const TTL_DAYS: u32 = 30;
 
@@ -29,6 +32,22 @@ fn write_session(root: &Path, cwd: &str, id: &str, age: FileTime) -> PathBuf {
 
 fn sweep(root: &Path, live: &Path) -> CleanupStats {
     cleanup_stale_sessions_inner(root, TTL_DAYS, live, CleanupLevel::SessionsRoot)
+}
+
+#[test]
+fn cleanup_ttl_days_from_effective_requires_a_positive_integer() {
+    let empty = toml::Value::Table(toml::map::Map::new());
+    let zero = toml::toml! { [storage] cleanup_ttl_days = 0 }.into();
+    let negative = toml::toml! { [storage] cleanup_ttl_days = -1 }.into();
+    let positive = toml::toml! { [storage] cleanup_ttl_days = 30 }.into();
+    for (cfg, expected) in [
+        (&empty, None),
+        (&zero, None),
+        (&negative, None),
+        (&positive, Some(30)),
+    ] {
+        assert_eq!(expected, cleanup_ttl_days_from_effective(cfg), "{cfg}");
+    }
 }
 
 fn no_live() -> PathBuf {

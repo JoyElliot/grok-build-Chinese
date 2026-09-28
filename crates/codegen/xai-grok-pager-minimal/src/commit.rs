@@ -12,6 +12,7 @@ use xai_grok_pager::app::PagerTerminal;
 use xai_grok_pager::app::app_view::{ActiveView, AppView};
 use xai_grok_pager::appearance::AppearanceConfig;
 use xai_grok_pager::minimal_api;
+use xai_grok_pager::minimal_reprint;
 use xai_grok_pager::render::Renderable;
 use xai_grok_pager::scrollback::block::RenderBlock;
 use xai_grok_pager::scrollback::blocks::ToolCallBlock;
@@ -218,7 +219,7 @@ pub(crate) fn minimal_renderer<'a>(
 /// Diffs always commit in full, so an uncapped multi-thousand-line `Edit` would allocate one huge `Buffer` and
 /// writer-thread send burst. When the block is taller than `max_rows`, only the top `max_rows - 1` content rows are
 /// committed.
-fn insert_committed(
+pub(crate) fn insert_committed(
     terminal: &mut PagerTerminal,
     renderer: EntryRenderer<'_>,
     width: u16,
@@ -383,7 +384,7 @@ pub fn commit_active(app: &mut AppView, terminal: &mut PagerTerminal) {
 
     // Drive the ONE frontier walk (`commit_leading_run`, also what the unit tests exercise) with the production per-entry work
     // The per-entry work finalizes, stamps the print-once display mode, prints, then remembers folded blocks for Ctrl+E
-    commit_leading_run(sb, turn_running, |sb, i| {
+    let committed = commit_leading_run(sb, turn_running, |sb, i| {
         // If the turn is idle but this entry still carries a stale `is_running` flag, finalize it first
         // It then renders in its finished form (e.g. "Thought for Xs", not an animated "Thinking…").
         if let Some(id) = sb.get(i).filter(|e| e.is_running).map(|e| e.id) {
@@ -422,6 +423,9 @@ pub fn commit_active(app: &mut AppView, terminal: &mut PagerTerminal) {
         e.set_display_mode(mode);
         j += 1;
     }
+    if committed > 0 {
+        minimal_reprint::record_minimal_rows_printed(app, width);
+    }
 }
 
 /// Committed terminal text cannot be mutated in place, so "expanding" a folded block is an honest re-print of the
@@ -454,6 +458,7 @@ pub fn expand_pending(app: &mut AppView, terminal: &mut PagerTerminal) {
     // A non-agent active view, a 0-width (probe) frame, or an open band-owning modal must leave the IDs queued for a later frame
     let ids = minimal_api::take_minimal_pending_expand(app);
     let mut requeue: Vec<EntryId> = Vec::new();
+    let mut is_printed = false;
     {
         let Some(agent) = app.agents.get_mut(&id) else {
             // Can't happen (existence checked just above, nothing in between can remove the agent)
@@ -480,11 +485,15 @@ pub fn expand_pending(app: &mut AppView, terminal: &mut PagerTerminal) {
                     requeue.extend(iter);
                     break;
                 }
+                is_printed = true;
             }
         }
     }
     if !requeue.is_empty() {
         minimal_api::requeue_minimal_pending_expand(app, requeue);
+    }
+    if is_printed {
+        minimal_reprint::record_minimal_rows_printed(app, width);
     }
 }
 

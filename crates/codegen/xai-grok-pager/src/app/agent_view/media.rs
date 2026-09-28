@@ -368,6 +368,17 @@ impl AgentView {
         (!clear_esc.is_empty()).then_some(clear_esc)
     }
 
+    /// Forget which Kitty images the terminal holds, so the next frame re-transmits them instead of placing ids that no longer exist.
+    /// Call after a full screen clear: Ghostty drops image data on `ESC[2J`, and a place-only frame with `q=2` then fails silently and draws nothing.
+    pub(crate) fn forget_transmitted_inline_media(&mut self) {
+        self.inline_media_ids.clear();
+        self.inline_media_iterm_emitted.clear();
+        self.last_placed_ids.clear();
+        for child in self.subagent_views.values_mut() {
+            child.forget_transmitted_inline_media();
+        }
+    }
+
     /// Stop inline video playback, dropping the pre-extracted frame set (~50-300 MB), and request a post-draw purge for it.
     /// Returns whether a video was actually playing.
     /// Draw-path callers rely on the deferred request (never a synchronous mid-frame purge); image-only paths must not purge at all.

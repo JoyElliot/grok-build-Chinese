@@ -97,6 +97,7 @@ pub use pb::{
     TruncationConfig,
     // Version lifecycle warnings
     VersionWarning,
+    WholeReadPolicy,
 };
 
 /// Default client-facing tool name derived from a namespaced tool id. Tool ids are colon-separated `Namespace:tool`

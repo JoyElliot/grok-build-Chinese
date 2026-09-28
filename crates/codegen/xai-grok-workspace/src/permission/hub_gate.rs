@@ -4,10 +4,12 @@
 //! persisted grants are the TUI's `permission.toml`, shared on purpose so a grant given in either
 //! surface holds in the other.
 
+use std::path::Path;
 use std::sync::LazyLock;
 
 use prometheus::{IntCounterVec, register_int_counter_vec};
 use serde_json::Value;
+use xai_grok_agent::repo::RepoDirChain;
 use xai_grok_paths::AbsPathBuf;
 use xai_tool_runtime::{ToolApprovalPolicy, ToolError, ToolErrorKind};
 
@@ -63,16 +65,16 @@ pub enum ToolApprovalGate {
     Off,
 }
 
-/// On by construction where the device is the user's own: there is no off switch on the device, only
-/// the tenant's `tool_approval_policy` delivered with the bind. The sandbox guest keeps the opt-in its
-/// plane already uses (`GROK_HITL_PERMISSION_LIVE`).
+/// Pre-release stopgap: the daemon runs every hub tool call unasked (no permission cards) until
+/// sandboxing lands. The sandbox guest keeps the opt-in its plane already uses
+/// (`GROK_HITL_PERMISSION_LIVE`).
 pub fn approval_gate_for(host_kind: WorkspaceHostKind) -> ToolApprovalGate {
     resolve_gate(host_kind, hitl_permission_live_enabled())
 }
 
 fn resolve_gate(host_kind: WorkspaceHostKind, hitl_opt_in: bool) -> ToolApprovalGate {
     let enforced = match host_kind {
-        WorkspaceHostKind::Daemon => true,
+        WorkspaceHostKind::Daemon => false,
         WorkspaceHostKind::Sandbox => hitl_opt_in,
     };
     if enforced {
@@ -117,6 +119,11 @@ impl SessionApproval {
 
 struct FolderGrants {
     cwd: AbsPathBuf,
+    /// The store's key: the served folder when the bound cwd is a repo-less directory under it.
+    /// Grok Desktop binds every conversation to its own scratch directory beneath the folder it
+    /// exposes, and a cwd-keyed store made an "always" answer hold for one chat only. A cwd inside a
+    /// repository keeps the repo-root key, so the CLI's per-project grants are unchanged.
+    grant_dir: AbsPathBuf,
     store: CachedStateStore,
     state: PermissionState,
     /// The owner's "allow all edits" answer: session-scoped by design, never written to disk.
@@ -124,10 +131,12 @@ struct FolderGrants {
 }
 
 impl FolderGrants {
-    async fn load(cwd: AbsPathBuf) -> Self {
-        let (store, state) = CachedStateStore::resolve_and_load(&cwd, None).await;
+    async fn load(cwd: AbsPathBuf, served_root: &Path) -> Self {
+        let grant_dir = grant_dir_for(&cwd, served_root).await;
+        let (store, state) = CachedStateStore::resolve_and_load(&grant_dir, None).await;
         FolderGrants {
             cwd,
+            grant_dir,
             store,
             state,
             allow_edits_for_session: false,
@@ -188,8 +197,38 @@ impl FolderGrants {
         if matches!(outcome, PromptOutcome::AllowEditsForSession) {
             self.allow_edits_for_session = true;
         } else if record_prompt_outcome(&mut self.state, access, outcome).is_some() {
-            persist_state(&self.cwd, &self.state, None).await;
+            persist_state(&self.grant_dir, &self.state, None).await;
         }
+    }
+}
+
+/// The served folder when `cwd` lies under it and is inside no repository of its own; otherwise
+/// `cwd`, which the store resolves to its repo root as before. Both paths are compared canonical
+/// (the desktop joins its cwd from the raw home dir; the daemon canonicalizes the root it serves).
+/// The probe walks the filesystem, so it runs on the blocking pool; one that did not finish keeps
+/// the cwd key.
+async fn grant_dir_for(cwd: &AbsPathBuf, served_root: &Path) -> AbsPathBuf {
+    if cwd.as_path() == served_root {
+        return cwd.clone();
+    }
+    let Ok(root) = AbsPathBuf::new(served_root.to_path_buf()) else {
+        return cwd.clone();
+    };
+    let (probe_cwd, probe_root) = (cwd.clone(), root.clone());
+    let under_root_outside_repo = tokio::task::spawn_blocking(move || {
+        let canonical =
+            |path: &Path| dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canonical(probe_cwd.as_path()).starts_with(canonical(probe_root.as_path()))
+            && RepoDirChain::resolve(probe_cwd.as_path())
+                .git_root
+                .is_none()
+    })
+    .await
+    .unwrap_or(false);
+    if under_root_outside_repo {
+        root
+    } else {
+        cwd.clone()
     }
 }
 
@@ -218,6 +257,7 @@ pub(crate) async fn approve_hub_call(
     });
     settle(
         session,
+        workspace.shared.root_cwd(),
         tool_name,
         call_id,
         args,
@@ -230,6 +270,7 @@ pub(crate) async fn approve_hub_call(
 
 async fn settle(
     session: &WorkspaceSession,
+    served_root: &Path,
     tool_name: &str,
     call_id: &str,
     args: &Value,
@@ -256,7 +297,7 @@ async fn settle(
         ToolApprovalPolicy::GrantsAllowed | ToolApprovalPolicy::UnattendedAllowed => {
             if slot.is_none() {
                 match AbsPathBuf::new(session.cwd().to_path_buf()) {
-                    Ok(cwd) => *slot = Some(FolderGrants::load(cwd).await),
+                    Ok(cwd) => *slot = Some(FolderGrants::load(cwd, served_root).await),
                     Err(e) => {
                         tracing::warn!(error = %e, "session cwd has no grant store; every mutating call prompts")
                     }

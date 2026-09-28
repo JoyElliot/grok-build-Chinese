@@ -11,6 +11,8 @@ const BASH_MODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60
 /// Phase 2: dispatch a tool call through [`WorkspaceOps::call_tool`].
 ///
 /// Agent sessions always use local workspace ops (in-process toolset).
+/// Production dispatch builds the origin itself and calls [`dispatch_observed`].
+#[cfg(test)]
 pub(super) async fn dispatch_tool(
     workspace_ops: &xai_grok_workspace::WorkspaceOps,
     prepared: &PreparedToolCall,
@@ -23,12 +25,43 @@ pub(super) async fn dispatch_tool(
         mode = "local",
         "dispatch_tool"
     );
+    let origin = crate::session::telemetry::model_origin(
+        &prepared.invocation_id,
+        session_id,
+        None,
+        prepared.model_id.as_deref(),
+        &prepared.tool_id,
+        prepared.tool_version.as_deref(),
+    );
+    dispatch_observed(
+        workspace_ops,
+        prepared,
+        session_id,
+        origin,
+        xai_grok_tools::types::source_summary::SourceSummarySlot::new(),
+    )
+    .await
+}
+
+pub(super) async fn dispatch_observed(
+    workspace_ops: &xai_grok_workspace::WorkspaceOps,
+    prepared: &PreparedToolCall,
+    session_id: &str,
+    origin: xai_grok_tools::types::tool_call_origin::ToolCallOrigin,
+    slot: xai_grok_tools::types::source_summary::SourceSummarySlot,
+) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+    let mut ctx = xai_tool_runtime::ToolCallContext::new(
+        xai_tool_protocol::ToolCallId::new(prepared.tool_call_id.0.as_ref())
+            .unwrap_or_else(|_| xai_tool_protocol::ToolCallId::new_v7()),
+    );
+    ctx.insert(origin);
+    ctx.insert(slot);
     workspace_ops
-        .call_tool(
+        .call_tool_with_context(
             &prepared.tool_name,
-            prepared.parsed_args.clone(),
-            &prepared.tool_call_id.0,
+            prepared.execution_arguments().clone(),
             Some(session_id),
+            ctx,
         )
         .await
 }

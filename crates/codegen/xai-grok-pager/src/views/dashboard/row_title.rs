@@ -47,15 +47,11 @@ impl RowTitle<'_> {
         let RowTitle { row, theme, bg } = *self;
         let mut cx = area.x;
         if area.width > 0 {
-            let label_style = if row.is_more_placeholder {
-                theme.dim().bg(bg)
-            } else {
-                Style::default().bg(bg).fg(theme.text_primary)
-            };
+            let label_style = Style::default().bg(bg).fg(theme.text_primary);
             // The # distinguishes the fallback from user titles beginning with "New session".
-            let dim_suffix = (!row.is_more_placeholder)
-                .then(|| row.label.strip_prefix(new_session_label))
-                .flatten()
+            let dim_suffix = row
+                .label
+                .strip_prefix(new_session_label)
                 .filter(|rest| rest.starts_with(" #"));
             if let Some(suffix) = dim_suffix {
                 let head = truncate_str(new_session_label, usize::from(area.width));

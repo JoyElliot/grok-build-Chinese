@@ -75,6 +75,52 @@ pub struct McpToolCalled {
     pub mode: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum McpFileInputKind {
+    Arguments,
+    Invocation,
+}
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum McpFileInputOutcome {
+    Success,
+    Failed,
+}
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum McpFileLimitKind {
+    Source,
+    Sources,
+    Snapshots,
+}
+
+#[derive(Serialize)]
+pub struct McpFileInputUsed {
+    pub kind: McpFileInputKind,
+    pub model_id: String,
+}
+
+#[derive(Serialize)]
+pub struct McpFileInputCompleted {
+    pub kind: McpFileInputKind,
+    pub outcome: McpFileInputOutcome,
+    pub source_bytes: u64,
+    pub snapshot_bytes: u64,
+    pub duration_ms: u64,
+    pub model_id: String,
+}
+
+#[derive(Serialize)]
+pub struct McpFileInputLimitHit {
+    pub kind: McpFileLimitKind,
+    pub limit_bytes: u64,
+    pub observed_bytes: u64,
+    pub model_id: String,
+}
+
 /// How a `tools/call` failed before the server answered with a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

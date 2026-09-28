@@ -759,6 +759,7 @@ impl SchedulerActor {
             // coordinator still has queued at the concurrent limit.
             cancel_token: self.cancel_token.child_token(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
 
         if events

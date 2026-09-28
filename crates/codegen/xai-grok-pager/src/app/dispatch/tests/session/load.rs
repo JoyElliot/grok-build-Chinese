@@ -1466,6 +1466,7 @@ fn duplicate_load_unbind_invalidates_old_minimal_btw_response() {
     dispatch(
         Action::TaskComplete(TaskResult::BtwResponse {
             image_notice: None,
+            skipped_image_numbers: Vec::new(),
             agent_id: old_owner,
             result: Ok("old answer".into()),
             minimal_request_id: Some(request_id),

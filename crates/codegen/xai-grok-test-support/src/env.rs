@@ -3,8 +3,16 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use crate::sandbox::TestSandbox;
+
+// First setter wins and later sets are ignored, so parallel tests never race the process-wide choice.
+static GROK_BINARY_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_grok_binary_override(path: PathBuf) {
+    let _ = GROK_BINARY_OVERRIDE.set(path);
+}
 
 /// Parse env var `key` into `T`, falling back to `default` when it is unset or present-but-unparseable (warning in the latter case).
 pub fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -144,8 +152,62 @@ pub fn ensure_cargo_bin(package: &str, bin: &str) -> PathBuf {
     binary
 }
 
+// Reserve four cores for the pager children other test threads spawn, so a cold build does not starve them.
+fn build_jobs() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    cores.saturating_sub(4).max(1)
+}
+
+pub fn ensure_cargo_bin_with_features(
+    package: &str,
+    bin: &str,
+    features: &[&str],
+    target_subdir: &str,
+) -> PathBuf {
+    let out_target = target_dir().join(target_subdir);
+    let binary = out_target
+        .join("debug")
+        .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+    if binary.exists() {
+        return binary;
+    }
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut cmd = Command::new(&cargo);
+    cmd.current_dir(workspace_root())
+        .args(["build", "-p", package, "--bin", bin])
+        .args(["--features", &features.join(",")])
+        .args(["--jobs", &build_jobs().to_string()])
+        .env("CARGO_TARGET_DIR", &out_target)
+        .stdin(std::process::Stdio::null())
+        .envs(xai_tty_utils::pager_env());
+    xai_tty_utils::detach_std_command(&mut cmd);
+    let output = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {cargo} to build {bin}: {e}"));
+
+    assert!(
+        output.status.success(),
+        "failed to build {bin} with features {features:?} (exit {:?})\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        binary.exists(),
+        "{bin} build completed but binary missing at {}",
+        binary.display()
+    );
+    binary
+}
+
 /// Resolve grok binary: `GROK_BINARY` env (CI) or a locally built `grok-zh` binary.
 pub fn grok_binary() -> PathBuf {
+    if let Some(path) = GROK_BINARY_OVERRIDE.get() {
+        return path.clone();
+    }
     if let Ok(path) = std::env::var("GROK_BINARY") {
         let p = PathBuf::from(path);
         assert!(p.exists(), "GROK_BINARY does not exist: {}", p.display());

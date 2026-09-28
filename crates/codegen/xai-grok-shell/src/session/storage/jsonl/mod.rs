@@ -1361,7 +1361,7 @@ impl StorageAdapter for JsonlStorageAdapter {
         &self,
         info: &Info,
         model_id: &acp::ModelId,
-        agent_name: Option<&str>,
+        agent: Option<&crate::session::persistence::PersistedAgent>,
         reasoning_effort: Option<Option<xai_grok_sampling_types::ReasoningEffort>>,
     ) -> io::Result<()> {
         self.apply_summary_patch(
@@ -1369,9 +1369,9 @@ impl StorageAdapter for JsonlStorageAdapter {
             super::summary_write::SummaryPatch {
                 model: Some(super::summary_write::ModelPatch {
                     model_id: model_id.clone(),
-                    agent_name: agent_name.map(String::from),
                     reasoning_effort,
                 }),
+                agent: agent.cloned(),
                 ..Default::default()
             },
         )

@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use crate::extensions::agent_runtime::AgentRuntime;
 use crate::util::config as cli_config;
 use xai_grok_agent::prompt::skills::{
-    CompatConfig, SkillInfo, SkillsConfig, list_skills_with_plugins,
+    CompatConfig, SkillInfo, SkillsConfig, collect_config_skills, list_skills_with_plugins,
 };
+use xai_grok_telemetry::events::{HarnessChangeOp, HarnessChanged, HarnessSurfaceKind};
 
 use super::ExtResult;
 
@@ -143,6 +144,54 @@ async fn reload_skills(
 fn count_skills_from(skills: &[SkillInfo], dir: &std::path::Path) -> usize {
     let prefix = dir.to_str().unwrap_or("");
     skills.iter().filter(|s| s.path.starts_with(prefix)).count()
+}
+
+/// The skills one `[skills].paths` entry contributes, classified exactly as the loader will classify them
+/// (`Repo` inside the cwd's git root, else `User`), so `harness_changed` and `skill_dispatched` agree on `skill_source`.
+/// Scanned directly rather than diffed from a reload, so the names are known before the config write and still
+/// known once a removed path leaves the list.
+async fn skills_at_config_path(resolved: &str, cwd: &str) -> Vec<SkillInfo> {
+    let paths = vec![resolved.to_owned()];
+    let cwd = std::path::PathBuf::from(cwd);
+    // Same bound as `reload_skills`: a slow or huge tree must not stall the runtime; the per-item
+    // telemetry is best-effort and the count-only events still fire when this gives up.
+    let scan = tokio::task::spawn_blocking(move || {
+        let git_root = xai_grok_agent::repo::RepoDirChain::resolve(&cwd).git_root;
+        collect_config_skills(&paths, git_root.as_deref())
+    });
+    match tokio::time::timeout(std::time::Duration::from_secs(5), scan).await {
+        Ok(Ok(skills)) => skills,
+        Ok(Err(join_error)) => {
+            tracing::warn!(%join_error, "skill path scan panicked");
+            vec![]
+        }
+        Err(_) => {
+            tracing::warn!("skill path scan timed out");
+            vec![]
+        }
+    }
+}
+
+/// Bounds the per-item fan-out of one add/remove; a path holding more skills than this reports only the first ones.
+const HARNESS_CHANGED_MAX_ITEMS: usize = 100;
+
+fn log_harness_changed(skills: &[SkillInfo], op: HarnessChangeOp, success: bool) {
+    for skill in skills.iter().take(HARNESS_CHANGED_MAX_ITEMS) {
+        xai_grok_telemetry::session_ctx::log_event(HarnessChanged {
+            kind: HarnessSurfaceKind::Skill,
+            op,
+            name: skill.name.clone(),
+            skill_source: crate::session::telemetry::skill_source(
+                skill.scope,
+                skill.plugin_name.as_deref(),
+            )
+            .to_owned(),
+            origin: skill.origin.clone(),
+            // None here: a `[skills].paths` entry is never a plugin skill
+            plugin_source: skill.plugin_name.clone(),
+            success,
+        });
+    }
 }
 
 /// Handles `~` expansion and relative path resolution against `cwd`.
@@ -288,6 +337,7 @@ pub async fn handle(
 
             // Resolve to absolute path so config entries work from any cwd.
             let resolved = resolve_skill_path(&req.path, cwd);
+            let changed = skills_at_config_path(&resolved, cwd).await;
 
             let p = resolved.clone();
             if let Err(e) = cli_config::update_config(|cfg| {
@@ -307,6 +357,7 @@ pub async fn handle(
                         success: false,
                     },
                 );
+                log_harness_changed(&changed, HarnessChangeOp::Added, false);
                 return super::to_ext_response(Err::<SkillsAddResponse, _>(anyhow::anyhow!(
                     "Failed to save config: {e}"
                 )));
@@ -331,6 +382,7 @@ pub async fn handle(
                 total_skills: total as u32,
                 success: true,
             });
+            log_harness_changed(&changed, HarnessChangeOp::Added, true);
             super::to_ext_response(Ok(SkillsAddResponse {
                 added_count,
                 total,
@@ -346,6 +398,7 @@ pub async fn handle(
 
             // Resolve so relative/tilde paths match what was saved by add.
             let resolved = resolve_skill_path(&req.path, cwd);
+            let changed = skills_at_config_path(&resolved, cwd).await;
 
             let p = resolved.clone();
             if let Err(e) = cli_config::update_config(|cfg| {
@@ -356,6 +409,7 @@ pub async fn handle(
                 xai_grok_telemetry::session_ctx::log_event(
                     xai_grok_telemetry::events::SkillRemoved { success: false },
                 );
+                log_harness_changed(&changed, HarnessChangeOp::Removed, false);
                 return super::to_ext_response(Err::<SkillsRemoveResponse, _>(anyhow::anyhow!(
                     "Failed to save config: {e}"
                 )));
@@ -373,6 +427,7 @@ pub async fn handle(
             xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SkillRemoved {
                 success: true,
             });
+            log_harness_changed(&changed, HarnessChangeOp::Removed, true);
             super::to_ext_response(Ok(SkillsRemoveResponse {
                 path: resolved,
                 skills,

@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "1.0.35"
+version = "1.0.41"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -50,8 +50,6 @@ serde_json = { workspace = true }
 dunce = { workspace = true }
 semver = { workspace = true }
 xai-tty-utils = { workspace = true }
-# `collect_crashed()` for the startup crash notice.
-xai-grok-active-sessions = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-grok-extra-ca = { workspace = true }
@@ -97,6 +95,11 @@ jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc
 # xai-grok-workspace no longer enables sandbox-enforce by default, so enable it here.
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce", "xai-grok-workspace/sandbox-enforce"]
 local-workspace = ["xai-grok-pager/local-workspace"]
+# Test-only, prod-inert seam: lets the e2e harness install a TEST-signed managed-policy key the
+# spawned pager trusts. Double locked out of production: absent from `default`, `default-bazel`, and
+# `release-dist`, and the install hook is additionally gated on `debug_assertions` (off in shipped
+# `-c opt`/release builds). Never add this to a shipped feature set.
+test-seams = []
 release-dist = [
     "xai-grok-pager/release-dist",
     ]

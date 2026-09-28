@@ -154,6 +154,8 @@ mod parent_message;
 use mcp_init::*;
 #[path = "acp_session_impl/hooks_plugins.rs"]
 mod hooks_plugins;
+#[path = "acp_session_impl/mcp_argument_coercion.rs"]
+mod mcp_argument_coercion;
 #[path = "acp_session_impl/mcp_failed_reminder.rs"]
 mod mcp_failed_reminder;
 #[path = "acp_session_impl/model_switch.rs"]
@@ -182,6 +184,8 @@ mod length_salvage;
 #[path = "acp_session_impl/sampler_turn.rs"]
 mod sampler_turn;
 use sampler_turn::*;
+#[path = "acp_session_impl/mcp_file_input.rs"]
+mod mcp_file_input;
 #[path = "acp_session_impl/tool_dispatch.rs"]
 mod tool_dispatch;
 use tool_dispatch::*;
@@ -195,6 +199,8 @@ use turn_task::*;
 mod cancel;
 #[path = "acp_session_impl/reminders.rs"]
 mod reminders;
+#[path = "acp_session_impl/subagent_handoff.rs"]
+mod subagent_handoff;
 use reminders::*;
 pub use reminders::{CollectedTodoGateInput, TodoGateInput, evaluate_todo_gate};
 #[path = "acp_session_impl/laziness_classifier.rs"]
@@ -629,14 +635,23 @@ pub(crate) struct PreparedToolCall {
     tool_call_id: acp::ToolCallId,
     /// The tool name as requested by the model.
     tool_name: String,
-    /// The raw arguments string (for post_tool_use hook payload).
+    /// Authored arguments; file references never expand into conversation payloads.
     raw_arguments: String,
-    /// Parsed JSON arguments ready for bridge.call().
+    mcp_file: Option<mcp_file_input::PreparedMcpFile>,
+    /// Authored/recovered arguments; dispatch uses execution_arguments().
     parsed_args: serde_json::Value,
-    /// Model ID at time of call.
-    model_id: String,
+    /// Requested model snapshotted before the sampler await. Absent when unknown.
+    model_id: Option<String>,
+    /// Host id for this logical invocation. Not the provider call id.
+    invocation_id: String,
+    /// Qualified registry id, or the opaque class.
+    tool_id: String,
+    /// Managed behavior version, when the registration has one.
+    tool_version: Option<String>,
     /// Whether concatenated JSON recovery was used, and how many objects were found.
     concatenated_json_count: usize,
+    /// Reminder appended to the model-visible tool result. None when this call was left unchanged.
+    coercion_note: Option<String>,
     /// Resolved target for meta-dispatch tools (`use_tool`, `CallMcpTool`); `None` for ordinary tools.
     /// See [`ToolInput::dispatch_target_name`].
     dispatch_target_name: Option<String>,
@@ -723,10 +738,10 @@ impl StreamApplySpan {
     }
 }
 pub(crate) struct SessionActor {
-    pub(crate) repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState,
+    /// Git/jj working-tree root for templated first-message prefixes, if any.
+    pub(crate) vcs_root: Option<std::path::PathBuf>,
     pub(crate) session_info: SessionInfo,
     /// Transient turn-retry kill switch, resolved once at spawn; flips apply to new sessions.
-    /// Off for subagents in the first release; headless is enforced per turn via `attach_non_interactive`.
     pub(crate) transient_retry_enabled: bool,
     /// Cumulative transient resubmits this prompt.
     /// Prompt-scoped on the actor: auto-recovery, stop-hook continuations, and the goal loop re-enter the turn loop within one prompt.
@@ -823,6 +838,10 @@ pub(crate) struct SessionActor {
     pub(crate) forked_tool_override: Option<Vec<ToolSpec>>,
     /// Compaction configuration and runtime state.
     pub(crate) compaction: super::compaction_config::CompactionConfig,
+    pub(crate) long_reasoning_reminder: super::long_reasoning_reminder::LongReasoningReminder,
+    /// Per-turn reminder state; owned here so every round of one logical turn shares it.
+    pub(crate) long_reasoning_turn_state:
+        parking_lot::Mutex<super::long_reasoning_reminder::LongReasoningTurnState>,
     /// Memory subsystem: storage, flush config, injection state, telemetry.
     pub(crate) memory: super::memory_state::SessionMemory,
     /// Telemetry counters for session summary.
@@ -989,9 +1008,9 @@ pub(crate) struct SessionActor {
     pub(crate) goal_classifier_in_flight: std::sync::atomic::AtomicBool,
     /// Agent-level managed MCP gateway catalog cache.
     pub(crate) managed_mcp_handle: crate::session::managed_mcp::ManagedMcpStateHandle,
-    /// Original client-provided MCP servers from session creation.
-    /// Retained for re-merge during plugin reload.
-    pub(crate) initial_client_mcp_servers: Vec<acp::McpServer>,
+    /// Admitted client MCP seed. Set from `UpdateMcpServers.client_seed` on this actor.
+    /// `RefCell` matches `agent` and `plugin_registry`: the session task is single-threaded.
+    pub(crate) initial_client_mcp_servers: std::cell::RefCell<Vec<acp::McpServer>>,
     /// Shared MCP tool metadata for the BM25 search index. Updated after MCP init.
     pub(crate) tool_metadata_snapshot:
         Arc<std::sync::Mutex<crate::session::tool_index::ToolMetadataSnapshot>>,
@@ -1053,8 +1072,6 @@ pub(crate) struct SessionActor {
     /// Resolved workspace root for hooks: git worktree root if in a git repo, otherwise session cwd.
     /// Used for hook child process cwd, envelope fields, and GROK_WORKSPACE_ROOT env var.
     pub(crate) hook_resolved_workspace_root: String,
-    /// The detected VCS kind for this session's workspace.
-    pub(crate) vcs_kind: xai_grok_workspace::session::git::VcsKind,
     /// Errors from last hook config load (parse failures, etc.).
     pub(crate) hook_load_errors: std::cell::RefCell<Vec<String>>,
     /// Plugin registry snapshot for this session. Updated on `/plugins reload`.
@@ -1792,7 +1809,7 @@ mod tool_meta_stamp_tests {
                 );
                 let prepared = fixture
                     .actor
-                    .prepare_tool_call(read_file_call(), &mut Vec::new())
+                    .prepare_tool_call(read_file_call(), &mut Vec::new(), None)
                     .await
                     .expect("prepare_tool_call should not error");
                 assert!(prepared.is_ok(), "read_file should prepare cleanly");
@@ -1882,7 +1899,7 @@ mod tool_meta_stamp_tests {
                 });
                 let prepared = fixture
                     .actor
-                    .prepare_tool_call(read_file_call(), &mut Vec::new())
+                    .prepare_tool_call(read_file_call(), &mut Vec::new(), None)
                     .await
                     .expect("prepare_tool_call should not error");
                 assert!(prepared.is_ok(), "allowed read_file should prepare cleanly");
@@ -1990,6 +2007,9 @@ mod length_salvage_tests;
 #[path = "acp_session_tests/load_user_prompts_tests.rs"]
 mod load_user_prompts_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/mcp_argument_coercion_tests.rs"]
+mod mcp_argument_coercion_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/mcp_connecting_reminder_tests.rs"]
 mod mcp_connecting_reminder_tests;
 #[cfg(test)]
@@ -2023,6 +2043,9 @@ mod session_thread_tests;
 #[path = "acp_session_tests/status_line_payload_tests.rs"]
 mod status_line_payload_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/tool_call_telemetry_tests.rs"]
+mod tool_call_telemetry_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/tool_definitions_artifact_tests.rs"]
 mod tool_definitions_artifact_tests;
 #[cfg(test)]
@@ -2041,6 +2064,9 @@ mod turn_end_guard_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/turn_end_reporting_tests.rs"]
 mod turn_end_reporting_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/turn/turn_start_anchor_tests.rs"]
+mod turn_start_anchor_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/wait_for_mcp_prefix_tests.rs"]
 mod wait_for_mcp_prefix_tests;

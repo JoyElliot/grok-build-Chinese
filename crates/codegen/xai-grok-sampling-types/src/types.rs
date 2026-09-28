@@ -934,7 +934,21 @@ enum RawReasoningEffortOption {
     },
 }
 
-/// Uppercase the first character of an id for a default label; `"xhigh"` becomes `"Xhigh"`, `"deep"` becomes `"Deep"`.
+/// Display label for a known level; the bare-string menu shorthand and the shell's built-in effort picker share it.
+pub fn effort_label(effort: ReasoningEffort) -> String {
+    match effort {
+        ReasoningEffort::None => "None",
+        ReasoningEffort::Minimal => "Minimal",
+        ReasoningEffort::Low => "Low",
+        ReasoningEffort::Medium => "Medium",
+        ReasoningEffort::High => "High",
+        ReasoningEffort::Xhigh => "X-High",
+        ReasoningEffort::Max => "Max",
+    }
+    .to_string()
+}
+
+/// Uppercase the first character of a custom id for a default label; `"deep"` becomes `"Deep"`.
 fn humanize_effort_id(id: &str) -> String {
     let mut chars = id.chars();
     match chars.next() {
@@ -953,12 +967,10 @@ impl<'de> serde::Deserialize<'de> for ReasoningEffortOption {
                 let value = s
                     .parse::<ReasoningEffort>()
                     .map_err(serde::de::Error::custom)?;
-                let id = value.as_ref().to_string();
-                let label = humanize_effort_id(&id);
                 ReasoningEffortOption {
-                    id,
+                    id: value.as_ref().to_string(),
                     value,
-                    label,
+                    label: effort_label(value),
                     description: None,
                     default: false,
                 }
@@ -970,8 +982,11 @@ impl<'de> serde::Deserialize<'de> for ReasoningEffortOption {
                 description,
                 default,
             } => {
+                let label = label.unwrap_or_else(|| match &id {
+                    Some(id) => humanize_effort_id(id),
+                    None => effort_label(value),
+                });
                 let id = id.unwrap_or_else(|| value.as_ref().to_string());
-                let label = label.unwrap_or_else(|| humanize_effort_id(&id));
                 ReasoningEffortOption {
                     id,
                     value,
@@ -986,14 +1001,17 @@ impl<'de> serde::Deserialize<'de> for ReasoningEffortOption {
 
 /// Parse a JSON array of reasoning-effort options element-by-element, skipping and warning on any entry whose `value` fails to parse.
 /// That keeps tiers a newer server introduces from breaking the whole list.
-/// The meta reader and the remote `/models` parser both call this, so the skip rule lives in one place.
-pub fn parse_reasoning_effort_options(arr: &[serde_json::Value]) -> Vec<ReasoningEffortOption> {
+/// The meta reader and the remote `/models` parser both call this, so the skip rule lives in one place; `field` names the source key in the warn.
+pub fn parse_reasoning_effort_options(
+    arr: &[serde_json::Value],
+    field: &str,
+) -> Vec<ReasoningEffortOption> {
     arr.iter()
         .filter_map(
             |el| match serde_json::from_value::<ReasoningEffortOption>(el.clone()) {
                 Ok(opt) => Some(opt),
                 Err(err) => {
-                    tracing::warn!(value = %el, error = %err, "reasoningEfforts: skipping invalid entry");
+                    tracing::warn!(value = %el, error = %err, "{field}: skipping invalid entry");
                     None
                 }
             },
@@ -1015,7 +1033,7 @@ pub fn parse_reasoning_efforts_meta(
             return None;
         }
     };
-    let options = parse_reasoning_effort_options(arr);
+    let options = parse_reasoning_effort_options(arr, REASONING_EFFORTS_META_KEY);
     (!options.is_empty()).then_some(options)
 }
 
@@ -1047,6 +1065,15 @@ impl ApiBackend {
     /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
     pub fn forwards_prompt_cache_key(&self) -> bool {
         matches!(self, Self::Responses)
+    }
+
+    /// Request-body cap the hosts speaking this protocol enforce; the budget when a model sets no `max_request_bytes`.
+    /// The xAI inference proxy rejects bodies over 50 MiB (nginx `proxy-body-size`); Messages API hosts reject bodies over 30 MB.
+    pub const fn default_max_request_bytes(&self) -> NonZeroU64 {
+        match self {
+            Self::ChatCompletions | Self::Responses => NonZeroU64::new(50 * 1024 * 1024).unwrap(),
+            Self::Messages => NonZeroU64::new(30_000_000).unwrap(),
+        }
     }
 }
 
@@ -1113,6 +1140,9 @@ pub struct SamplingConfig {
     pub env_http_headers: indexmap::IndexMap<String, String>,
     /// Total context window size in tokens; auto-compact thresholds derive from it.
     pub context_window: NonZeroU64,
+    /// Provider request-body cap, already defaulted from `api_backend` by model resolution; `None` budgets to 50 MiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_request_bytes: Option<NonZeroU64>,
     /// Reasoning effort level for reasoning models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -1143,6 +1173,7 @@ impl Default for SamplingConfig {
             query_params: indexmap::IndexMap::new(),
             env_http_headers: indexmap::IndexMap::new(),
             context_window: NonZeroU64::MIN,
+            max_request_bytes: None,
             reasoning_effort: None,
             reasoning_summary: None,
             stream_tool_calls: None,
@@ -1346,7 +1377,7 @@ mod tests {
             ReasoningEffortOption {
                 id: "xhigh".to_string(),
                 value: ReasoningEffort::Xhigh,
-                label: "Xhigh".to_string(),
+                label: "X-High".to_string(),
                 description: None,
                 default: false,
             }

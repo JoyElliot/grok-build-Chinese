@@ -11,6 +11,7 @@
 //! - [`todo`]: the persistent todo panel shown above the prompt.
 //! - [`auth`]: the in-region sign-in flow shown before a session exists.
 //! - [`overlay`]: the inline-overlay host (prompt-anchored dropdowns; grows / shrinks the live viewport).
+//! - [`reprint`]: reprints the history at the new width after a resize.
 //!
 //! # Wiring
 //!
@@ -30,6 +31,7 @@ pub mod live;
 pub mod overlay;
 pub mod panel;
 pub mod plan;
+pub mod reprint;
 pub mod todo;
 pub mod welcome;
 
@@ -42,19 +44,22 @@ use crossterm::terminal::BeginSynchronizedUpdate;
 use xai_grok_pager::app::PagerTerminal;
 use xai_grok_pager::app::app_view::AppView;
 
-/// Adopt terminal size and open a synchronized update first, or a same-frame resize prints committed blocks at the stale width and hard-wraps them permanently.
+/// Adopt the terminal size before opening the synchronized update. Inside the update, the resize's cursor query stalls until the update ends.
+/// Adopting first also keeps a same-frame resize from printing committed blocks at the stale width, where they would hard-wrap permanently.
 /// Size the viewport to post-commit height before `insert_before`; sizing after stranded the prompt at the top of a tall streaming viewport.
 /// The synchronized update batches commit scroll/paint with the live redraw; without it a multi-block commit flickers as separate presents.
 /// The opening marker here and the closing marker of the live frame must be decided by one synchronization policy on one terminal context.
 pub fn draw(app: &mut AppView, terminal: &mut PagerTerminal) {
     let ctx = xai_grok_pager::terminal::terminal_context();
+    terminal.set_width_shrink(ctx.width_shrink());
+    let _ = terminal.autoresize();
     if xai_grok_pager::terminal::should_emit_synchronized_output(ctx) {
         let _ = terminal.backend_mut().queue(BeginSynchronizedUpdate);
     }
-    let _ = terminal.autoresize();
     // Pending permission/question marks are synced ONCE, up front (see `commit::sync_pending_marks`)
     // The viewport sizing (`sync_viewport` / `tail_height` / `will_commit`) and the commit pass then judge committability against the same state
     commit::sync_pending_marks(app);
+    reprint::maybe_reprint(app, terminal);
     // Advance any in-progress /transcript build by one time-budgeted slice (sets `pending_pager_path` when done; see `full_view::pump_transcript`)
     full_view::pump_transcript(app);
     welcome::maybe_commit_welcome(app, terminal);

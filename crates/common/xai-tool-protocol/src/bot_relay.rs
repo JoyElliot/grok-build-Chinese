@@ -24,6 +24,7 @@ pub const BOT_RELAY_CAPABILITIES: &[&str] = &[
     Method::BotSubscribe.as_wire_str(),
     Method::BotUnsubscribe.as_wire_str(),
     Method::BotBindConversation.as_wire_str(),
+    Method::BotPresence.as_wire_str(),
     Method::BotEvent.as_wire_str(),
 ];
 
@@ -88,6 +89,16 @@ pub const COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD: &str = "gateway/unknown-metho
 /// The box never held the state, so a box answer would be empty or a ghost.
 pub const COMMAND_REJECTED_TEMPORAL_UNSUPPORTED: &str = "temporal_unsupported";
 
+/// `reason` on `command_rejected` when the upstream answered the voice mint with `invalid_argument` or a voice harness call with `not_found`: voice calling is not enabled for this account, or the mint was refused.
+/// `detail.upstream` keeps the `status=... connect=...` excerpt and
+/// `detail.upstream_message` the sentence.
+pub const COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE: &str = "voice_call_unavailable";
+
+/// `reason` on `command_rejected` when the upstream refused `setMainAgent` because the main bot feature is not enabled for this account: `getMainAgent` still reads the pointer, but nothing can write it until the account is enrolled.
+/// `detail.upstream` keeps the `status=400 connect=invalid_argument` excerpt
+/// and `detail.upstream_message` the sentence.
+pub const COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED: &str = "main_agent_not_enabled";
+
 /// Every `command_rejected` reason above, sorted. Codegen fails if this
 /// disagrees with the `COMMAND_REJECTED_*` consts, and the hub checks its
 /// metrics label set against it, so a new reason cannot land uncounted.
@@ -105,9 +116,11 @@ pub const COMMAND_REJECTED_REASONS: &[&str] = &[
     COMMAND_REJECTED_BOX_REFUSED,
     COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD,
     COMMAND_REJECTED_HARNESS_REFUSED,
+    COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED,
     COMMAND_REJECTED_NOT_SUPPORTED_IN_LIVE,
     COMMAND_REJECTED_NOT_YET_ENABLED,
     COMMAND_REJECTED_TEMPORAL_UNSUPPORTED,
+    COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE,
 ];
 
 /// True only when the hub classified a box unknown-method refusal.
@@ -444,6 +457,22 @@ pub struct BotBindConversationParams {
 /// `bot.bindConversation` result.
 #[typeshare]
 pub type BotBindConversationResult = BotEmptyResult;
+
+// ── bot.presence ─────────────────────────────────────────────────────────
+
+/// `bot.presence` params. A connection views at most one agent; `viewing:
+/// true` for a new agent replaces the previous one.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotPresenceParams {
+    pub agent_id: String,
+    pub viewing: bool,
+}
+
+/// `bot.presence` result.
+#[typeshare]
+pub type BotPresenceResult = BotEmptyResult;
 
 // ── Closed error enum ────────────────────────────────────────────────────
 
@@ -869,6 +898,8 @@ impl From<BotRelayError> for JsonRpcError {
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum HubChannel {
+    #[serde(rename = "hub:turn_started")]
+    TurnStarted,
     #[serde(rename = "hub:turn_finished")]
     TurnFinished,
     #[serde(rename = "hub:resync_required")]
@@ -876,10 +907,11 @@ pub enum HubChannel {
 }
 
 impl HubChannel {
-    pub const ALL: &'static [Self] = &[Self::TurnFinished, Self::ResyncRequired];
+    pub const ALL: &'static [Self] = &[Self::TurnStarted, Self::TurnFinished, Self::ResyncRequired];
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TurnStarted => "hub:turn_started",
             Self::TurnFinished => "hub:turn_finished",
             Self::ResyncRequired => "hub:resync_required",
         }
@@ -887,6 +919,7 @@ impl HubChannel {
 
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
+            "hub:turn_started" => Some(Self::TurnStarted),
             "hub:turn_finished" => Some(Self::TurnFinished),
             "hub:resync_required" => Some(Self::ResyncRequired),
             _ => None,
@@ -996,7 +1029,24 @@ impl<'de> Deserialize<'de> for BotEventChannel {
 
 // ── Hub-owned event bodies ───────────────────────────────────────────────
 
+/// Body of `hub:turn_started` (`event` when [`HubChannel::TurnStarted`]).
+///
+/// The hub mints `turn_id` when it sees the agent's `isRunning` level rise
+/// and repeats it on the matching [`HubTurnFinishedEvent`], so a client can
+/// tell which running span a finish closes. A subscriber joining mid-turn
+/// receives the running turn's start first.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubTurnStartedEvent {
+    pub agent_id: String,
+    pub turn_id: String,
+}
+
 /// Body of `hub:turn_finished` (`event` when [`HubChannel::TurnFinished`]).
+///
+/// `turn_id` matches the [`HubTurnStartedEvent`] that opened the span;
+/// empty from hubs that predate turn ids.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1004,6 +1054,8 @@ pub struct HubTurnFinishedEvent {
     pub agent_id: String,
     pub conversation_ids: Vec<String>,
     pub preview: String,
+    #[serde(default)]
+    pub turn_id: String,
 }
 
 /// Body of `hub:resync_required` (`event` when [`HubChannel::ResyncRequired`]).
@@ -1028,6 +1080,7 @@ pub struct HubResyncRequiredEvent {
 /// omitted from the wire when `None`.
 ///
 /// `event` is upstream-verbatim for [`BotEventChannel::Upstream`]. For
+/// [`HubChannel::TurnStarted`] it is [`HubTurnStartedEvent`]; for
 /// [`HubChannel::TurnFinished`] it is [`HubTurnFinishedEvent`]; for
 /// [`HubChannel::ResyncRequired`] it is [`HubResyncRequiredEvent`].
 ///
@@ -1106,6 +1159,7 @@ mod tests {
             "bot.subscribe",
             "bot.unsubscribe",
             "bot.bindConversation",
+            "bot.presence",
             "bot.event",
         ];
         assert_eq!(BOT_RELAY_CAPABILITIES, expected);
@@ -1586,6 +1640,17 @@ mod tests {
         assert_eq!(roundtrip(&empty_bind), empty_bind_wire);
         let parsed: BotBindConversationParams = serde_json::from_value(empty_bind_wire).unwrap();
         assert!(parsed.agent_ids.is_empty());
+
+        let presence = BotPresenceParams {
+            agent_id: "agt_a".to_owned(),
+            viewing: true,
+        };
+        assert_eq!(
+            json!({"agentId": "agt_a", "viewing": true}),
+            roundtrip(&presence)
+        );
+        assert_rejects::<BotPresenceParams>(json!({"agentId": "agt_a"}));
+        assert_rejects::<BotPresenceParams>(json!({"agent_id": "agt_a", "viewing": true}));
     }
 
     #[test]
@@ -1942,10 +2007,19 @@ mod tests {
 
     #[test]
     fn hub_owned_event_bodies_round_trip() {
+        let started = HubTurnStartedEvent {
+            agent_id: "agt_1".to_owned(),
+            turn_id: "turn_7".to_owned(),
+        };
+        assert_eq!(
+            roundtrip(&started),
+            json!({"agentId": "agt_1", "turnId": "turn_7"})
+        );
         let finished = HubTurnFinishedEvent {
             agent_id: "agt_1".to_owned(),
             conversation_ids: vec!["conv_1".to_owned()],
             preview: "done".to_owned(),
+            turn_id: "turn_7".to_owned(),
         };
         assert_eq!(
             roundtrip(&finished),
@@ -1953,6 +2027,7 @@ mod tests {
                 "agentId": "agt_1",
                 "conversationIds": ["conv_1"],
                 "preview": "done",
+                "turnId": "turn_7",
             })
         );
         let resync = HubResyncRequiredEvent {
@@ -1960,6 +2035,13 @@ mod tests {
         };
         assert_eq!(roundtrip(&resync), json!({"agentId": "agt_1"}));
         assert_rejects::<HubResyncRequiredEvent>(json!({"agent_id": "agt_1"}));
+        let legacy: HubTurnFinishedEvent = serde_json::from_value(json!({
+            "agentId": "agt_1",
+            "conversationIds": [],
+            "preview": "",
+        }))
+        .unwrap();
+        assert_eq!("", legacy.turn_id);
     }
 
     #[test]
@@ -1968,6 +2050,7 @@ mod tests {
             agent_id: "agt_1".to_owned(),
             conversation_ids: vec!["conv_1".to_owned()],
             preview: "done".to_owned(),
+            turn_id: "turn_7".to_owned(),
         };
         let finished_env = BotEventEnvelope::new(
             "agt_1",
@@ -1984,6 +2067,7 @@ mod tests {
                 "agentId": "agt_1",
                 "conversationIds": ["conv_1"],
                 "preview": "done",
+                "turnId": "turn_7",
             },
         });
         assert_eq!(roundtrip(&finished_env), finished_wire);

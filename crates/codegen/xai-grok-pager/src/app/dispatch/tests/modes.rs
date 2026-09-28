@@ -1317,6 +1317,28 @@ fn cycle_mode_plan_plus_always_approve_under_pin_still_resets() {
 }
 
 #[test]
+fn turning_always_approve_off_restages_ask() {
+    let mut app = test_app_with_agent();
+    app.default_yolo = true;
+    app.current_ui.permission_mode = Some("always-approve".into());
+    {
+        let agent = app
+            .agents
+            .get_mut(&AgentId(0))
+            .expect("the test agent exists");
+        agent.session.session_id = None;
+        agent.session.yolo_mode = true;
+        agent.deferred_permission_mode = Some("always-approve");
+    }
+
+    dispatch(Action::ToggleYolo, &mut app);
+
+    let agent = test_agent(&app, AgentId(0));
+    assert!(!agent.session.is_yolo());
+    assert_eq!(agent.deferred_permission_mode, Some("ask"));
+}
+
+#[test]
 fn cycle_mode_pre_session_plan_plus_yolo_unstages_plan_keeps_yolo() {
     let mut app = test_app_with_agent();
     app.default_yolo = true;
@@ -1983,6 +2005,135 @@ fn cycle_always_approve_with_nudge_jumps_to_plan() {
     );
 }
 
+/// The jump skips the shared body, so it has to clear the soft-default flag itself.
+#[test]
+fn cycle_with_nudge_clears_the_soft_default_flag() {
+    let mut app = test_app_with_agent();
+    publish_agent_ask_plan(&mut app);
+    app.permission_mode_from_soft_default = true;
+    let _ = app
+        .agents
+        .get_mut(&AgentId(0))
+        .expect("the test agent exists")
+        .ephemeral_tip
+        .show(
+            crate::tips::plan_nudge::plan_nudge_tip(),
+            &mut std::collections::HashMap::new(),
+        );
+
+    let _ = press_shift_tab(&mut app);
+
+    assert!(!app.permission_mode_from_soft_default);
+}
+
+/// Before the session binds, the staged word is the only way the choice reaches the agent.
+#[test]
+fn turning_always_approve_on_before_a_session_stages_it() {
+    let mut app = test_app_with_agent();
+    app.agents
+        .get_mut(&AgentId(0))
+        .expect("the test agent exists")
+        .session
+        .session_id = None;
+
+    dispatch(Action::ToggleYolo, &mut app);
+
+    assert_eq!(
+        test_agent(&app, AgentId(0)).deferred_permission_mode,
+        Some("always-approve")
+    );
+}
+
+/// Picking a mode by name stages that word, so a staged Auto cannot outlive a later Ask.
+#[test]
+fn picking_ask_restages_ask_over_a_staged_auto() {
+    let mut app = test_app_with_agent();
+    {
+        let agent = app
+            .agents
+            .get_mut(&AgentId(0))
+            .expect("the test agent exists");
+        agent.session.session_id = None;
+        agent.deferred_permission_mode = Some("auto");
+    }
+
+    crate::app::dispatch::modes::set_permission_mode(
+        &mut app,
+        crate::app::actions::PermissionModeKind::Ask,
+    );
+
+    assert_eq!(
+        test_agent(&app, AgentId(0)).deferred_permission_mode,
+        Some("ask")
+    );
+}
+
+/// Turning always-approve off leaves a staged Auto alone.
+#[test]
+fn turning_always_approve_off_keeps_a_staged_auto() {
+    let mut app = test_app_with_agent();
+    {
+        let agent = app
+            .agents
+            .get_mut(&AgentId(0))
+            .expect("the test agent exists");
+        agent.session.session_id = None;
+        agent.session.yolo_mode = true;
+        agent.deferred_permission_mode = Some("auto");
+    }
+
+    dispatch(Action::ToggleYolo, &mut app);
+
+    assert_eq!(
+        test_agent(&app, AgentId(0)).deferred_permission_mode,
+        Some("auto")
+    );
+}
+
+/// Reconnecting refuses the press, and the nudge shortcut must not slip Plan through first.
+#[test]
+fn cycle_with_nudge_does_nothing_while_reconnecting() {
+    let mut app = test_app_with_agent();
+    publish_agent_ask_plan(&mut app);
+    app.reconnect_pending = true;
+    let _ = app
+        .agents
+        .get_mut(&AgentId(0))
+        .expect("the test agent exists")
+        .ephemeral_tip
+        .show(
+            crate::tips::plan_nudge::plan_nudge_tip(),
+            &mut std::collections::HashMap::new(),
+        );
+
+    let effects = dispatch(Action::CycleMode, &mut app);
+
+    assert!(effects.is_empty());
+    assert!(!test_agent(&app, AgentId(0)).plan_mode_active);
+}
+
+/// Ask sits between Agent and Plan, so the nudge jump must not depend on where the cycle starts.
+#[test]
+fn cycle_with_nudge_jumps_to_plan_from_a_published_ask() {
+    let mut app = test_app_with_agent();
+    publish_agent_ask_plan(&mut app);
+    {
+        let agent = app
+            .agents
+            .get_mut(&AgentId(0))
+            .expect("the test agent exists");
+        agent.session_mode = xai_grok_tools::types::SessionMode::Ask;
+        let _ = agent.ephemeral_tip.show(
+            crate::tips::plan_nudge::plan_nudge_tip(),
+            &mut std::collections::HashMap::new(),
+        );
+    }
+
+    let (banner, _) = press_shift_tab(&mut app);
+
+    assert_eq!(banner, "Switched to mode: Plan");
+}
+
 /// Auto with the plan nudge showing: Shift+Tab jumps to Plan (not Always-Approve), clears auto, retires the nudge, and persists ask.
 #[test]
 fn cycle_auto_with_nudge_jumps_to_plan() {
@@ -2372,12 +2523,55 @@ fn show_export_copy_tip_shows_and_counts_when_flag_on() {
 }
 
 #[test]
-fn cycle_mode_walks_the_agents_published_modes() {
-    use xai_grok_tools::types::SessionMode;
+fn cycle_mode_walks_the_published_modes_then_always_approve() {
     let mut app = test_app_with_agent();
+    publish_agent_ask_plan(&mut app);
+
+    let presses: Vec<_> = (0..4).map(|_| press_shift_tab(&mut app)).collect();
+
+    assert_eq!(
+        vec![
+            ("Switched to mode: Ask", vec!["set_mode:ask".to_owned()]),
+            ("Switched to mode: Plan", vec!["set_mode:plan".to_owned()]),
+            (
+                "Switched to mode: Always-Approve",
+                vec![
+                    "set_mode:default".to_owned(),
+                    "persist:always-approve".to_owned()
+                ]
+            ),
+            ("Switched to mode: Agent", vec!["persist:ask".to_owned()]),
+        ],
+        presses
+            .iter()
+            .map(|(banner, effects)| (banner.as_str(), effects.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(!test_agent(&app, AgentId(0)).session.is_yolo());
+}
+
+#[test]
+fn cycle_mode_under_the_policy_pin_returns_to_the_first_published_mode() {
+    let mut app = test_app_with_agent();
+    app.yolo_policy_block = Some(POLICY_WARNING);
+    publish_agent_ask_plan(&mut app);
+
+    press_shift_tab(&mut app);
+    press_shift_tab(&mut app);
+
+    let (banner, effects) = press_shift_tab(&mut app);
+
+    assert_eq!("Switched to mode: Agent", banner);
+    assert_eq!(vec!["set_mode:default", "persist:ask"], effects);
+    assert_eq!(Some(POLICY_WARNING), agent_toast(&app).as_deref());
+    assert!(!test_agent(&app, AgentId(0)).session.is_yolo());
+}
+
+/// Gives the test agent the default, ask, and plan modes.
+fn publish_agent_ask_plan(app: &mut AppView) {
     app.agents
         .get_mut(&AgentId(0))
-        .unwrap()
+        .expect("the test agent exists")
         .apply_session_modes(Some(acp::SessionModeState::new(
             "default",
             vec![
@@ -2386,36 +2580,33 @@ fn cycle_mode_walks_the_agents_published_modes() {
                 acp::SessionMode::new("plan", "Plan"),
             ],
         )));
+}
 
-    let mut sent = Vec::new();
-    for _ in 0..3 {
-        let effects = dispatch(Action::CycleMode, &mut app);
-        let [Effect::SetSessionMode { mode_id, .. }] = effects.as_slice() else {
-            panic!("a published-mode cycle is one set_mode and nothing else: {effects:?}");
-        };
-        sent.push(mode_id.0.to_string());
+/// Sends one Shift+Tab and returns the banner plus the labelled effects.
+fn press_shift_tab(app: &mut AppView) -> (String, Vec<String>) {
+    let effects = dispatch(Action::CycleMode, app)
+        .iter()
+        .map(effect_label)
+        .collect();
+    let banner = test_agent(app, AgentId(0))
+        .mode_switch_banner
+        .as_ref()
+        .map(|(msg, _)| msg.clone())
+        .unwrap_or_default();
+    (banner, effects)
+}
+
+/// Labels a cycle effect as `set_mode:<id>` or `persist:<canonical>`.
+fn effect_label(effect: &Effect) -> String {
+    match effect {
+        Effect::SetSessionMode { mode_id, .. } => format!("set_mode:{}", mode_id.0),
+        Effect::PersistPermissionMode {
+            canonical,
+            persist: crate::app::actions::PermissionModePersist::BestEffort,
+            ..
+        } => format!("persist:{canonical}"),
+        other => format!("{other:?}"),
     }
-
-    assert_eq!(vec!["ask", "plan", "default"], sent);
-    let agent = test_agent(&app, AgentId(0));
-    assert_eq!(
-        SessionMode::Default,
-        agent.effective_session_mode(),
-        "three presses come back around before any confirmation arrives"
-    );
-    assert_eq!(Some(false), agent.plan_mode_pending);
-    assert!(
-        !agent.session.is_yolo() && !agent.session.is_auto(),
-        "the permission axis stays put"
-    );
-    assert_eq!(
-        Some("Switched to mode: Agent".to_owned()),
-        agent
-            .mode_switch_banner
-            .as_ref()
-            .map(|(msg, _)| msg.clone()),
-        "the banner uses the name the agent gave the mode"
-    );
 }
 
 #[test]
@@ -2449,9 +2640,9 @@ fn published_mode_confirmation_clears_the_pick_and_labels_the_row() {
     assert_eq!(Some("ask"), agent.published_mode_label());
 }
 
-/// Pre-session Always-Approve must not survive a published mode list with no permission arm.
+/// The published cycle includes Always-Approve.
 #[test]
-fn published_modes_drop_the_permission_the_pre_session_ring_staged() {
+fn published_modes_keep_the_always_approve_staged_before_the_session() {
     let mut app = test_app_with_agent();
     app.auto_mode_gate = false;
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
@@ -2459,18 +2650,54 @@ fn published_modes_drop_the_permission_the_pre_session_ring_staged() {
     // Normal → Plan → Always-Approve (auto gated off), all before a session exists
     dispatch(Action::CycleMode, &mut app);
     dispatch(Action::CycleMode, &mut app);
-    let agent = test_agent(&app, AgentId(0));
-    assert!(
-        agent.session.is_yolo(),
-        "the Grok ring staged Always-Approve"
-    );
-    assert_eq!(Some("always-approve"), agent.deferred_permission_mode);
+    assert!(test_agent(&app, AgentId(0)).session.is_yolo());
+
+    let effects = create_session_with_published_modes(&mut app);
+
+    assert!(test_agent(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
         Some("always-approve"),
         app.current_ui.permission_mode.as_deref()
     );
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::PersistPermissionMode {
+                canonical: "always-approve",
+                ..
+            }
+        )),
+        "the shell must be told the permission the prompt row shows: {effects:?}"
+    );
+}
 
-    let effects = dispatch(
+/// The published cycle has no Auto.
+#[test]
+fn an_agent_that_publishes_modes_drops_auto() {
+    let mut app = test_app_with_agent();
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
+
+    // Two presses move the agent from Normal to Plan to Auto before a session exists
+    dispatch(Action::CycleMode, &mut app);
+    dispatch(Action::CycleMode, &mut app);
+    assert!(test_agent(&app, AgentId(0)).session.is_auto());
+
+    let effects = create_session_with_published_modes(&mut app);
+
+    assert!(!test_agent(&app, AgentId(0)).session.is_auto());
+    assert_eq!(Some("ask"), app.current_ui.permission_mode.as_deref());
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::PersistPermissionMode { .. })),
+        "a permission the published cycle cannot show must not be persisted: {effects:?}"
+    );
+}
+
+/// Binds `sess-1` to the test agent with a two-mode list.
+/// An agent that publishes modes answers `session/new` with the same two modes.
+fn create_session_with_published_modes(app: &mut AppView) -> Vec<Effect> {
+    dispatch(
         Action::TaskComplete(TaskResult::SessionCreated {
             agent_id: AgentId(0),
             session_id: "sess-1".into(),
@@ -2483,25 +2710,6 @@ fn published_modes_drop_the_permission_the_pre_session_ring_staged() {
                 ],
             )),
         }),
-        &mut app,
-    );
-
-    let agent = test_agent(&app, AgentId(0));
-    assert!(!agent.session.is_yolo() && !agent.session.is_auto());
-    assert_eq!(None, agent.deferred_permission_mode);
-    assert_eq!(Some("ask"), app.current_ui.permission_mode.as_deref());
-    assert!(!app.default_yolo);
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistPermissionMode { .. })),
-        "a permission the published ring cannot show must not be persisted: {effects:?}"
-    );
-
-    let effects = dispatch(Action::CycleMode, &mut app);
-    let [Effect::SetSessionMode { mode_id, .. }] = effects.as_slice() else {
-        panic!("Shift+Tab now walks the published list: {effects:?}");
-    };
-    assert_eq!("ask", &*mode_id.0);
-    assert!(!test_agent(&app, AgentId(0)).session.is_yolo());
+        app,
+    )
 }

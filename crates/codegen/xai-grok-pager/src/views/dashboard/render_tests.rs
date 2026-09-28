@@ -951,10 +951,6 @@ fn render_narrow_mode_registers_row_rects() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     let rows = vec![row];
     let theme = Theme::current();
@@ -1372,8 +1368,8 @@ fn render_popup_overlay_registers_close_hit_rect() {
     );
     let content = buf_to_text(&buf);
     assert!(
-        content.contains('\u{2717}'),
-        "close affordance [✗] missing, got: {content:?}",
+        content.contains(crate::glyphs::ballot_x_button()),
+        "platform close affordance missing, got: {content:?}",
     );
     let close_rect = state
         .popup_close_rect
@@ -1550,10 +1546,6 @@ fn sanitized_rename_draft_is_safe_in_both_render_paths() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     let rows = vec![row];
     let theme = Theme::current();
@@ -1614,10 +1606,6 @@ fn render_rename_overlay_aligns_with_title_and_keeps_icon() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     let rows = vec![row];
     let theme = Theme::current();
@@ -1854,10 +1842,6 @@ fn rename_hover_selection_and_delete_geometry_stay_consistent() {
         pinned: false,
         badges: vec![RowBadge::Subagents(1)],
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     let rows = vec![row];
     let text = format!("{}中e\u{301}👩🏽\u{200d}💻", "x".repeat(90));
@@ -2801,10 +2785,6 @@ fn render_row_two_line_layout_paints_title_and_secondary() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     render_row(&mut buf, Rect::new(0, 0, 100, 2), &theme, &row, &mut state);
 
@@ -2821,8 +2801,8 @@ fn render_row_two_line_layout_paints_title_and_secondary() {
     );
     assert_eq!(
         buf_cell(&buf, 2, 0).symbol(),
-        "\u{2e2c}",
-        "row 0 col 2 must be the spinner glyph `⸬` at tick=8",
+        crate::glyphs::dot_spinner_frames()[2],
+        "row 0 col 2 must be the third platform spinner frame at tick=8",
     );
     assert_eq!(
         buf_cell(&buf, 3, 0).symbol(),
@@ -2884,10 +2864,6 @@ fn render_row_selected_brightens_secondary_text() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
 
     // Unselected: dim secondary
@@ -2946,10 +2922,6 @@ fn render_row_needs_input_yellow_blink_no_badge_pending_prefix() {
         pinned: false,
         badges: vec![RowBadge::NeedsInput],
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     let render = |tick: u64| {
         let mut buf = Buffer::empty(Rect::new(0, 0, 100, 2));
@@ -3034,10 +3006,6 @@ fn render_row_new_session_fallback_label_is_two_tone() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     };
     render_row(&mut buf, Rect::new(0, 0, 100, 2), &theme, &row, &mut state);
 
@@ -3194,57 +3162,6 @@ fn render_rows_skips_headers_when_filter_is_state() {
     assert!(
         content.contains("second working"),
         "second row must render, got: {content:?}",
-    );
-}
-
-/// Subagent rows (indent > 0) must NOT trigger their own state header; they inherit their parent's group.
-/// A `Working` parent followed by `Completed` and `Failed` subagents must emit only the parent's `Working` header, not extra ones for the subagents.
-#[test]
-fn render_rows_subagents_do_not_trigger_their_own_headers() {
-    use crate::app::agent::AgentId;
-    let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
-    let mut state = DashboardState::new();
-    let parent = DashboardRow {
-        id: DashboardRowId::TopLevel(AgentId(1)),
-        indent: 0,
-        ..header_test_row(1, RowState::Working, "parent")
-    };
-    let sub_completed = DashboardRow {
-        id: DashboardRowId::Subagent {
-            parent: AgentId(1),
-            child_session_id: "c1".to_string(),
-        },
-        label: "sub-completed".to_string(),
-        indent: 1,
-        ..header_test_row(11, RowState::Completed, "sub-completed")
-    };
-    let sub_failed = DashboardRow {
-        id: DashboardRowId::Subagent {
-            parent: AgentId(1),
-            child_session_id: "c2".to_string(),
-        },
-        label: "sub-failed".to_string(),
-        indent: 1,
-        ..header_test_row(12, RowState::Failed, "sub-failed")
-    };
-    let rows = vec![parent, sub_completed, sub_failed];
-    let theme = Theme::current();
-    render_rows(&mut buf, Rect::new(0, 0, 80, 20), &theme, &rows, &mut state);
-    let content = buf_to_text(&buf);
-    // Group header reads `Working 1 ─────` (no parens; the trailing rule fills the rest of the row)
-    assert!(
-        content.contains("Working 1"),
-        "parent's Working header must render, got: {content:?}",
-    );
-    // Subagents inherit their parent's group and must NOT emit their own headers
-    // The trailing `\u{2500}` rule is the marker that distinguishes a header from a row
-    assert!(
-        !content.contains("Completed 1"),
-        "subagent must NOT trigger a Completed header, got: {content:?}",
-    );
-    assert!(
-        !content.contains("Failed 1"),
-        "subagent must NOT trigger a Failed header, got: {content:?}",
     );
 }
 

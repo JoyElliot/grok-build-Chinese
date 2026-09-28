@@ -20,7 +20,7 @@ try {
       $validationTestState.Calls.Clear()
       & $runner -Mode $mode -Suite $suite -SkipResourceMonitor
       $summary = Get-Content (Join-Path $temp "grok-zh-windows-validation-$suite/summary.json") -Raw | ConvertFrom-Json
-      $expected = if ($mode -eq 'preview') { if ($suite -eq 'core') { 7 } else { 5 } } else { if ($suite -eq 'core') { 9 } else { 6 } }
+      $expected = if ($mode -eq 'preview') { if ($suite -eq 'core') { 9 } else { 5 } } else { if ($suite -eq 'core') { 11 } else { 6 } }
       if ($summary.outcome -ne 'success' -or $summary.commands.Count -ne $expected) { throw 'Incomplete success diagnostics.' }
       $extra = if ($suite -eq 'core') { 1 } else { 0 }
       if ($validationTestState.Calls.Count -ne ($expected + $extra)) { throw 'Unexpected cargo invocation count.' }

@@ -426,6 +426,7 @@ fn soak_request(id: String, background: bool) -> SubagentRequest {
         owner: SubagentOwner::Task,
         cancel_token: CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     }
 }
 

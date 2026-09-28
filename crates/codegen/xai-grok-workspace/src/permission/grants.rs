@@ -13,6 +13,7 @@ use crate::permission::auto_mode::{
 use crate::permission::bash_command_splitting::{
     is_setup_command, try_parse_shell, try_parse_word_only_commands_sequence, unwrap_wrappers,
 };
+use crate::permission::bash_permission_script::PermissionScript;
 use crate::permission::exec_risk::{
     SAFE_GIT_SUBCOMMANDS, ambient_exec_risk_from_plan, ambient_scan_plan_from_segments,
     git_words_are_read_only_query, git_words_have_unsafe_query_option, script_may_invoke_git,
@@ -498,7 +499,7 @@ pub(crate) struct BashEvaluation {
     /// `ExecOrAmbientGit` may be added later by the ambient git scan.
     pub(crate) assessment: BashSecurityAssessment,
     /// An unsafe write target came from a redirect (`> f`), which allow-rule word matching cannot see; no configured allow rule may vouch for it.
-    /// `true` (fail closed) on undecomposable scripts.
+    /// `true` (fail closed) unless the script decomposed or was recovered as an eligible reader script.
     pub(crate) redirect_write: bool,
     /// Raw segment word lists for ambient cwd tracking (git present, flags clean).
     pub(crate) ambient_segments: Option<Vec<Vec<String>>>,
@@ -506,6 +507,8 @@ pub(crate) struct BashEvaluation {
     pub(crate) protected_paths: Vec<String>,
     /// Script has an in-scope `cd`/`pushd`/`popd`, so relative operands cannot be pinned.
     pub(crate) has_cwd_change: bool,
+    /// Strict decomposition failed but every command is a reviewed reader with understood filename positions.
+    pub(crate) recovered_eligible: bool,
 }
 
 fn unparseable_exec_risk(cmd: &str) -> bool {
@@ -561,6 +564,7 @@ pub(crate) fn evaluate_bash(
             ambient_segments: None,
             protected_paths: Vec::new(),
             has_cwd_change: false,
+            recovered_eligible: false,
         };
     };
     let writes = command_write_paths_split(tree.root_node(), cmd);
@@ -591,8 +595,26 @@ pub(crate) fn evaluate_bash(
         assessment.insert(finding);
     }
     let Some(segments) = segments else {
-        // WHY: undecomposable dynamic `bash -c "$X"`/`eval` is still opaque shell.
-        assessment.insert(Finding::UnparseableShell);
+        let recovery = PermissionScript::analyze(&tree, cmd);
+        if recovery.has_unresolved() {
+            assessment.insert(Finding::UnresolvedArgument);
+        }
+        let projections = recovery.projections();
+        for words in &projections {
+            let words = unwrap_wrappers(words);
+            if is_dangerous_command_words(words) {
+                assessment.insert(Finding::DangerousCommand);
+            }
+            if rg_has_unsafe_flag(words) {
+                assessment.insert(Finding::SpecialExecSurface);
+            }
+            if segment_exec_facts(words).exec_risk {
+                assessment.insert(Finding::ExecOrAmbientGit);
+            }
+        }
+        if !recovery.is_eligible() {
+            assessment.insert(Finding::UnparseableShell);
+        }
         if tree_has_opaque_shell(tree.root_node(), cmd) {
             assessment.insert(Finding::OpaqueShell);
         }
@@ -600,14 +622,21 @@ pub(crate) fn evaluate_bash(
             assessment.insert(Finding::ExecOrAmbientGit);
         }
         return BashEvaluation {
-            segments: raw_deny_rejection(cmd, state).unwrap_or(SegmentEvaluation::Unparseable),
+            segments: raw_deny_rejection(cmd, state)
+                .or_else(|| {
+                    projections.iter().find_map(|words| {
+                        raw_deny_rejection(&unwrap_wrappers(words).join(" "), state)
+                    })
+                })
+                .unwrap_or(SegmentEvaluation::Unparseable),
             exact_grant,
             all_segments_granted: false,
             assessment,
-            redirect_write: true,
+            redirect_write: redirect_write || !recovery.is_eligible(),
             ambient_segments: None,
             protected_paths,
             has_cwd_change,
+            recovered_eligible: recovery.is_eligible(),
         };
     };
     // Upgrade the raw-string compare with the dequoted single-command form now that the parse is available (see `whole_script_grant`)
@@ -659,6 +688,7 @@ pub(crate) fn evaluate_bash(
                 ambient_segments: None,
                 protected_paths: Vec::new(),
                 has_cwd_change: false,
+                recovered_eligible: false,
             };
         }
 
@@ -736,6 +766,7 @@ pub(crate) fn evaluate_bash(
         ambient_segments,
         protected_paths,
         has_cwd_change,
+        recovered_eligible: false,
     }
 }
 

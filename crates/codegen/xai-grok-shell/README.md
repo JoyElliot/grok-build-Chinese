@@ -1796,15 +1796,31 @@ never removes or replaces another layer's block. Each hook's `/hooks-list` name 
 prefixed with the layer it came from (for example `managed:` or
 `requirements/user:`).
 
-Hooks from the **root-owned** layers (a system-dir `requirements.toml` such as
-`/etc/grok/requirements.toml`, or `/etc/grok/managed_config.toml`) are enforced:
-they cannot be disabled from the hooks modal, the enable/disable APIs, or the
-`disabled-hooks` file, and a byte-identical copy in a lower layer cannot take
-over their provenance. Enforcement relies on OS file ownership — deploy these
-files root-owned (or via MDM); there is no signature verification. Hooks in
-`$GROK_HOME` layers (`requirements.toml`, `managed_config.toml`, `config.toml`)
+Hooks from two kinds of layer are enforced: they cannot be disabled from the
+hooks modal, the enable/disable APIs, or the `disabled-hooks` file, and a
+byte-identical copy in a lower layer cannot take over their provenance.
+
+- The **root-owned** system layers (`/etc/grok/requirements.toml`,
+  `/etc/grok/managed_config.toml`). Enforcement relies on OS file ownership, so
+  deploy these files root-owned (or via MDM).
+- The **signed** `$GROK_HOME/requirements.toml` the deployment sync writes.
+  Its hooks are enforced while the file's bytes match the server-signed
+  envelope (`requirements/signed:` names); an edited copy, or one whose
+  signature file is missing or unreadable, is the user's own file again
+  (`requirements/user:` names, disableable); an unreadable `requirements.toml`
+  contributes no hooks. Pair the policy with `fail_closed = true`, which
+  refuses the session on an edited copy or a missing signature (an unreadable
+  file is a read error, not tampering, and still starts).
+
+Hooks in the other `$GROK_HOME` layers (`managed_config.toml`, `config.toml`)
 remain convenience distribution, not an enforcement boundary: the user owns
 that directory and can edit or repoint it.
+
+`allow_managed_hooks_only = true` (also `allowManagedHooksOnly`) in any policy
+layer is a tighten-only pin that skips every hook that is not managed policy:
+user, project, plugin, agent-frontmatter, and vendor-compat hooks are left out of
+dispatch and show `[disabled]` in the modal, and enabling them is refused.
+ACP client-registered hooks are unaffected. A non-boolean value engages the pin.
 
 ---
 

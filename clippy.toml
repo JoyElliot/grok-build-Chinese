@@ -50,6 +50,6 @@ disallowed-methods = [
     # which would otherwise warn that the banned path is unreachable.
     { path = "dirs::home_dir", reason = "home-anchored paths resolve via xai_dirs::home_dir so all sites agree; Node-based tools use os.homedir, which matches it, not the known-folder API", allow-invalid = true },
     { path = "std::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll" },
-    { path = "tokio::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll" },
-    { path = "portable_pty::SlavePty::spawn_command", reason = "an unenrolled pty child outlives its session; enroll the shell with xai_tty_utils::ProcessScope::enroll_terminal_pid" },
+    { path = "tokio::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll", allow-invalid = true },
+    { path = "portable_pty::SlavePty::spawn_command", reason = "an unenrolled pty child outlives its session; enroll the shell with xai_tty_utils::ProcessScope::enroll_terminal_pid", allow-invalid = true },
 ]

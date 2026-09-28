@@ -11,7 +11,7 @@ use crate::bounded_log::BoundedLog;
 use crate::otel_decode;
 use crate::otel_event::{
     OtelBody, OtelDecodeError, OtelEvent, OtelExport, OtelFault, OtelLogRecord, OtelMetricPoint,
-    OtelSignal, OtelUnreadBody,
+    OtelSignal, OtelSpan, OtelUnreadBody,
 };
 use crate::watched::{WaitOutcome, Watched};
 
@@ -36,6 +36,22 @@ pub enum OtelRecorderError {
         events: Vec<OtelEvent>,
     },
     #[error(
+        "no matching OpenTelemetry span within {timeout:?}; {spans_recorded} spans recorded, names {span_names:?}"
+    )]
+    SpanTimeout {
+        timeout: Duration,
+        spans_recorded: usize,
+        span_names: Vec<String>,
+    },
+    #[error(
+        "{} OpenTelemetry spans recorded within a {window:?} window that had to stay silent",
+        .spans.len()
+    )]
+    SpanSilenceBroken {
+        window: Duration,
+        spans: Vec<OtelSpan>,
+    },
+    #[error(
         "an OpenTelemetry {signal:?} body of {len} bytes was past the retention cap, so the body text is incomplete"
     )]
     BodyPastRetentionCap { signal: OtelSignal, len: usize },
@@ -58,6 +74,7 @@ const MAX_RETAINED_BODY_BYTES: usize = 256 * 1024;
 
 struct RecorderLog {
     events: BoundedLog<OtelEvent>,
+    spans: BoundedLog<OtelSpan>,
     exports: BoundedLog<OtelExport>,
     faults: Vec<OtelFault>,
 }
@@ -68,6 +85,10 @@ pub(crate) enum ReceivedBody<'a> {
     InFull {
         bytes: &'a [u8],
         decoded: Result<Vec<OtelEvent>, OtelDecodeError>,
+    },
+    Spans {
+        bytes: &'a [u8],
+        decoded: Result<Vec<OtelSpan>, OtelDecodeError>,
     },
     Unread {
         body: OtelUnreadBody,
@@ -92,6 +113,7 @@ impl OtelRecorder {
         OtelRecorder {
             log: Arc::new(Watched::new(RecorderLog {
                 events: BoundedLog::new(MAX_LOGGED_EVENTS),
+                spans: BoundedLog::new(MAX_LOGGED_EVENTS),
                 exports: BoundedLog::new(MAX_LOGGED_EXPORTS),
                 faults: Vec::new(),
             })),
@@ -100,9 +122,16 @@ impl OtelRecorder {
 
     /// For a transport of the test's own; the export has no headers.
     pub fn record_protobuf(&self, signal: OtelSignal, message: &[u8]) {
-        let received = ReceivedBody::InFull {
-            bytes: message,
-            decoded: otel_decode::decode_protobuf(signal, message),
+        let received = if signal == OtelSignal::Traces {
+            ReceivedBody::Spans {
+                bytes: message,
+                decoded: otel_decode::decode_trace_protobuf(message),
+            }
+        } else {
+            ReceivedBody::InFull {
+                bytes: message,
+                decoded: otel_decode::decode_protobuf(signal, message),
+            }
         };
         self.record(signal, Vec::new(), received);
     }
@@ -113,18 +142,16 @@ impl OtelRecorder {
         headers: Vec<(String, String)>,
         received: ReceivedBody<'_>,
     ) {
-        let (body, decoded) = match received {
+        let (body, decoded_events, decoded_spans) = match received {
             ReceivedBody::InFull { bytes, decoded } => (
-                if bytes.len() <= MAX_RETAINED_BODY_BYTES {
-                    OtelBody::Kept(bytes.to_vec())
-                } else {
-                    OtelBody::PastRetentionCap { len: bytes.len() }
-                },
-                decoded.map_err(|error| OtelFault::Undecodable {
-                    signal,
-                    len: bytes.len(),
-                    error,
-                }),
+                retained_body(bytes),
+                decoded.map_err(|error| undecodable(signal, bytes.len(), error)),
+                Ok(Vec::new()),
+            ),
+            ReceivedBody::Spans { bytes, decoded } => (
+                retained_body(bytes),
+                Ok(Vec::new()),
+                decoded.map_err(|error| undecodable(signal, bytes.len(), error)),
             ),
             ReceivedBody::Unread { body, error } => (
                 OtelBody::Unread(body),
@@ -133,11 +160,16 @@ impl OtelRecorder {
                     body,
                     error,
                 }),
+                Ok(Vec::new()),
             ),
         };
         self.log.update(|log| {
-            match decoded {
+            match decoded_events {
                 Ok(events) => log.events.extend(events),
+                Err(fault) => log.faults.push(fault),
+            }
+            match decoded_spans {
+                Ok(spans) => log.spans.extend(spans),
                 Err(fault) => log.faults.push(fault),
             }
             log.exports.push(OtelExport {
@@ -150,6 +182,56 @@ impl OtelRecorder {
 
     pub(crate) fn record_fault(&self, fault: OtelFault) {
         self.log.update(|log| log.faults.push(fault));
+    }
+
+    pub fn spans(&self) -> Vec<OtelSpan> {
+        self.log.read(|log| log.spans.to_vec())
+    }
+
+    pub fn span_named(&self, name: &str) -> Option<OtelSpan> {
+        self.spans().into_iter().find(|span| span.name == name)
+    }
+
+    pub async fn wait_for_spans(
+        &self,
+        timeout: Duration,
+        mut is_satisfied: impl FnMut(&[OtelSpan]) -> bool,
+    ) -> Result<Vec<OtelSpan>, OtelRecorderError> {
+        let timeout = crate::scaled(timeout);
+        let deadline = Instant::now() + timeout;
+        let outcome = self
+            .wait_unless_faulted(
+                deadline,
+                |log| log.spans.to_vec(),
+                |spans| is_satisfied(spans).then(|| spans.clone()),
+            )
+            .await?;
+        match outcome {
+            WaitOutcome::Accepted(spans) => Ok(spans),
+            WaitOutcome::DeadlinePassed(spans) => Err(OtelRecorderError::SpanTimeout {
+                timeout,
+                spans_recorded: spans.len(),
+                span_names: spans.iter().map(|span| span.name.clone()).collect(),
+            }),
+        }
+    }
+
+    pub async fn wait_for_span_silence(&self, window: Duration) -> Result<(), OtelRecorderError> {
+        let baseline = self.log.read(|log| log.spans.total());
+        let deadline = Instant::now() + window;
+        let outcome = self
+            .wait_unless_faulted(
+                deadline,
+                |log| log.spans.arrived_since(baseline),
+                |fresh| (!fresh.is_empty()).then(|| fresh.clone()),
+            )
+            .await?;
+        match outcome {
+            WaitOutcome::Accepted(spans) => {
+                Err(OtelRecorderError::SpanSilenceBroken { window, spans })
+            }
+            WaitOutcome::DeadlinePassed(_) => Ok(()),
+        }
     }
 
     pub fn events(&self) -> Vec<OtelEvent> {
@@ -324,6 +406,18 @@ struct Snapshot<S> {
 enum Probe<R> {
     Faulted(OtelFault),
     Satisfied(R),
+}
+
+fn retained_body(bytes: &[u8]) -> OtelBody {
+    if bytes.len() <= MAX_RETAINED_BODY_BYTES {
+        OtelBody::Kept(bytes.to_vec())
+    } else {
+        OtelBody::PastRetentionCap { len: bytes.len() }
+    }
+}
+
+fn undecodable(signal: OtelSignal, len: usize, error: OtelDecodeError) -> OtelFault {
+    OtelFault::Undecodable { signal, len, error }
 }
 
 fn distinct_event_names(events: Vec<OtelEvent>) -> Vec<String> {

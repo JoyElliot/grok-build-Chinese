@@ -656,6 +656,83 @@ async fn settings_404_until_set_then_200() {
     assert_eq!(json!({ "tips": ["t1"] }), body);
 }
 
+type UserRouteStep = (&'static str, fn(&MockInferenceServer), Value);
+
+/// Whole bodies, so an absent key cannot pass as `null`; one server, so each state is reversible.
+#[tokio::test]
+async fn user_route_serves_exactly_the_fields_set() {
+    use MockCanAdministerTeam::{Allowed, Denied, Omitted, Unresolved};
+    let server = MockInferenceServer::start().await.unwrap();
+    let url = format!("{}/user", server.url());
+
+    let default = json!({ "userId": "mock-user", "email": "mock-user@test.invalid" });
+    let with_tier = json!({
+        "userId": "mock-user",
+        "email": "mock-user@test.invalid",
+        "subscriptionTier": "grok_pro",
+    });
+    let with_team = json!({
+        "userId": "mock-user",
+        "email": "mock-user@test.invalid",
+        "teamId": "team-1",
+        "teamName": "Mock Team",
+        "teamRole": "MEMBER",
+    });
+    let capability = |value: Value| {
+        let mut body = with_team.clone();
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("canAdministerTeam".into(), value);
+        }
+        body
+    };
+
+    let steps: [UserRouteStep; 7] = [
+        ("default", |_| {}, default),
+        (
+            "tier",
+            |s| s.set_user_subscription_tier(Some("grok_pro")),
+            with_tier,
+        ),
+        (
+            "team",
+            |s| {
+                s.set_user_subscription_tier(None);
+                s.set_user_team(MockUserTeam {
+                    id: "team-1".into(),
+                    name: "Mock Team".into(),
+                    role: "MEMBER".into(),
+                });
+            },
+            with_team.clone(),
+        ),
+        (
+            "unresolved",
+            |s| s.set_user_can_administer_team(Unresolved),
+            capability(Value::Null),
+        ),
+        (
+            "allowed",
+            |s| s.set_user_can_administer_team(Allowed),
+            capability(json!(true)),
+        ),
+        (
+            "denied",
+            |s| s.set_user_can_administer_team(Denied),
+            capability(json!(false)),
+        ),
+        (
+            "omitted again",
+            |s| s.set_user_can_administer_team(Omitted),
+            with_team.clone(),
+        ),
+    ];
+    for (label, apply, expected) in steps {
+        apply(&server);
+        let body: Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
+        assert_eq!(expected, body, "{label}");
+    }
+}
+
 #[tokio::test]
 async fn startup_fetch_delay_slows_models_and_settings_then_clears() {
     let server = MockInferenceServer::start().await.unwrap();

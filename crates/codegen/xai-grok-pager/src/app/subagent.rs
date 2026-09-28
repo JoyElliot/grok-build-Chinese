@@ -850,8 +850,7 @@ pub(crate) fn evict_finished_child_view(
 }
 
 /// Finalize a finished child view: end the turn and append the `TurnCompleted` footer.
-/// Idempotent on the *trailing* footer: a re-finalized child must not get a second completed line.
-/// An earlier turn's `TurnCompleted` deeper in the transcript must not suppress a later turn's footer.
+/// Idempotent on a trailing turn-terminal marker. An earlier marker must not suppress a later footer.
 pub(crate) fn finalize_finished_child_view(
     child_view: &mut crate::app::agent_view::AgentView,
     elapsed: std::time::Duration,
@@ -862,17 +861,20 @@ pub(crate) fn finalize_finished_child_view(
         .finish_turn(&mut child_view.scrollback);
     // finish_turn only reaches entries the tracker saw live; entries left running by a from-disk replay would otherwise animate forever
     child_view.scrollback.finish_all_running();
-    let already_has_trailing_completed_footer = child_view.scrollback.last().is_some_and(|e| {
+    let already_has_trailing_terminal = child_view.scrollback.last().is_some_and(|e| {
         matches!(
             &e.block,
             crate::scrollback::block::RenderBlock::SessionEvent(seb)
                 if matches!(
                     seb.event,
                     crate::scrollback::blocks::SessionEvent::TurnCompleted { .. }
+                        | crate::scrollback::blocks::SessionEvent::TurnCancelled { .. }
+                        | crate::scrollback::blocks::SessionEvent::TurnFailed { .. }
+                        | crate::scrollback::blocks::SessionEvent::TurnBlockedByHook { .. }
                 )
         )
     });
-    if already_has_trailing_completed_footer {
+    if already_has_trailing_terminal {
         return;
     }
     child_view

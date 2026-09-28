@@ -382,7 +382,7 @@ async fn first_catalog_wait_unblocks_on_fetch_and_skips_dead_dwell() {
     // Cold cache, remote fetch disabled: no fetch is coming, so no dwell.
     let start = tokio::time::Instant::now();
     assert!(
-        !mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ false)
+        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ false)
             .await
     );
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
@@ -390,7 +390,7 @@ async fn first_catalog_wait_unblocks_on_fetch_and_skips_dead_dwell() {
     // Cold cache, no attempt spawned: nothing to wait for, so no dwell.
     let start = tokio::time::Instant::now();
     assert!(
-        !mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await
     );
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
@@ -398,7 +398,7 @@ async fn first_catalog_wait_unblocks_on_fetch_and_skips_dead_dwell() {
     // Cold cache, fetch in flight: the wait unblocks when the fetch lands.
     mgr.spawn_fetch_inner(None, /*remote_fetch_enabled*/ true);
     assert!(
-        mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await,
         "the wait must observe the completed fetch",
     );
@@ -407,7 +407,7 @@ async fn first_catalog_wait_unblocks_on_fetch_and_skips_dead_dwell() {
     // Warm: an already-loaded catalog returns immediately.
     let start = tokio::time::Instant::now();
     assert!(
-        mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await
     );
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
@@ -423,7 +423,7 @@ async fn first_catalog_wait_unblocks_on_failed_fetch() {
     let start = tokio::time::Instant::now();
     mgr.spawn_fetch_inner(None, /*remote_fetch_enabled*/ true);
     assert!(
-        !mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await
     );
     assert!(start.elapsed() < budget, "failure must beat the budget");
@@ -439,7 +439,7 @@ async fn first_catalog_wait_is_bounded() {
     let _attempt = FetchAttemptGuard::begin(&mgr.inner);
     let start = tokio::time::Instant::now();
     assert!(
-        !mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await
     );
     assert_eq!(start.elapsed(), budget, "only the budget ends this wait");
@@ -454,7 +454,7 @@ async fn first_catalog_wait_skips_doomed_signed_out_fetch() {
     let start = tokio::time::Instant::now();
     mgr.spawn_fetch_inner(None, /*remote_fetch_enabled*/ true);
     assert!(
-        !mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await
     );
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);
@@ -472,7 +472,7 @@ async fn first_catalog_wait_observes_inline_fetch() {
     // Fetch first in the join, so its attempt registers on first poll.
     let ((), ready) = tokio::join!(
         mgr.fetch_and_apply_inner(/*remote_fetch_enabled*/ true),
-        mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true),
+        mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true),
     );
     assert!(ready, "the wait must observe the inline fetch's outcome");
 }
@@ -505,7 +505,7 @@ async fn new_fetch_attempt_supersedes_failed_latch() {
 
     let start = tokio::time::Instant::now();
     assert!(
-        !mgr.wait_for_first_catalog_inner(/*remote_fetch_enabled*/ true)
+        !mgr.wait_for_first_catalog(/*remote_fetch_enabled*/ true)
             .await
     );
     assert_eq!(start.elapsed(), std::time::Duration::ZERO);

@@ -14,6 +14,7 @@ pub mod community_update_notes;
 pub mod display_translations;
 pub mod version;
 mod version_policy;
+mod winget;
 
 pub use auto_update::UpdateStatus;
 pub use version::{UpdateConfig, channel_label, channel_name, write_version_cache};

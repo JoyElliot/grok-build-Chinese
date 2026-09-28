@@ -43,9 +43,5 @@ pub(super) fn header_test_row(id: u32, state: RowState, label: &str) -> Dashboar
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }

@@ -29,7 +29,6 @@ pub enum ActivePaneSnapshot {
     Todo,
     Queue,
     Tasks,
-    Catalog,
     Other,
 }
 /// Copy-friendly snapshot of the input outcome. No heap allocation.

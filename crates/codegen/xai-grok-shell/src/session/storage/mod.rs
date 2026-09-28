@@ -1374,20 +1374,19 @@ pub trait StorageAdapter: Send + Sync {
         )))
     }
 
-    /// Update the current model in summary (delegates to `update_current_model_and_agent` with `agent_name = None`).
+    /// Update the current model in summary (delegates to `update_current_model_and_agent` with no agent change).
     async fn update_current_model(&self, info: &Info, model_id: &acp::ModelId) -> io::Result<()> {
         self.update_current_model_and_agent(info, model_id, None, None)
             .await
     }
 
-    /// Update the current model and agent name in summary.
-    /// `agent_name` is the resolved agent definition name, persisted so session resume doesn't depend on the mutable model catalog.
-    /// `None` leaves the existing `agent_name` unchanged (used by legacy callers that only update the model ID).
+    /// Update the current model and, when `agent` is set, the session's selected agent.
+    /// Persisted so session resume doesn't depend on the mutable model catalog.
     async fn update_current_model_and_agent(
         &self,
         info: &Info,
         model_id: &acp::ModelId,
-        agent_name: Option<&str>,
+        agent: Option<&crate::session::persistence::PersistedAgent>,
         reasoning_effort: Option<Option<ReasoningEffort>>,
     ) -> io::Result<()>;
 

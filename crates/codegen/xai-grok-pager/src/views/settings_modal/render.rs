@@ -445,6 +445,19 @@ fn localized_lock_reason<'a>(
     localized_named_text(locale, id, english)
 }
 
+fn localized_detail_text<'a>(
+    state: &SettingsModalState,
+    key: SettingKey,
+    meta: &'a SettingMeta,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> std::borrow::Cow<'a, str> {
+    if state.row_lock(key).is_some() {
+        localized_lock_reason(locale, state.detail_text(key, meta))
+    } else {
+        localized_setting_description(locale, meta)
+    }
+}
+
 fn localized_restart_pill(locale: Option<&crate::locale::LocaleContext>) -> String {
     let restart = localized_named_text(locale, "settings.ui.restart", "restart");
     format!(" \u{00B7} {restart}")
@@ -831,13 +844,12 @@ pub(super) fn render_rows_with_locale(
                             width: area.width,
                             height: desc_height.min(8),
                         };
-                        render_expanded_description(buf, desc_rect, meta, None, theme, locale);
+                        let detail = localized_setting_description(locale, meta);
+                        render_expanded_description(buf, desc_rect, detail.as_ref(), theme);
                         let consumed = wrapped_description_height(
-                            meta,
-                            None,
+                            detail.as_ref(),
                             area.width,
                             desc_rect.height,
-                            locale,
                         );
                         y_cursor = y_cursor.saturating_add(consumed);
                     }
@@ -924,17 +936,11 @@ pub(super) fn render_rows_with_locale(
                         width: area.width,
                         height: desc_height.min(8), // cap at 8 lines per row to keep scroll sane
                     };
-                    let lock_reason = lock.map(CodingDataSharingLock::reason);
-                    render_expanded_description(buf, desc_rect, meta, lock_reason, theme, locale);
-                    // Re-measure how many lines the wrapped description
-                    // actually consumed, so y_cursor advances precisely.
-                    let consumed = wrapped_description_height(
-                        meta,
-                        lock_reason,
-                        area.width,
-                        desc_rect.height,
-                        locale,
-                    );
+                    let detail = localized_detail_text(state, key, meta, locale);
+                    render_expanded_description(buf, desc_rect, detail.as_ref(), theme);
+                    // Re-measure how many lines the wrapped description actually consumed, so y_cursor advances precisely
+                    let consumed =
+                        wrapped_description_height(detail.as_ref(), area.width, desc_rect.height);
                     y_cursor = y_cursor.saturating_add(consumed);
                 }
             }
@@ -1017,8 +1023,11 @@ fn compute_filtered_row_heights(
                 if matches!(meta.kind, SettingKind::Group { .. }) {
                     let mut h: u16 = 1;
                     if state.expanded_keys.contains(key) {
+                        let detail = localized_setting_description(locale, meta);
                         h = h.saturating_add(wrapped_description_height(
-                            meta, None, area_width, 8, locale,
+                            detail.as_ref(),
+                            area_width,
+                            8,
                         ));
                     }
                     heights.push(h);
@@ -1050,12 +1059,11 @@ fn compute_filtered_row_heights(
                 };
                 if is_expanded {
                     // Cap matches the forward render loop (`desc_rect.height = ... .min(8)`).
+                    let detail = localized_detail_text(state, key, meta, locale);
                     h = h.saturating_add(wrapped_description_height(
-                        meta,
-                        lock.map(CodingDataSharingLock::reason),
+                        detail.as_ref(),
                         area_width,
                         8,
-                        locale,
                     ));
                 }
                 heights.push(h);
@@ -1066,25 +1074,43 @@ fn compute_filtered_row_heights(
 }
 
 /// Wrapped description height for scroll math (mirrors render path).
-fn wrapped_description_height(
-    meta: &SettingMeta,
-    lock_reason: Option<&'static str>,
+fn wrapped_description_height(text: &str, area_width: u16, cap: u16) -> u16 {
+    wrap_expanded_description(text, Style::default(), area_width, cap)
+        .lines
+        .len() as u16
+}
+
+/// An expanded description laid out under its row: nested 4 columns under the label, at most `cap` lines.
+struct WrappedDescription {
+    indent: u16,
+    wrap_w: u16,
+    lines: Vec<Line<'static>>,
+}
+
+fn wrap_expanded_description(
+    text: &str,
+    style: Style,
     area_width: u16,
     cap: u16,
-    locale: Option<&crate::locale::LocaleContext>,
-) -> u16 {
+) -> WrappedDescription {
     let indent = 4u16.min(area_width);
     let wrap_w = area_width.saturating_sub(indent);
-    if wrap_w == 0 {
-        return 0;
-    }
-    let text = match lock_reason {
-        Some(reason) => localized_lock_reason(locale, reason),
-        None => localized_setting_description(locale, meta),
+    let mut lines = if wrap_w == 0 {
+        Vec::new()
+    } else {
+        // Word wrap only breaks at spaces, so each `\n`-separated paragraph wraps on its own
+        crate::render::wrapping::word_wrap_lines(
+            text.split('\n')
+                .map(|paragraph| Line::from(Span::styled(paragraph, style))),
+            wrap_w as usize,
+        )
     };
-    let line = Line::from(Span::raw(text.as_ref()));
-    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
-    (wrapped.len() as u16).min(cap)
+    lines.truncate(cap as usize);
+    WrappedDescription {
+        indent,
+        wrap_w,
+        lines,
+    }
 }
 
 // Picker prefix width templates (glyphs are drawn separately).
@@ -2864,45 +2890,21 @@ fn render_setting_row_with_locale(
 }
 
 /// Render the wrapped description for an expanded row.
-fn render_expanded_description(
-    buf: &mut Buffer,
-    area: Rect,
-    meta: &SettingMeta,
-    lock_reason: Option<&'static str>,
-    theme: &Theme,
-    locale: Option<&crate::locale::LocaleContext>,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
+fn render_expanded_description(buf: &mut Buffer, area: Rect, desc_text: &str, theme: &Theme) {
     let desc_style = Style::default()
         .fg(theme.gray)
         .bg(theme.bg_base)
         .add_modifier(Modifier::ITALIC);
-    let desc_text = match lock_reason {
-        Some(reason) => localized_lock_reason(locale, reason),
-        None => localized_setting_description(locale, meta),
-    };
-    // Indent 4 cols to nest under the label.
-    let indent = 4u16.min(area.width);
-    let wrap_w = area.width.saturating_sub(indent);
-    if wrap_w == 0 {
-        return;
-    }
-    let line = Line::from(Span::styled(desc_text.as_ref(), desc_style));
-    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
-    for (i, wrapped_line) in wrapped.iter().enumerate() {
-        if (i as u16) >= area.height {
-            break;
-        }
+    let wrapped = wrap_expanded_description(desc_text, desc_style, area.width, area.height);
+    for (i, wrapped_line) in wrapped.lines.iter().enumerate() {
         let y = area.y + i as u16;
         // Paint indent bg first so the wrapped text aligns visually.
-        for x in area.x..area.x + indent {
+        for x in area.x..area.x + wrapped.indent {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_bg(theme.bg_base);
             }
         }
-        buf.set_line(area.x + indent, y, wrapped_line, wrap_w);
+        buf.set_line(area.x + wrapped.indent, y, wrapped_line, wrapped.wrap_w);
     }
 }
 

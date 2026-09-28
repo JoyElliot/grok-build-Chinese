@@ -1322,7 +1322,7 @@ fn opaque_shell_floor_only_for_inline_c_and_eval() {
 }
 
 /// Opaque shell is detected on the undecomposable path (dynamic `-c`/`eval`) and surfaces both `opaque_shell` and `unparseable_shell`.
-/// Non-opaque undecomposable commands surface only `unparseable_shell`.
+/// Non-opaque undecomposable commands surface `unparseable_shell` (plus `unresolved_argument` when the structure was recovered).
 #[test]
 fn opaque_shell_floor_covers_undecomposable_inline_c_and_eval() {
     use ClassifierSecurityFinding::{OpaqueShell, UnparseableShell};

@@ -373,7 +373,7 @@ pub(crate) fn build_subagent_trace_items(
         name: task_tool_name.to_string(),
         arguments: std::sync::Arc::from(arguments),
     }]);
-    let footer = xai_tool_types::format_resume_footer(subagent_id, subagent_type, None);
+    let footer = xai_tool_types::format_resume_footer(subagent_id, None);
     let result = ConversationItem::tool_result(subagent_id, format!("{output}\n\n{footer}"));
     vec![call, result]
 }
@@ -509,6 +509,7 @@ impl ChannelSpawner {
             owner: SubagentOwner::Task,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
         let backend = ChannelBackend::new(self.event_tx.clone());
         let result = backend

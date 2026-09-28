@@ -1,12 +1,8 @@
 //! Dashboard rows: classification, build, filter, sort.
 use super::state::{DashboardRowId, Filter, RowState};
-use crate::acp::tracker::TurnActivity;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
 use crate::app::roster::{RosterActivity, RosterEntry};
-use crate::app::subagent::{
-    SubagentInfo, format_activity_label_with_locale, format_subagent_label_with_locale,
-};
 use crate::locale::LocaleContext;
 use crate::views::dashboard::row_activity::{
     has_live_parent_activity, live_work_badges, top_level_activity_with_locale,
@@ -69,15 +65,6 @@ pub struct DashboardRow {
     pub badges: Vec<RowBadge>,
     /// Context window usage percent, when known. Drives the mini gauge.
     pub context_pct: Option<u8>,
-    /// Indent level for nested subagent rendering: 0 for a top-level row, 1 for a subagent under its parent.
-    pub indent: u8,
-    /// Display title for the parent agent, used to scope group headers in `Grouping::Directory` mode where subagents must sort with their parent.
-    pub parent_label: Option<String>,
-    /// True when this row is a "… N more" collapse placeholder.
-    /// The renderer paints it dimmed and the cursor cannot land on it (selectable=false).
-    pub is_more_placeholder: bool,
-    /// Number of rolled-up rows when `is_more_placeholder == true`.
-    pub more_count: usize,
 }
 /// Compact badge rendered next to the label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,8 +96,6 @@ impl RowBadge {
         }
     }
 }
-/// Maximum number of subagents to show per parent before collapsing completed/failed ones into a "… N more" row.
-pub const MAX_VISIBLE_SUBAGENTS: usize = 8;
 /// Process-wide fallback anchor for the age column when an agent lacks both `turn_started_at` and `last_active_at`.
 /// Rare: `AgentView::new` always stamps the latter, but a future caller could omit it.
 /// Initialised lazily on first call so the fallback stays frozen instead of re-anchoring every frame.
@@ -118,37 +103,8 @@ fn fallback_epoch() -> Instant {
     static FALLBACK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *FALLBACK.get_or_init(Instant::now)
 }
-/// Iterates `agents` so a stale `AgentId` can never panic. Subagents are appended directly after
-/// their parent, never reordered across parents.
-pub fn build_rows(
-    agents: &IndexMap<AgentId, AgentView>,
-    pinned: &std::collections::BTreeSet<DashboardRowId>,
-    reorder: &[DashboardRowId],
-    grouping: super::state::Grouping,
-    filter: &Filter,
-    home: Option<&str>,
-) -> Vec<DashboardRow> {
-    build_rows_with_locale(agents, pinned, reorder, grouping, filter, home, None)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn build_rows_with_locale(
-    agents: &IndexMap<AgentId, AgentView>,
-    pinned: &std::collections::BTreeSet<DashboardRowId>,
-    reorder: &[DashboardRowId],
-    grouping: super::state::Grouping,
-    filter: &Filter,
-    home: Option<&str>,
-    locale: Option<&LocaleContext>,
-) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, home, true, locale);
-    apply_filter(&mut rows, filter, home);
-    sort_rows(&mut rows, grouping, reorder);
-    rows
-}
 /// It appends "roster-only" rows for leader sessions this client is not locally attached to (the
-/// FleetView dashboard). It does not list subagents as their own rows; only top-level agents and
-/// roster sessions appear (see [`build_local_rows`]).
+/// FleetView dashboard). Only top-level agents and roster sessions appear (see [`build_local_rows`]).
 pub fn build_rows_with_roster(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
@@ -174,7 +130,7 @@ pub fn build_rows_with_roster_and_locale(
     roster: &[RosterEntry],
     locale: Option<&LocaleContext>,
 ) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, home, false, locale);
+    let mut rows = build_local_rows(agents, pinned, home, locale);
     append_roster_rows(&mut rows, roster, agents, pinned, home, locale);
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, grouping, reorder);
@@ -198,6 +154,15 @@ impl WorkspaceRowInputs<'_> {
 }
 /// The store is authoritative for membership, layout, and sessions this process has not loaded.
 pub(crate) fn build_rows_with_workspace(
+    agents: &IndexMap<AgentId, AgentView>,
+    inputs: WorkspaceRowInputs<'_>,
+    filter: &Filter,
+    home: Option<&str>,
+) -> Vec<DashboardRow> {
+    build_rows_with_workspace_and_locale(agents, inputs, filter, home, None)
+}
+
+pub(crate) fn build_rows_with_workspace_and_locale(
     agents: &IndexMap<AgentId, AgentView>,
     inputs: WorkspaceRowInputs<'_>,
     filter: &Filter,
@@ -241,7 +206,7 @@ pub(crate) fn build_rows_with_workspace(
             }
             if let Some((id, agent)) = live {
                 return Some(top_level_row_with_locale(
-                    id, agent, is_pinned, false, home, locale,
+                    id, agent, is_pinned, home, locale,
                 ));
             }
             Some(workspace_member_row(member, is_pinned, home))
@@ -252,9 +217,7 @@ pub(crate) fn build_rows_with_workspace(
         if is_empty_idle_top_level(agent) {
             return None;
         }
-        Some(top_level_row_with_locale(
-            *id, agent, false, false, home, locale,
-        ))
+        Some(top_level_row_with_locale(*id, agent, false, home, locale))
     }));
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, inputs.grouping(), &reorder);
@@ -338,19 +301,14 @@ fn workspace_member_row(
         pinned,
         badges,
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }
-/// Build the local-agent rows WITHOUT applying filter or sort. Shared by [`build_rows`] and
-/// [`build_rows_with_roster`].
+/// Build the local-agent rows WITHOUT applying filter or sort. [`build_rows_with_roster`] appends
+/// roster rows on top.
 fn build_local_rows(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
     home: Option<&str>,
-    include_subagents: bool,
     locale: Option<&LocaleContext>,
 ) -> Vec<DashboardRow> {
     let mut rows = Vec::new();
@@ -359,67 +317,13 @@ fn build_local_rows(
         if is_empty_idle_top_level(agent) && !pinned.contains(&top_id) {
             continue;
         }
-        let row =
-            top_level_row_with_locale(*id, agent, pinned.contains(&top_id), false, home, locale);
-        rows.push(row);
-        if !include_subagents {
-            continue;
-        }
-        let mut subagents: Vec<&SubagentInfo> = agent
-            .subagent_sessions
-            .values()
-            .filter(|info| info.attempt.workflow_run_id.is_none())
-            .collect();
-        subagents.sort_by(|a, b| {
-            let a_running = a.is_running();
-            let b_running = b.is_running();
-            match (a_running, b_running) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => b.attempt.started_at.cmp(&a.attempt.started_at),
-            }
-        });
-        let total = subagents.len();
-        let keep = MAX_VISIBLE_SUBAGENTS.min(total);
-        for info in subagents.iter().take(keep) {
-            rows.push(subagent_row_with_locale(
-                *id,
-                agent,
-                info,
-                pinned.contains(&DashboardRowId::Subagent {
-                    parent: *id,
-                    child_session_id: info.child_session_id.to_string(),
-                }),
-                home,
-                locale,
-            ));
-        }
-        if total > keep {
-            let agent_label = top_level_label_with_locale(agent, locale);
-            rows.push(DashboardRow {
-                id: DashboardRowId::Subagent {
-                    parent: *id,
-                    child_session_id: format!("__more_{}", id.0),
-                },
-                session_id: None,
-                label: row_text(locale, "dashboard.row.more", "… {count} more")
-                    .replace("{count}", &(total - keep).to_string()),
-                subtitle: None,
-                state: RowState::Idle,
-                activity: None,
-                secondary_line: None,
-                cwd_display: String::new(),
-                cwd: agent.session.cwd.clone(),
-                last_change_at: SystemTime::now(),
-                pinned: false,
-                badges: Vec::new(),
-                context_pct: None,
-                indent: 1,
-                parent_label: Some(agent_label),
-                is_more_placeholder: true,
-                more_count: total - keep,
-            });
-        }
+        rows.push(top_level_row_with_locale(
+            *id,
+            agent,
+            pinned.contains(&top_id),
+            home,
+            locale,
+        ));
     }
     rows
 }
@@ -503,11 +407,12 @@ fn append_roster_rows(
         }
         let cwd_display = super::state::compact_cwd(&cwd, home);
         let is_pinned = pinned.contains(&id);
+        let subtitle = None;
         rows.push(DashboardRow {
             id,
             session_id: Some(entry.session_id.clone()),
             label,
-            subtitle: None,
+            subtitle,
             state,
             activity,
             secondary_line: entry
@@ -523,10 +428,6 @@ fn append_roster_rows(
             pinned: is_pinned,
             badges,
             context_pct: None,
-            indent: 0,
-            parent_label: None,
-            is_more_placeholder: false,
-            more_count: 0,
         });
     }
 }
@@ -554,19 +455,6 @@ pub fn has_background_work(agent: &AgentView) -> bool {
         .values()
         .any(|t| t.status == crate::app::agent::BgTaskStatus::Running)
         || !agent.session.scheduled_tasks.is_empty()
-}
-/// Classify a subagent.
-///
-/// Subagents never enter `NeedsInput` in v1; they have no way to ask the user for input. A test asserts this.
-pub fn classify_subagent(info: &SubagentInfo) -> RowState {
-    if info.is_finished() {
-        match info.attempt.status.as_deref() {
-            Some("failed") | Some("cancelled") | Some("error") => RowState::Failed,
-            _ => RowState::Completed,
-        }
-    } else {
-        RowState::Working
-    }
 }
 /// Sanitise every string derived from backend / model-controlled content before returning.
 /// The dashboard's renderer paints raw via `set_string`, which preserves embedded escape sequences in the ratatui buffer.
@@ -638,14 +526,13 @@ fn top_level_label_with_locale(agent: &AgentView, locale: Option<&LocaleContext>
     new_session_label(locale).to_string()
 }
 fn top_level_row(id: AgentId, agent: &AgentView, pinned: bool, home: Option<&str>) -> DashboardRow {
-    top_level_row_with_locale(id, agent, pinned, false, home, None)
+    top_level_row_with_locale(id, agent, pinned, home, None)
 }
 
 fn top_level_row_with_locale(
     id: AgentId,
     agent: &AgentView,
     pinned: bool,
-    is_active: bool,
     home: Option<&str>,
     locale: Option<&LocaleContext>,
 ) -> DashboardRow {
@@ -655,18 +542,7 @@ fn top_level_row_with_locale(
     let activity = top_level_activity_with_locale(agent, state, locale);
     let secondary_line =
         top_level_secondary_line_with_locale(agent, state, activity.as_deref(), locale);
-    let anchor: Instant = match state {
-        RowState::Working => agent
-            .turn_started_at
-            .or(agent.last_active_at)
-            .unwrap_or_else(fallback_epoch),
-        RowState::NeedsInput
-        | RowState::Idle
-        | RowState::Inactive
-        | RowState::Completed
-        | RowState::Failed => agent.last_active_at.unwrap_or_else(fallback_epoch),
-    };
-    let last_change_at = crate::util::system_time_from_instant(anchor);
+    let last_change_at = top_level_last_change_at(agent, state);
     let mut badges = Vec::new();
     if agent.is_worktree {
         badges.push(RowBadge::Worktree);
@@ -693,10 +569,6 @@ fn top_level_row_with_locale(
         pinned,
         badges,
         context_pct: agent.context_state.as_ref().map(|c| c.usage_pct),
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }
 /// Wall-clock anchor used by both dashboard rows and workspace metadata sync.
@@ -713,79 +585,6 @@ pub(crate) fn top_level_last_change_at(agent: &AgentView, state: RowState) -> Sy
         | RowState::Failed => agent.last_active_at.unwrap_or_else(fallback_epoch),
     };
     crate::util::system_time_from_instant(anchor)
-}
-fn subagent_row(
-    parent: AgentId,
-    parent_view: &AgentView,
-    info: &SubagentInfo,
-    pinned: bool,
-    home: Option<&str>,
-) -> DashboardRow {
-    subagent_row_with_locale(parent, parent_view, info, pinned, home, None)
-}
-
-fn subagent_row_with_locale(
-    parent: AgentId,
-    parent_view: &AgentView,
-    info: &SubagentInfo,
-    pinned: bool,
-    home: Option<&str>,
-    locale: Option<&LocaleContext>,
-) -> DashboardRow {
-    let state = classify_subagent(info);
-    let (label_raw, desc_raw) = format_subagent_label_with_locale(info, locale);
-    let label = {
-        let label = sanitize(&label_raw);
-        let desc = sanitize(&desc_raw);
-        if desc.trim().is_empty() {
-            label
-        } else {
-            format!("{label} · {desc}")
-        }
-    };
-    let activity = subagent_activity_with_locale(info, state, locale);
-    let cwd = info
-        .child_cwd
-        .as_deref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| parent_view.session.cwd.clone());
-    let cwd_display = super::state::compact_cwd(&cwd, home);
-    let last_change_at = crate::util::system_time_from_instant(info.attempt.last_progress_at);
-    let mut badges = Vec::new();
-    if info.worktree_path.is_some() {
-        badges.push(RowBadge::Worktree);
-    }
-    if pinned {
-        badges.push(RowBadge::Pinned);
-    }
-    if state == RowState::Failed {
-        badges.push(RowBadge::Failed);
-    }
-    let parent_label = Some(top_level_label_with_locale(parent_view, locale));
-    let subtitle = subagent_subtitle_with_locale(info, &cwd, locale);
-    let secondary_line = subagent_secondary_line(info, state, activity.as_deref());
-    DashboardRow {
-        id: DashboardRowId::Subagent {
-            parent,
-            child_session_id: info.child_session_id.to_string(),
-        },
-        session_id: Some(info.child_session_id.to_string()),
-        label,
-        subtitle,
-        state,
-        activity,
-        secondary_line,
-        cwd_display,
-        cwd,
-        last_change_at,
-        pinned,
-        badges,
-        context_pct: info.attempt.context_usage_pct,
-        indent: 1,
-        parent_label,
-        is_more_placeholder: false,
-        more_count: 0,
-    }
 }
 /// Basename of a directory (the leaf folder name), or `None` for the filesystem root / an empty path.
 fn cwd_basename(cwd: &std::path::Path) -> Option<String> {
@@ -846,90 +645,6 @@ fn top_level_subtitle_with_locale(
     }
     Some(parts.join(" "))
 }
-/// Subagent equivalent of `top_level_subtitle`.
-/// Subagents don't carry their own branch / repo metadata, so we show the cwd's folder name plus a `worktree` suffix when one is set.
-/// In a worktree the cwd's folder name is the worktree folder name.
-fn subagent_subtitle(info: &SubagentInfo, cwd: &std::path::Path) -> Option<String> {
-    subagent_subtitle_with_locale(info, cwd, None)
-}
-
-fn subagent_subtitle_with_locale(
-    info: &SubagentInfo,
-    cwd: &std::path::Path,
-    locale: Option<&LocaleContext>,
-) -> Option<String> {
-    let name = cwd_basename(cwd)?;
-    if info.worktree_path.is_some() {
-        Some(format!(
-            "{name} {}",
-            row_static(locale, "dashboard.badge.worktree", "worktree")
-        ))
-    } else {
-        Some(name)
-    }
-}
-/// Secondary line for subagent rows: the running tool (working) or the duration summary (finished).
-fn subagent_secondary_line(
-    _info: &SubagentInfo,
-    _state: RowState,
-    activity: Option<&str>,
-) -> Option<String> {
-    activity.map(sanitize)
-}
-fn subagent_activity(info: &SubagentInfo, state: RowState) -> Option<String> {
-    subagent_activity_with_locale(info, state, None)
-}
-
-fn subagent_activity_with_locale(
-    info: &SubagentInfo,
-    state: RowState,
-    locale: Option<&LocaleContext>,
-) -> Option<String> {
-    if state == RowState::Working {
-        if let Some(label) = info
-            .attempt
-            .activity_label
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Some(sanitize(label));
-        }
-        let last_tool = info
-            .attempt
-            .tools_used
-            .last()
-            .map(|s| s.as_ref())
-            .unwrap_or("");
-        if last_tool.is_empty() {
-            Some(row_static(locale, "dashboard.row.working", "Working").to_string())
-        } else {
-            Some(sanitize(&format_activity_label_with_locale(
-                &TurnActivity::ToolRunning {
-                    title: last_tool.to_string(),
-                    description: None,
-                },
-                locale,
-            )))
-        }
-    } else if info.is_finished() {
-        let turns = info.attempt.turns.unwrap_or(0);
-        let tools = info.attempt.tool_calls.unwrap_or(0);
-        let toks = info.attempt.tokens_used.unwrap_or(0);
-        Some(
-            row_text(
-                locale,
-                "dashboard.row.finished_stats",
-                "{tools} tools · {tokens} tok · {turns} turns",
-            )
-            .replace("{tools}", &tools.to_string())
-            .replace("{tokens}", &toks.to_string())
-            .replace("{turns}", &turns.to_string()),
-        )
-    } else {
-        None
-    }
-}
 /// Apply a filter to the list in place.
 ///
 /// Needle is lowercased once outside `retain` instead of per-row, so a 100-row list doesn't allocate 100 fresh lowercase Strings per keystroke.
@@ -941,27 +656,19 @@ pub fn apply_filter(rows: &mut Vec<DashboardRow>, filter: &Filter, _home: Option
         Filter::Agent(s) | Filter::Substring(s) => Some(s.to_lowercase()),
         _ => None,
     };
-    rows.retain(|r| {
-        if r.is_more_placeholder {
-            return true;
+    rows.retain(|r| match filter {
+        Filter::None => true,
+        Filter::Agent(_) => {
+            let n = needle_lower.as_deref().unwrap_or("");
+            r.label.to_lowercase().contains(n)
         }
-        match filter {
-            Filter::None => true,
-            Filter::Agent(_) => {
-                let n = needle_lower.as_deref().unwrap_or("");
-                r.label.to_lowercase().contains(n)
-                    || r.parent_label
-                        .as_deref()
-                        .is_some_and(|p| p.to_lowercase().contains(n))
+        Filter::State(rs) => r.state == *rs,
+        Filter::Substring(_) => {
+            let n = needle_lower.as_deref().unwrap_or("");
+            if n.is_empty() {
+                return true;
             }
-            Filter::State(rs) => r.state == *rs,
-            Filter::Substring(_) => {
-                let n = needle_lower.as_deref().unwrap_or("");
-                if n.is_empty() {
-                    return true;
-                }
-                r.label.to_lowercase().contains(n) || r.cwd_display.to_lowercase().contains(n)
-            }
+            r.label.to_lowercase().contains(n) || r.cwd_display.to_lowercase().contains(n)
         }
     });
 }
@@ -979,95 +686,69 @@ pub fn sort_rows(
     }
 }
 fn sort_within_groups(rows: &mut [DashboardRow], reorder: &[DashboardRowId]) {
-    let clusters = build_clusters(rows);
-    let snapshot = rows.to_vec();
-    let mut indexed: Vec<(usize, usize, ClusterKey<'_>)> = clusters
+    let mut keyed: Vec<(RowKey, DashboardRow)> = rows
         .iter()
-        .filter_map(|(start, end)| {
-            let parent = snapshot.get(*start)?;
-            Some((
-                *start,
-                *end,
-                ClusterKey {
-                    pinned: parent.pinned,
-                    state: parent.state.group_priority(),
-                    last_change_at: parent.last_change_at,
-                    reorder_idx: reorder.iter().position(|r| *r == parent.id),
-                    session_id: parent.session_id.as_deref(),
-                    id: parent.id.clone(),
-                },
-            ))
+        .cloned()
+        .map(|row| {
+            let key = row_key(&row, reorder);
+            (key, row)
         })
         .collect();
-    indexed.sort_by(|(_, _, left), (_, _, right)| sort_cluster_key(left, right, true));
-    let mut write = 0usize;
-    for (start, end, _) in &indexed {
-        for src in snapshot.iter().take(*end).skip(*start) {
-            if let Some(slot) = rows.get_mut(write) {
-                *slot = src.clone();
-                write += 1;
-            }
-        }
+    keyed.sort_by(|(left, _), (right, _)| sort_row_key(left, right, true));
+    for (slot, (_, row)) in rows.iter_mut().zip(keyed) {
+        *slot = row;
     }
 }
 fn sort_within_directory_groups(rows: &mut [DashboardRow], reorder: &[DashboardRowId]) {
-    let clusters = build_clusters(rows);
-    let snapshot = rows.to_vec();
-    let mut indexed: Vec<(usize, usize, (String, ClusterKey<'_>))> = clusters
+    let mut keyed: Vec<(String, RowKey, DashboardRow)> = rows
         .iter()
-        .filter_map(|(start, end)| {
-            let parent = snapshot.get(*start)?;
-            let key = ClusterKey {
-                pinned: parent.pinned,
-                state: parent.state.group_priority(),
-                last_change_at: parent.last_change_at,
-                reorder_idx: reorder.iter().position(|r| *r == parent.id),
-                session_id: parent.session_id.as_deref(),
-                id: parent.id.clone(),
-            };
-            Some((*start, *end, (parent.cwd_display.clone(), key)))
+        .cloned()
+        .map(|row| {
+            let cwd = row.cwd_display.clone();
+            let key = row_key(&row, reorder);
+            (cwd, key, row)
         })
         .collect();
-    indexed.sort_by(|(_, _, (left_cwd, left)), (_, _, (right_cwd, right))| {
+    keyed.sort_by(|(left_cwd, left, _), (right_cwd, right, _)| {
         if left.pinned || right.pinned {
-            return sort_cluster_key(left, right, false);
+            return sort_row_key(left, right, false);
         }
         left_cwd
             .cmp(right_cwd)
-            .then_with(|| sort_cluster_key(left, right, false))
+            .then_with(|| sort_row_key(left, right, false))
     });
-    let mut write = 0usize;
-    for (start, end, _) in &indexed {
-        for src in snapshot.iter().take(*end).skip(*start) {
-            if let Some(slot) = rows.get_mut(write) {
-                *slot = src.clone();
-                write += 1;
-            }
-        }
+    for (slot, (_, _, row)) in rows.iter_mut().zip(keyed) {
+        *slot = row;
+    }
+}
+fn row_key(row: &DashboardRow, reorder: &[DashboardRowId]) -> RowKey {
+    RowKey {
+        pinned: row.pinned,
+        state: row.state.group_priority(),
+        last_change_at: row.last_change_at,
+        reorder_idx: reorder.iter().position(|id| *id == row.id),
+        session_id: row.session_id.clone(),
+        id: row.id.clone(),
     }
 }
 #[derive(Debug, Clone)]
-struct ClusterKey<'a> {
+struct RowKey {
     pinned: bool,
     state: u8,
     last_change_at: SystemTime,
     reorder_idx: Option<usize>,
-    session_id: Option<&'a str>,
-    /// Final tiebreak: when every other field is equal, fall back to the parent row's id so the order is deterministic across rebuilds.
+    session_id: Option<String>,
+    /// Final tiebreak: when every other field is equal, fall back to the row id so the order is deterministic across rebuilds.
     /// This avoids relying on `sort_by`'s stable-on-equal pass-through.
     id: DashboardRowId,
 }
 /// `state_before_reorder` restricts manual ordering of unpinned rows to the same state.
-fn sort_cluster_key(
-    a: &ClusterKey<'_>,
-    b: &ClusterKey<'_>,
-    state_before_reorder: bool,
-) -> std::cmp::Ordering {
+fn sort_row_key(a: &RowKey, b: &RowKey, state_before_reorder: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     if a.pinned != b.pinned {
         return b.pinned.cmp(&a.pinned);
     }
-    let by_reorder = |a: &ClusterKey<'_>, b: &ClusterKey<'_>| match (a.reorder_idx, b.reorder_idx) {
+    let by_reorder = |a: &RowKey, b: &RowKey| match (a.reorder_idx, b.reorder_idx) {
         (Some(x), Some(y)) => x.cmp(&y),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
@@ -1078,7 +759,7 @@ fn sort_cluster_key(
             .then_with(|| a.session_id.cmp(&b.session_id))
             .then_with(|| a.id.cmp(&b.id));
     }
-    let by_state = |a: &ClusterKey<'_>, b: &ClusterKey<'_>| b.state.cmp(&a.state);
+    let by_state = |a: &RowKey, b: &RowKey| b.state.cmp(&a.state);
     if state_before_reorder {
         if a.state != b.state {
             return by_state(a, b);
@@ -1100,27 +781,12 @@ fn sort_cluster_key(
         .cmp(&a.last_change_at)
         .then_with(|| a.id.cmp(&b.id))
 }
-/// Identify `(start, end)` ranges of clustered rows: each cluster is one top-level row followed by zero or more subagents.
-fn build_clusters(rows: &[DashboardRow]) -> Vec<(usize, usize)> {
-    let mut clusters = Vec::new();
-    let mut i = 0;
-    while i < rows.len() {
-        let start = i;
-        i += 1;
-        while i < rows.len() && rows.get(i).is_some_and(|r| r.indent > 0) {
-            i += 1;
-        }
-        clusters.push((start, i));
-    }
-    clusters
-}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::agent_test_fixtures::{running_bg_task, scheduled_loop};
     use crate::app::workspace_test_fixtures::snapshot as workspace_snapshot;
     use agent_client_protocol as acp;
-    use std::sync::Arc;
     use std::time::{Duration, UNIX_EPOCH};
     fn nth(rows: &[DashboardRow], i: usize) -> &DashboardRow {
         rows.get(i)
@@ -1150,7 +816,7 @@ mod tests {
         provisional: &[AgentId],
     ) -> Vec<DashboardRow> {
         let workspace = snapshot.map(crate::app::workspace_layout::WorkspaceView::from_snapshot);
-        build_rows_with_workspace(
+        build_rows_with_workspace_and_locale(
             agents,
             WorkspaceRowInputs {
                 workspace: workspace.as_ref(),
@@ -1326,150 +992,9 @@ mod tests {
         assert_eq!(nth(&rows, 1).secondary_line.as_deref(), Some("grok-test"));
         assert!(nth(&rows, 1).badges.contains(&RowBadge::Worktree));
     }
-    fn make_subagent(child_id: &str, finished: bool, status: Option<&str>) -> SubagentInfo {
-        let now = Instant::now();
-        let mut info = SubagentInfo {
-            subagent_id: Arc::from(format!("sa-{child_id}")),
-            child_session_id: Arc::from(child_id),
-            description: Arc::from("test task"),
-            subagent_type: Arc::from("explore"),
-            attempt: crate::app::subagent::SubagentAttemptInfo {
-                lifecycle: crate::app::subagent::SubagentLifecycleState::running_legacy_for_test(),
-                persona: None,
-                role: None,
-                model: None,
-                context_source: None,
-                resumed_from: None,
-                capability_mode: None,
-                workflow_run_id: None,
-                context_normalized: false,
-                parent_prompt_id: None,
-                started_at: now,
-                last_progress_at: now,
-                status: status.map(Arc::from),
-                error: None,
-                duration_ms: None,
-                tool_calls: None,
-                turns: None,
-                turn_count: None,
-                tool_call_count: None,
-                tokens_used: None,
-                context_window_tokens: None,
-                context_usage_pct: None,
-                tools_used: Vec::new(),
-                error_count: None,
-                activity_label: None,
-                is_background: false,
-                pending_kill: false,
-                kill_requested_at: None,
-                scrollback_entry_id: None,
-                terminal_entry_id: None,
-            },
-            completed_attempt_tokens: 0,
-            sealed_attempt_tokens: Default::default(),
-            prompt: None,
-            child_cwd: None,
-            worktree_path: None,
-            transcript: Default::default(),
-        };
-        info.set_finished_for_test(finished);
-        info
-    }
-    #[test]
-    fn classify_subagent_running() {
-        let info = make_subagent("a", false, None);
-        assert_eq!(classify_subagent(&info), RowState::Working);
-    }
-    #[test]
-    fn full_tree_excludes_workflow_owned_subagent_rows() {
-        let mut agents = IndexMap::new();
-        let mut agent = crate::app::agent_view::test_fixtures::make_agent();
-        let mut workflow_child = make_subagent("workflow-child", false, None);
-        workflow_child.attempt.workflow_run_id = Some(Arc::from("wf_1"));
-        agent
-            .subagent_sessions
-            .insert("workflow-child".into(), workflow_child);
-        agents.insert(AgentId(0), agent);
-        let rows = build_rows(
-            &agents,
-            &Default::default(),
-            &[],
-            super::super::state::Grouping::State,
-            &Filter::default(),
-            None,
-        );
-        assert!(
-            rows.iter()
-                .all(|row| !matches!(row.id, DashboardRowId::Subagent { .. }))
-        );
-    }
-    #[test]
-    fn classify_subagent_completed() {
-        let info = make_subagent("a", true, Some("completed"));
-        assert_eq!(classify_subagent(&info), RowState::Completed);
-    }
-    #[test]
-    fn classify_subagent_failed() {
-        let info = make_subagent("a", true, Some("failed"));
-        assert_eq!(classify_subagent(&info), RowState::Failed);
-    }
-    #[test]
-    fn classify_subagent_cancelled() {
-        let info = make_subagent("a", true, Some("cancelled"));
-        assert_eq!(classify_subagent(&info), RowState::Failed);
-    }
-    #[test]
-    fn subagent_activity_prefers_live_label_over_tool_reconstruction() {
-        let mut info = make_subagent("a", false, None);
-        info.attempt.tools_used = vec![Arc::from("bash")];
-        info.attempt.activity_label = Some("Running: cargo build".into());
-        assert_eq!(
-            subagent_activity(&info, RowState::Working).as_deref(),
-            Some("Running: cargo build")
-        );
-        info.attempt.activity_label = None;
-        assert_eq!(
-            subagent_activity(&info, RowState::Working).as_deref(),
-            Some("Running: bash")
-        );
-    }
-    /// Subagent rows never reach `NeedsInput` in v1.
-    #[test]
-    fn subagent_classifier_never_emits_needs_input() {
-        for finished in [false, true] {
-            for status in [None, Some("completed"), Some("failed"), Some("cancelled")] {
-                let info = make_subagent("a", finished, status);
-                let state = classify_subagent(&info);
-                assert_ne!(
-                    state,
-                    RowState::NeedsInput,
-                    "finished={finished} status={status:?}"
-                );
-            }
-        }
-    }
-    #[test]
-    fn cluster_keeps_subagents_with_parent() {
-        let rows = vec![
-            make_row("a", 0, RowState::Working),
-            make_row("a:1", 1, RowState::Working),
-            make_row("a:2", 1, RowState::Idle),
-            make_row("b", 0, RowState::Idle),
-            make_row("b:1", 1, RowState::Working),
-        ];
-        let clusters = build_clusters(&rows);
-        assert_eq!(clusters, vec![(0, 3), (3, 5)]);
-    }
-    fn make_row(label: &str, indent: u8, state: RowState) -> DashboardRow {
+    fn make_row(label: &str, state: RowState) -> DashboardRow {
         DashboardRow {
-            id: if indent == 0 {
-                DashboardRowId::TopLevel(AgentId(label.len()))
-            } else {
-                DashboardRowId::Subagent {
-                    parent: AgentId(0),
-                    child_session_id: label.to_string(),
-                }
-            },
+            id: DashboardRowId::TopLevel(AgentId(label.len())),
             session_id: None,
             label: label.to_string(),
             subtitle: None,
@@ -1482,13 +1007,9 @@ mod tests {
             pinned: false,
             badges: Vec::new(),
             context_pct: None,
-            indent,
-            parent_label: None,
-            is_more_placeholder: false,
-            more_count: 0,
         }
     }
-    fn make_row_with_id(id: DashboardRowId, indent: u8, state: RowState) -> DashboardRow {
+    fn make_row_with_id(id: DashboardRowId, state: RowState) -> DashboardRow {
         DashboardRow {
             id,
             session_id: None,
@@ -1503,10 +1024,6 @@ mod tests {
             pinned: false,
             badges: Vec::new(),
             context_pct: None,
-            indent,
-            parent_label: None,
-            is_more_placeholder: false,
-            more_count: 0,
         }
     }
     /// Sort: pinned floats above non-pinned regardless of state.
@@ -1516,12 +1033,12 @@ mod tests {
             DashboardRow {
                 pinned: false,
                 state: RowState::Working,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), 0, RowState::Working)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), RowState::Working)
             },
             DashboardRow {
                 pinned: true,
                 state: RowState::Idle,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), RowState::Idle)
             },
         ];
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
@@ -1531,13 +1048,9 @@ mod tests {
     #[test]
     fn sort_state_priority_within_group() {
         let mut rows = vec![
-            make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle),
-            make_row_with_id(
-                DashboardRowId::TopLevel(AgentId(2)),
-                0,
-                RowState::NeedsInput,
-            ),
-            make_row_with_id(DashboardRowId::TopLevel(AgentId(3)), 0, RowState::Working),
+            make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), RowState::Idle),
+            make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), RowState::NeedsInput),
+            make_row_with_id(DashboardRowId::TopLevel(AgentId(3)), RowState::Working),
         ];
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
         assert_eq!(nth(&rows, 0).state, RowState::NeedsInput);
@@ -1545,7 +1058,7 @@ mod tests {
         assert_eq!(nth(&rows, 2).state, RowState::Idle);
     }
     /// Renamed from `sort_deterministic_with_equal_keys`. The original name implied a tiebreak
-    /// guarantee that `sort_cluster_key` does NOT provide; documents the actual behavioural contract:
+    /// guarantee that `sort_row_key` does NOT provide; documents the actual behavioural contract:
     /// idempotent on identical inputs.
     #[test]
     fn sort_is_idempotent_for_identical_inputs() {
@@ -1553,11 +1066,11 @@ mod tests {
         let mut rows1 = vec![
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), RowState::Idle)
             },
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), 0, RowState::Idle)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), RowState::Idle)
             },
         ];
         let mut rows2 = rows1.clone();
@@ -1578,21 +1091,21 @@ mod tests {
         let mut forward = vec![
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id1.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id1.clone(), RowState::Idle)
             },
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id2.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id2.clone(), RowState::Idle)
             },
         ];
         let mut reverse = vec![
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id2.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id2.clone(), RowState::Idle)
             },
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id1.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id1.clone(), RowState::Idle)
             },
         ];
         sort_rows(&mut forward, super::super::state::Grouping::State, &[]);
@@ -1607,48 +1120,42 @@ mod tests {
         let mut rows = vec![
             DashboardRow {
                 label: "fix login bug".to_string(),
-                ..make_row("a", 0, RowState::Working)
+                ..make_row("a", RowState::Working)
             },
             DashboardRow {
                 label: "investigate cache".to_string(),
-                ..make_row("b", 0, RowState::Working)
+                ..make_row("b", RowState::Working)
             },
         ];
         apply_filter(&mut rows, &Filter::Substring("login".into()), None);
         assert_eq!(rows.len(), 1);
     }
     #[test]
-    fn filter_agent_matches_label_and_parent() {
+    fn filter_agent_matches_label() {
         let mut rows = vec![
             DashboardRow {
                 label: "implementer".to_string(),
-                parent_label: None,
-                ..make_row("a", 0, RowState::Working)
-            },
-            DashboardRow {
-                label: "explore".to_string(),
-                parent_label: Some("implementer".to_string()),
-                ..make_row("a:1", 1, RowState::Working)
+                ..make_row("a", RowState::Working)
             },
             DashboardRow {
                 label: "other".to_string(),
-                parent_label: None,
-                ..make_row("b", 0, RowState::Working)
+                ..make_row("b", RowState::Working)
             },
         ];
         apply_filter(&mut rows, &Filter::Agent("implementer".into()), None);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(nth(&rows, 0).label, "implementer");
     }
     #[test]
     fn filter_state_matches_exact() {
         let mut rows = vec![
             DashboardRow {
                 state: RowState::NeedsInput,
-                ..make_row("a", 0, RowState::NeedsInput)
+                ..make_row("a", RowState::NeedsInput)
             },
             DashboardRow {
                 state: RowState::Idle,
-                ..make_row("b", 0, RowState::Idle)
+                ..make_row("b", RowState::Idle)
             },
         ];
         apply_filter(&mut rows, &Filter::State(RowState::Idle), None);
@@ -1666,11 +1173,11 @@ mod tests {
         let mut rows = vec![
             DashboardRow {
                 last_change_at: newer, // recency would put id1 first
-                ..make_row_with_id(id1.clone(), 0, RowState::Working)
+                ..make_row_with_id(id1.clone(), RowState::Working)
             },
             DashboardRow {
                 last_change_at: older,
-                ..make_row_with_id(id2.clone(), 0, RowState::Working)
+                ..make_row_with_id(id2.clone(), RowState::Working)
             },
         ];
         sort_rows(
@@ -1690,10 +1197,10 @@ mod tests {
         let w2 = DashboardRowId::TopLevel(AgentId(3));
         let i2 = DashboardRowId::TopLevel(AgentId(4));
         let mut rows = vec![
-            make_row_with_id(w1, 0, RowState::Working),
-            make_row_with_id(i1.clone(), 0, RowState::Idle),
-            make_row_with_id(w2, 0, RowState::Working),
-            make_row_with_id(i2.clone(), 0, RowState::Idle),
+            make_row_with_id(w1, RowState::Working),
+            make_row_with_id(i1.clone(), RowState::Idle),
+            make_row_with_id(w2, RowState::Working),
+            make_row_with_id(i2.clone(), RowState::Idle),
         ];
         sort_rows(
             &mut rows,
@@ -1732,13 +1239,13 @@ mod tests {
                     pinned: true,
                     cwd_display: "/z".to_owned(),
                     last_change_at: UNIX_EPOCH,
-                    ..make_row_with_id(first, 0, RowState::Idle)
+                    ..make_row_with_id(first, RowState::Idle)
                 },
                 DashboardRow {
                     pinned: true,
                     cwd_display: "/a".to_owned(),
                     last_change_at: UNIX_EPOCH,
-                    ..make_row_with_id(second, 0, RowState::Idle)
+                    ..make_row_with_id(second, RowState::Idle)
                 },
             ];
             for state in [
@@ -1777,7 +1284,7 @@ mod tests {
                         pinned: true,
                         session_id: session_id.map(str::to_owned),
                         last_change_at: UNIX_EPOCH,
-                        ..make_row_with_id(DashboardRowId::TopLevel(AgentId(id)), 0, RowState::Idle)
+                        ..make_row_with_id(DashboardRowId::TopLevel(AgentId(id)), RowState::Idle)
                     })
                     .collect::<Vec<_>>();
                 sort_rows(&mut rows, grouping, &[]);
@@ -1884,32 +1391,11 @@ mod tests {
     #[test]
     fn filter_agent_with_empty_string_does_not_hide_rows() {
         let mut rows = vec![
-            make_row("a", 0, RowState::Working),
-            make_row("b", 0, RowState::Idle),
+            make_row("a", RowState::Working),
+            make_row("b", RowState::Idle),
         ];
         apply_filter(&mut rows, &Filter::Agent(String::new()), None);
         assert_eq!(rows.len(), 2);
-    }
-    /// More-placeholder rows survive filtering.
-    #[test]
-    fn filter_keeps_more_placeholders() {
-        let mut rows = vec![
-            DashboardRow {
-                label: "real row".to_string(),
-                ..make_row("a", 1, RowState::Idle)
-            },
-            DashboardRow {
-                label: "… 3 more".to_string(),
-                is_more_placeholder: true,
-                ..make_row("b", 1, RowState::Idle)
-            },
-        ];
-        apply_filter(
-            &mut rows,
-            &Filter::Substring("nothing matches".into()),
-            None,
-        );
-        assert!(rows.iter().any(|r| r.is_more_placeholder));
     }
     fn roster_entry(session_id: &str, last_change_unix_ms: i64) -> RosterEntry {
         use crate::app::roster::RosterOrigin;
@@ -2391,10 +1877,10 @@ mod tests {
     #[test]
     fn sort_rows_places_inactive_between_idle_and_done() {
         let mut rows = vec![
-            make_row("done", 0, RowState::Completed),
-            make_row("inactive", 0, RowState::Inactive),
-            make_row("idle", 0, RowState::Idle),
-            make_row("failed", 0, RowState::Failed),
+            make_row("done", RowState::Completed),
+            make_row("inactive", RowState::Inactive),
+            make_row("idle", RowState::Idle),
+            make_row("failed", RowState::Failed),
         ];
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
         let order: Vec<RowState> = rows.iter().map(|r| r.state).collect();
@@ -2412,9 +1898,13 @@ mod tests {
     fn workspace_manual_order_is_global_and_survives_filtering() {
         let mut a = workspace_member("a", "Alpha", None);
         a.order_rank = Some(2 * xai_grok_dashboard_store::RANK_GAP);
-        let b = workspace_member("b", "Beta", None);
+        let mut b = workspace_member("b", "Beta", None);
         let mut c = workspace_member("c", "Charlie", None);
         c.order_rank = Some(xai_grok_dashboard_store::RANK_GAP);
+        // Keep this title-filter test independent of the platform's temporary path.
+        for member in [&mut a, &mut b, &mut c] {
+            member.cwd = None;
+        }
         let snapshot = workspace_snapshot(vec![a, b, c]);
         let rows = workspace_rows(&IndexMap::new(), &snapshot);
         assert_eq!(
@@ -2424,7 +1914,7 @@ mod tests {
             vec!["Charlie", "Alpha", "Beta"]
         );
         let workspace = crate::app::workspace_layout::WorkspaceView::from_snapshot(&snapshot);
-        let rows = build_rows_with_workspace(
+        let rows = build_rows_with_workspace_and_locale(
             &IndexMap::new(),
             WorkspaceRowInputs {
                 workspace: Some(&workspace),

@@ -13,10 +13,11 @@ pub type OtelAttributes = BTreeMap<String, Value>;
 pub enum OtelSignal {
     Logs,
     Metrics,
+    Traces,
 }
 
 impl OtelSignal {
-    pub const ALL: [OtelSignal; 2] = [OtelSignal::Logs, OtelSignal::Metrics];
+    pub const ALL: [OtelSignal; 3] = [OtelSignal::Logs, OtelSignal::Metrics, OtelSignal::Traces];
 }
 
 /// `event_name` is the record's own field, else its `event.name` attribute.
@@ -60,6 +61,14 @@ pub enum OtelMetricData {
     },
     ExponentialHistogram,
     Summary,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OtelSpan {
+    pub name: String,
+    pub attributes: OtelAttributes,
+    pub resource: OtelAttributes,
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

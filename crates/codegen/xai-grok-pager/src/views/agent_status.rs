@@ -229,10 +229,6 @@ pub(crate) fn task_status_line(
     Some(Line::from(spans))
 }
 
-// ---------------------------------------------------------------------------
-// Goal status line
-// ---------------------------------------------------------------------------
-
 /// Format a token count compactly: `500`, `1.5k`, `50k`, `1.5M`.
 pub(crate) fn format_tokens_compact(tokens: i64) -> String {
     let sign = if tokens < 0 { "-" } else { "" };
@@ -428,10 +424,6 @@ pub fn goal_status_line_with_locale(
         Span::styled(format!("  {tokens_display}  {elapsed_str}"), dim_style),
     ])
 }
-
-// ---------------------------------------------------------------------------
-// MCP connecting indicator
-// ---------------------------------------------------------------------------
 
 /// The chip shows real server counts only. "Starting session…" is the turn-status row's job
 /// (see [`crate::views::turn_status`]).

@@ -43,7 +43,7 @@ fn message_row(target: SentMessageTarget) -> RenderBlock {
 }
 fn named_child() -> SentMessageTarget {
     SentMessageTarget::Named {
-        label: Arc::from("General \u{201c}sleeper\u{201d}"),
+        label: Arc::from("Subagent \u{201c}sleeper\u{201d}"),
         child_session_id: Arc::from(CHILD_SID),
     }
 }
@@ -253,7 +253,6 @@ fn takeover_draw_forwards_pending_hint_and_child_cursor() {
         }),
         false,
         crate::app::agent_view::BannerSlotParams::none(),
-        &crate::app::bundle::BundleState::default(),
         false,
         &mut Vec::new(),
         crate::app::agent_view::AppRenderParams::default(),
@@ -322,7 +321,6 @@ fn zh_localization_takeover_forwards_locale_to_frame_and_child() {
                 }),
                 false,
                 crate::app::agent_view::BannerSlotParams::none(),
-                &crate::app::bundle::BundleState::default(),
                 false,
                 &mut Vec::new(),
                 crate::app::agent_view::AppRenderParams {
@@ -348,6 +346,48 @@ fn zh_localization_takeover_forwards_locale_to_frame_and_child() {
                 assert!(text.contains(opaque), "{opaque}: {text}");
             }
         }
+    }
+}
+
+/// A child view paints no `[Dashboard]` button, even when its own registry could dispatch `/dashboard`.
+/// Inside the dashboard overlay the button stays as the way back.
+#[test]
+fn takeover_shows_dashboard_button_only_inside_the_overlay() {
+    let registry = ActionRegistry::defaults();
+    for (in_overlay, expect_button) in [(false, false), (true, true)] {
+        let mut parent = parent_with_child("child");
+        parent
+            .subagent_view_mut("child")
+            .expect("child view")
+            .set_dashboard_visible(true);
+        parent.open_subagent_fullscreen("child".to_owned());
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buf = Buffer::empty(area);
+        let mut scratch = ScratchBuffer::new();
+        let _ = parent.draw(
+            area,
+            &mut buf,
+            &registry,
+            &mut scratch,
+            None,
+            false,
+            crate::app::agent_view::BannerSlotParams::none(),
+            in_overlay,
+            &mut Vec::new(),
+            crate::app::agent_view::AppRenderParams::default(),
+        );
+        let text = buffer_text(&buf, area);
+        assert_eq!(
+            expect_button,
+            text.contains("[Dashboard]"),
+            "in_overlay={in_overlay}: {text}"
+        );
+        let child = parent.subagent_view("child").expect("child view");
+        assert_eq!(
+            expect_button,
+            child.hit_dashboard.rect.is_some(),
+            "in_overlay={in_overlay}"
+        );
     }
 }
 
