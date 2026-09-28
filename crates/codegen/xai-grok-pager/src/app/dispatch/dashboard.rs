@@ -1584,7 +1584,10 @@ pub(super) fn dispatch_dashboard_peek_reply(
     }
     let DashboardRowId::TopLevel(agent_id) = row else {
         if let Some(d) = app.dashboard.as_mut() {
-            d.set_error_toast("Load the session before replying");
+            d.set_error_toast(app.locale.named_static_text(
+                "dashboard.toast.load_before_reply",
+                "Load the session before replying",
+            ));
         }
         return vec![];
     };

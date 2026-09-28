@@ -170,7 +170,7 @@ fn synthesize_replay_turn_marker(
             super::prompt_origin::rate_limited_wake_failure_event(
                 agent_result,
                 elapsed_ms.map(std::time::Duration::from_millis),
-                None,
+                Some(agent.scrollback.locale()),
             )
         })
     })
@@ -390,7 +390,7 @@ pub(super) fn handle_session_notification_with_origin(
                                 super::prompt_origin::rate_limited_wake_failure_event(
                                     agent_result.as_deref(),
                                     None,
-                                    None,
+                                    Some(agent.scrollback.locale()),
                                 ),
                             );
                             true
@@ -1056,7 +1056,8 @@ pub(super) fn handle_session_notification_with_origin(
                 false
             } else if let Some(pending_id) = agent.pending_recap_entry.take() {
                 agent.scrollback.remove_entry(pending_id);
-                agent.show_toast(crate::app::dispatch::recap_unavailable_toast(
+                agent.show_toast(crate::app::dispatch::recap_unavailable_toast_with_locale(
+                    agent.scrollback.locale(),
                     crate::app::dispatch::scrollback_has_user_messages(&agent.scrollback),
                 ));
                 true
@@ -1174,9 +1175,12 @@ pub(super) fn handle_session_notification_with_origin(
                 dream_enabled,
             };
             agent.active_modal = Some(crate::views::modal::ActiveModal::MemoryBrowser {
-                state: Box::new(crate::views::memory_modal::MemoryModalState::from_listing(
-                    listing,
-                )),
+                state: Box::new(
+                    crate::views::memory_modal::MemoryModalState::from_listing_with_locale(
+                        listing,
+                        Some(agent.scrollback.locale()),
+                    ),
+                ),
             });
             true
         }
@@ -1630,22 +1634,15 @@ fn memory_capture_system_message(
     from_turn: u32,
     through_turn: u32,
     attempt: u32,
+    locale: &crate::locale::LocaleContext,
 ) -> String {
-    let activity = match activity {
-        "queued" => "queued",
-        "running" => "running",
-        "completed" => "completed",
-        "no_op" => "completed with no changes",
-        "retry" => "scheduled for retry",
-        "failed" => "failed",
-        _ => "updated",
-    };
-    let attempt_suffix = if attempt > 1 {
-        format!(" (attempt {attempt})")
-    } else {
-        String::new()
-    };
-    format!("Memory capture {activity} for turns {from_turn}-{through_turn}{attempt_suffix}")
+    crate::scrollback::blocks::memory_capture_status_text(
+        activity,
+        from_turn,
+        through_turn,
+        attempt,
+        locale,
+    )
 }
 pub(super) fn apply_session_event(
     update: &XaiSessionUpdate,
@@ -1742,6 +1739,7 @@ pub(super) fn apply_session_event(
                 *from_turn,
                 *through_turn,
                 *attempt,
+                scrollback.locale(),
             )));
             true
         }
@@ -1850,8 +1848,13 @@ pub(super) fn apply_retry_state(
                 }));
             } else {
                 scrollback.push_block(RenderBlock::session_event(
-                    crate::app::error_display::format_request_failure(None, None, reason)
-                        .into_session_event(),
+                    crate::app::error_display::format_request_failure_with_locale(
+                        None,
+                        None,
+                        reason,
+                        Some(scrollback.locale()),
+                    )
+                    .into_session_event(),
                 ));
             }
         }
@@ -1888,8 +1891,13 @@ pub(super) fn apply_retry_state(
                 }));
             } else {
                 scrollback.push_block(RenderBlock::session_event(
-                    crate::app::error_display::format_request_failure(None, Some(wire), message)
-                        .into_session_event(),
+                    crate::app::error_display::format_request_failure_with_locale(
+                        None,
+                        Some(wire),
+                        message,
+                        Some(scrollback.locale()),
+                    )
+                    .into_session_event(),
                 ));
             }
         }
@@ -1976,7 +1984,13 @@ mod memory_capture_privacy_tests {
     #[test]
     fn trusted_capture_copy_only_accepts_typed_status_values() {
         let untrusted = "failed: /Users/alice/private\nhttps://untrusted.example";
-        let message = memory_capture_system_message(untrusted, 2, 4, 3);
+        let message = memory_capture_system_message(
+            untrusted,
+            2,
+            4,
+            3,
+            &crate::locale::LocaleContext::default(),
+        );
         assert_eq!(message, "Memory capture updated for turns 2-4 (attempt 3)");
         assert!(!message.contains(untrusted));
     }

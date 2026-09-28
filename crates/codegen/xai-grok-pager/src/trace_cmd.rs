@@ -14,15 +14,15 @@ const TRACE_BUNDLE_FILENAME: &str = "trace_export.tar.gz";
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct TraceArgs {
-    /// Session ID to export/upload
+    /// 要导出或上传的会话 ID
     pub session_id: String,
-    /// Save locally only, skip remote upload
+    /// 仅保存到本地，跳过远程上传
     #[arg(long)]
     pub local: bool,
-    /// Output path (default: $GROK_HOME/trace-exports/<session-id>.tar.gz)
+    /// 输出路径（默认：$GROK_HOME/trace-exports/<session-id>.tar.gz）
     #[arg(short, long)]
     pub output: Option<PathBuf>,
-    /// Emit machine-readable JSON output
+    /// 输出机器可读的 JSON
     #[arg(long)]
     pub json: bool,
 }
@@ -63,10 +63,14 @@ pub async fn run(args: TraceArgs, agent_config: &AgentConfig) -> Result<()> {
             "trace_cmd: trace uploads disabled in config"
         );
         if !args.json {
-            eprintln!(
-                "Trace uploads disabled. Set [telemetry] trace_upload = true in {}",
-                crate::util::display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
-            );
+            if !xai_grok_product::SESSION_DATA_UPLOADS_ALLOWED {
+                eprintln!("Trace uploads are disabled by the community build privacy policy.");
+            } else {
+                eprintln!(
+                    "Trace uploads disabled. Set [telemetry] trace_upload = true in {}",
+                    crate::util::display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
+                );
+            }
             eprintln!("Falling back to local export.");
         }
         return run_export(
@@ -452,8 +456,9 @@ async fn run_upload(
         UploadGate::NoCredentials => {
             if !json {
                 eprintln!(
-                    "No upload credentials for this account (run `grok login` or set a deployment \
-                     key); exporting locally."
+                    "No upload credentials for this account (run `{} login` or set a deployment \
+                     key); exporting locally.",
+                    xai_grok_product::CLI_NAME
                 );
             }
             return run_export(args, session_dir, agent_config, Some("no_credentials")).await;
@@ -631,7 +636,11 @@ impl UploadAttempt<'_> {
             eprintln!("Trace upload failed: {error}");
             eprintln!("  Bundle: {}", export_path.display());
             eprintln!("  Log:    {}", log_path.display());
-            eprintln!("  Retry:  grok trace {}", self.session_id);
+            eprintln!(
+                "  Retry:  {} trace {}",
+                xai_grok_product::CLI_NAME,
+                self.session_id
+            );
             println!("{}", export_path.display());
         }
 

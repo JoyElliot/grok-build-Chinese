@@ -385,7 +385,12 @@ pub(super) fn dispatch_show_usage(app: &mut AppView) -> Vec<Effect> {
                 push_and_page_flip(
                     &mut agent.scrollback,
                     RenderBlock::system(
-                        "Session usage is unavailable until the session starts.".to_string(),
+                        app.locale
+                            .named_text(
+                                "status.usage.session_unavailable",
+                                "Session usage is unavailable until the session starts.",
+                            )
+                            .into_owned(),
                     ),
                 );
             }
@@ -445,9 +450,11 @@ pub(super) fn append_consumer_billing_surface(app: &mut AppView, agent_id: Agent
     if let Some(url) = app.usage_billing_redirect_url.clone() {
         if let Some(agent) = app.agents.get_mut(&agent_id) {
             agent.scrollback.push_block(RenderBlock::System(
-                crate::scrollback::blocks::SystemMessageBlock::new(format!(
-                    "Please check your usage on {url}"
-                )),
+                crate::scrollback::blocks::SystemMessageBlock::new(
+                    app.locale
+                        .named_text("status.usage.redirect", "Please check your usage on {url}")
+                        .replace("{url}", &url),
+                ),
             ));
         }
         return vec![];

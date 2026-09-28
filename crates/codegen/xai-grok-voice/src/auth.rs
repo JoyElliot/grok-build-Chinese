@@ -20,7 +20,10 @@ pub enum VoiceAuthError {
         "voice needs an xAI credential for this account: sign in with an xAI login or set XAI_API_KEY"
     )]
     ForeignSession,
-    #[error("not signed in — run `grok login`, set XAI_API_KEY, or set a model api_key/env_key")]
+    #[error(
+        "not signed in — run `{} login`, set XAI_API_KEY, or set a model api_key/env_key",
+        xai_grok_product::CLI_NAME
+    )]
     NotSignedIn,
 }
 

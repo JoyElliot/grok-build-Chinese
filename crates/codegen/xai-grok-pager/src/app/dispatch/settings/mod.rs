@@ -5,7 +5,7 @@ pub(in crate::app::dispatch) mod ui;
 use super::status::toast_persist_failure;
 use crate::app::actions::Effect;
 use crate::app::app_view::AppView;
-use crate::app::dispatch::settings::ui::save_success_toast;
+use crate::app::dispatch::settings::ui::show_setting_success_toast;
 use crate::settings::SettingValue;
 use xai_grok_shell::agent::config::Feature;
 
@@ -22,7 +22,7 @@ pub(in crate::app::dispatch) fn handle_setting_persisted(
         if let Some(dashboard) = app.dashboard.as_mut() {
             dashboard.set_preview_enabled(enabled, &mut app.agents);
         }
-        app.show_toast(&save_success_toast("Dashboard preview", enabled));
+        show_setting_success_toast(app, "dashboard_preview", "Dashboard preview", enabled);
     }
 }
 

@@ -47,6 +47,13 @@ pub fn run_with_locale(
     args: DiskUsageArgs,
     locale: Option<&crate::locale::LocaleContext>,
 ) -> Result<()> {
+    if args.clean || args.clean_orphaned {
+        anyhow::bail!(localized(
+            locale,
+            "du.error.cleanup_unavailable",
+            "redirect cleanup is not available in this build",
+        ));
+    }
     // The registry's own resolution, unlike xai_grok_config::grok_home().
     let grok_home = resolve_grok_home()?;
     let mut out = std::io::stdout().lock();

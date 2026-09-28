@@ -1,8 +1,8 @@
 //! Individual setting setters with persistence effects and toasts.
 
 use super::ui::{
-    refresh_open_settings_modals, save_success_toast, save_success_toast_with_locale,
-    setting_already_default_toast, setting_cleared_toast,
+    refresh_open_settings_modals, restart_required_toast, save_setting_value_toast,
+    save_success_toast_with_locale, setting_already_default_toast, setting_cleared_toast,
     show_restart_required_setting_choice_toast, show_restart_required_setting_success_toast,
     show_setting_choice_toast, show_setting_success_toast, show_setting_value_toast,
 };
@@ -473,9 +473,19 @@ fn refuse_fixed_subagent_model_inheritance(app: &mut AppView) -> bool {
     let Some(by) = app.subagent_model_inheritance.forced_by() else {
         return false;
     };
-    app.show_toast(&format!(
-        "\u{2717} {SUBAGENT_MODEL_INHERITANCE_LABEL} is fixed by {by}"
-    ));
+    let label = app.locale.setting_label(
+        "subagent_model_inheritance",
+        SUBAGENT_MODEL_INHERITANCE_LABEL,
+    );
+    let toast = app
+        .locale
+        .named_text(
+            "settings.toast.fixed_by",
+            "\u{2717} {label} is fixed by {by}",
+        )
+        .replace("{label}", label.as_ref())
+        .replace("{by}", &by);
+    app.show_toast(&toast);
     true
 }
 
@@ -498,10 +508,12 @@ pub(in crate::app::dispatch) fn set_subagent_model_inheritance(
         value = new,
         "setting changed",
     );
-    app.show_toast(&format!(
-        "{} (restart to apply)",
-        save_success_toast(SUBAGENT_MODEL_INHERITANCE_LABEL, new),
-    ));
+    show_restart_required_setting_success_toast(
+        app,
+        "subagent_model_inheritance",
+        SUBAGENT_MODEL_INHERITANCE_LABEL,
+        new,
+    );
     effects
 }
 
@@ -514,12 +526,26 @@ pub(in crate::app::dispatch) fn clear_subagent_model_inheritance(app: &mut AppVi
     let state = app.subagent_model_inheritance;
     if state.config.user.is_none() {
         // A managed layer shows through here; naming it explains why the row is not at the default
+        let label = app.locale.setting_label(
+            "subagent_model_inheritance",
+            SUBAGENT_MODEL_INHERITANCE_LABEL,
+        );
         let toast = match state.config.below_user {
-            Some(layer) => format!(
-                "{SUBAGENT_MODEL_INHERITANCE_LABEL}: nothing to reset; {} sets it",
-                layer.layer.label()
-            ),
-            None => format!("{SUBAGENT_MODEL_INHERITANCE_LABEL}: nothing to reset"),
+            Some(layer) => app
+                .locale
+                .named_text(
+                    "settings.toast.nothing_to_reset_from_layer",
+                    "{label}: nothing to reset; {layer} sets it",
+                )
+                .replace("{label}", label.as_ref())
+                .replace("{layer}", layer.layer.label()),
+            None => app
+                .locale
+                .named_text(
+                    "settings.toast.nothing_to_reset",
+                    "{label}: nothing to reset",
+                )
+                .replace("{label}", label.as_ref()),
         };
         app.show_toast(&toast);
         return vec![];
@@ -532,9 +558,17 @@ pub(in crate::app::dispatch) fn clear_subagent_model_inheritance(app: &mut AppVi
         value = "<cleared>",
         "setting changed",
     );
-    app.show_toast(&format!(
-        "\u{2713} {SUBAGENT_MODEL_INHERITANCE_LABEL}: reset (restart to apply)"
-    ));
+    let reset = app
+        .locale
+        .named_static_text("settings.toast.value.reset", "reset");
+    let saved = save_setting_value_toast(
+        &app.locale,
+        "subagent_model_inheritance",
+        SUBAGENT_MODEL_INHERITANCE_LABEL,
+        reset,
+    );
+    let toast = restart_required_toast(&app.locale, &saved);
+    app.show_toast(&toast);
     effects
 }
 

@@ -1,6 +1,5 @@
 //! Conversation rewind dispatchers and prompt-entry lookup helpers.
 
-use super::ctx::NO_SESSION_NOTICE;
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::app_view::{ActiveView, AppView};
@@ -86,7 +85,10 @@ pub(super) fn dispatch_rewind(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
     let Some(session_id) = agent.session.session_id.clone() else {
-        app.show_toast(NO_SESSION_NOTICE);
+        app.show_toast(
+            app.locale
+                .named_static_text("session.no_active", "No active session"),
+        );
         return vec![];
     };
 
@@ -130,7 +132,10 @@ pub(super) fn dispatch_rewind_show_picker(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
     let Some(session_id) = agent.session.session_id.clone() else {
-        app.show_toast(NO_SESSION_NOTICE);
+        app.show_toast(
+            app.locale
+                .named_static_text("session.no_active", "No active session"),
+        );
         return vec![];
     };
 
@@ -383,14 +388,16 @@ pub(super) fn dispatch_rewind_success(
         crate::memory_release::release_retained_memory("rewind-truncate");
     }
 
-    const MSG: &str = "Reverted conversation";
+    let message = app
+        .locale
+        .named_static_text("rewind.reverted.conversation", "Reverted conversation");
     if app.screen_mode.is_minimal() {
         // Minimal has no toast area and can't erase committed lines, so the confirmation stays in scrollback there
         agent
             .scrollback
-            .push_block(RenderBlock::system(MSG.to_string()));
+            .push_block(RenderBlock::system(message.to_string()));
     } else {
-        agent.show_toast(MSG);
+        agent.show_toast(message);
     }
 
     if let Some(ref prompt_text) = response.prompt_text {
@@ -430,7 +437,10 @@ pub(super) fn handle_rewind_points_loaded(
         if let Some(stashed) = stashed {
             agent.prompt.restore(stashed);
         }
-        app.show_toast("No undoable prompts");
+        app.show_toast(
+            app.locale
+                .named_static_text("rewind.no_undoable_prompts", "No undoable prompts"),
+        );
         return vec![];
     }
 

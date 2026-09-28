@@ -143,12 +143,21 @@ pub(crate) fn localize_command_error(
         .strip_prefix("No active session to reopen in ")
         .and_then(|rest| rest.strip_suffix(" mode"))
     {
+        let localized_mode = match mode {
+            "minimal" => {
+                locale.named_text("settings.setting.screen_mode.choice.minimal.label", mode)
+            }
+            "fullscreen" => {
+                locale.named_text("settings.setting.screen_mode.choice.fullscreen.label", mode)
+            }
+            _ => std::borrow::Cow::Borrowed(mode),
+        };
         return locale
             .named_text(
                 "slash.command.screen_mode.error.no_session",
                 "No active session to reopen in {mode} mode",
             )
-            .replace("{mode}", mode);
+            .replace("{mode}", &localized_mode);
     }
     message.to_owned()
 }

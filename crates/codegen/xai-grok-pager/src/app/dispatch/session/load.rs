@@ -572,7 +572,14 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
         return vec![];
     }
     if crate::app::is_daemon_or_remote_control_row(&source) {
-        app.show_toast("Daemon sessions can't be resumed in a worktree");
+        let toast = app
+            .locale
+            .named_text(
+                "session.toast.daemon_worktree_forbidden",
+                "Daemon sessions can't be resumed in a worktree",
+            )
+            .into_owned();
+        app.show_toast(&toast);
         return vec![];
     }
     #[cfg(feature = "local-workspace")]
