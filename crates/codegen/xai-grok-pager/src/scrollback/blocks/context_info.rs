@@ -482,7 +482,10 @@ impl ContextInfoBlock {
         }
         lines.push(Line::from(""));
 
-        lines.push(Line::from(Span::styled("Already counted above", muted)));
+        lines.push(Line::from(Span::styled(
+            text("context.already_counted_above", "Already counted above"),
+            muted,
+        )));
         for row in &info_rows {
             lines.extend(layout.render(row, bar, total, &token_unit, label_style, muted));
         }

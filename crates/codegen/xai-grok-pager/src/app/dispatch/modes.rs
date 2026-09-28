@@ -136,7 +136,7 @@ pub(super) fn set_plan_mode(
     // Same gate as ExecutePlan and post-turn revise: toast and keep the
     // review mounted. Do not commit or send session/set_mode on a dead channel.
     if app.reconnect_pending {
-        agent.show_toast(super::prompt::RECONNECTING_NOTICE);
+        agent.show_toast(app.locale.text(crate::locale::TextKey::ReconnectWait));
         return vec![];
     }
 
@@ -778,7 +778,7 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
     // Same gate as set_plan_mode: toast and keep the review. Do not
     // commit abandon or send session/set_mode on a dead channel.
     if app.reconnect_pending {
-        agent.show_toast(super::prompt::RECONNECTING_NOTICE);
+        agent.show_toast(app.locale.text(crate::locale::TextKey::ReconnectWait));
         return vec![];
     }
     // Same refuse as set_plan_mode(Off). Shift+Tab Default is not worker

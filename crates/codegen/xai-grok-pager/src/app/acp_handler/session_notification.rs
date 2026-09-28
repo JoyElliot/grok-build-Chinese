@@ -1423,7 +1423,7 @@ fn queue_wake_turn_complete_notification(app: &mut AppView, agent_id: AgentId) {
     };
     let cwd_str = app.cwd.to_string_lossy().into_owned();
     let idle_title = crate::notifications::TitleState {
-        locale: None,
+        locale: Some(app.locale.as_ref()),
         session_name: session_name.as_deref(),
         model: model.as_deref(),
         activity: None,
@@ -1438,7 +1438,10 @@ fn queue_wake_turn_complete_notification(app: &mut AppView, agent_id: AgentId) {
         NotificationEvent {
             kind: NotificationEventKind::TurnComplete,
             title: session_name.unwrap_or_else(|| "Grok".into()),
-            body: String::from("Turn complete."),
+            body: app
+                .locale
+                .named_text("notification.turn_complete", "Turn complete.")
+                .into_owned(),
             session_id,
         },
         3,

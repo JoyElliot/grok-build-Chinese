@@ -469,17 +469,33 @@ impl AgentView {
         count: usize,
         dropped_by: ImagesDroppedBy,
     ) -> String {
+        let locale = self.scrollback.locale();
         let (message, ctx) = match dropped_by {
             ImagesDroppedBy::CompactCommand => (
-                "Images not sent with /compact — paste them again".to_owned(),
+                locale
+                    .named_text(
+                        "prompt.images_not_sent_compact",
+                        "Images not sent with /compact — paste them again",
+                    )
+                    .into_owned(),
                 serde_json::json!({ "count": count, "reason": "compact_command" }),
             ),
             ImagesDroppedBy::SkillPrompt => (
-                "Images not sent with a skill prompt — paste them again".to_owned(),
+                locale
+                    .named_text(
+                        "prompt.images_not_sent_skill",
+                        "Images not sent with a skill prompt — paste them again",
+                    )
+                    .into_owned(),
                 serde_json::json!({ "count": count, "reason": "skill_prompt" }),
             ),
             ImagesDroppedBy::SlashAction(command) => (
-                format!("Images not sent with /{command} — paste them again"),
+                locale
+                    .named_text(
+                        "prompt.images_not_sent_command",
+                        "Images not sent with /{command} — paste them again",
+                    )
+                    .replace("{command}", &command),
                 serde_json::json!({
                     "count": count,
                     "reason": "slash_action",

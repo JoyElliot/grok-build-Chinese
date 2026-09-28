@@ -478,12 +478,17 @@ pub(super) fn dispatch_manage_billing(app: &mut AppView) -> Vec<Effect> {
 /// Minimal mode has no welcome screen (where the full TUI shows updates), so the background update check's result is shown here instead.
 /// No-op when there is no active agent.
 pub(crate) fn commit_minimal_update_notice(app: &mut AppView, latest_version: &str) {
+    let message = app
+        .locale
+        .named_text(
+            "status.update_available",
+            "Update available: v{version}. Restart to apply.",
+        )
+        .replace("{version}", latest_version);
     if let ActiveView::Agent(id) = app.active_view
         && let Some(agent) = app.agents.get_mut(&id)
     {
-        agent.scrollback.push_block(RenderBlock::system(format!(
-            "Update available: v{latest_version}. Restart to apply."
-        )));
+        agent.scrollback.push_block(RenderBlock::system(message));
     }
 }
 
@@ -491,10 +496,12 @@ pub(crate) fn commit_minimal_update_notice(app: &mut AppView, latest_version: &s
 /// The text is built by [`crate::app::status_blocks::queue_block_text`]; this just resolves the active agent and pushes it.
 /// Works in every render mode; in minimal, which has no interactive `QueuePane`, it is the primary way to inspect the queue.
 pub(super) fn dispatch_show_queue(app: &mut AppView) -> Vec<Effect> {
+    let locale = app.locale.clone();
     if let ActiveView::Agent(id) = app.active_view
         && let Some(agent) = app.agents.get_mut(&id)
     {
-        let text = crate::app::status_blocks::queue_block_text(agent);
+        let text =
+            crate::app::status_blocks::queue_block_text_with_locale(agent, Some(locale.as_ref()));
         agent.scrollback.push_block(RenderBlock::system(text));
     }
     vec![]
@@ -504,10 +511,12 @@ pub(super) fn dispatch_show_queue(app: &mut AppView) -> Vec<Effect> {
 /// The text is built by [`crate::app::status_blocks::tasks_block_text`]; this just resolves the active agent and pushes it.
 /// Works in every render mode; in minimal, which has no interactive `TasksPane`, it is the primary task snapshot.
 pub(super) fn dispatch_show_tasks(app: &mut AppView) -> Vec<Effect> {
+    let locale = app.locale.clone();
     if let ActiveView::Agent(id) = app.active_view
         && let Some(agent) = app.agents.get_mut(&id)
     {
-        let text = crate::app::status_blocks::tasks_block_text(agent);
+        let text =
+            crate::app::status_blocks::tasks_block_text_with_locale(agent, Some(locale.as_ref()));
         agent.scrollback.push_block(RenderBlock::system(text));
     }
     vec![]
@@ -525,10 +534,11 @@ pub(super) fn dispatch_open_gboom(app: &mut AppView) -> Vec<Effect> {
         return vec![];
     };
     if detect_graphics_protocol() == GraphicsProtocol::None {
-        agent.show_toast(
+        agent.show_toast(app.locale.named_static_text(
+            "gboom.graphics_required",
             "No demons here: GBOOM needs a graphics-capable terminal \
              (kitty, Ghostty, WezTerm, iTerm2)",
-        );
+        ));
         return vec![];
     }
     // Close other media modals: they share the kitty placement id
@@ -675,6 +685,7 @@ pub(super) fn handle_context_info_complete(
     nonce: u64,
 ) -> Vec<Effect> {
     let minimal = app.screen_mode.is_minimal();
+    let locale = app.locale.as_ref().clone();
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         if agent.session.session_id.as_ref() != Some(session_id) {
             return vec![];
@@ -689,14 +700,18 @@ pub(super) fn handle_context_info_complete(
         let snapshot = info.data.context;
         agent.apply_full_context_info(snapshot.clone());
         if let Some(state) = usage_modal_state_mut(agent) {
-            state.context = Some(crate::scrollback::blocks::ContextInfoBlock::new(
-                snapshot, model,
-            ));
+            state.context = Some(
+                crate::scrollback::blocks::ContextInfoBlock::new_with_locale(
+                    snapshot, model, locale,
+                ),
+            );
             state.context_error = None;
         } else if minimal {
             push_and_page_flip(
                 &mut agent.scrollback,
-                crate::scrollback::block::RenderBlock::context_info(snapshot, model),
+                crate::scrollback::block::RenderBlock::context_info_with_locale(
+                    snapshot, model, locale,
+                ),
             );
         }
         // Full mode with the modal closed: the result arrived after dismissal, so drop it
@@ -729,7 +744,8 @@ pub(super) fn dispatch_copy_session_id(app: &mut AppView, index: usize) -> Vec<E
         });
     if let Some(id) = id {
         let delivery = crate::clipboard::copy_text_or_file(&id);
-        app.show_toast(delivery.toast_message().as_ref());
+        let message = crate::clipboard_toast::localized_copy_toast(&app.locale, &delivery);
+        app.show_toast(&message);
     }
     vec![]
 }
@@ -745,7 +761,9 @@ pub(super) fn dispatch_open_tutorial(app: &mut AppView) -> Vec<Effect> {
         app.tutorial = None;
         return vec![];
     }
-    app.tutorial = Some(crate::views::tutorial::TutorialState::new());
+    app.tutorial = Some(crate::views::tutorial::TutorialState::new_with_locale(
+        app.locale.clone(),
+    ));
     vec![]
 }
 

@@ -1191,7 +1191,7 @@ pub(super) fn dispatch_run_edited_queued_command(
 ) -> Vec<Effect> {
     if app.reconnect_pending {
         // Nothing runs and nothing drains while reconnecting (see `dispatch_drain_queue`), so the row just stays put
-        app.show_toast(super::prompt::RECONNECTING_NOTICE);
+        app.show_toast(app.locale.text(crate::locale::TextKey::ReconnectWait));
         preserve_queued_image_paths(app, &mut submission);
         return vec![];
     }

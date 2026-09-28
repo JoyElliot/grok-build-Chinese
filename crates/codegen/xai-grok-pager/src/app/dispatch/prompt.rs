@@ -20,15 +20,13 @@ use crate::app::agent::{AgentCommand, AgentId, AgentState};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView};
 use crate::app::cancel_latency::TurnEnd;
+use crate::locale::TextKey;
 use crate::notifications::{NotificationEvent, NotificationEventKind};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{MemoryCommandKind, SessionEvent};
 use crate::slash::command::DoctorRequest;
 use agent_client_protocol as acp;
 use xai_grok_telemetry::session_ctx::log_event;
-
-/// Shared by every submit guard that refuses while the session reconnects.
-pub(super) const RECONNECTING_NOTICE: &str = "Reconnecting, please wait...";
 
 pub(super) use crate::app::agent_view::{
     BUILD_IN_FLIGHT_ABANDON_NOTICE, BUILD_IN_FLIGHT_REVISE_NOTICE, LEAVE_PLAN_REVISE_NOTICE,
@@ -137,28 +135,48 @@ pub(super) fn open_doctor_fix_question(
         Question, QuestionOption,
     };
 
+    let locale = app.locale.clone();
     let Some(agent) = app.agents.get_mut(&target.agent_id) else {
         return;
     };
     if agent.question_view.is_some() {
-        agent.scrollback.push_block(RenderBlock::system(
-            "Close the current question before applying this fix.",
-        ));
+        agent
+            .scrollback
+            .push_block(RenderBlock::system(locale.named_static_text(
+                "doctor.fix.close_current_question",
+                "Close the current question before applying this fix.",
+            )));
         return;
     }
     let preview = crate::diagnostics::format_fix_preview(&plan);
     let question = Question {
-        question: "Apply this fix?".to_owned(),
+        question: locale
+            .named_static_text("doctor.fix.question", "Apply this fix?")
+            .to_owned(),
         options: vec![
             QuestionOption {
-                label: "Apply".to_owned(),
-                description: "Make the changes shown above.".to_owned(),
+                label: locale
+                    .named_static_text("doctor.fix.apply", "Apply")
+                    .to_owned(),
+                description: locale
+                    .named_static_text(
+                        "doctor.fix.apply_description",
+                        "Make the changes shown above.",
+                    )
+                    .to_owned(),
                 preview: Some(preview),
                 id: None,
             },
             QuestionOption {
-                label: "Cancel".to_owned(),
-                description: "Do not change the configuration.".to_owned(),
+                label: locale
+                    .named_static_text("doctor.fix.cancel", "Cancel")
+                    .to_owned(),
+                description: locale
+                    .named_static_text(
+                        "doctor.fix.cancel_description",
+                        "Do not change the configuration.",
+                    )
+                    .to_owned(),
                 preview: None,
                 id: None,
             },
@@ -179,6 +197,7 @@ pub(super) fn dispatch_execute_plan(
     plan_file_content: String,
     plan_file_uri: Option<String>,
 ) -> Vec<Effect> {
+    let locale = app.locale.clone();
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -187,7 +206,7 @@ pub(super) fn dispatch_execute_plan(
     };
     // Same gate as send/bash: do not mark TurnRunning or fire ExecutePlan on a dead ACP channel.
     if app.reconnect_pending {
-        agent.show_toast(RECONNECTING_NOTICE);
+        agent.show_toast(locale.text(TextKey::ReconnectWait));
         return vec![];
     }
     let Some(session_id) = agent.session.session_id.clone() else {
@@ -195,13 +214,18 @@ pub(super) fn dispatch_execute_plan(
         return vec![];
     };
     if !agent.session.state.is_idle() {
-        agent.show_toast("Wait for the current turn to end before building the plan.");
+        agent.show_toast(locale.named_static_text(
+            "plan.notice.busy_build",
+            "Wait for the current turn to end before building the plan.",
+        ));
         return vec![];
     }
     // Shift+Tab / set_mode Off stages leave-Plan first. Approve must not
     // start ExecutePlan while that switch can still clear last_plan.
     if agent.plan_mode_pending == Some(false) {
-        agent.show_toast(LEAVE_PLAN_BUILD_NOTICE);
+        agent.show_toast(
+            locale.named_static_text("plan.notice.switching_build", LEAVE_PLAN_BUILD_NOTICE),
+        );
         return vec![];
     }
     let prompt_id = uuid::Uuid::new_v4().to_string();
@@ -239,11 +263,12 @@ pub(super) fn dispatch_send_prompt(app: &mut AppView, text: String) -> Vec<Effec
 /// commands and exit aliases go to the model instead of running as pager
 /// commands (same as `SubmitFollowUp`).
 pub(super) fn dispatch_revise_plan(app: &mut AppView, text: String) -> Vec<Effect> {
+    let locale = app.locale.clone();
     if app.reconnect_pending {
         if let Some(agent) = get_active_agent_mut(app) {
-            agent.show_toast(RECONNECTING_NOTICE);
+            agent.show_toast(locale.text(TextKey::ReconnectWait));
         } else {
-            app.show_toast(RECONNECTING_NOTICE);
+            app.show_toast(locale.text(TextKey::ReconnectWait));
         }
         return vec![];
     }
@@ -262,17 +287,25 @@ pub(super) fn dispatch_revise_plan(app: &mut AppView, text: String) -> Vec<Effec
     };
     if has_post_turn_review && leave_plan_pending {
         if let Some(agent) = get_active_agent_mut(app) {
-            agent.show_toast(LEAVE_PLAN_REVISE_NOTICE);
+            agent.show_toast(
+                locale.named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE),
+            );
         } else {
-            app.show_toast(LEAVE_PLAN_REVISE_NOTICE);
+            app.show_toast(
+                locale.named_static_text("plan.notice.switching_revise", LEAVE_PLAN_REVISE_NOTICE),
+            );
         }
         return vec![];
     }
     if has_post_turn_review && build_in_flight {
         if let Some(agent) = get_active_agent_mut(app) {
-            agent.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
+            agent.show_toast(
+                locale.named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE),
+            );
         } else {
-            app.show_toast(BUILD_IN_FLIGHT_REVISE_NOTICE);
+            app.show_toast(
+                locale.named_static_text("plan.notice.busy_revise", BUILD_IN_FLIGHT_REVISE_NOTICE),
+            );
         }
         return vec![];
     }
@@ -632,7 +665,7 @@ pub(super) fn dispatch_send_prompt_submission(
     app.pending_action = None;
 
     if app.reconnect_pending {
-        app.show_toast(RECONNECTING_NOTICE);
+        app.show_toast(app.locale.text(TextKey::ReconnectWait));
         return vec![];
     }
 
@@ -1315,7 +1348,7 @@ pub(super) fn dispatch_send_prompt_submission(
 /// Bash commands go through the same enqueue/drain pipeline as normal prompts, just with `QueueEntryKind::BashCommand`. No scrollback block is pushed here; the execute block from the shell IS the visual entry.
 pub(super) fn dispatch_send_bash_command(app: &mut AppView, command: String) -> Vec<Effect> {
     if app.reconnect_pending {
-        app.show_toast(RECONNECTING_NOTICE);
+        app.show_toast(app.locale.text(TextKey::ReconnectWait));
         return vec![];
     }
 
@@ -1702,16 +1735,26 @@ pub(super) fn handle_prompt_response(
         let notification = match (&result, was_cancelling) {
             (Ok(_), false) if !agent.bash_turn => {
                 let body = match elapsed {
-                    Some(d) => {
-                        format!("Turn complete in {}.", crate::util::format_duration(d))
-                    }
-                    None => String::from("Turn complete."),
+                    Some(d) => app
+                        .locale
+                        .named_text(
+                            "notification.turn_complete_duration",
+                            "Turn complete in {duration}.",
+                        )
+                        .replace("{duration}", &crate::util::format_duration(d)),
+                    None => app
+                        .locale
+                        .named_text("notification.turn_complete", "Turn complete.")
+                        .into_owned(),
                 };
                 Some((NotificationEventKind::TurnComplete, body))
             }
-            (Err(err), _) if !dedicated_ux_shown => {
-                Some((NotificationEventKind::AgentError, format!("Error: {err}")))
-            }
+            (Err(err), _) if !dedicated_ux_shown => Some((
+                NotificationEventKind::AgentError,
+                app.locale
+                    .named_text("notification.agent_error", "Error: {error}")
+                    .replace("{error}", err),
+            )),
             _ => None,
         };
 
@@ -1764,7 +1807,7 @@ pub(super) fn handle_prompt_response(
                 let cwd_str = app.cwd.to_string_lossy();
                 let model = agent.session.models.current_model_name();
                 let idle_title = crate::notifications::TitleState {
-                    locale: None,
+                    locale: Some(app.locale.as_ref()),
                     session_name,
                     model: model.as_deref(),
                     activity: None,
