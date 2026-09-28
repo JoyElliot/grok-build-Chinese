@@ -906,6 +906,13 @@ pub(super) fn dispatch_send_prompt_submission(
         // The feedback modal owns the composer only once it accepts the open, so it settles before the
         // shared image disposition below.
         let exec_result = match exec_result {
+            CommandResult::Action(action @ Action::SendFeedback { .. })
+                if !xai_grok_product::FEEDBACK_UPLOADS_ALLOWED =>
+            {
+                // Refuse before stashing the composer; its draft and attachments still belong to the user.
+                effects.extend(dispatch(action, app));
+                return effects;
+            }
             CommandResult::Action(Action::OpenFeedbackModal(mut open)) => {
                 // Composer chips stay put until this open is accepted. A no-session
                 // or blocker refusal drops `open`, and FeedbackImages Drop would
