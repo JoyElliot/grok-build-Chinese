@@ -1368,8 +1368,8 @@ fn render_popup_overlay_registers_close_hit_rect() {
     );
     let content = buf_to_text(&buf);
     assert!(
-        content.contains('\u{2717}'),
-        "close affordance [✗] missing, got: {content:?}",
+        content.contains(crate::glyphs::ballot_x_button()),
+        "platform close affordance missing, got: {content:?}",
     );
     let close_rect = state
         .popup_close_rect
@@ -2801,8 +2801,8 @@ fn render_row_two_line_layout_paints_title_and_secondary() {
     );
     assert_eq!(
         buf_cell(&buf, 2, 0).symbol(),
-        "\u{2e2c}",
-        "row 0 col 2 must be the spinner glyph `⸬` at tick=8",
+        crate::glyphs::dot_spinner_frames()[2],
+        "row 0 col 2 must be the third platform spinner frame at tick=8",
     );
     assert_eq!(
         buf_cell(&buf, 3, 0).symbol(),

@@ -653,7 +653,7 @@ fn dispatch_fork_resolved_no_worktree_emits_fork_effect() {
         ] => {
             assert_eq!(*agent_id, AgentId(1));
             assert_eq!(parent_session_id.0.as_ref(), "test-session");
-            assert_eq!(parent_cwd, std::path::Path::new("/tmp"));
+            assert_eq!(parent_cwd, &std::env::temp_dir());
             assert!(!*parent_is_worktree);
         }
         other => panic!("expected ForkSession, got {other:?}"),

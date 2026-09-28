@@ -2712,13 +2712,19 @@ fn zh_localization_review135_btw_notices_translate_without_rewriting_reply() {
                     result: Ok("Original reply {count}".into()),
                     minimal_request_id: request_id,
                     image_notice: Some(notice.into()),
+                    skipped_image_numbers: Vec::new(),
                 }),
                 &mut app,
             );
-            assert_eq!(
-                agent_ref(&app, id).toast.as_ref().map(|(s, _)| s.as_str()),
-                Some(expected)
-            );
+            if minimal {
+                assert_eq!(last_system_text(&app, id), expected);
+                assert!(agent_ref(&app, id).toast.is_none());
+            } else {
+                assert_eq!(
+                    agent_ref(&app, id).toast.as_ref().map(|(s, _)| s.as_str()),
+                    Some(expected)
+                );
+            }
             let Some(crate::views::btw_overlay::BtwOverlayState::Done { content, .. }) =
                 &agent_ref(&app, id).btw_state
             else {

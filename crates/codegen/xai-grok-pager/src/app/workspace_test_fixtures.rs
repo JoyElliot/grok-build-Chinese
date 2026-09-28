@@ -28,7 +28,7 @@ pub(crate) fn new_member(id: &str, title: &str) -> NewMember {
         key: key(id),
         origin: MemberOrigin::Local,
         metadata: MemberMetadata {
-            cwd: Some("/tmp".into()),
+            cwd: Some(std::env::temp_dir().to_string_lossy().into_owned()),
             title: Some(title.into()),
             model: None,
             last_turn_summary: None,

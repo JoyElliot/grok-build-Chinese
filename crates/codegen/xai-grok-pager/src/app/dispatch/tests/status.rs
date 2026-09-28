@@ -154,8 +154,8 @@ fn set_coding_data_sharing_blocked_by_zdr() {
         "ZDR toast must surface the policy: {toast}",
     );
     assert!(
-        toast.contains('\u{2717}'),
-        "blocked toast uses ✗ glyph: {toast}"
+        toast.contains(crate::glyphs::ballot_x()),
+        "blocked toast uses the platform error glyph: {toast}"
     );
     // State unchanged: the user was blocked, so the optimistic mutation never happened
     assert!(
@@ -336,7 +336,10 @@ fn coding_data_sharing_failed_rolls_back_and_toasts_error() {
              (G2 Issue 2): {toast}",
     );
     assert!(toast.contains("server error"), "error in toast: {toast}");
-    assert!(toast.contains('\u{2717}'), "failure toast uses ✗: {toast}");
+    assert!(
+        toast.contains(crate::glyphs::ballot_x()),
+        "failure toast uses the platform error glyph: {toast}"
+    );
 }
 
 /// `TaskResult::CodingDataSharingFailed` reverts in the other direction too (the pre-toggle state could have been either).
@@ -1637,7 +1640,7 @@ fn dispatch_reset_session_title_clears_titles_and_emits_effect() {
         ] => {
             assert_eq!(*agent_id, AgentId(0));
             assert_eq!(session_id.0.as_ref(), "test-session");
-            assert_eq!(cwd, std::path::Path::new("/tmp"));
+            assert_eq!(cwd, &std::env::temp_dir());
             assert_eq!(
                 *kind,
                 xai_grok_shell::session::unified_list::SessionKind::Build

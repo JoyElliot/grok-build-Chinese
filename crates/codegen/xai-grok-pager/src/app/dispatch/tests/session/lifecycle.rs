@@ -1125,7 +1125,7 @@ fn new_session_falls_back_to_app_cwd_on_welcome_screen() {
         .find(|e| matches!(e, Effect::CreateSession { .. }));
     assert!(create.is_some(), "expected CreateSession effect");
     match create.unwrap() {
-        Effect::CreateSession { cwd, .. } => assert_eq!(cwd, &PathBuf::from("/tmp")),
+        Effect::CreateSession { cwd, .. } => assert_eq!(cwd, &std::env::temp_dir()),
         _ => unreachable!(),
     }
     let new_id = AgentId(0);

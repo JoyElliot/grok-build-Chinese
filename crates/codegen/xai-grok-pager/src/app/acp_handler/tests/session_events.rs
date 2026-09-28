@@ -1066,21 +1066,17 @@
     }
 
     #[test]
-    fn apply_hook_annotation_preserves_structured_kind_for_replay() {
-        let mut session = make_session(Some("s1"));
-        let mut scrollback = ScrollbackState::new();
+    fn root_hook_annotation_preserves_structured_kind() {
+        let mut app = make_app_with_agent("s1");
         let update = XaiSessionUpdate::HookAnnotation {
             message: "⚠ Prompt blocked by global/guard: provider reason".into(),
             kind: xai_grok_shell::extensions::notification::HookAnnotationKind::PromptBlocked,
         };
 
-        assert!(apply_session_event(
-            &update,
-            &mut session,
-            &mut scrollback,
-            false
-        ));
-        let entry = scrollback.entries_mut().last().expect("entry pushed");
+        let notification = subagent_notification_with_event_id("s1", update, None);
+        assert!(handle_session_notification(&notification, &mut app));
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        let entry = agent.scrollback.entries_mut().last().expect("entry pushed");
         match &entry.block {
             RenderBlock::SessionEvent(block) => assert!(matches!(
                 &block.event,
@@ -1093,6 +1089,10 @@
             )),
             other => panic!("expected hook SessionEvent block, got {other:?}"),
         }
+        let entry_count = agent.scrollback.len();
+        app.appearance.disable_plugins = true;
+        assert!(!handle_session_notification(&notification, &mut app));
+        assert_eq!(app.agents.get(&AgentId(0)).unwrap().scrollback.len(), entry_count);
     }
 
     // ── handle_child_session_notification ──────────────────────────────
@@ -1161,7 +1161,7 @@
     }
 
     #[test]
-    fn child_hook_annotation_routes_to_live_child_scrollback() {
+    fn child_hook_annotation_is_not_routed_by_session_event_handler() {
         let mut agent = make_agent(Some("root-sess"));
         let child_sid = "child-hook";
         agent.insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
@@ -1170,7 +1170,7 @@
             kind: Default::default(),
         };
 
-        assert!(handle_child_session_notification(
+        assert!(!handle_child_session_notification(
             update,
             child_sid,
             &mut agent,
@@ -1178,19 +1178,7 @@
             None,
         ));
         let child = agent.subagent_views.get_mut(child_sid).unwrap();
-        let entry = child
-            .scrollback
-            .entries_mut()
-            .last()
-            .expect("child entry pushed");
-        match &entry.block {
-            RenderBlock::SessionEvent(block) => assert!(matches!(
-                &block.event,
-                SessionEvent::HookAnnotation { message, kind: None }
-                    if message == "custom hook text"
-            )),
-            other => panic!("expected child hook SessionEvent block, got {other:?}"),
-        }
+        assert!(child.scrollback.is_empty(), "upstream child routing leaves hook annotations unhandled");
 
         let visible_entry_count = child.scrollback.entries_mut().len();
         agent.set_plugins_visible_recursive(false);

@@ -7255,7 +7255,10 @@ fn clamped_preview_renders_note_below_content() {
         width: 60,
         height: 24,
     };
-    let (buf, _) = render_max_thoughts_width_at(85, area);
+    let theme = Theme::current();
+    let mut state = int_stepper_fixture(85);
+    let mut buf = Buffer::empty(area);
+    render_editing_value(&mut buf, area, &mut state, &theme);
     let preview_y = find_text_row(&buf, area, "preview").expect("preview title must render");
 
     // Title row carries the lowercase `preview` text and no `clamped` suffix
@@ -7318,7 +7321,6 @@ fn clamped_preview_renders_note_below_content() {
     // Style assertions: the note cell at column 0 (the `n` of "note:") must carry `theme.text_secondary` fg
     // It must have no bg tint past `theme.bg_base` and no modifier
     // We sample the modifier directly; the fg/bg colors are theme-dependent but compared symbolically to the theme tokens in use
-    let theme = Theme::current();
     let cell = buf
         .cell((area.x, note_y))
         .expect("note cell at column 0 must exist");
