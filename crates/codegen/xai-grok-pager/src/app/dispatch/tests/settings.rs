@@ -1622,7 +1622,12 @@ fn subagent_model_inheritance_writes_one_at_a_time_and_issues_the_newest_intent(
     let _ = toggle(&mut app, Action::SetSubagentModelInheritance(true));
     let _ = toggle(&mut app, Action::SetSubagentModelInheritance(false));
     assert_eq!(Some(Some(false)), complete(&mut app, failed()));
-    assert!(read_toast(&app).starts_with("\u{2717} Could not save subagent_model_inheritance"));
+    assert_eq!(
+        read_toast(&app),
+        crate::glyphs::sanitize_toast_message(
+            "\u{2717} Could not save subagent_model_inheritance: disk"
+        ),
+    );
     assert_eq!(None, complete(&mut app, failed()));
     assert_eq!(None, mirror(&app));
     assert!(app.subagent_model_inheritance.writes.is_none());

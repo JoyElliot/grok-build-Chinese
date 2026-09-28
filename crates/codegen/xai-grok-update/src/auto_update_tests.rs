@@ -205,6 +205,10 @@ fn managed_layout() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBu
 fn test_installer_manages_bin_entrypoints_gate() {
     assert!(installer_manages_bin_entrypoints("internal"));
     assert!(installer_manages_bin_entrypoints("gh-release"));
+    #[cfg(feature = "community-build")]
+    assert!(installer_manages_bin_entrypoints(
+        crate::community_release::COMMUNITY_INSTALLER
+    ));
     assert!(!installer_manages_bin_entrypoints("npm"));
     assert!(!installer_manages_bin_entrypoints("unknown"));
 }
@@ -2294,6 +2298,8 @@ async fn test_windows_replace_exe_sweeps_accumulated_asides() {
     std::fs::write(&aside_b, "aside-b").unwrap();
     let agent_old = dir.path().join("agent.exe.old");
     std::fs::write(&agent_old, "agent-old").unwrap();
+    let personal_old = dir.path().join("grok.exe.old.personal.old");
+    std::fs::write(&personal_old, "personal").unwrap();
 
     windows_replace_exe(&src, &dest).await.unwrap();
 
@@ -2301,6 +2307,10 @@ async fn test_windows_replace_exe_sweeps_accumulated_asides() {
     assert!(!old.exists(), "legacy .old must be swept");
     assert!(!aside_a.exists(), "aside must be swept");
     assert!(!aside_b.exists(), "aside must be swept");
+    assert!(
+        personal_old.exists(),
+        "only generated pid-sequence asides may be removed"
+    );
     assert!(
         agent_old.exists(),
         "other executables' leftovers must be untouched"
@@ -2541,4 +2551,184 @@ fn test_reinstall_hint_community_never_names_official_sources() {
             "unexpected official source: {hint}"
         );
     }
+}
+
+#[cfg(all(
+    feature = "community-build",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    )
+))]
+#[tokio::test]
+async fn test_community_entrypoints_share_one_immutable_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    let downloads = dir.path().join("grok-zh-downloads");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&downloads).unwrap();
+    let target = downloads.join(format!(
+        "grok-zh-1.0.8-{}.1-0.installed",
+        community_unix_platform_suffix()
+    ));
+    std::fs::write(&target, "community").unwrap();
+
+    let primary = swap_community_bin_links(&target, &bin).await.unwrap();
+
+    assert_eq!(primary, bin.join("grok-zh"));
+    for name in ["grok-zh", "agent-zh"] {
+        let link = bin.join(name);
+        assert!(link.is_symlink(), "{name} must be a symlink");
+        assert_eq!(std::fs::read_to_string(link).unwrap(), "community");
+    }
+    assert_eq!(
+        std::fs::read_link(bin.join("agent-zh")).unwrap(),
+        std::path::PathBuf::from("grok-zh")
+    );
+}
+
+#[cfg(all(
+    feature = "community-build",
+    any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    )
+))]
+#[tokio::test]
+async fn test_community_entrypoints_refuse_unmanaged_existing_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    let downloads = dir.path().join("grok-zh-downloads");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&downloads).unwrap();
+    let target = downloads.join(format!(
+        "grok-zh-1.0.8-{}.1-0.installed",
+        community_unix_platform_suffix()
+    ));
+    std::fs::write(&target, "community").unwrap();
+
+    std::os::unix::fs::symlink("/tmp/unmanaged-grok", bin.join("grok-zh")).unwrap();
+    let error = swap_community_bin_links(&target, &bin).await.unwrap_err();
+    assert!(error.to_string().contains("unmanaged community link"));
+    assert_eq!(
+        std::fs::read_link(bin.join("grok-zh")).unwrap(),
+        std::path::PathBuf::from("/tmp/unmanaged-grok")
+    );
+
+    std::fs::remove_file(bin.join("grok-zh")).unwrap();
+    std::fs::write(bin.join("agent-zh"), "user file").unwrap();
+    let error = swap_community_bin_links(&target, &bin).await.unwrap_err();
+    assert!(error.to_string().contains("unmanaged entry point"));
+    assert_eq!(
+        std::fs::read_to_string(bin.join("agent-zh")).unwrap(),
+        "user file"
+    );
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_community_version_output_must_match_release_version() {
+    assert!(community_version_output_matches(
+        "grok-zh 1.2.3 (abcdef0) [stable]\n",
+        "1.2.3"
+    ));
+    assert!(!community_version_output_matches(
+        "grok-zh 1.2.2 (abcdef0)\n",
+        "1.2.3"
+    ));
+    assert!(!community_version_output_matches(
+        "grok 1.2.3 (abcdef0)\n",
+        "1.2.3"
+    ));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_update_lock_protects_concurrent_activation_and_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("grok-zh.exe");
+    let source = dir.path().join("new.exe");
+    std::fs::write(&destination, "original").unwrap();
+    std::fs::write(&source, "new").unwrap();
+    let lock = acquire_windows_update_lock(&destination).unwrap();
+    assert!(windows_replace_exe(&source, &destination).await.is_err());
+    assert!(acquire_windows_update_lock(&destination).is_err());
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
+    drop(lock);
+    windows_replace_exe(&source, &destination).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "new");
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn community_cleanup_recognizes_only_owned_installed_target_names() {
+    for valid in [
+        "grok-zh-1.0.35-linux-x86_64-gnu.42-1.installed",
+        "grok-zh-1.0.35-rc.2-macos-aarch64.Ab12Cd.installed",
+    ] {
+        assert!(is_community_installed_target(valid));
+    }
+    for invalid in [
+        "grok-1.0.35-linux-x86_64-gnu.42-1.installed",
+        "grok-zh-config.installed",
+        "grok-zh-1.0.35-linux-x86_64-gnu..installed",
+        "grok-zh-1.0.35-linux-x86_64-gnu.42-1.candidate",
+        "grok-zh-1.0.35+custom-linux-x86_64-gnu.42-1.installed",
+    ] {
+        assert!(!is_community_installed_target(invalid), "{invalid}");
+    }
+}
+
+#[cfg(all(unix, feature = "community-build"))]
+#[tokio::test]
+async fn community_cleanup_keeps_live_aliases_processes_fresh_files_and_unmanaged_data() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    // Exercise an aliased parent on every Unix host, like /var -> /private/var
+    // for macOS temporary directories.
+    let real_home = dir.path().join("real-home");
+    std::fs::create_dir(&real_home).unwrap();
+    let home = dir.path().join("linked-home");
+    symlink(&real_home, &home).unwrap();
+    let bin = home.join("bin");
+    let downloads = home.join("grok-zh-downloads");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::create_dir(&downloads).unwrap();
+    let names = [
+        "grok-zh-1.0.36-linux-x86_64-gnu.1-1.installed",
+        "grok-zh-1.0.35-linux-x86_64-gnu.1-2.installed",
+        "grok-zh-1.0.34-linux-x86_64-gnu.1-3.installed",
+        "grok-zh-1.0.33-linux-x86_64-gnu.1-4.installed",
+        "grok-zh-1.0.32-linux-x86_64-gnu.1-5.installed",
+        "personal.txt",
+    ];
+    let paths: Vec<_> = names.iter().map(|name| downloads.join(name)).collect();
+    for path in &paths {
+        std::fs::write(path, "binary").unwrap();
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::now() - STALE_TMP_AGE * 2),
+            )
+            .unwrap();
+    }
+    let [active, stale, in_use, fresh, alias, personal] = paths.as_slice() else {
+        unreachable!()
+    };
+    std::fs::File::open(fresh)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+        .unwrap();
+    symlink(active, bin.join("grok-zh")).unwrap();
+    symlink(alias, bin.join("agent-zh")).unwrap();
+    // The callback receives entries from the canonical downloads directory.
+    let in_use_canonical = std::fs::canonicalize(in_use).unwrap();
+    cleanup_community_targets_with(&downloads, &bin, |path| path == in_use_canonical).await;
+    assert!(!stale.exists());
+    for kept in [active, in_use, fresh, alias, personal] {
+        assert!(kept.exists(), "{}", kept.display());
+    }
+    cleanup_community_targets_with(&downloads, &bin, |_| true).await;
+    assert!(in_use.exists());
 }
