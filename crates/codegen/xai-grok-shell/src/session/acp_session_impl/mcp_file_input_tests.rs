@@ -5,6 +5,7 @@ use crate::session::acp_session::{
     tool_dispatch::dispatch_tool,
 };
 use serde_json::json;
+use sha2::Digest;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -149,6 +150,7 @@ async fn fixture(
                     tool_id: "update".to_owned(),
                     tool_name: "update".to_owned(),
                     call_id: "fixture.update".to_owned(),
+                    description_sha256: format!("{:x}", sha2::Sha256::digest(b"")),
                 },
             )],
         )));
@@ -597,9 +599,12 @@ async fn invalid_sources_never_dispatch_or_echo_source_details() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let (actor, fs, receiver, _gateway) = fixture(false).await;
-            let invocation = json!({"file":"/tmp/mcp-source.json"});
-            let arguments =
-                json!({"tool_name":"fixture__update","tool_input_file":"/tmp/mcp-source.json"});
+            let dir = tempfile::tempdir().unwrap();
+            let source_path = dunce::canonicalize(dir.path())
+                .unwrap()
+                .join("mcp-source.json");
+            let invocation = json!({"file":source_path});
+            let arguments = json!({"tool_name":"fixture__update","tool_input_file":source_path});
             for (bytes, wrapper, diagnostic) in [
                 (vec![0xff], invocation.clone(), None),
                 (vec![b' '; MAX_SOURCE_BYTES + 1], invocation.clone(), None),
@@ -614,7 +619,7 @@ async fn invalid_sources_never_dispatch_or_echo_source_details() {
                     Some("Invalid MCP arguments JSON at line 2, column 22"),
                 ),
             ] {
-                fs.files.set_file("/tmp/mcp-source.json", &bytes).await;
+                fs.files.set_file(&source_path, &bytes).await;
                 assert!(matches!(
                     prepare_call(&actor, call(wrapper)).await,
                     Err(ToolLoop::Continue)
@@ -970,6 +975,9 @@ async fn snapshot_overflow_emits_once_on_the_session_task_with_measured_bytes() 
 async fn failed_preparations_preserve_order_and_known_byte_counts() {
     tokio::task::LocalSet::new()
         .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(dir.path()).unwrap();
+            let source_path = root.join("mcp-source.json");
             for stage in [
                 "read",
                 "parse",
@@ -992,7 +1000,7 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
                         xai_grok_workspace::permission::spawn_permission_manager(
                             actor.session_info.id.clone(),
                             actor.notifications.gateway.clone(),
-                            xai_grok_paths::AbsPathBuf::new(PathBuf::from("/tmp")).unwrap(),
+                            xai_grok_paths::AbsPathBuf::new(root.clone()).unwrap(),
                             xai_grok_workspace::permission::ClientType::Generic,
                             Some(PermissionConfig::new(vec![PermissionRule {
                                 action: RuleAction::Deny,
@@ -1019,14 +1027,14 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
                 };
                 if stage != "read" {
                     fs.files
-                        .set_file("/tmp/mcp-source.json", document.as_bytes())
+                        .set_file(&source_path, document.as_bytes())
                         .await;
                 }
                 if stage.ends_with("rewrite") {
                     let rewrite = if stage == "invocation-rewrite" {
-                        json!({"file":"/tmp/another.json"})
+                        json!({"file":root.join("another.json")})
                     } else {
-                        json!({"tool_name":"fixture__update","tool_input_file":"/tmp/another.json"})
+                        json!({"tool_name":"fixture__update","tool_input_file":root.join("another.json")})
                     };
                     let script = format!(
                         "printf '%s' '{}'",
@@ -1051,8 +1059,7 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
                     },
                 );
                 let (_, events) = capture_events(async {
-                    let result =
-                        prepare_call(&actor, call(json!({"file":"/tmp/mcp-source.json"}))).await;
+                    let result = prepare_call(&actor, call(json!({"file":source_path}))).await;
                     if stage.ends_with("budget") {
                         let prepared = result.unwrap();
                         let mut budget = McpFileBatchBudget {
@@ -1253,9 +1260,12 @@ async fn source_and_resolved_approval_are_distinct_and_reject_prevents_send() {
                 PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,
             };
             let (mut actor, fs, remote, _gateway) = fixture(false).await;
+            let dir = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(dir.path()).unwrap();
+            let source_path = root.join("mcp-source.json");
             fs.files
                 .set_file(
-                    "/tmp/mcp-source.json",
+                    &source_path,
                     br#"{"tool_name":"fixture__update","tool_input":{"body":"loaded"}}"#,
                 )
                 .await;
@@ -1263,7 +1273,7 @@ async fn source_and_resolved_approval_are_distinct_and_reject_prevents_send() {
             let (permission, _events) = xai_grok_workspace::permission::spawn_permission_manager(
                 actor.session_info.id.clone(),
                 xai_acp_lib::AcpAgentGatewaySender::new(gateway),
-                xai_grok_paths::AbsPathBuf::new(PathBuf::from("/tmp")).unwrap(),
+                xai_grok_paths::AbsPathBuf::new(root).unwrap(),
                 xai_grok_workspace::permission::ClientType::Desktop,
                 Some(PermissionConfig::new(vec![PermissionRule {
                     action: RuleAction::Ask,
@@ -1297,7 +1307,7 @@ async fn source_and_resolved_approval_are_distinct_and_reject_prevents_send() {
                     }
                 }));
             assert!(matches!(
-                prepare_call(&actor, call(json!({"file":"/tmp/mcp-source.json"}))).await,
+                prepare_call(&actor, call(json!({"file":source_path}))).await,
                 Err(ToolLoop::PermissionReject { .. })
             ));
             let prompts = prompts.lock();
@@ -1316,7 +1326,7 @@ async fn source_and_resolved_approval_are_distinct_and_reject_prevents_send() {
             let title = target.fields.title.as_deref().unwrap();
             assert!(
                 title.contains("fixture__update")
-                    && title.contains("source file: /tmp/mcp-source.json")
+                    && title.contains(&format!("source file: {}", source_path.display()))
             );
             assert!(
                 target

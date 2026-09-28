@@ -254,6 +254,9 @@ fn gateway_resources_with_expected_call_id(
     use crate::types::resources::{
         ManagedGatewayToolCatalog, ManagedGatewayToolClient, ManagedGatewayToolSource, Resources,
     };
+    // These minimal gateway fixtures have no description.
+    let description_sha256 =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned();
     let mut resources = Resources::new();
     resources.insert(ManagedGatewayToolCatalog(std::collections::HashMap::from(
         [
@@ -265,6 +268,7 @@ fn gateway_resources_with_expected_call_id(
                     tool_id: "search_dashboards".to_string(),
                     tool_name: "Search Dashboards".to_string(),
                     call_id: "grafana.searchDashboards".to_string(),
+                    description_sha256: description_sha256.clone(),
                 },
             ),
             (
@@ -275,6 +279,7 @@ fn gateway_resources_with_expected_call_id(
                     tool_id: "tool".to_string(),
                     tool_name: "Tool".to_string(),
                     call_id: "gateway.collision".to_string(),
+                    description_sha256: description_sha256.clone(),
                 },
             ),
             (
@@ -285,6 +290,7 @@ fn gateway_resources_with_expected_call_id(
                     tool_id: "bad/id".to_string(),
                     tool_name: "Bad ID".to_string(),
                     call_id: "gateway.invalidLocal".to_string(),
+                    description_sha256,
                 },
             ),
         ],

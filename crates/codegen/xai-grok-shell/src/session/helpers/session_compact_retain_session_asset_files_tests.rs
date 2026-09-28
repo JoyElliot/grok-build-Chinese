@@ -53,10 +53,6 @@ async fn keeps_only_regular_files_inside_the_assets_dir() {
     std::fs::write(&inside, b"png").unwrap();
     let outside = elsewhere.path().join("image-2.png");
     std::fs::write(&outside, b"png").unwrap();
-    let link_inside = assets.path().join("link-inside.png");
-    std::os::unix::fs::symlink(&inside, &link_inside).unwrap();
-    let link_outside = assets.path().join("link-outside.png");
-    std::os::unix::fs::symlink(&outside, &link_outside).unwrap();
     let directory = assets.path().join("nested");
     std::fs::create_dir(&directory).unwrap();
     let missing = assets.path().join("gone.png");
@@ -64,10 +60,6 @@ async fn keeps_only_regular_files_inside_the_assets_dir() {
     std::fs::create_dir(&nested_dir).unwrap();
     let nested = nested_dir.join("x.png");
     std::fs::write(&nested, b"png").unwrap();
-    // A symlinked subdirectory would make an outside file look like it sits under `assets/`.
-    let link_dir = assets.path().join("link");
-    std::os::unix::fs::symlink(elsewhere.path(), &link_dir).unwrap();
-    let through_link_dir = link_dir.join("image-2.png");
     // Resolves into the assets dir, but only through `..`.
     let assets_name = assets.path().file_name().expect("tempdir has a file name");
     let dotdot = assets
@@ -76,23 +68,36 @@ async fn keeps_only_regular_files_inside_the_assets_dir() {
         .join(assets_name)
         .join("image-1.png");
 
-    let (kept, dropped) = retain_session_asset_files(
-        vec![
-            path_string(&inside),
-            path_string(&outside),
+    let paths = vec![
+        path_string(&inside),
+        path_string(&outside),
+        path_string(&directory),
+        path_string(&missing),
+        path_string(&dotdot),
+        path_string(&nested),
+        "relative/image-1.png".to_owned(),
+    ];
+    // Keep the portable file and path checks active on Windows, where symlink creation needs privileges.
+    #[cfg(unix)]
+    let paths = {
+        let link_inside = assets.path().join("link-inside.png");
+        std::os::unix::fs::symlink(&inside, &link_inside).unwrap();
+        let link_outside = assets.path().join("link-outside.png");
+        std::os::unix::fs::symlink(&outside, &link_outside).unwrap();
+        // A symlinked subdirectory would make an outside file look like it sits under `assets/`.
+        let link_dir = assets.path().join("link");
+        std::os::unix::fs::symlink(elsewhere.path(), &link_dir).unwrap();
+        let mut paths = paths;
+        paths.extend([
             path_string(&link_inside),
             path_string(&link_outside),
-            path_string(&directory),
-            path_string(&missing),
-            path_string(&dotdot),
-            path_string(&nested),
-            path_string(&through_link_dir),
-            "relative/image-1.png".to_owned(),
-        ],
-        assets.path(),
-    )
-    .await;
+            path_string(&link_dir.join("image-2.png")),
+        ]);
+        paths
+    };
+    let expected_dropped = paths.len() - 1;
+    let (kept, dropped) = retain_session_asset_files(paths, assets.path()).await;
 
     assert_eq!(kept, vec![path_string(&inside)]);
-    assert_eq!(dropped, 9);
+    assert_eq!(dropped, expected_dropped);
 }
