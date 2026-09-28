@@ -511,6 +511,7 @@ async fn test_atomic_symlink_swap_broken_symlink_target() {
 }
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_needs_update_prerelease_to_stable_forces_install() {
     // An inadmissible current version (a pre-release on the stable channel) forces an install even if the candidate is semver-lower
     assert_eq!(
@@ -917,6 +918,7 @@ async fn test_cleanup_old_downloads_mixed_stable_and_alpha() {
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_reinstall_hint_npm_mentions_npm_command() {
     let hint = reinstall_hint("npm", "stable");
     assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
@@ -927,6 +929,7 @@ fn test_reinstall_hint_npm_mentions_npm_command() {
 }
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_reinstall_hint_gh_release_mentions_gh_command() {
     let hint = reinstall_hint("gh-release", "stable");
     assert!(
@@ -940,6 +943,7 @@ fn test_reinstall_hint_gh_release_mentions_gh_command() {
 }
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_reinstall_hint_internal_mentions_platform_installer() {
     let hint = reinstall_hint("internal", "stable");
     if cfg!(windows) {
@@ -966,6 +970,7 @@ fn test_reinstall_hint_internal_mentions_platform_installer() {
 }
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_reinstall_hint_internal_alpha_sets_channel() {
     let hint = reinstall_hint("internal", "alpha");
     if cfg!(windows) {
@@ -983,6 +988,7 @@ fn test_reinstall_hint_internal_alpha_sets_channel() {
 }
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_reinstall_hint_enterprise_uses_enterprise_script() {
     // Enterprise ships via its own bootstrap script (channel hardcoded there), never install.sh with GROK_CHANNEL
     let hint = reinstall_hint("internal", "enterprise");
@@ -1372,6 +1378,7 @@ fn test_needs_update_downgrade_prerelease_still_rejected_on_stable() {
 }
 
 #[test]
+#[cfg(not(feature = "community-build"))]
 fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downgrade() {
     // A pre-release current on the stable channel forces an install, independent of allow_downgrade
     assert_eq!(
@@ -1623,14 +1630,29 @@ async fn test_cleanup_old_downloads_darwin_platform_recognized() {
 
 #[test]
 fn test_user_facing_constants_are_stable() {
-    assert_eq!(PROMPT_UPDATE_NOW, "Update now? [Y/n/d]");
+    assert_eq!(
+        PROMPT_UPDATE_NOW,
+        if cfg!(feature = "community-build") {
+            "现在更新？[Y/n/d]"
+        } else {
+            "Update now? [Y/n/d]"
+        }
+    );
     assert_eq!(
         MSG_AUTO_UPDATE_BACKGROUND,
-        "Auto-update running in background."
+        if cfg!(feature = "community-build") {
+            "正在后台自动更新。"
+        } else {
+            "Auto-update running in background."
+        }
     );
     assert_eq!(
         MSG_RUN_UPDATE_MANUAL,
-        "Run `grok update` to get the latest version."
+        if cfg!(feature = "community-build") {
+            "运行 `grok-zh update` 获取最新版本。"
+        } else {
+            "Run `grok update` to get the latest version."
+        }
     );
 }
 
@@ -2061,9 +2083,15 @@ async fn test_windows_replace_exe_locked_file_renames_aside() {
     assert_eq!(std::fs::read_to_string(&dest).unwrap(), "updated binary");
 
     let old = dir.path().join("grok.exe.old");
-    assert!(old.exists(), ".old must exist after rename fallback");
+    // This handle permits deletion; cleanup leaves its old file data readable.
+    let mut old_bytes = String::new();
+    std::io::Read::read_to_string(&mut &_lock, &mut old_bytes).unwrap();
+    assert_eq!(old_bytes, "running binary");
     drop(_lock);
-    assert_eq!(std::fs::read_to_string(&old).unwrap(), "running binary");
+    assert!(
+        !old.exists(),
+        "successful replacement must clean a deletable aside"
+    );
 }
 
 #[cfg(windows)]
@@ -2138,8 +2166,9 @@ async fn test_windows_replace_exe_empty_binary() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_windows_replace_exe_locked_stale_old_does_not_block_update() {
-    // A leftover .old can still be a running image (the session live during the previous update), which cannot be deleted
-    // The rename must divert to a unique aside instead of failing on the locked name
+    // A leftover .old can still be a running image (the session live
+    // during the previous update): undeletable, so the rename must
+    // divert to a unique aside instead of failing on the locked name.
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_SHARE_READ: u32 = 0x00000001;
     const FILE_SHARE_DELETE: u32 = 0x00000004;
@@ -2182,21 +2211,13 @@ async fn test_windows_replace_exe_locked_stale_old_does_not_block_update() {
                 .is_some_and(|n| n.starts_with("grok.exe.old.") && n.ends_with(".old"))
         })
         .collect();
-    assert_eq!(
-        asides.len(),
-        1,
-        "dest must be renamed to a unique aside: {asides:?}"
+    assert!(
+        asides.is_empty(),
+        "deletable unique asides must be cleaned after success: {asides:?}"
     );
-    assert_eq!(
-        std::fs::read_to_string({
-            let Some(aside) = asides.first() else {
-                panic!("aside path: {asides:?}");
-            };
-            aside
-        })
-        .unwrap(),
-        "running binary"
-    );
+    let mut running_bytes = String::new();
+    std::io::Read::read_to_string(&mut &_dest_lock, &mut running_bytes).unwrap();
+    assert_eq!(running_bytes, "running binary");
 }
 
 #[cfg(windows)]
@@ -2296,6 +2317,7 @@ fn assert_decoded_executable(path: &std::path::Path) {
 fn assert_decoded_executable(_path: &std::path::Path) {}
 
 #[tokio::test]
+#[cfg(not(feature = "community-build"))]
 async fn download_and_decode_round_trips_each_codec() {
     use std::io::Write;
     use wiremock::matchers::{method, path};
@@ -2361,6 +2383,7 @@ async fn download_and_decode_errs_on_corrupt() {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "community-build"))]
 async fn download_cli_artifact_falls_back_to_plain() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2384,6 +2407,7 @@ async fn download_cli_artifact_falls_back_to_plain() {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "community-build"))]
 async fn download_cli_artifact_prefers_compressed_over_plain() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2445,4 +2469,76 @@ fn npm_entry_is_recognized_by_the_binary_location() {
     let resolved = dunce::canonicalize(&path_entry).unwrap();
     assert!(super::is_under_node_modules(&resolved));
     assert!(!super::is_under_node_modules(&root.join("home/bin/grok")));
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_needs_update_prerelease_to_stable_respects_version_order() {
+    assert_eq!(
+        needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
+        Some(false)
+    );
+    assert_eq!(
+        needs_update("0.1.148-alpha.3", "0.1.148", "stable", false),
+        Some(true)
+    );
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_needs_update_ci_prerelease_respects_rollback_policy() {
+    let current = "1.0.3-zh.ci.21";
+    for (target, allow_downgrade, expected) in [
+        ("1.0.0", false, false),
+        ("1.0.0", true, true),
+        ("1.0.3", false, true),
+        ("1.0.3", true, true),
+        ("1.0.4", false, true),
+        ("1.0.4", true, true),
+    ] {
+        assert_eq!(
+            needs_update(current, target, "stable", allow_downgrade),
+            Some(expected),
+            "current={current}, target={target}, allow_downgrade={allow_downgrade}"
+        );
+    }
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_needs_update_prerelease_current_respects_allow_downgrade() {
+    // A lower stable target is only an update for authoritative installers
+    // whose pointer is allowed to roll back.
+    assert_eq!(
+        needs_update("0.1.149-alpha.1", "0.1.148", "stable", true),
+        Some(true)
+    );
+    assert_eq!(
+        needs_update("0.1.149-alpha.1", "0.1.148", "stable", false),
+        Some(false)
+    );
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_installer_blocks_automatic_community_release_downgrade() {
+    let allow_downgrade = installer_allows_downgrade(crate::community_release::COMMUNITY_INSTALLER);
+    assert!(!allow_downgrade);
+    assert_eq!(
+        needs_update("1.0.8-zh.ci.59", "1.0.5", "stable", allow_downgrade),
+        Some(false)
+    );
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_reinstall_hint_community_never_names_official_sources() {
+    let hint = reinstall_hint(crate::community_release::COMMUNITY_INSTALLER, "stable");
+    assert!(hint.contains(xai_grok_product::COMMUNITY_RELEASE_REPO));
+    for forbidden in ["x.ai", "@xai-official", "xai-org-shared"] {
+        assert!(
+            !hint.contains(forbidden),
+            "unexpected official source: {hint}"
+        );
+    }
 }
