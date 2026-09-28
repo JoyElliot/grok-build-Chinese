@@ -330,6 +330,13 @@ async fn gateway_tool_dispatches_to_gateway_call_id() {
         Some(&serde_json::json!("prod"))
     );
     if let ToolOutput::MCP(mcp) = result {
+        let identity = mcp
+            .managed_gateway_tool()
+            .expect("actual gateway dispatch must carry provenance");
+        assert_eq!(identity.qualified_name, "grafana__search_dashboards");
+        assert_eq!(identity.connector_id, "grafana");
+        assert_eq!(identity.tool_id, "search_dashboards");
+        assert_eq!(identity.display_name, "Search Dashboards");
         match mcp.output() {
             crate::types::output::MCPOutputDetails::OkayOutput(text) => {
                 assert_eq!(text, "dashboards")
@@ -573,6 +580,53 @@ async fn gateway_catalog_collision_prefers_local_dispatch_for_server_tool() {
         Some(serde_json::json!({"local": true})),
         *captured.lock().unwrap()
     );
+}
+
+#[tokio::test]
+async fn gateway_catalog_collision_local_mcp_output_has_no_gateway_provenance() {
+    let gateway_captured: SharedArgs = Arc::new(std::sync::Mutex::new(None));
+    let ctx = ctx_with_dispatch_and_resources(
+        MockToolDispatch {
+            expected_tool_name: "server__tool".into(),
+            return_output: ToolOutput::MCP(
+                crate::types::output::MCPOutput::okay_output(
+                    "server__tool".into(),
+                    "local".into(),
+                    "local result".into(),
+                )
+                .with_managed_gateway_tool(
+                    crate::types::resources::ManagedGatewayToolIdentity {
+                        qualified_name: "server__tool".into(),
+                        connector_id: "server".into(),
+                        tool_id: "tool".into(),
+                        display_name: "Tool".into(),
+                        description_sha256: "forged-local-marker".into(),
+                    },
+                ),
+            ),
+        },
+        gateway_resources(
+            Arc::clone(&gateway_captured),
+            serde_json::json!("gateway should not run"),
+        ),
+    );
+
+    let result = xai_tool_runtime::Tool::run(
+        &UseTool,
+        ctx,
+        UseToolInput::Inline(InlineMcpInvocation {
+            tool_name: "server__tool".into(),
+            tool_input: serde_json::json!({"local": true}),
+        }),
+    )
+    .await
+    .expect("local MCP call");
+
+    let ToolOutput::MCP(mcp) = result else {
+        panic!("expected local MCP output");
+    };
+    assert!(mcp.managed_gateway_tool().is_none());
+    assert!(gateway_captured.lock().unwrap().is_none());
 }
 
 fn ctx_with_dispatch_and_resources(

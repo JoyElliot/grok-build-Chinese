@@ -172,18 +172,17 @@ fn gateway_response_to_output(
 ) -> ToolOutput {
     let is_error = gateway_result_is_error(&result);
     let text = gateway_result_to_text(result);
+    let identity = source.identity(tool_name.to_owned());
     if is_error {
-        ToolOutput::MCP(MCPOutput::errored(
-            tool_name.to_owned(),
-            source.connector_name,
-            text,
-        ))
+        ToolOutput::MCP(
+            MCPOutput::errored(tool_name.to_owned(), source.connector_name, text)
+                .with_managed_gateway_tool(identity),
+        )
     } else {
-        ToolOutput::MCP(MCPOutput::okay_output(
-            tool_name.to_owned(),
-            source.connector_name,
-            text,
-        ))
+        ToolOutput::MCP(
+            MCPOutput::okay_output(tool_name.to_owned(), source.connector_name, text)
+                .with_managed_gateway_tool(identity),
+        )
     }
 }
 
@@ -213,7 +212,9 @@ pub async fn dispatch_mcp_tool(
             && let Some(dispatch) = dispatch.clone()
         {
             match dispatch_local_mcp(dispatch, tool_name, tool_input.clone(), ctx.clone()).await {
-                Ok(local_output) => return Ok(local_output),
+                Ok(local_output) => {
+                    return Ok(local_output.without_managed_gateway_provenance());
+                }
                 Err(err)
                     if err.kind != xai_tool_runtime::ToolErrorKind::NotFound
                         && !is_local_tool_id_rejection(&err, tool_name) =>
@@ -256,6 +257,7 @@ pub async fn dispatch_mcp_tool(
         ctx.clone(),
     )
     .await
+    .map(ToolOutput::without_managed_gateway_provenance)
 }
 
 /// Check MCP routing eligibility without dispatching or probing a remote tool.
