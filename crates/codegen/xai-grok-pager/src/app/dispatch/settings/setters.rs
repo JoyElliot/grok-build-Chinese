@@ -1,10 +1,10 @@
 //! Individual setting setters with persistence effects and toasts.
 
 use super::ui::{
-    refresh_open_settings_modals, save_success_toast, save_success_toast_with_locale, setting_already_default_toast,
-    setting_cleared_toast, show_restart_required_setting_choice_toast,
-    show_restart_required_setting_success_toast, show_setting_choice_toast,
-    show_setting_success_toast, show_setting_value_toast,
+    refresh_open_settings_modals, save_success_toast, save_success_toast_with_locale,
+    setting_already_default_toast, setting_cleared_toast,
+    show_restart_required_setting_choice_toast, show_restart_required_setting_success_toast,
+    show_setting_choice_toast, show_setting_success_toast, show_setting_value_toast,
 };
 use crate::app::actions::Effect;
 use crate::app::app_view::{ActiveView, AppView};

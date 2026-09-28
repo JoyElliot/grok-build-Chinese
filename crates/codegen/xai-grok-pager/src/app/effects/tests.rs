@@ -3129,6 +3129,7 @@ fn zh_localization_review135_usage_unsupported_is_typed_not_a_text_rewrite() {
     assert_eq!(unsupported_or_sanitized(acp::Error::method_not_found(), &LocaleContext::default()), "not supported by this agent version");
     let expected = sanitize_user_error(&acp::Error::internal_error().to_string());
     assert_eq!(unsupported_or_sanitized(acp::Error::internal_error(), &zh), expected);
+}
 
 /// Every answer the shell can give, plus a dead channel and a broken peer, comes back as `TeamCapabilityHydrated` for the identity that asked.
 /// The serialization arm is not in the table: `HydrateTeamCapabilityRequest` is two `Option<String>`s, whose `Serialize` cannot fail, so no input reaches it.

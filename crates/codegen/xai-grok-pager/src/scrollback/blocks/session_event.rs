@@ -1513,7 +1513,7 @@ mod tests {
     #[test]
     fn hook_blocked_turn_is_distinct_and_localized() {
         let event = SessionEvent::TurnBlockedByHook {
-            elapsed: Duration::from_secs(10),
+            elapsed: Some(Duration::from_secs(10)),
         };
         assert_eq!(event.message(), "Turn blocked by a hook in 10s.");
         assert_eq!(

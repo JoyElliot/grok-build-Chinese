@@ -1174,7 +1174,8 @@
             update,
             child_sid,
             &mut agent,
-            false
+            false,
+            None,
         ));
         let child = agent.subagent_views.get_mut(child_sid).unwrap();
         let entry = child
@@ -1200,7 +1201,8 @@
             },
             child_sid,
             &mut agent,
-            false
+            false,
+            None,
         ));
         assert_eq!(
             agent

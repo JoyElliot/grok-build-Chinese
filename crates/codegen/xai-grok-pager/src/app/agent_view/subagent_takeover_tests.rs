@@ -321,7 +321,6 @@ fn zh_localization_takeover_forwards_locale_to_frame_and_child() {
                 }),
                 false,
                 crate::app::agent_view::BannerSlotParams::none(),
-                &crate::app::bundle::BundleState::default(),
                 false,
                 &mut Vec::new(),
                 crate::app::agent_view::AppRenderParams {

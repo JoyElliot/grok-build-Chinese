@@ -119,7 +119,14 @@ fn reprint_committed(app: &AppView, terminal: &mut PagerTerminal, width: u16) ->
     for &(i, cap) in committed.get(first..).unwrap_or_default() {
         let Some(entry) = sb.get(i) else { continue };
         let renderer = minimal_renderer(entry, &theme, appearance.clone(), cwd, COMMITTED_TICK);
-        insert_committed(terminal, renderer, width, cap, footer_style, locale.as_ref())?;
+        insert_committed(
+            terminal,
+            renderer,
+            width,
+            cap,
+            footer_style,
+            locale.as_ref(),
+        )?;
     }
     Ok(())
 }
