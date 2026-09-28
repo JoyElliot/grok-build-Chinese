@@ -291,8 +291,15 @@ pub(super) fn set_coding_data_sharing(
 
 /// The toast for a setting that could not be written to `config.toml`.
 pub(super) fn toast_persist_failure(app: &mut AppView, key: &str, error: &str) {
-    let scrubbed = scrub_error_for_toast(error);
-    app.show_toast(&format!("\u{2717} Could not save {key}: {scrubbed}"));
+    let scrubbed = scrub_error_for_toast_with_locale(error, app.locale.as_ref());
+    let message = crate::localized_text::format_template(
+        &app.locale.named_text(
+            "settings.persist.save_failed",
+            "\u{2717} Could not save {key}: {error}",
+        ),
+        &[("{key}", key), ("{error}", &scrubbed)],
+    );
+    app.show_toast(&message);
 }
 
 /// Scrub an untrusted error string for toast display.
@@ -744,9 +751,15 @@ pub(super) fn dispatch_open_tutorial(app: &mut AppView) -> Vec<Effect> {
 
 pub(super) fn dispatch_show_release_notes(
     app: &mut AppView,
-    title: String,
+    mut title: String,
     content: String,
 ) -> Vec<Effect> {
+    if title == "Release Notes" {
+        title = app
+            .locale
+            .named_text("docs.release_notes.title", "Release Notes")
+            .into_owned();
+    }
     match app.active_view {
         ActiveView::Agent(id) => {
             if let Some(agent) = app.agents.get_mut(&id) {

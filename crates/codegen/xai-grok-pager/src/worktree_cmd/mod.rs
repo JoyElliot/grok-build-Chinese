@@ -6,9 +6,27 @@ use std::io::Write;
 use tokio_util::sync::CancellationToken;
 use xai_acp_lib::acp_send;
 use xai_fast_worktree::WorktreeRecord;
-/// Reuse the agent's own report types rather than copies, so a field added there cannot go missing here.
-pub use xai_fast_worktree::{DbStats, GcReport, KeptWorktree, RebuildReport};
 use xai_grok_shell::agent::config::Config as AgentConfig;
+
+fn localized_named(
+    locale: &crate::locale::LocaleContext,
+    id: &str,
+    english: &str,
+    arguments: &[(&str, &str)],
+) -> String {
+    let placeholders: Vec<_> = arguments
+        .iter()
+        .map(|(name, value)| (format!("{{{name}}}"), *value))
+        .collect();
+    let replacements: Vec<_> = placeholders
+        .iter()
+        .map(|(placeholder, value)| (placeholder.as_str(), *value))
+        .collect();
+    crate::localized_text::format_template(&locale.named_text(id, english), &replacements)
+}
+/// Read the agent's own report types rather than copies, so a field added
+/// there cannot go missing here.
+pub use xai_fast_worktree::{DbStats, GcReport, KeptWorktree, RebuildReport};
 #[derive(Debug, clap::Args, Clone)]
 pub struct WorktreeArgs {
     #[command(subcommand)]
@@ -16,7 +34,7 @@ pub struct WorktreeArgs {
 }
 #[derive(Debug, Subcommand, Clone)]
 enum WorktreeCommand {
-    /// List tracked worktrees
+    /// 列出已跟踪的工作树
     #[command(visible_alias = "ls")]
     List {
         #[arg(long)]
@@ -28,9 +46,9 @@ enum WorktreeCommand {
         #[arg(long)]
         all: bool,
     },
-    /// Show details for a specific worktree
+    /// 显示指定工作树的详细信息
     Show { id_or_path: String },
-    /// Remove worktrees
+    /// 移除工作树
     Rm {
         #[arg(required = true)]
         ids: Vec<String>,
@@ -39,22 +57,21 @@ enum WorktreeCommand {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Remove expired worktrees, keeping any whose work would not survive.
+    /// 清理孤立或过期的工作树；无法确认工作仍有其他副本时会保留
     #[command(alias = "prune")]
     Gc {
-        /// Report what would be removed without removing it.
+        /// 仅报告将被移除的项目，不实际移除。
         #[arg(long)]
         dry_run: bool,
-        /// Expire worktrees idle longer than this, e.g. `7d`.
-        /// Without it, nothing expires.
+        /// 使闲置时间超过该值的工作树过期，例如 `7d`；未指定时不会使任何项过期。
         #[arg(long)]
         max_age: Option<String>,
-        /// Skip the live-process and protected-path guards.
-        /// This does not override the safety check; use `grok worktree rm` for that.
+        /// 跳过活动进程与受保护路径检查；不会绕过工作内容安全检查，强制移除请使用
+        /// `grok-zh worktree rm`。
         #[arg(short, long)]
         force: bool,
     },
-    /// Database maintenance
+    /// 数据库维护
     Db {
         #[command(subcommand)]
         command: WorktreeDbCommand,
@@ -62,20 +79,32 @@ enum WorktreeCommand {
 }
 #[derive(Debug, Subcommand, Clone)]
 enum WorktreeDbCommand {
-    /// Rebuild DB from filesystem scan
+    /// 通过扫描文件系统重建数据库
     Rebuild,
-    /// Show DB statistics
+    /// 显示数据库统计信息
     Stats,
-    /// Print DB file path
+    /// 输出数据库文件路径
     Path,
 }
 pub async fn run(args: WorktreeArgs, agent_config: &AgentConfig) -> Result<()> {
+    run_with_locale(args, agent_config, &crate::locale::LocaleContext::default()).await
+}
+
+pub async fn run_with_locale(
+    args: WorktreeArgs,
+    agent_config: &AgentConfig,
+    locale: &crate::locale::LocaleContext,
+) -> Result<()> {
     let command = args.command;
     let cancel = CancellationToken::new();
     xai_grok_telemetry::startup::mark_utility_process();
     let spawned = crate::acp::spawn::spawn_grok_shell(agent_config.clone(), &cancel, None).await?;
-    let _agent_guard =
-        crate::acp::spawn::AgentShutdownGuard::new(cancel.clone(), Some(spawned.thread_handle));
+    // Cancel + join on every return path, including the `?` below.
+    let _agent_guard = crate::acp::spawn::AgentShutdownGuard::new_with_locale(
+        cancel.clone(),
+        Some(spawned.thread_handle),
+        locale,
+    );
     let _init: acp::InitializeResponse = acp_send(
         acp::InitializeRequest::new(acp::ProtocolVersion::V1)
             .client_capabilities(
@@ -94,28 +123,33 @@ pub async fn run(args: WorktreeArgs, agent_config: &AgentConfig) -> Result<()> {
         &spawned.channel.tx,
     )
     .await?;
-    dispatch(command, &spawned.channel.tx).await
+    dispatch(command, &spawned.channel.tx, locale).await
 }
-async fn dispatch(command: WorktreeCommand, tx: &xai_acp_lib::AcpAgentTx) -> Result<()> {
+
+async fn dispatch(
+    command: WorktreeCommand,
+    tx: &xai_acp_lib::AcpAgentTx,
+    locale: &crate::locale::LocaleContext,
+) -> Result<()> {
     match command {
         WorktreeCommand::List {
             repo,
             r#type,
             json,
             all,
-        } => cmd_list(tx, repo, r#type, json, all).await,
-        WorktreeCommand::Show { id_or_path } => cmd_show(tx, &id_or_path).await,
+        } => cmd_list(tx, repo, r#type, json, all, locale).await,
+        WorktreeCommand::Show { id_or_path } => cmd_show(tx, &id_or_path, locale).await,
         WorktreeCommand::Rm {
             ids,
             force,
             dry_run,
-        } => cmd_rm(tx, ids, force, dry_run).await,
+        } => cmd_rm(tx, ids, force, dry_run, locale).await,
         WorktreeCommand::Gc {
             dry_run,
             max_age,
             force,
-        } => cmd_gc(tx, dry_run, max_age, force).await,
-        WorktreeCommand::Db { command } => cmd_db(tx, command).await,
+        } => cmd_gc(tx, dry_run, max_age, force, locale).await,
+        WorktreeCommand::Db { command } => cmd_db(tx, command, locale).await,
     }
 }
 fn ext_request<T: serde::Serialize>(
@@ -156,6 +190,7 @@ async fn cmd_list(
     types: Vec<String>,
     json: bool,
     all: bool,
+    locale: &crate::locale::LocaleContext,
 ) -> Result<()> {
     let records: Vec<WorktreeRecord> = ext_call(
         tx,
@@ -171,11 +206,15 @@ async fn cmd_list(
     let written = if json {
         display::print_json(&records, &mut out)
     } else {
-        display::print_table(&records, &mut out)
+        display::print_table_with_locale(&records, &mut out, locale)
     };
     Ok(crate::util::ignore_broken_pipe(written)?)
 }
-async fn cmd_show(tx: &xai_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> {
+async fn cmd_show(
+    tx: &xai_acp_lib::AcpAgentTx,
+    id_or_path: &str,
+    locale: &crate::locale::LocaleContext,
+) -> Result<()> {
     let result: Result<Option<WorktreeRecord>> = ext_call(
         tx,
         "x.ai/git/worktree/show",
@@ -186,11 +225,20 @@ async fn cmd_show(tx: &xai_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> 
     match rec {
         Some(r) => {
             let redirections_bytes = None;
-            let written =
-                display::print_show(&r, redirections_bytes, &mut std::io::stdout().lock());
+            let written = display::print_show_with_locale(
+                &r,
+                redirections_bytes,
+                &mut std::io::stdout().lock(),
+                locale,
+            );
             Ok(crate::util::ignore_broken_pipe(written)?)
         }
-        None => bail!("worktree not found: {id_or_path}"),
+        None => bail!(localized_named(
+            locale,
+            "worktree.error.not_found",
+            "worktree not found: {id_or_path}",
+            &[("id_or_path", id_or_path)],
+        )),
     }
 }
 #[derive(serde::Deserialize)]
@@ -205,6 +253,7 @@ async fn cmd_rm(
     ids: Vec<String>,
     force: bool,
     dry_run: bool,
+    locale: &crate::locale::LocaleContext,
 ) -> Result<()> {
     for id_or_path in &ids {
         let resp: Result<RemoveResponse> = ext_call(
@@ -221,12 +270,36 @@ async fn cmd_rm(
             Ok(r) => {
                 let path = r.resolved_path.as_deref().unwrap_or(id_or_path);
                 if dry_run {
-                    println!("  would remove: {path}");
+                    println!(
+                        "  {}",
+                        localized_named(
+                            locale,
+                            "worktree.rm.would_remove",
+                            "would remove: {path}",
+                            &[("path", path)],
+                        )
+                    );
                 } else if r.removed {
-                    println!("  removed: {path}");
+                    println!(
+                        "  {}",
+                        localized_named(
+                            locale,
+                            "worktree.rm.removed",
+                            "removed: {path}",
+                            &[("path", path)],
+                        )
+                    );
                 }
             }
-            Err(e) => eprintln!("  error removing {id_or_path}: {e}"),
+            Err(e) => eprintln!(
+                "  {}",
+                localized_named(
+                    locale,
+                    "worktree.rm.error",
+                    "error removing {id_or_path}: {error}",
+                    &[("id_or_path", id_or_path), ("error", &e.to_string())],
+                )
+            ),
         }
     }
     Ok(())
@@ -236,6 +309,7 @@ async fn cmd_gc(
     dry_run: bool,
     max_age: Option<String>,
     force: bool,
+    locale: &crate::locale::LocaleContext,
 ) -> Result<()> {
     let report: GcReport = ext_call(
         tx,
@@ -250,17 +324,26 @@ async fn cmd_gc(
     let mut out = std::io::stdout().lock();
     let written = (|| {
         if dry_run {
-            writeln!(out, "Dry run: no changes made.")?;
+            writeln!(
+                out,
+                "{}",
+                locale.named_text("worktree.gc.dry_run", "Dry run: no changes made.",)
+            )?;
         }
-        display::print_gc(&report, &mut out)
+        display::print_gc_with_locale(&report, &mut out, locale)
     })();
     Ok(crate::util::ignore_broken_pipe(written)?)
 }
-async fn cmd_db(tx: &xai_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Result<()> {
+async fn cmd_db(
+    tx: &xai_acp_lib::AcpAgentTx,
+    command: WorktreeDbCommand,
+    locale: &crate::locale::LocaleContext,
+) -> Result<()> {
     match command {
         WorktreeDbCommand::Stats => {
             let stats: DbStats = ext_call(tx, "x.ai/git/worktree/db/stats", &()).await?;
-            let written = display::print_stats(&stats, &mut std::io::stdout().lock());
+            let written =
+                display::print_stats_with_locale(&stats, &mut std::io::stdout().lock(), locale);
             Ok(crate::util::ignore_broken_pipe(written)?)
         }
         WorktreeDbCommand::Path => {
@@ -274,7 +357,8 @@ async fn cmd_db(tx: &xai_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Res
         }
         WorktreeDbCommand::Rebuild => {
             let report: RebuildReport = ext_call(tx, "x.ai/git/worktree/db/rebuild", &()).await?;
-            let written = display::print_rebuild(&report, &mut std::io::stdout().lock());
+            let written =
+                display::print_rebuild_with_locale(&report, &mut std::io::stdout().lock(), locale);
             Ok(crate::util::ignore_broken_pipe(written)?)
         }
     }

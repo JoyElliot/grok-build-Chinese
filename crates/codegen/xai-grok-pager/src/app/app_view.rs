@@ -4878,17 +4878,21 @@ impl AppView {
                                 .dashboard
                                 .as_ref()
                                 .is_some_and(|d| d.attached_agent == Some(id));
-                            let position: Option<(usize, usize)> = if overlay_active
-                                && let Some(d) = self.dashboard.as_ref()
-                            {
-                                let order = crate::views::dashboard::overlay_cycle_order(d, agents);
-                                order
-                                    .iter()
-                                    .position(|i| *i == id)
-                                    .map(|idx| (idx + 1, order.len()))
-                            } else {
-                                None
-                            };
+                            let position: Option<(usize, usize)> =
+                                if overlay_active && let Some(d) = self.dashboard.as_ref() {
+                                    let order =
+                                        crate::views::dashboard::overlay_cycle_order_with_locale(
+                                            d,
+                                            agents,
+                                            Some(self.locale.as_ref()),
+                                        );
+                                    order
+                                        .iter()
+                                        .position(|i| *i == id)
+                                        .map(|idx| (idx + 1, order.len()))
+                                } else {
+                                    None
+                                };
                             let overlay_title = overlay_active
                                 .then(|| {
                                     agents

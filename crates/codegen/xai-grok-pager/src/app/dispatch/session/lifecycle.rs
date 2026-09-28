@@ -28,8 +28,20 @@ use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
 use std::time::Instant;
 use xai_grok_shell::sampling::types::ReasoningEffort;
-/// A deferred model switch to apply once the session exists, plus any effort error to report.
-/// `switch` is still populated when a `-m` model was stashed even if the effort token failed, so an invalid effort never drops the CLI model override.
+
+fn localized_template(
+    locale: &crate::locale::LocaleContext,
+    id: &str,
+    english: &str,
+    replacements: &[(&str, &str)],
+) -> String {
+    crate::localized_text::format_template(&locale.named_text(id, english), replacements)
+}
+
+/// A deferred model switch to apply once the session exists, plus any effort
+/// error to surface. `switch` is still populated when a `-m` model was stashed
+/// even if the effort token failed, so an invalid effort never drops the CLI
+/// model override.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeferredSwitchOutcome {
     pub switch: Option<DeferredModelSwitch>,
@@ -105,9 +117,17 @@ pub(crate) fn apply_deferred_model_switch(
     agent: &mut AgentView,
     cli_effort_token: Option<&str>,
 ) -> Option<DeferredModelSwitch> {
+    apply_deferred_model_switch_with_locale(agent, cli_effort_token, None)
+}
+
+pub(crate) fn apply_deferred_model_switch_with_locale(
+    agent: &mut AgentView,
+    cli_effort_token: Option<&str>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Option<DeferredModelSwitch> {
     let stashed = agent.session.deferred_model_switch.take();
     let outcome = take_deferred_model_switch(stashed, &agent.session.models, cli_effort_token);
-    apply_deferred_switch_outcome(agent, outcome).map(|mut switch| {
+    apply_deferred_switch_outcome_with_locale(agent, outcome, locale).map(|mut switch| {
         if agent.session.models.current.as_ref() != Some(&switch.model_id) {
             switch.prev_model_id = agent.session.models.current.clone();
         }
@@ -119,8 +139,27 @@ pub(crate) fn apply_deferred_switch_outcome(
     agent: &mut AgentView,
     outcome: DeferredSwitchOutcome,
 ) -> Option<DeferredModelSwitch> {
+    apply_deferred_switch_outcome_with_locale(agent, outcome, None)
+}
+
+pub(crate) fn apply_deferred_switch_outcome_with_locale(
+    agent: &mut AgentView,
+    outcome: DeferredSwitchOutcome,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Option<DeferredModelSwitch> {
     if let Some(err) = outcome.effort_error {
-        let msg = format!("--effort/--reasoning-effort: {}", err.message());
+        let detail = locale.map_or_else(|| err.message(), |locale| err.message_with_locale(locale));
+        let msg = locale.map_or_else(
+            || format!("--effort/--reasoning-effort: {detail}"),
+            |locale| {
+                localized_template(
+                    locale,
+                    "reasoning.error.cli_effort",
+                    "--effort/--reasoning-effort: {error}",
+                    &[("{error}", &detail)],
+                )
+            },
+        );
         tracing::warn!("{msg}");
         agent.show_toast(&msg);
         agent.scrollback.push_block(RenderBlock::system(msg));
@@ -185,54 +224,6 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
 /// Open the local worktree question modal for `/new`.
 /// Mirrors [`open_fork_question`] but uses [`LocalQuestionKind::NewSession`].
 /// The answer routes to [`dispatch_new_session_inner`] or [`dispatch_new_worktree_session`].
-pub(in crate::app::dispatch) fn localized_welcome_workspace_error(
-    locale: &crate::locale::LocaleContext,
-    error: &str,
-) -> String {
-    match error {
-        "local-workspace resolve returned no config after own-mode request"
-        | "local-workspace resolve returned no config after ack" => locale
-            .named_text("session.workspace.local_resolve_missing", error)
-            .into_owned(),
-        _ => error.to_owned(),
-    }
-}
-
-#[cfg(test)]
-mod workspace_error_localization_tests {
-    use super::localized_welcome_workspace_error;
-    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
-
-    #[test]
-    fn local_workspace_missing_config_localizes_exact_internal_errors_only() {
-        let zh = LocaleContext::new(ResolvedLocale {
-            locale: UiLocale::ZhCn,
-            source: LocaleSource::Cli,
-        });
-        assert_eq!(
-            localized_welcome_workspace_error(
-                &zh,
-                "local-workspace resolve returned no config after ack"
-            ),
-            "本地工作区解析未返回配置"
-        );
-        assert_eq!(
-            localized_welcome_workspace_error(
-                &zh,
-                "local-workspace resolve returned no config after ack: future detail"
-            ),
-            "local-workspace resolve returned no config after ack: future detail"
-        );
-        assert_eq!(
-            localized_welcome_workspace_error(
-                &LocaleContext::default(),
-                "local-workspace resolve returned no config after ack"
-            ),
-            "local-workspace resolve returned no config after ack"
-        );
-    }
-}
-
 pub(in crate::app::dispatch) fn open_new_session_question(app: &mut AppView) -> Vec<Effect> {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
     use xai_grok_tools::implementations::grok_build::ask_user_question::{
@@ -241,30 +232,52 @@ pub(in crate::app::dispatch) fn open_new_session_question(app: &mut AppView) -> 
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
+    let locale = app.locale.clone();
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
     if agent.question_view.is_some() {
-        app.show_toast("Finish answering the current question first");
+        let toast = locale
+            .named_text(
+                "question.finish_current_first",
+                "Finish answering the current question first",
+            )
+            .into_owned();
+        app.show_toast(&toast);
         return vec![];
     }
     let mut options = vec![
         QuestionOption {
-            label: "Yes".into(),
-            description: "New session in a new isolated git worktree".into(),
+            label: locale.named_text("question.option.yes", "Yes").into_owned(),
+            description: locale
+                .named_text(
+                    "session.new.option.worktree",
+                    "New session in a new isolated git worktree",
+                )
+                .into_owned(),
             preview: None,
             id: None,
         },
         QuestionOption {
-            label: "No".into(),
-            description: "New session in the current cwd".into(),
+            label: locale.named_text("question.option.no", "No").into_owned(),
+            description: locale
+                .named_text(
+                    "session.new.option.current_cwd",
+                    "New session in the current cwd",
+                )
+                .into_owned(),
             preview: None,
             id: None,
         },
     ];
-    options.extend(worktree_persist_options(app.locale.as_ref()));
+    options.extend(worktree_persist_options(locale.as_ref()));
     let question = Question {
-        question: "Start the new session in an isolated git worktree?".into(),
+        question: locale
+            .named_text(
+                "session.new.question.worktree",
+                "Start the new session in an isolated git worktree?",
+            )
+            .into_owned(),
         id: None,
         options,
         multi_select: Some(false),
@@ -298,26 +311,48 @@ pub(in crate::app::dispatch) fn open_agent_type_mismatch_question(
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
+    let locale = app.locale.clone();
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
     if agent.question_view.is_some() {
-        app.show_toast("Finish answering the current question first");
+        let toast = locale
+            .named_text(
+                "question.finish_current_first",
+                "Finish answering the current question first",
+            )
+            .into_owned();
+        app.show_toast(&toast);
         return vec![];
     }
     let question = Question {
-        question: format!("Switching to {model_name} requires starting a new session. Continue?"),
+        question: localized_template(
+            locale.as_ref(),
+            "session.model_mismatch.question",
+            "Switching to {model_name} requires starting a new session. Continue?",
+            &[("{model_name}", model_name)],
+        ),
         id: None,
         options: vec![
             QuestionOption {
-                label: "Yes".into(),
-                description: format!("Start a new session with {model_name}"),
+                label: locale.named_text("question.option.yes", "Yes").into_owned(),
+                description: localized_template(
+                    locale.as_ref(),
+                    "session.model_mismatch.option.start_new",
+                    "Start a new session with {model_name}",
+                    &[("{model_name}", model_name)],
+                ),
                 preview: None,
                 id: None,
             },
             QuestionOption {
-                label: "No".into(),
-                description: "Continue the current session".into(),
+                label: locale.named_text("question.option.no", "No").into_owned(),
+                description: locale
+                    .named_text(
+                        "session.model_mismatch.option.continue",
+                        "Continue the current session",
+                    )
+                    .into_owned(),
                 preview: None,
                 id: None,
             },
@@ -374,13 +409,67 @@ fn apply_welcome_workspace_on_new_session(app: &mut AppView) -> Result<(), Vec<E
         }
         Err(err) => {
             tracing::warn!("welcome workspace mode: {err}");
-            app.show_toast(&format!(
-                "Local workspace unavailable ({err}); using sandbox"
-            ));
+            let raw_error = err.to_string();
+            let display_error = localized_welcome_workspace_error(app.locale.as_ref(), &raw_error);
+            let message = localized_template(
+                app.locale.as_ref(),
+                "session.workspace.local_unavailable",
+                "Local workspace unavailable ({error}); using sandbox",
+                &[("{error}", &display_error)],
+            );
+            app.show_toast(&message);
             app.welcome_session_local_workspace = Some(None);
             app.welcome_workspace_mode = WelcomeWorkspaceMode::Sandbox;
             Ok(())
         }
+    }
+}
+
+pub(in crate::app::dispatch) fn localized_welcome_workspace_error(
+    locale: &crate::locale::LocaleContext,
+    error: &str,
+) -> String {
+    match error {
+        "local-workspace resolve returned no config after own-mode request"
+        | "local-workspace resolve returned no config after ack" => locale
+            .named_text("session.workspace.local_resolve_missing", error)
+            .into_owned(),
+        _ => error.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod workspace_error_localization_tests {
+    use super::localized_welcome_workspace_error;
+    use crate::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
+
+    #[test]
+    fn local_workspace_missing_config_localizes_exact_internal_errors_only() {
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &zh,
+                "local-workspace resolve returned no config after ack"
+            ),
+            "本地工作区解析未返回配置"
+        );
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &zh,
+                "local-workspace resolve returned no config after ack: future detail"
+            ),
+            "local-workspace resolve returned no config after ack: future detail"
+        );
+        assert_eq!(
+            localized_welcome_workspace_error(
+                &LocaleContext::default(),
+                "local-workspace resolve returned no config after ack"
+            ),
+            "local-workspace resolve returned no config after ack"
+        );
     }
 }
 /// The create's `_meta.sessionId`: honor `preferred`, else mint a v7 UUID. Records it as `pending_session_id` so setup phases route here.
@@ -572,37 +661,71 @@ pub(in crate::app::dispatch) fn open_delete_current_session_question(
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
-    let delete_description = if after_delete_current_session(app, id)
-        == crate::app::actions::AfterSessionDelete::Dashboard
-    {
-        "Remove history and return to the dashboard"
+    let locale = app.locale.clone();
+    let delete_returns_to_dashboard =
+        after_delete_current_session(app, id) == crate::app::actions::AfterSessionDelete::Dashboard;
+    let delete_description = if delete_returns_to_dashboard {
+        locale
+            .named_text(
+                "session.delete.option.delete.description.dashboard",
+                "Remove history and return to the dashboard",
+            )
+            .into_owned()
     } else {
-        "Remove history and return home"
+        locale
+            .named_text(
+                "session.delete.option.delete.description",
+                "Remove history and return home",
+            )
+            .into_owned()
     };
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
     if agent.session.session_id.is_none() {
-        app.show_toast("No active session to delete");
+        let toast = locale
+            .named_text("session.delete.no_active", "No active session to delete")
+            .into_owned();
+        app.show_toast(&toast);
         return vec![];
     }
     if agent.question_view.is_some() {
-        app.show_toast("Finish answering the current question first");
+        let toast = locale
+            .named_text(
+                "question.finish_current_first",
+                "Finish answering the current question first",
+            )
+            .into_owned();
+        app.show_toast(&toast);
         return vec![];
     }
     let question = Question {
-        question: "Delete this session permanently?".into(),
+        question: locale
+            .named_text(
+                "session.delete.question.permanent",
+                "Delete this session permanently?",
+            )
+            .into_owned(),
         id: None,
         options: vec![
             QuestionOption {
-                label: "Delete".into(),
-                description: delete_description.into(),
+                label: locale
+                    .named_text("session.delete.option.delete", "Delete")
+                    .into_owned(),
+                description: delete_description,
                 preview: None,
                 id: None,
             },
             QuestionOption {
-                label: "Cancel".into(),
-                description: "Keep the session".into(),
+                label: locale
+                    .named_text("session.delete.option.cancel", "Cancel")
+                    .into_owned(),
+                description: locale
+                    .named_text(
+                        "session.delete.option.cancel.description",
+                        "Keep the session",
+                    )
+                    .into_owned(),
                 preview: None,
                 id: None,
             },
@@ -645,7 +768,11 @@ pub(in crate::app::dispatch) fn dispatch_delete_current_session_answered(
             Some((session_id, cwd, running_bg_tasks, !agent.conversation_entry))
         })
     else {
-        app.show_toast("No active session to delete");
+        let toast = app
+            .locale
+            .named_text("session.delete.no_active", "No active session to delete")
+            .into_owned();
+        app.show_toast(&toast);
         return vec![];
     };
     if build_session
@@ -670,7 +797,11 @@ pub(in crate::app::dispatch) fn dispatch_delete_current_session_answered(
                 source: xai_grok_shell::extensions::task::TaskKillSource::Teardown,
             }),
     );
-    app.show_toast("Deleting session\u{2026}");
+    let toast = app
+        .locale
+        .named_text("session.delete.deleting", "Deleting session\u{2026}")
+        .into_owned();
+    app.show_toast(&toast);
     effects.push(Effect::DeleteSession {
         source: "current".into(),
         session_id: session_id.to_string(),
@@ -1212,9 +1343,13 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         return vec![];
     }
     if !app.cwd_has_git_ancestor {
-        let msg: String = "Not inside a git repository. Navigate to a git repo \
-                      or run 'git init' first."
-            .into();
+        let msg = app
+            .locale
+            .named_text(
+                "session.worktree.not_inside_git",
+                "Not inside a git repository. Navigate to a git repo or run 'git init' first.",
+            )
+            .into_owned();
         if !app.startup_warnings.iter().any(|w| w.message == msg) {
             app.startup_warnings.push(crate::startup::StartupWarning {
                 severity: crate::startup::WarningSeverity::Warning,
@@ -1335,11 +1470,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
             agent.workspace_mode_cli_locked = locked;
         }
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-        agent
-            .prompt
-            .slash_controller
-            .registry_mut()
-            .set_plugins_visible(!app.appearance.disable_plugins);
+        agent.set_plugins_visible_recursive(!app.appearance.disable_plugins);
         agent.session_starting_since = Some(Instant::now());
     }
     if let Some(prompt) = prompt
@@ -1390,7 +1521,8 @@ pub(in crate::app::dispatch) fn dispatch_new_session_with_id(
 /// Tear down a placeholder agent that must not proceed under sticky `--chat` (local Build refuse).
 /// Never leave a half-loaded slot with a bound session id.
 pub(in crate::app::dispatch) fn refuse_chat_mode_build_agent(app: &mut AppView, agent_id: AgentId) {
-    app.show_toast(crate::app::session_startup::CHAT_MODE_LOCAL_BUILD_REFUSAL);
+    let refusal = crate::app::session_startup::chat_mode_local_build_refusal(app.locale.as_ref());
+    app.show_toast(&refusal);
     let fallback = app.agents.keys().copied().find(|id| *id != agent_id);
     remove_agent_and_cleanup(app, agent_id);
     if let Some(target) = fallback {
@@ -1403,7 +1535,7 @@ pub(in crate::app::dispatch) fn refuse_chat_mode_build_agent(app: &mut AppView, 
         app.session_picker_state.selected = 0;
         app.session_picker_content_results = None;
         app.session_picker_content_loading = false;
-        let msg = crate::app::session_startup::CHAT_MODE_LOCAL_BUILD_REFUSAL.to_string();
+        let msg = refusal;
         if !app.startup_warnings.iter().any(|w| w.message == msg) {
             app.startup_warnings.push(crate::startup::StartupWarning {
                 severity: crate::startup::WarningSeverity::Warning,
@@ -1423,6 +1555,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
     let identity_rebind = super::super::dashboard::WorkspaceIdentityRebind::capture(app);
     crate::app::workspace_sync::allow_loaded_session(app, session_id.0.as_ref());
     let agent_count = app.agents.len();
+    let locale = app.locale.clone();
     let switch_hint =
         crate::views::dashboard::session_switch_hint_command(app.screen_mode.is_minimal());
     let has_switch_target =
@@ -1433,23 +1566,36 @@ pub(in crate::app::dispatch) fn handle_session_created(
             && has_switch_target
             && let Some(cmd) = switch_hint
         {
-            agent.scrollback.push_block(RenderBlock::system(format!(
-                "Session {}, use {cmd} to switch between sessions",
-                session_id_clone.0,
-            )));
+            let session_id = session_id_clone.0.to_string();
+            let message = localized_template(
+                locale.as_ref(),
+                "session.created.switch_hint",
+                "Session {session_id}, use {command} to switch between sessions",
+                &[("{session_id}", &session_id), ("{command}", cmd)],
+            );
+            agent.scrollback.push_block(RenderBlock::system(message));
         } else if agent_count > 1 {
-            agent.scrollback.push_block(RenderBlock::system(format!(
-                "Session: {}",
-                session_id_clone.0,
-            )));
+            let session_id = session_id_clone.0.to_string();
+            let message = localized_template(
+                locale.as_ref(),
+                "session.created.marker",
+                "Session: {session_id}",
+                &[("{session_id}", &session_id)],
+            );
+            agent.scrollback.push_block(RenderBlock::system(message));
         }
         agent.bind_session_id(session_id);
         if let Some(m) = new_models {
             app.models = Some(m).into();
+            app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
         apply_session_modes_dropping_auto(agent, modes, &mut app.current_ui.permission_mode);
-        let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
+        let deferred = apply_deferred_model_switch_with_locale(
+            agent,
+            app.cli_effort_token.as_deref(),
+            Some(locale.as_ref()),
+        );
         let deferred_mode = agent.deferred_session_mode.take();
         let deferred_permission = agent.deferred_permission_mode.take();
         let cwd = agent.session.cwd.clone();
@@ -1569,6 +1715,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
     modes: Option<acp::SessionModeState>,
     strategy_summary: Option<String>,
 ) -> Vec<Effect> {
+    let locale = app.locale.clone();
     let identity_rebind = super::super::dashboard::WorkspaceIdentityRebind::capture(app);
     crate::app::workspace_sync::allow_loaded_session(app, session_id.0.as_ref());
     if let Some(agent) = app.agents.get_mut(&agent_id) {
@@ -1584,18 +1731,27 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         crate::git_info::populate_from_cwd_async(session_cwd.clone());
         if let Some(m) = new_models {
             app.models = Some(m).into();
+            app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
         apply_session_modes_dropping_auto(agent, modes, &mut app.current_ui.permission_mode);
         agent.prompt.file_search.retarget(&session_cwd);
-        agent.scrollback.push_block(RenderBlock::system(format!(
-            "Worktree ready: {}",
-            worktree_path.display()
-        )));
+        let worktree_path = worktree_path.display().to_string();
+        let message = localized_template(
+            locale.as_ref(),
+            "session.worktree.ready",
+            "Worktree ready: {path}",
+            &[("{path}", &worktree_path)],
+        );
+        agent.scrollback.push_block(RenderBlock::system(message));
         if let Some(summary) = strategy_summary {
             agent.scrollback.push_block(RenderBlock::system(summary));
         }
-        let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
+        let deferred = apply_deferred_model_switch_with_locale(
+            agent,
+            app.cli_effort_token.as_deref(),
+            Some(locale.as_ref()),
+        );
         let deferred_mode = agent.deferred_session_mode.take();
         let deferred_permission = agent.deferred_permission_mode.take();
         let cwd = agent.session.cwd.clone();
@@ -1791,7 +1947,12 @@ pub(in crate::app::dispatch) fn handle_session_failed(
     let stuck_step = report_session_create_failed(app, agent_id, timed_out);
     let msg = match stuck_step {
         Some(step) if timed_out => crate::app::effects::timed_out_while(step),
-        Some(_) | None => format!("Session creation failed: {error}"),
+        Some(_) | None => localized_template(
+            app.locale.as_ref(),
+            "session.create.failed",
+            "Session creation failed: {error}",
+            &[("{error}", &error)],
+        ),
     };
     let is_orphan = app
         .agents
@@ -1864,10 +2025,19 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
     };
     let reason = match stuck_step {
         Some(step) if timed_out => crate::app::effects::timed_out_while(step),
-        Some(_) | None => format!("Cannot create worktree: {error}"),
+        Some(_) | None => localized_template(
+            app.locale.as_ref(),
+            "session.worktree.create_failed",
+            "Cannot create worktree: {error}",
+            &[("{error}", &error)],
+        ),
     };
     let msg = match orphaned_worktree_root {
-        Some(root) => crate::app::worktree_session::note_orphaned_worktree(&reason, &root, app.locale.as_ref()),
+        Some(root) => crate::app::worktree_session::note_orphaned_worktree(
+            &reason,
+            &root,
+            app.locale.as_ref(),
+        ),
         None => reason,
     };
     let is_orphan = app
@@ -1928,6 +2098,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
     result: Result<(), SwitchModelError>,
     prev_model_id: Option<acp::ModelId>,
 ) -> Vec<Effect> {
+    let locale = app.locale.clone();
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.session.model_switch_pending = false;
         let mut effects = match result {
@@ -1953,9 +2124,23 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                     prev_model.as_ref() == Some(&model_id) && prev_effort == resolved_effort;
                 if !unchanged {
                     let msg = if let Some(eff) = resolved_effort {
-                        format!("Switched to {display_name} ({eff} effort)")
+                        let effort = eff.to_string();
+                        let effort_label = locale
+                            .named_text(&format!("reasoning_effort.{effort}.label"), &effort)
+                            .into_owned();
+                        localized_template(
+                            locale.as_ref(),
+                            "session.model.switched_with_effort",
+                            "Switched to {model_name} ({effort} effort)",
+                            &[("{model_name}", &display_name), ("{effort}", &effort_label)],
+                        )
                     } else {
-                        format!("Switched to {display_name}")
+                        localized_template(
+                            locale.as_ref(),
+                            "session.model.switched",
+                            "Switched to {model_name}",
+                            &[("{model_name}", &display_name)],
+                        )
                     };
                     agent.scrollback.push_block(RenderBlock::system(msg));
                 }
@@ -1977,9 +2162,13 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 return open_agent_type_mismatch_question(app, model_id, effort, &display_name);
             }
             Err(SwitchModelError::Other(msg)) => {
-                agent
-                    .scrollback
-                    .push_block(RenderBlock::system(format!("Couldn't switch model: {msg}")));
+                let message = localized_template(
+                    locale.as_ref(),
+                    "session.model.switch_failed",
+                    "Couldn't switch model: {error}",
+                    &[("{error}", &msg)],
+                );
+                agent.scrollback.push_block(RenderBlock::system(message));
                 vec![]
             }
         };

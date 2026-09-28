@@ -143,7 +143,14 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
             let show_todos = crate::todo::todo_panel_visible(agent, force_todos);
             let queued = agent.session.pending_prompts.len() + agent.shared_queue.len();
             if let Some(kind) = super::panel::active(agent) {
-                let cursor = super::panel::render(frame.buffer_mut(), area, agent, kind, &theme, Some(locale.as_ref()));
+                let cursor = super::panel::render(
+                    frame.buffer_mut(),
+                    area,
+                    agent,
+                    kind,
+                    &theme,
+                    Some(locale.as_ref()),
+                );
                 return (cursor, None);
             }
             if super::overlay::app_modal_active(agent) {
@@ -256,8 +263,9 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
             let sl_h = status_line_frame
                 .height()
                 .min(area.height.saturating_sub(status_h + 1));
-            let overlay_h = super::overlay::overlay_rows(&agent.prompt, area.width, Some(locale.as_ref()))
-                .min(area.height.saturating_sub(status_h + sl_h + 1));
+            let overlay_h =
+                super::overlay::overlay_rows(&agent.prompt, area.width, Some(locale.as_ref()))
+                    .min(area.height.saturating_sub(status_h + sl_h + 1));
             let info_h = if overlay_h == 0 {
                 1u16.min(area.height.saturating_sub(status_h + sl_h + 1))
             } else {
@@ -287,7 +295,12 @@ pub fn draw_live(app: &mut AppView, terminal: &mut PagerTerminal, ctx: &Terminal
                 after_btw.min(crate::todo::MAX_TODO_ROWS)
             };
             let todo_lines = if show_todos {
-                crate::todo::todo_panel_lines_with_locale(agent, todos_cap, force_todos, Some(locale.as_ref()))
+                crate::todo::todo_panel_lines_with_locale(
+                    agent,
+                    todos_cap,
+                    force_todos,
+                    Some(locale.as_ref()),
+                )
             } else {
                 Vec::new()
             };
@@ -794,7 +807,13 @@ fn minimal_pending_hint(
                 locale
                     .named_text("minimal.double_press", "press {shortcut} again to {action}")
                     .replace("{shortcut}", &shortcut)
-                    .replace("{action}", label)
+                    .replace(
+                        "{action}",
+                        &xai_grok_pager::views::shortcuts_bar::localized_shortcut_label_for_display(
+                            Some(locale),
+                            label,
+                        ),
+                    )
             })
             .unwrap_or_else(|| format!("press {shortcut} again to {label}")),
     )
@@ -1207,12 +1226,35 @@ mod tests {
         use xai_grok_pager::app::actions::Action;
         use xai_grok_pager::app::app_view::PendingAction;
         use xai_grok_pager::input::key::KeyShortcut;
+        use xai_grok_pager::locale::{LocaleContext, LocaleSource, ResolvedLocale, UiLocale};
         assert!(minimal_pending_hint(&None, None).is_none());
         let shortcut = KeyShortcut::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
         let pending = Some(PendingAction::new(Action::Quit, shortcut, "quit"));
         assert_eq!(
             minimal_pending_hint(&pending, None).as_deref(),
             Some("press Ctrl+q again to quit")
+        );
+        let zh = LocaleContext::new(ResolvedLocale {
+            locale: UiLocale::ZhCn,
+            source: LocaleSource::Cli,
+        });
+        let close = Some(PendingAction::new(
+            Action::DashboardOverlayStop,
+            shortcut,
+            "close this session",
+        ));
+        assert_eq!(
+            minimal_pending_hint(&close, Some(&zh)).as_deref(),
+            Some("再次按 Ctrl+q：关闭此会话")
+        );
+        let unknown = Some(PendingAction::new(
+            Action::Quit,
+            shortcut,
+            "new in worktree",
+        ));
+        assert_eq!(
+            minimal_pending_hint(&unknown, Some(&zh)).as_deref(),
+            Some("再次按 Ctrl+q：new in worktree")
         );
         let silent = Some(PendingAction::with_ttl(
             Action::Quit,

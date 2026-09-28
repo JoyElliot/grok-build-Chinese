@@ -93,8 +93,16 @@ pub fn overlay_cycle_order(
     state: &DashboardState,
     agents: &indexmap::IndexMap<crate::app::agent::AgentId, crate::app::agent_view::AgentView>,
 ) -> Vec<crate::app::agent::AgentId> {
+    overlay_cycle_order_with_locale(state, agents, None)
+}
+
+pub fn overlay_cycle_order_with_locale(
+    state: &DashboardState,
+    agents: &indexmap::IndexMap<crate::app::agent::AgentId, crate::app::agent_view::AgentView>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Vec<crate::app::agent::AgentId> {
     let home = render::cached_home();
-    let rows = build_rows_with_roster(
+    let rows = row::build_rows_with_roster_and_locale(
         agents,
         &state.pinned,
         &state.reorder,
@@ -102,6 +110,7 @@ pub fn overlay_cycle_order(
         &state.filter,
         home,
         &[],
+        locale,
     );
     rows.iter()
         .filter_map(|r| match &r.id {

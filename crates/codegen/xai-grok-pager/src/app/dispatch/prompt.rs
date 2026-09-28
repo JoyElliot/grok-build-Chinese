@@ -741,12 +741,18 @@ pub(super) fn dispatch_send_prompt_submission(
             agent.prompt.slash_controller.registry(),
         )
     {
+        let notice = agent
+            .scrollback
+            .locale()
+            .named_text(
+                "slash.command.goal.error.mid_text",
+                crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE,
+            )
+            .into_owned();
         if screen_mode_is_minimal {
-            agent.scrollback.push_block(RenderBlock::system(
-                crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE.to_owned(),
-            ));
+            agent.scrollback.push_block(RenderBlock::system(notice));
         } else {
-            agent.show_toast(crate::slash::mid_text_hoist::MID_TEXT_GOAL_NOTICE);
+            agent.show_toast(&notice);
         }
         return prelude;
     }
@@ -993,7 +999,15 @@ pub(super) fn dispatch_send_prompt_submission(
                 }
                 return effects;
             }
-            CommandResult::Error(msg) | CommandResult::Message(msg) => {
+            CommandResult::Error(msg) => {
+                if consume_input {
+                    agent.prompt.set_text("");
+                }
+                let message = crate::slash::localize_command_error(&msg, agent.scrollback.locale());
+                push_and_page_flip(&mut agent.scrollback, RenderBlock::system(message));
+                return effects;
+            }
+            CommandResult::Message(msg) => {
                 if consume_input {
                     agent.prompt.set_text("");
                 }
@@ -1743,7 +1757,7 @@ pub(super) fn handle_prompt_response(
                 let cwd_str = app.cwd.to_string_lossy();
                 let model = agent.session.models.current_model_name();
                 let idle_title = crate::notifications::TitleState {
-        locale: None,
+                    locale: None,
                     session_name,
                     model: model.as_deref(),
                     activity: None,

@@ -1,6 +1,5 @@
 use super::*;
 use xai_grok_shell::extensions::notification::HookAnnotationKind;
-use xai_grok_shell::sampling::error::format_rate_limited_user_message;
 /// The one scrollback line a failed run gets; success gets none and a deny is already annotated by the shell.
 /// "ignored" is literal (fail-open); a config-tier source has no name worth showing, so its line names only the event.
 pub(super) fn failed_hook_line(
@@ -1837,8 +1836,10 @@ pub(super) fn apply_retry_state(
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
             } else if *rate_limited {
-                let error = crate::app::effects::sanitize_user_error(
-                    &format_rate_limited_user_message(Some(reason.as_str()), is_api_key_auth),
+                let error = crate::app::effects::format_rate_limited_user_message_with_locale(
+                    Some(reason.as_str()),
+                    is_api_key_auth,
+                    scrollback.locale(),
                 );
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::RetryFailed {
                     error,

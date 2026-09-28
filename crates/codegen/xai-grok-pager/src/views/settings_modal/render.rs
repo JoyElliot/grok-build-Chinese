@@ -11,8 +11,8 @@ use super::state::{
 };
 use crate::render::line_utils::truncate_str;
 use crate::settings::{
-    CodingDataSharingLock, OwnedEnumChoice, SettingKey, SettingKind, SettingMeta, SettingValue,
-    StringValidator, dynamic_enum_choices,
+    CodingDataSharingLock, OwnedEnumChoice, SettingCategory, SettingKey, SettingKind, SettingMeta,
+    SettingValue, StringValidator, dynamic_enum_choices,
 };
 use crate::theme::Theme;
 use crate::views::modal_window::{
@@ -29,6 +29,18 @@ pub struct ResetConfirmOverlay<'a> {
 
 /// Render the settings modal.
 /// Returns `true` if the reset-confirm overlay was rendered (caller suppresses row-list mouse events).
+pub fn render_settings_modal(
+    buf: &mut Buffer,
+    full_area: Rect,
+    state: &mut SettingsModalState,
+    compact: bool,
+    overlay: Option<&ResetConfirmOverlay<'_>>,
+) -> bool {
+    render_settings_modal_with_locale(buf, full_area, state, compact, overlay, None)
+}
+
+/// Locale-aware composition-root entry point. The legacy wrapper above keeps
+/// focused renderer tests and upstream call sites on the English fallback.
 pub fn render_settings_modal_with_locale(
     buf: &mut Buffer,
     full_area: Rect,
@@ -37,21 +49,12 @@ pub fn render_settings_modal_with_locale(
     overlay: Option<&ResetConfirmOverlay<'_>>,
     locale: Option<&crate::locale::LocaleContext>,
 ) -> bool {
-    // QUESTION(localize): settings modal TARGET body; accept locale for call-site compatibility.
-    let _ = locale;
-    render_settings_modal(buf, full_area, state, compact, overlay)
-}
-
-pub fn render_settings_modal(
-    buf: &mut Buffer,
-    full_area: Rect,
-    state: &mut SettingsModalState,
-    compact: bool,
-    overlay: Option<&ResetConfirmOverlay<'_>>,
-) -> bool {
     let theme = Theme::current();
-    let confirm_shortcuts = build_reset_confirm_shortcuts();
-    let normal_shortcuts = build_shortcuts(state);
+    let base_title = locale
+        .map(|locale| locale.text(crate::locale::TextKey::SettingsTitle))
+        .unwrap_or(MODAL_TITLE);
+    let confirm_shortcuts = build_reset_confirm_shortcuts_with_locale(locale);
+    let normal_shortcuts = build_shortcuts_with_locale(state, locale);
     let shortcuts: &[Shortcut<'_>] = if overlay.is_some() {
         &confirm_shortcuts
     } else {
@@ -62,7 +65,7 @@ pub fn render_settings_modal(
     let breadcrumb_owned: String;
     let title: &str = if let Some(o) = overlay {
         breadcrumb_owned = format!(
-            "{MODAL_TITLE} {} {}",
+            "{base_title} {} {}",
             crate::glyphs::chevron(),
             o.breadcrumb_suffix
         );
@@ -71,33 +74,33 @@ pub fn render_settings_modal(
         match &state.state.mode {
             SettingsMode::PickingEnum { key, .. } => {
                 if let Some(meta) = state.registry.find(key) {
-                    breadcrumb_owned =
-                        format!("{MODAL_TITLE} {} {}", crate::glyphs::chevron(), meta.label);
+                    let label = localized_setting_label(locale, meta);
+                    breadcrumb_owned = format!("{base_title} {} {label}", crate::glyphs::chevron());
                     &breadcrumb_owned
                 } else {
-                    MODAL_TITLE
+                    base_title
                 }
             }
 
             SettingsMode::EditingString { key, .. } | SettingsMode::EditingInt { key, .. } => {
                 if let Some(meta) = state.registry.find(key) {
-                    breadcrumb_owned =
-                        format!("{MODAL_TITLE} {} {}", crate::glyphs::chevron(), meta.label);
+                    let label = localized_setting_label(locale, meta);
+                    breadcrumb_owned = format!("{base_title} {} {label}", crate::glyphs::chevron());
                     &breadcrumb_owned
                 } else {
-                    MODAL_TITLE
+                    base_title
                 }
             }
             SettingsMode::PickingGroup { key, .. } => {
                 if let Some(meta) = state.registry.find(key) {
-                    breadcrumb_owned =
-                        format!("{MODAL_TITLE} {} {}", crate::glyphs::chevron(), meta.label);
+                    let label = localized_setting_label(locale, meta);
+                    breadcrumb_owned = format!("{base_title} {} {label}", crate::glyphs::chevron());
                     &breadcrumb_owned
                 } else {
-                    MODAL_TITLE
+                    base_title
                 }
             }
-            _ => MODAL_TITLE,
+            _ => base_title,
         }
     };
 
@@ -168,9 +171,10 @@ pub fn render_settings_modal(
     }
 
     if let Some(o) = overlay {
-        // Confirmation overlay replaces the search bar; the row list renders dimmed underneath
-        // Hit-rects reset so clicks only route to the y/n footer buttons
-        render_reset_confirm_overlay(buf, content_area, state, &theme, o);
+        // Confirmation overlay replaces the search bar; row list
+        // renders dimmed underneath. Hit-rects reset so clicks
+        // only route to the y/n footer buttons.
+        render_reset_confirm_overlay(buf, content_area, state, &theme, o, locale);
         return true;
     }
 
@@ -192,17 +196,17 @@ pub fn render_settings_modal(
     match state.state.mode_kind() {
         SettingsModeKind::PickingEnum => {
             state.reset_hit_rects();
-            render_picking_enum(buf, inner_area, state, &theme);
+            render_picking_enum_with_locale(buf, inner_area, state, &theme, locale);
             state.picker_choice_rects = take_picker_choice_rects();
         }
         SettingsModeKind::PickingGroup => {
             state.reset_hit_rects();
-            let rects = render_picking_group(buf, inner_area, state, &theme);
+            let rects = render_picking_group(buf, inner_area, state, &theme, locale);
             state.picker_choice_rects = rects;
         }
         SettingsModeKind::EditingString | SettingsModeKind::EditingInt => {
             state.reset_hit_rects();
-            render_editing_value(buf, inner_area, state, &theme);
+            render_editing_value_with_locale(buf, inner_area, state, &theme, locale);
         }
         SettingsModeKind::Browse | SettingsModeKind::FilterFocused => {
             // Clear sub-pane hit-rects from prior frames.
@@ -210,7 +214,7 @@ pub fn render_settings_modal(
             state.editor_adornment_rects = (Rect::default(), Rect::default());
             state.settings_breadcrumb_rect = None;
             state.list_area = inner_area;
-            render_row_list_with_search_bar(buf, inner_area, state, &theme);
+            render_row_list_with_search_bar_with_locale(buf, inner_area, state, &theme, locale);
         }
     }
 
@@ -250,7 +254,7 @@ pub fn render_settings_modal(
     }
 
     if let Some(footer_area) = docs_footer_area {
-        render_docs_footer(buf, footer_area, &theme);
+        render_docs_footer_with_locale(buf, footer_area, &theme, locale);
     }
     false
 }
@@ -263,6 +267,7 @@ fn render_reset_confirm_overlay(
     state: &mut SettingsModalState,
     theme: &Theme,
     overlay: &ResetConfirmOverlay<'_>,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     // Clear hit-rects so clicks only route to y/n buttons.
     state.reset_hit_rects();
@@ -308,7 +313,7 @@ fn render_reset_confirm_overlay(
         width: content_area.width,
         height: content_area.height - 1,
     };
-    render_rows(buf, list_area, state, theme);
+    render_rows_with_locale(buf, list_area, state, theme, locale);
 
     let target_rect = state.row_rects.get(state.selected).copied();
 
@@ -334,39 +339,189 @@ fn render_reset_confirm_overlay(
     }
 }
 
-/// Footer shortcuts for the reset-confirm dialog (y/n are clickable).
-fn build_reset_confirm_shortcuts() -> Vec<Shortcut<'static>> {
+fn build_reset_confirm_shortcuts_with_locale(
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Vec<Shortcut<'static>> {
     use crate::views::modal::{RESET_CONFIRM_NO_ID, RESET_CONFIRM_YES_ID};
     vec![
         Shortcut {
-            label: "y reset",
+            label: localized_named_static(locale, "settings.shortcut.y_reset", "y reset"),
             clickable: true,
             id: RESET_CONFIRM_YES_ID,
         },
         Shortcut {
-            label: "n cancel",
+            label: localized_named_static(locale, "settings.shortcut.n_cancel", "n cancel"),
             clickable: true,
             id: RESET_CONFIRM_NO_ID,
         },
         Shortcut {
-            label: "Esc cancel",
+            label: localized_named_static(locale, "settings.shortcut.esc_cancel", "Esc cancel"),
             clickable: false,
             id: 0,
         },
         Shortcut {
-            label: "F2 cancel",
+            label: localized_named_static(locale, "settings.shortcut.f2_cancel", "F2 cancel"),
             clickable: false,
             id: 0,
         },
     ]
 }
 
+fn localized_text(
+    locale: Option<&crate::locale::LocaleContext>,
+    key: crate::locale::TextKey,
+    english: &'static str,
+) -> &'static str {
+    locale.map(|locale| locale.text(key)).unwrap_or(english)
+}
+
+fn localized_category_label(
+    category: SettingCategory,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> &'static str {
+    let key = match category {
+        SettingCategory::Appearance => crate::locale::TextKey::SettingsCategoryAppearance,
+        SettingCategory::Mouse => crate::locale::TextKey::SettingsCategoryMouse,
+        SettingCategory::Editor => crate::locale::TextKey::SettingsCategoryEditor,
+        SettingCategory::Agent => crate::locale::TextKey::SettingsCategoryAgent,
+        SettingCategory::Privacy => crate::locale::TextKey::SettingsCategoryPrivacy,
+        SettingCategory::Models => crate::locale::TextKey::SettingsCategoryModels,
+        SettingCategory::Session => crate::locale::TextKey::SettingsCategorySession,
+        SettingCategory::Advanced => crate::locale::TextKey::SettingsCategoryAdvanced,
+    };
+    localized_text(locale, key, category.label())
+}
+
+fn localized_setting_label<'a>(
+    locale: Option<&crate::locale::LocaleContext>,
+    meta: &'a SettingMeta,
+) -> std::borrow::Cow<'a, str> {
+    locale.map_or_else(
+        || std::borrow::Cow::Borrowed(meta.label),
+        |locale| locale.setting_label(meta.key, meta.label),
+    )
+}
+
+fn localized_setting_description<'a>(
+    locale: Option<&crate::locale::LocaleContext>,
+    meta: &'a SettingMeta,
+) -> std::borrow::Cow<'a, str> {
+    locale.map_or_else(
+        || std::borrow::Cow::Borrowed(meta.description),
+        |locale| locale.setting_description(meta.key, meta.description),
+    )
+}
+
+fn localized_named_text<'a>(
+    locale: Option<&crate::locale::LocaleContext>,
+    id: &str,
+    english: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    locale.map_or_else(
+        || std::borrow::Cow::Borrowed(english),
+        |locale| locale.named_text(id, english),
+    )
+}
+
+fn localized_named_static(
+    locale: Option<&crate::locale::LocaleContext>,
+    id: &str,
+    english: &'static str,
+) -> &'static str {
+    locale
+        .map(|locale| locale.named_static_text(id, english))
+        .unwrap_or(english)
+}
+
+fn localized_lock_reason<'a>(
+    locale: Option<&crate::locale::LocaleContext>,
+    english: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    let id = match english {
+        "Your team has Zero Data Retention." => "settings.ui.lock.zdr",
+        "Managed by your team admin." => "settings.ui.lock.team",
+        _ => return std::borrow::Cow::Borrowed(english),
+    };
+    localized_named_text(locale, id, english)
+}
+
+fn localized_detail_text<'a>(
+    state: &SettingsModalState,
+    key: SettingKey,
+    meta: &'a SettingMeta,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> std::borrow::Cow<'a, str> {
+    if state.row_lock(key).is_some() {
+        localized_lock_reason(locale, state.detail_text(key, meta))
+    } else {
+        localized_setting_description(locale, meta)
+    }
+}
+
+fn localized_restart_pill(locale: Option<&crate::locale::LocaleContext>) -> String {
+    let restart = localized_named_text(locale, "settings.ui.restart", "restart");
+    format!(" \u{00B7} {restart}")
+}
+
+fn localized_validation_error<'a>(
+    locale: Option<&crate::locale::LocaleContext>,
+    english: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    let (id, fallback) = match english {
+        "Value cannot be empty" => ("settings.ui.validation.empty", english),
+        "Value cannot contain whitespace" => ("settings.ui.validation.whitespace", english),
+        "Model catalog still loading, try again" => {
+            ("settings.ui.validation.model_loading", english)
+        }
+        _ if english.starts_with("Unknown model: \"") && english.ends_with('"') => {
+            let model = english
+                .strip_prefix("Unknown model: \"")
+                .and_then(|value| value.strip_suffix('"'))
+                .unwrap_or_default();
+            let template = localized_named_text(
+                locale,
+                "settings.ui.validation.unknown_model",
+                "Unknown model: \"{model}\"",
+            );
+            return std::borrow::Cow::Owned(template.replace("{model}", model));
+        }
+        _ => return std::borrow::Cow::Borrowed(english),
+    };
+    localized_named_text(locale, id, fallback)
+}
+
+fn settings_no_matches_message(
+    locale: Option<&crate::locale::LocaleContext>,
+    query: &str,
+) -> String {
+    locale.map_or_else(
+        || format!("No matches for \"{query}\""),
+        |locale| {
+            locale.format(
+                crate::locale::TextKey::SettingsNoMatches,
+                &[("query", query)],
+            )
+        },
+    )
+}
+
 /// Render the row list with a search bar at the top (Browse/FilterFocused).
+#[cfg(test)]
 pub(super) fn render_row_list_with_search_bar(
     buf: &mut Buffer,
     content_area: Rect,
     state: &mut SettingsModalState,
     theme: &Theme,
+) {
+    render_row_list_with_search_bar_with_locale(buf, content_area, state, theme, None);
+}
+
+pub(super) fn render_row_list_with_search_bar_with_locale(
+    buf: &mut Buffer,
+    content_area: Rect,
+    state: &mut SettingsModalState,
+    theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     let filter_focused = state.state.mode_kind() == SettingsModeKind::FilterFocused;
     if content_area.height >= 3 {
@@ -377,7 +532,7 @@ pub(super) fn render_row_list_with_search_bar(
             width: content_area.width,
             height: 1,
         };
-        crate::views::picker::render_line_editor_search_bar(
+        crate::views::picker::render_line_editor_search_bar_with_locale(
             buf,
             search_area.x,
             search_area.y,
@@ -387,6 +542,7 @@ pub(super) fn render_row_list_with_search_bar(
             filter_focused,
             true,
             Some(theme.bg_base),
+            locale,
         );
         crate::views::picker::render_divider(
             buf,
@@ -404,7 +560,7 @@ pub(super) fn render_row_list_with_search_bar(
         };
 
         state.list_area = list_area;
-        render_rows(buf, list_area, state, theme);
+        render_rows_with_locale(buf, list_area, state, theme, locale);
     } else if content_area.height >= 2 {
         // Tight: search bar only, no divider.
         let search_area = Rect {
@@ -413,7 +569,7 @@ pub(super) fn render_row_list_with_search_bar(
             width: content_area.width,
             height: 1,
         };
-        crate::views::picker::render_line_editor_search_bar(
+        crate::views::picker::render_line_editor_search_bar_with_locale(
             buf,
             search_area.x,
             search_area.y,
@@ -423,6 +579,7 @@ pub(super) fn render_row_list_with_search_bar(
             filter_focused,
             true,
             Some(theme.bg_base),
+            locale,
         );
         let list_area = Rect {
             x: content_area.x,
@@ -431,26 +588,54 @@ pub(super) fn render_row_list_with_search_bar(
             height: content_area.height - 1,
         };
         state.list_area = list_area;
-        render_rows(buf, list_area, state, theme);
+        render_rows_with_locale(buf, list_area, state, theme, locale);
     } else {
         // Too narrow for a search bar; just render the rows.
-        render_rows(buf, content_area, state, theme);
+        render_rows_with_locale(buf, content_area, state, theme, locale);
     }
 }
 
+#[cfg(test)]
 pub(super) fn render_docs_footer(buf: &mut Buffer, area: Rect, theme: &Theme) {
-    const LONG: &str =
-        "Tip · Ask Grok: \"change theme to grokday\" or \"what does compact mode do?\"";
-    const SHORT: &str = "Tip · Ask Grok to change a setting";
-    let text = modal_window::fit_tip_line(&[LONG, SHORT], area.width as usize);
+    render_docs_footer_with_locale(buf, area, theme, None);
+}
+
+pub(super) fn render_docs_footer_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
+) {
+    let long = localized_text(
+        locale,
+        crate::locale::TextKey::SettingsDocsFooterLong,
+        "Tip · Ask Grok: \"change theme to grokday\" or \"what does compact mode do?\"",
+    );
+    let short = localized_text(
+        locale,
+        crate::locale::TextKey::SettingsDocsFooterShort,
+        "Tip · Ask Grok to change a setting",
+    );
+    let text = modal_window::fit_tip_line(&[long, short], area.width as usize);
     modal_window::render_centered_tip_footer(buf, area, theme, text.as_ref());
 }
 
+#[cfg(test)]
 pub(super) fn render_rows(
     buf: &mut Buffer,
     area: Rect,
     state: &mut SettingsModalState,
     theme: &Theme,
+) {
+    render_rows_with_locale(buf, area, state, theme, None);
+}
+
+pub(super) fn render_rows_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &mut SettingsModalState,
+    theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     let visible_h = area.height as usize;
     if visible_h == 0 {
@@ -475,17 +660,14 @@ pub(super) fn render_rows(
     // Empty filter: show "No matches for <query>"
     if total_visible == 0 {
         if !state.query().is_empty() {
-            let prefix = "No matches for ";
-            let suffix_quote_w = 2u16; // surrounding "" chars
-            let available_for_query = (area.width as usize)
-                .saturating_sub(prefix.width())
-                .saturating_sub(suffix_quote_w as usize);
+            let empty_message = settings_no_matches_message(locale, "");
+            let available_for_query = (area.width as usize).saturating_sub(empty_message.width());
             let q_disp = if state.query().width() <= available_for_query {
                 state.query().to_owned()
             } else {
                 truncate_str(state.query(), available_for_query)
             };
-            let msg = format!("{prefix}\"{q_disp}\"");
+            let msg = settings_no_matches_message(locale, &q_disp);
             let style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
             let msg_w = (msg.width() as u16).min(area.width);
             let cx = area.x + area.width.saturating_sub(msg_w) / 2;
@@ -501,9 +683,10 @@ pub(super) fn render_rows(
         .iter()
         .position(|&i| i == state.selected);
 
-    // Clamp scroll so selection stays in view, keeping the preceding section header visible when scrolling up
-    // Row heights are variable (expanded descriptions, header gaps)
-    let row_heights = compute_filtered_row_heights(state, area.width);
+    // Clamp scroll so selection stays in view, keeping the preceding
+    // section header visible when scrolling up. Row heights are
+    // variable (expanded descriptions, header gaps).
+    let row_heights = compute_filtered_row_heights(state, area.width, locale);
     if let Some(fpos) = selected_fpos {
         if fpos < state.scroll_offset {
             let new_offset = match fpos
@@ -607,7 +790,7 @@ pub(super) fn render_rows(
 
         match row {
             RowEntry::Header { category } => {
-                let label = category.label();
+                let label = localized_category_label(*category, locale);
                 let header_style = Style::default()
                     .fg(theme.gray)
                     .bg(theme.bg_base)
@@ -645,6 +828,7 @@ pub(super) fn render_rows(
                         is_hovered,
                         is_expanded,
                         theme,
+                        locale,
                     );
                     if let Some(slot) = state.value_hit_rects.get_mut(row_idx) {
                         *slot = value_rect;
@@ -660,9 +844,10 @@ pub(super) fn render_rows(
                             width: area.width,
                             height: desc_height.min(8),
                         };
-                        render_expanded_description(buf, desc_rect, meta.description, theme);
+                        let detail = localized_setting_description(locale, meta);
+                        render_expanded_description(buf, desc_rect, detail.as_ref(), theme);
                         let consumed = wrapped_description_height(
-                            meta.description,
+                            detail.as_ref(),
                             area.width,
                             desc_rect.height,
                         );
@@ -681,6 +866,7 @@ pub(super) fn render_rows(
                             max_label_w,
                             is_selected,
                             theme,
+                            locale,
                         );
                         y_cursor = y_cursor.saturating_add(1);
                         continue;
@@ -690,14 +876,20 @@ pub(super) fn render_rows(
                 let lock = state.row_lock(key);
 
                 // Decide 1 vs 2 line layout; fall back to 1 if viewport is tight.
-                let value_display = value_display(meta, value, lock);
+                let value_display = value_display_with_locale(meta, value, lock, locale);
                 let show_restart_pill_for_layout = meta.restart_required && is_expanded;
-                let layout_decision = row_layout(
-                    area.width,
-                    meta.label,
-                    &value_display,
-                    show_restart_pill_for_layout,
-                );
+                let label = localized_setting_label(locale, meta);
+                let layout_decision = row_layout(area.width, label.as_ref(), &value_display, false);
+                let layout_decision = if show_restart_pill_for_layout {
+                    row_layout_with_restart_width(
+                        area.width,
+                        label.as_ref(),
+                        &value_display,
+                        localized_restart_pill(locale).width() as u16,
+                    )
+                } else {
+                    layout_decision
+                };
                 let want_two_lines = !matches!(layout_decision, RowLayout::OneLine);
                 // Only allocate 2 lines if the viewport has room.
                 let row_height: u16 = if want_two_lines && y_cursor.saturating_add(2) <= area_end {
@@ -718,7 +910,7 @@ pub(super) fn render_rows(
                 }
 
                 let is_hovered = hover_row_snapshot == Some(row_idx);
-                let value_rect = render_setting_row(
+                let value_rect = render_setting_row_with_locale(
                     buf,
                     render_area,
                     meta,
@@ -729,6 +921,7 @@ pub(super) fn render_rows(
                     is_expanded,
                     is_hovered,
                     lock,
+                    locale,
                 );
                 if let Some(slot) = state.value_hit_rects.get_mut(row_idx) {
                     *slot = value_rect;
@@ -743,10 +936,11 @@ pub(super) fn render_rows(
                         width: area.width,
                         height: desc_height.min(8), // cap at 8 lines per row to keep scroll sane
                     };
-                    let detail = state.detail_text(key, meta);
-                    render_expanded_description(buf, desc_rect, detail, theme);
+                    let detail = localized_detail_text(state, key, meta, locale);
+                    render_expanded_description(buf, desc_rect, detail.as_ref(), theme);
                     // Re-measure how many lines the wrapped description actually consumed, so y_cursor advances precisely
-                    let consumed = wrapped_description_height(detail, area.width, desc_rect.height);
+                    let consumed =
+                        wrapped_description_height(detail.as_ref(), area.width, desc_rect.height);
                     y_cursor = y_cursor.saturating_add(consumed);
                 }
             }
@@ -794,10 +988,22 @@ fn compute_min_scroll_offset_for_visibility(
     offset
 }
 
-/// Precompute the visual height (in terminal rows) of each entry in `state.filtered_cache`. That
-/// gap is accounted for inside the scroll helper's backward walk because it depends on the runtime
-/// position relative to the viewport top.
-fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> Vec<u16> {
+/// Precompute the visual height (in terminal rows) of each entry in `state.filtered_cache`.
+/// Uses the same `row_layout` / `wrapped_description_height` math the forward render loop uses.
+///
+/// The cost passed to [`compute_min_scroll_offset_for_visibility`] is the row's intrinsic height EXCLUDING the blank-line-above-header gap.
+/// That gap is accounted for inside the scroll helper's backward walk because it depends on the runtime position relative to the viewport top.
+///
+/// Cost: O(visible filtered rows) per render, bounded by the
+/// registry size (~15 entries today). Each row does at most one
+/// `word_wrap_line` call (for expanded descriptions). Allocations
+/// are confined to a single `Vec<u16>` per call; per-row layout
+/// math is on the stack.
+fn compute_filtered_row_heights(
+    state: &SettingsModalState,
+    area_width: u16,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Vec<u16> {
     let mut heights = Vec::with_capacity(state.filtered_cache.len());
     for &row_idx in &state.filtered_cache {
         let Some(row) = state.rows.get(row_idx) else {
@@ -817,8 +1023,9 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                 if matches!(meta.kind, SettingKind::Group { .. }) {
                     let mut h: u16 = 1;
                     if state.expanded_keys.contains(key) {
+                        let detail = localized_setting_description(locale, meta);
                         h = h.saturating_add(wrapped_description_height(
-                            meta.description,
+                            detail.as_ref(),
                             area_width,
                             8,
                         ));
@@ -832,17 +1039,29 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                 };
                 let is_expanded = state.expanded_keys.contains(key);
                 let lock = state.row_lock(key);
-                let value_display = value_display(meta, &value, lock);
+                let value_display = value_display_with_locale(meta, &value, lock, locale);
                 let show_restart_pill = meta.restart_required && is_expanded;
-                let layout = row_layout(area_width, meta.label, &value_display, show_restart_pill);
+                let label = localized_setting_label(locale, meta);
+                let layout = row_layout(area_width, label.as_ref(), &value_display, false);
+                let layout = if show_restart_pill {
+                    row_layout_with_restart_width(
+                        area_width,
+                        label.as_ref(),
+                        &value_display,
+                        localized_restart_pill(locale).width() as u16,
+                    )
+                } else {
+                    layout
+                };
                 let mut h: u16 = match layout {
                     RowLayout::OneLine => 1,
                     RowLayout::TwoLine | RowLayout::TwoLineWithLabelTruncation => 2,
                 };
                 if is_expanded {
                     // Cap matches the forward render loop (`desc_rect.height = ... .min(8)`).
+                    let detail = localized_detail_text(state, key, meta, locale);
                     h = h.saturating_add(wrapped_description_height(
-                        state.detail_text(key, meta),
+                        detail.as_ref(),
                         area_width,
                         8,
                     ));
@@ -950,13 +1169,24 @@ fn render_sub_pane_header(
     if has_description { 2 + desc_rows } else { 2 }
 }
 
-/// Render the Enum chooser sub-pane.
-/// Title, description, and a radio-style choice list with scrolling and an `… N more` overflow indicator.
+/// Render the Enum chooser sub-pane. Title + description + radio-style
+/// choice list with scrolling and `… N more` overflow indicator.
+#[cfg(test)]
 pub(super) fn render_picking_enum(
     buf: &mut Buffer,
     area: Rect,
     state: &SettingsModalState,
     theme: &Theme,
+) {
+    render_picking_enum_with_locale(buf, area, state, theme, None);
+}
+
+fn render_picking_enum_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &SettingsModalState,
+    theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     debug_assert_eq!(
         PICKER_PREFIX_SELECTED.width(),
@@ -1008,13 +1238,41 @@ pub(super) fn render_picking_enum(
         }
         _ => return,
     };
+    let choices: Vec<OwnedEnumChoice> = choices
+        .into_iter()
+        .map(|choice| {
+            let display = locale
+                .map(|locale| {
+                    locale.setting_choice_label(meta.key, &choice.canonical, &choice.display)
+                })
+                .unwrap_or_else(|| std::borrow::Cow::Borrowed(choice.display.as_str()))
+                .into_owned();
+            let description = locale
+                .map(|locale| {
+                    locale.setting_choice_description(
+                        meta.key,
+                        &choice.canonical,
+                        &choice.description,
+                    )
+                })
+                .unwrap_or_else(|| std::borrow::Cow::Borrowed(choice.description.as_str()))
+                .into_owned();
+            OwnedEnumChoice {
+                canonical: choice.canonical,
+                display,
+                description,
+            }
+        })
+        .collect();
 
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    // Choosers need title + gap (2 rows) before the description renders
-    let header_rows = render_sub_pane_header(buf, area, theme, meta.label, meta.description, 2);
+    // Choosers need title + gap (2) before the description renders.
+    let label = localized_setting_label(locale, meta).into_owned();
+    let description = localized_setting_description(locale, meta).into_owned();
+    let header_rows = render_sub_pane_header(buf, area, theme, &label, &description, 2);
     if area.height <= header_rows {
         return;
     }
@@ -1239,7 +1497,9 @@ pub(super) fn render_picking_enum(
         let overflow_y = y_cursor;
         if overflow_y < choices_y + max_choices_h as u16 && overflow_y < area.y + area.height {
             let overflow_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
-            let raw = format!("\u{2026} {more_count} more");
+            let overflow_template =
+                localized_named_text(locale, "settings.ui.more", "\u{2026} {count} more");
+            let raw = overflow_template.replace("{count}", &more_count.to_string());
             let overflow_text: std::borrow::Cow<'_, str> = if raw.width() <= area.width as usize {
                 std::borrow::Cow::Owned(raw)
             } else {
@@ -1288,6 +1548,7 @@ fn render_picking_group(
     area: Rect,
     state: &SettingsModalState,
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> Vec<Rect> {
     let (group_key, child_idx) = match &state.state.mode {
         SettingsMode::PickingGroup { key, child_idx } => (*key, *child_idx),
@@ -1301,13 +1562,15 @@ fn render_picking_group(
         return Vec::new();
     }
 
-    // Chooser shape: title + gap (2 rows) before the description renders
+    // Chooser shape: title + gap (2) before the description renders.
+    let group_label = localized_setting_label(locale, group_meta);
+    let group_description = localized_setting_description(locale, group_meta);
     let header_rows = render_sub_pane_header(
         buf,
         area,
         theme,
-        group_meta.label,
-        group_meta.description,
+        group_label.as_ref(),
+        group_description.as_ref(),
         2,
     );
     if area.height <= header_rows {
@@ -1363,7 +1626,11 @@ fn render_picking_group(
 
         // Value read live from the snapshot (refreshed after each toggle).
         let on = matches!(state.value_for(child_key), Some(SettingValue::Bool(true)));
-        let value_text = if on { "on" } else { "off" };
+        let value_text = if on {
+            localized_named_text(locale, "settings.ui.value.on", "on")
+        } else {
+            localized_named_text(locale, "settings.ui.value.off", "off")
+        };
         let value_style = if on {
             Style::default().fg(theme.accent_user).bg(bg)
         } else {
@@ -1392,10 +1659,11 @@ fn render_picking_group(
             .max(label_x);
         if value_x > label_x {
             let label_room = (value_x - label_x).saturating_sub(1) as usize;
-            let label_text: std::borrow::Cow<'_, str> = if child_meta.label.width() <= label_room {
-                std::borrow::Cow::Borrowed(child_meta.label)
+            let child_label = localized_setting_label(locale, child_meta);
+            let label_text: std::borrow::Cow<'_, str> = if child_label.width() <= label_room {
+                child_label
             } else {
-                std::borrow::Cow::Owned(truncate_str(child_meta.label, label_room))
+                std::borrow::Cow::Owned(truncate_str(child_label.as_ref(), label_room))
             };
             let label_w = (label_text.width() as u16).min((value_x - label_x).saturating_sub(1));
             buf.set_span(
@@ -1406,7 +1674,12 @@ fn render_picking_group(
             );
         }
         if value_x + value_w <= area.x + area.width {
-            buf.set_span(value_x, y, &Span::styled(value_text, value_style), value_w);
+            buf.set_span(
+                value_x,
+                y,
+                &Span::styled(value_text.as_ref(), value_style),
+                value_w,
+            );
         }
         y = y.saturating_add(1);
     }
@@ -1540,17 +1813,55 @@ pub(super) fn int_step_sizes(min: i64, max: i64) -> (i64, i64) {
 }
 
 /// Footer labels for the Int stepper (must be `'static` for `Shortcut`).
-fn int_step_footer_labels(min: i64, max: i64) -> (&'static str, &'static str) {
+fn int_step_footer_labels(
+    min: i64,
+    max: i64,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> (&'static str, &'static str) {
     let (small, large) = int_step_sizes(min, max);
-    match (small, large) {
-        (1, 1) => ("\u{2191}/\u{2193} +/-1", "\u{2190}/\u{2192} +/-1"),
-        (1, 5) => ("\u{2191}/\u{2193} +/-1", "\u{2190}/\u{2192} +/-5"),
-        (5, 10) => ("\u{2191}/\u{2193} +/-5", "\u{2190}/\u{2192} +/-10"),
+    let (small_id, small_english, large_id, large_english) = match (small, large) {
+        (1, 1) => (
+            "settings.shortcut.int_step.vertical_1",
+            "\u{2191}/\u{2193} +/-1",
+            "settings.shortcut.int_step.horizontal_1",
+            "\u{2190}/\u{2192} +/-1",
+        ),
+        (1, 5) => (
+            "settings.shortcut.int_step.vertical_1",
+            "\u{2191}/\u{2193} +/-1",
+            "settings.shortcut.int_step.horizontal_5",
+            "\u{2190}/\u{2192} +/-5",
+        ),
+        (5, 10) => (
+            "settings.shortcut.int_step.vertical_5",
+            "\u{2191}/\u{2193} +/-5",
+            "settings.shortcut.int_step.horizontal_10",
+            "\u{2190}/\u{2192} +/-10",
+        ),
         // Defensive fallback if thresholds change without new static pairs.
-        (1, _) => ("\u{2191}/\u{2193} +/-1", "\u{2190}/\u{2192} step"),
-        (5, _) => ("\u{2191}/\u{2193} +/-5", "\u{2190}/\u{2192} step"),
-        _ => ("\u{2191}/\u{2193} step", "\u{2190}/\u{2192} step"),
-    }
+        (1, _) => (
+            "settings.shortcut.int_step.vertical_1",
+            "\u{2191}/\u{2193} +/-1",
+            "settings.shortcut.int_step.horizontal_step",
+            "\u{2190}/\u{2192} step",
+        ),
+        (5, _) => (
+            "settings.shortcut.int_step.vertical_5",
+            "\u{2191}/\u{2193} +/-5",
+            "settings.shortcut.int_step.horizontal_step",
+            "\u{2190}/\u{2192} step",
+        ),
+        _ => (
+            "settings.shortcut.int_step.vertical_step",
+            "\u{2191}/\u{2193} step",
+            "settings.shortcut.int_step.horizontal_step",
+            "\u{2190}/\u{2192} step",
+        ),
+    };
+    (
+        localized_named_static(locale, small_id, small_english),
+        localized_named_static(locale, large_id, large_english),
+    )
 }
 
 // ‹ / › (U+2039 / U+203A); falls back to ASCII `<` / `>` on legacy ConHost
@@ -1573,13 +1884,24 @@ pub(super) const MAX_THOUGHTS_WIDTH_PREVIEW_MIN_WIDTH: u16 = 30;
 /// Min remaining height to render the wrap preview below the stepper.
 pub(super) const MAX_THOUGHTS_WIDTH_PREVIEW_MIN_HEIGHT: u16 = 5;
 
-/// Render the inline editor.
-/// Int settings use a stepper; String settings use a text input with cursor and validation feedback.
+/// Render the inline editor. Int settings use a stepper; String
+/// settings use a text input with cursor and validation feedback.
+#[cfg(test)]
 pub(super) fn render_editing_value(
     buf: &mut Buffer,
     area: Rect,
     state: &mut SettingsModalState,
     theme: &Theme,
+) {
+    render_editing_value_with_locale(buf, area, state, theme, None);
+}
+
+fn render_editing_value_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &mut SettingsModalState,
+    theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -1598,18 +1920,19 @@ pub(super) fn render_editing_value(
         let Some(meta) = state.registry.find(setting_key) else {
             return;
         };
-        // Snapshot meta fields to release registry borrow.
-        let label = meta.label;
-        let description = meta.description;
+        // Snapshot localized metadata before mutably borrowing state.
+        let label = localized_setting_label(locale, meta).into_owned();
+        let description = localized_setting_description(locale, meta).into_owned();
         render_int_stepper(
             buf,
             area,
             state,
             setting_key,
-            label,
-            description,
+            &label,
+            &description,
             &buffer,
             theme,
+            locale,
         );
         return;
     }
@@ -1630,8 +1953,10 @@ pub(super) fn render_editing_value(
         return;
     };
 
-    // Editors reserve title + gap + the input row (3 rows) before the description
-    let header_rows = render_sub_pane_header(buf, area, theme, meta.label, meta.description, 3);
+    // Editors reserve title + gap + the input row (3) before the description.
+    let label = localized_setting_label(locale, meta).into_owned();
+    let description = localized_setting_description(locale, meta).into_owned();
+    let header_rows = render_sub_pane_header(buf, area, theme, &label, &description, 3);
     if area.height <= header_rows {
         return;
     }
@@ -1677,18 +2002,23 @@ pub(super) fn render_editing_value(
     if buffer.is_empty() {
         let placeholder = match &meta.kind {
             SettingKind::String { validator, .. } => match validator {
-                StringValidator::KnownModel => "<empty: uses shell default>",
-                StringValidator::NonEmptyToken => "<type a value>",
-                StringValidator::Any => "<type a value>",
+                StringValidator::KnownModel => localized_named_text(
+                    locale,
+                    "settings.ui.empty_use_default",
+                    "<empty: uses shell default>",
+                ),
+                StringValidator::NonEmptyToken | StringValidator::Any => {
+                    localized_named_text(locale, "settings.ui.type_value", "<type a value>")
+                }
             },
-            _ => "",
+            _ => std::borrow::Cow::Borrowed(""),
         };
         if !placeholder.is_empty() && visible_buffer_w > 0 {
             let placeholder_text: std::borrow::Cow<'_, str> =
                 if placeholder.width() <= visible_buffer_w {
-                    std::borrow::Cow::Borrowed(placeholder)
+                    std::borrow::Cow::Borrowed(placeholder.as_ref())
                 } else {
-                    std::borrow::Cow::Owned(truncate_str(placeholder, visible_buffer_w))
+                    std::borrow::Cow::Owned(truncate_str(placeholder.as_ref(), visible_buffer_w))
                 };
             let placeholder_w = (placeholder_text.width() as u16).min(visible_buffer_w as u16);
             let placeholder_style = Style::default().fg(theme.gray_dim).bg(input_bg);
@@ -1733,10 +2063,12 @@ pub(super) fn render_editing_value(
     {
         let err_y = input_y + 1;
         let err_style = Style::default().fg(theme.accent_error).bg(theme.bg_base);
-        let err_text: std::borrow::Cow<'_, str> = if err.width() <= area.width as usize {
-            std::borrow::Cow::Borrowed(err)
+        let localized_error = localized_validation_error(locale, err);
+        let err_text: std::borrow::Cow<'_, str> = if localized_error.width() <= area.width as usize
+        {
+            localized_error
         } else {
-            std::borrow::Cow::Owned(truncate_str(err, area.width as usize))
+            std::borrow::Cow::Owned(truncate_str(localized_error.as_ref(), area.width as usize))
         };
         let err_w = (err_text.width() as u16).min(area.width);
         buf.set_span(
@@ -1756,10 +2088,11 @@ fn render_int_stepper(
     area: Rect,
     state: &mut SettingsModalState,
     setting_key: SettingKey,
-    label: &'static str,
-    description: &'static str,
+    label: &str,
+    description: &str,
     buffer: &str,
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     // Editors reserve title + gap + the stepper row (3 rows) before the description
     let header_rows = render_sub_pane_header(buf, area, theme, label, description, 3);
@@ -1858,7 +2191,7 @@ fn render_int_stepper(
                 height: preview_h,
             };
             let pending_value = parse_max_thoughts_width_buffer(buffer);
-            render_max_thoughts_width_preview(buf, preview_area, pending_value, theme);
+            render_max_thoughts_width_preview(buf, preview_area, pending_value, theme, locale);
         }
     }
 }
@@ -1885,6 +2218,7 @@ fn render_max_thoughts_width_preview(
     area: Rect,
     pending_value: u16,
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     // Edge case 1: the terminal area is too narrow; omit
     if area.width < MAX_THOUGHTS_WIDTH_PREVIEW_MIN_WIDTH {
@@ -1894,11 +2228,17 @@ fn render_max_thoughts_width_preview(
     if area.height < MAX_THOUGHTS_WIDTH_PREVIEW_MIN_HEIGHT {
         return;
     }
-    // Defensive guard: catch future editors who add `\n` / `\t` (or any other control char that bypasses word_wrap_line's flow) to the sample
-    // `wrap_description` has the same debug_assert for the same reason
+    // Defensive guard: catch future editors who add `\n` / `\t` (or
+    // any other control char that bypasses word_wrap_line's flow)
+    // to the sample. `wrap_description` has the same debug_assert
+    // for the same reason.
+    let preview_sample = localized_named_text(
+        locale,
+        "settings.preview.max_thoughts_width.sample",
+        MAX_THOUGHTS_WIDTH_PREVIEW_SAMPLE,
+    );
     debug_assert!(
-        !MAX_THOUGHTS_WIDTH_PREVIEW_SAMPLE.contains('\n')
-            && !MAX_THOUGHTS_WIDTH_PREVIEW_SAMPLE.contains('\t'),
+        !preview_sample.contains('\n') && !preview_sample.contains('\t'),
         "MAX_THOUGHTS_WIDTH_PREVIEW_SAMPLE must not contain `\\n` or `\\t`; \
          word_wrap_line flattens spans byte-for-byte and would render control \
          cells as glyphs",
@@ -1910,7 +2250,7 @@ fn render_max_thoughts_width_preview(
     let clamped = pending_w > area.width;
 
     // Wrap the sample text at the effective width.
-    let sample_line = Line::from(Span::raw(MAX_THOUGHTS_WIDTH_PREVIEW_SAMPLE));
+    let sample_line = Line::from(Span::raw(preview_sample.as_ref()));
     let wrapped = crate::render::wrapping::word_wrap_line(&sample_line, effective_width as usize);
     // Defensive: a degenerate wrap (zero lines) means we have no meaningful preview to show
     // The MIN_WIDTH=30 gate above makes this practically unreachable
@@ -1929,6 +2269,7 @@ fn render_max_thoughts_width_preview(
         clamped,
         wrapped.get(..visible_content).unwrap_or(&[]),
         theme,
+        locale,
     );
 }
 
@@ -1941,6 +2282,7 @@ fn render_preview_block(
     clamped: bool,
     wrapped: &[Line<'_>],
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     debug_assert!(
         area.height >= (wrapped.len() as u16).saturating_add(2),
@@ -1968,10 +2310,13 @@ fn render_preview_block(
     };
     buf.set_style(title_rect, Style::default().bg(title_bg));
 
-    // Title is always plain lowercase `preview`
-    // The previous implementation appended ` · clamped to N cols` to the title when the preview clamped to a narrower terminal width
-    // The clamp signal now lives in a note row below the content, so the title carries the same shape regardless of clamp state
-    let title_text: &str = "preview";
+    // Title is always plain lowercase `preview`. The previous
+    // implementation appended ` · clamped to N cols` to the title
+    // when the preview clamped to a narrower terminal width; the
+    // clamp signal has been moved to a note row below the content
+    // (see the bottom of this function) so the title carries the
+    // same shape regardless of clamp state.
+    let title_text = localized_named_static(locale, "settings.ui.preview", "preview");
     let title_text_truncated: std::borrow::Cow<'_, str> =
         if title_text.width() <= effective_width as usize {
             std::borrow::Cow::Borrowed(title_text)
@@ -2031,7 +2376,12 @@ fn render_preview_block(
             .saturating_add(1);
         let area_end_y = area.y.saturating_add(area.height);
         if note_y < area_end_y {
-            let note_text = format!("note: clamped at {effective_width} cols");
+            let note_text = localized_named_text(
+                locale,
+                "settings.ui.clamped",
+                "note: clamped at {cols} cols",
+            )
+            .replace("{cols}", &effective_width.to_string());
             let note_text_truncated: std::borrow::Cow<'_, str> =
                 if note_text.width() <= area.width as usize {
                     std::borrow::Cow::Borrowed(note_text.as_str())
@@ -2119,33 +2469,61 @@ const ROW_CHEVRON_W: u16 = 2;
 pub(super) const ROW_CHEVRON_COL_W: u16 = ROW_CHEVRON_W;
 const ROW_RESTART_PILL_W: u16 = 10; // " · restart", used for layout budgeting only.
 /// Appended to the value column of a locked row (see `SettingsModalState::row_lock`).
+#[cfg(test)]
 pub(super) const ROW_ADMIN_MANAGED_SUFFIX: &str = " \u{00B7} Admin Managed";
 /// Value column for ZDR-locked rows; replaces the opt-in/out value entirely.
 pub(super) const ROW_ZDR_VALUE: &str = "ZDR";
 
 /// Value-column text, shared by layout, scroll math, and paint.
+#[cfg(test)]
 pub(super) fn value_display(
     meta: &SettingMeta,
     value: &SettingValue,
     lock: Option<CodingDataSharingLock>,
 ) -> String {
+    value_display_with_locale(meta, value, lock, None)
+}
+
+fn value_display_with_locale(
+    meta: &SettingMeta,
+    value: &SettingValue,
+    lock: Option<CodingDataSharingLock>,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> String {
     if lock == Some(CodingDataSharingLock::Zdr) {
         return ROW_ZDR_VALUE.to_string();
     }
     let mut display = match value {
-        SettingValue::Bool(b) => if *b { "on" } else { "off" }.to_string(),
+        SettingValue::Bool(b) => {
+            let (id, english) = if *b {
+                ("settings.ui.value.on", "on")
+            } else {
+                ("settings.ui.value.off", "off")
+            };
+            localized_named_text(locale, id, english).into_owned()
+        }
         SettingValue::String(s) => {
             if s.is_empty() && matches!(meta.kind, SettingKind::DynamicEnum { .. }) {
-                "(no override)".to_string()
+                localized_named_text(locale, "settings.ui.value.no_override", "(no override)")
+                    .into_owned()
             } else {
                 s.clone()
             }
         }
-        SettingValue::Enum(e) => display_for_enum_canonical(&meta.kind, e).to_string(),
+        SettingValue::Enum(e) => {
+            let english = display_for_enum_canonical(&meta.kind, e);
+            locale
+                .map(|locale| locale.setting_choice_label(meta.key, e, english))
+                .unwrap_or_else(|| std::borrow::Cow::Borrowed(english))
+                .into_owned()
+        }
         SettingValue::Int(i) => i.to_string(),
     };
     if lock == Some(CodingDataSharingLock::TeamManaged) {
-        display.push_str(ROW_ADMIN_MANAGED_SUFFIX);
+        let suffix =
+            localized_named_text(locale, "settings.ui.value.admin_managed", "Admin Managed");
+        display.push_str(" · ");
+        display.push_str(suffix.as_ref());
     }
     display
 }
@@ -2172,6 +2550,15 @@ pub(super) fn row_layout(
     } else {
         0
     };
+    row_layout_with_restart_width(area_width, label, value_display, restart_w)
+}
+
+fn row_layout_with_restart_width(
+    area_width: u16,
+    label: &str,
+    value_display: &str,
+    restart_w: u16,
+) -> RowLayout {
     let label_w = label.width() as u16;
     let value_w = value_display.width() as u16;
     let one_line_total = ROW_TRIANGLE_PREFIX_W
@@ -2229,6 +2616,7 @@ pub(super) fn settings_row_overlay(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn render_setting_row(
     buf: &mut Buffer,
     area: Rect,
@@ -2240,6 +2628,35 @@ pub(super) fn render_setting_row(
     is_expanded: bool,
     is_hovered: bool,
     lock: Option<CodingDataSharingLock>,
+) -> Rect {
+    render_setting_row_with_locale(
+        buf,
+        area,
+        meta,
+        value,
+        max_label_w,
+        is_selected,
+        theme,
+        is_expanded,
+        is_hovered,
+        lock,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_setting_row_with_locale(
+    buf: &mut Buffer,
+    area: Rect,
+    meta: &SettingMeta,
+    value: &SettingValue,
+    max_label_w: u16,
+    is_selected: bool,
+    theme: &Theme,
+    is_expanded: bool,
+    is_hovered: bool,
+    lock: Option<CodingDataSharingLock>,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> Rect {
     let bg = settings_list_row_bg(theme, is_selected, is_hovered);
     // Paint the row bg across the full area (1 or 2 lines).
@@ -2264,7 +2681,8 @@ pub(super) fn render_setting_row(
         .add_modifier(Modifier::ITALIC);
     let desc_style = Style::default().fg(theme.gray).bg(bg);
 
-    let value_text = value_display(meta, value, lock);
+    let label = localized_setting_label(locale, meta);
+    let value_text = value_display_with_locale(meta, value, lock, locale);
     let value_text = value_text.as_str();
 
     let value_style = if lock.is_some() || matches!(value, SettingValue::Bool(false)) {
@@ -2292,7 +2710,7 @@ pub(super) fn render_setting_row(
 
     // Pill only while expanded: change-time feedback is the toast's job, and a collapsed non-default row would misread as "restart pending" forever
     let show_restart_pill = meta.restart_required && is_expanded;
-    let restart_pill_text = " \u{00B7} restart";
+    let restart_pill_text = localized_restart_pill(locale);
     let restart_w = if show_restart_pill {
         restart_pill_text.width() as u16
     } else {
@@ -2312,7 +2730,8 @@ pub(super) fn render_setting_row(
     );
 
     // Fall back to one-line if only 1 line was allocated.
-    let layout_decision = row_layout(area.width, meta.label, value_text, show_restart_pill);
+    let layout_decision =
+        row_layout_with_restart_width(area.width, label.as_ref(), value_text, restart_w);
     let layout = if area.height < 2 {
         // Only 1 line is available: collapse to a one-line render and accept that the label might collide with the value column
         RowLayout::OneLine
@@ -2331,7 +2750,7 @@ pub(super) fn render_setting_row(
             let chevron_x = restart_x_line1.saturating_sub(ROW_CHEVRON_COL_W);
             let value_x = chevron_x.saturating_sub(value_w + 1);
 
-            let label_text = format!("{triangle} {}", meta.label);
+            let label_text = format!("{triangle} {label}");
             let label_w = label_text.width() as u16;
             let label_max_x = area.x.saturating_add(label_w);
             // Cap label end at value_x to never collide with the value column.
@@ -2367,7 +2786,7 @@ pub(super) fn render_setting_row(
                 buf.set_span(
                     restart_x_line1,
                     area.y,
-                    &Span::styled(restart_pill_text, restart_style),
+                    &Span::styled(restart_pill_text.as_str(), restart_style),
                     restart_w,
                 );
             }
@@ -2398,11 +2817,11 @@ pub(super) fn render_setting_row(
                     if label_avail == 0 {
                         ""
                     } else {
-                        label_text_owned = truncate_str(meta.label, label_avail as usize);
+                        label_text_owned = truncate_str(label.as_ref(), label_avail as usize);
                         &label_text_owned
                     }
                 }
-                _ => meta.label,
+                _ => label.as_ref(),
             };
 
             let full_label_text = format!("{triangle} {label_text}");
@@ -2421,7 +2840,7 @@ pub(super) fn render_setting_row(
                 buf.set_span(
                     restart_x_line1,
                     area.y,
-                    &Span::styled(restart_pill_text, restart_style),
+                    &Span::styled(restart_pill_text.as_str(), restart_style),
                     restart_w,
                 );
             }
@@ -2499,6 +2918,7 @@ fn render_setting_row_no_value(
     max_label_w: u16,
     is_selected: bool,
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) {
     let bg = settings_list_row_bg(theme, is_selected, false);
     buf.set_style(area, Style::default().bg(bg));
@@ -2512,12 +2932,15 @@ fn render_setting_row_no_value(
         .add_modifier(Modifier::BOLD);
 
     let label_max_w = max_label_w;
-    let label_truncated: std::borrow::Cow<'_, str> = if meta.label.width() <= label_max_w as usize {
-        std::borrow::Cow::Borrowed(meta.label)
+    let label = localized_setting_label(locale, meta);
+    let label_truncated: std::borrow::Cow<'_, str> = if label.width() <= label_max_w as usize {
+        std::borrow::Cow::Borrowed(label.as_ref())
     } else {
-        std::borrow::Cow::Owned(truncate_str(meta.label, label_max_w as usize))
+        std::borrow::Cow::Owned(truncate_str(label.as_ref(), label_max_w as usize))
     };
-    let text = format!(" !   {label_truncated} (no read mapping)");
+    let no_read_mapping =
+        localized_named_text(locale, "settings.ui.no_read_mapping", "no read mapping");
+    let text = format!(" !   {label_truncated} ({no_read_mapping})");
     let w = text.width() as u16;
     buf.set_span(
         area.x,
@@ -2538,6 +2961,7 @@ fn render_setting_group_row(
     is_hovered: bool,
     is_expanded: bool,
     theme: &Theme,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> Rect {
     let bg = settings_list_row_bg(theme, is_selected, is_hovered);
     buf.set_style(area, Style::default().bg(bg));
@@ -2559,7 +2983,8 @@ fn render_setting_group_row(
 
     // Triangle prefix mirrors normal rows: "▾" expanded, "▸" collapsed (the group's description expands inline via Right/l like other rows)
     let triangle = if is_expanded { "\u{25BE}" } else { "\u{25B8}" };
-    let label_text = format!("{triangle} {}", meta.label);
+    let label = localized_setting_label(locale, meta);
+    let label_text = format!("{triangle} {label}");
     let label_cap = chevron_x.saturating_sub(area.x).saturating_sub(1);
     let label_w = (label_text.width() as u16).min(label_cap);
     if label_w > 0 {
@@ -2587,9 +3012,16 @@ fn render_setting_group_row(
     }
 }
 
-/// Build the footer shortcut row.
-/// The Enter label varies by focused row kind.
+/// Build the footer shortcut row. Enter label varies by focused row kind.
+#[cfg(test)]
 pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'static>> {
+    build_shortcuts_with_locale(state, None)
+}
+
+fn build_shortcuts_with_locale(
+    state: &SettingsModalState,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Vec<Shortcut<'static>> {
     match &state.state.mode {
         SettingsMode::Browse => {
             // A locked row (ZDR / team-managed) accepts neither the edit keys nor `d`, so it advertises neither
@@ -2598,24 +3030,38 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                 .focused_setting()
                 .is_some_and(|(key, _)| state.row_lock(key).is_some());
             let enter_label = match state.focused_setting() {
-                Some((_, meta)) if matches!(meta.kind, SettingKind::Bool { .. }) => "Enter toggle",
-                _ => "Enter edit",
+                Some((_, meta)) if matches!(meta.kind, SettingKind::Bool { .. }) => {
+                    localized_named_static(locale, "settings.shortcut.enter_toggle", "Enter toggle")
+                }
+                _ => localized_named_static(locale, "settings.shortcut.enter_edit", "Enter edit"),
             };
             let mut shortcuts = vec![
                 Shortcut {
-                    label: "\u{2191}/\u{2193}/j/k nav",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.arrows_jk_nav",
+                        "\u{2191}/\u{2193}/j/k nav",
+                    ),
                     clickable: false,
                     id: 0,
                 },
                 Shortcut {
-                    label: "g/G top/btm",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.gg_top_bottom",
+                        "g/G top/btm",
+                    ),
                     clickable: false,
                     id: 0,
                 },
             ];
             if !locked {
                 shortcuts.push(Shortcut {
-                    label: "Space toggle",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.space_toggle",
+                        "Space toggle",
+                    ),
                     clickable: false,
                     id: 0,
                 });
@@ -2627,55 +3073,90 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
             }
             shortcuts.extend([
                 Shortcut {
-                    label: "\u{2192} expand",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.right_expand",
+                        "\u{2192} expand",
+                    ),
                     clickable: false,
                     id: 0,
                 },
                 Shortcut {
-                    label: "/ search",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.slash_search",
+                        "/ search",
+                    ),
                     clickable: false,
                     id: 0,
                 },
             ]);
             if !locked {
                 shortcuts.push(Shortcut {
-                    label: "d reset",
+                    label: localized_named_static(locale, "settings.shortcut.d_reset", "d reset"),
                     clickable: false,
                     id: 0,
                 });
             }
             shortcuts.push(Shortcut {
-                label: "F2/Esc close",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.f2_esc_close",
+                    "F2/Esc close",
+                ),
                 clickable: false,
                 id: 0,
             });
-            // Browse is nav mode (filter inactive), so append `i search` last (matching the shared pickers)
-            modal_window::push_vim_nav_search_hint(&mut shortcuts, false);
+            // Browse is nav mode (filter inactive), so append `i search` last
+            // (matching the shared pickers).
+            if crate::appearance::cache::load_vim_mode() {
+                shortcuts.push(Shortcut {
+                    label: localized_named_static(locale, "settings.shortcut.i_search", "i search"),
+                    clickable: false,
+                    id: 0,
+                });
+            }
             shortcuts
         }
         SettingsMode::FilterFocused => vec![
             Shortcut {
-                label: "type to filter",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.type_filter",
+                    "type to filter",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "\u{2191}/\u{2193} nav",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.arrows_nav",
+                    "\u{2191}/\u{2193} nav",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Backspace edit",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.backspace_edit",
+                    "Backspace edit",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Enter commit",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.enter_commit",
+                    "Enter commit",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Esc clear",
+                label: localized_named_static(locale, "settings.shortcut.esc_clear", "Esc clear"),
                 clickable: false,
                 id: 0,
             },
@@ -2687,11 +3168,23 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
         } => {
             // Labels depend on whether the Enum supports live preview.
             let nav_label = if *sp {
-                "\u{2191}/\u{2193} try"
+                localized_named_static(
+                    locale,
+                    "settings.shortcut.arrows_try",
+                    "\u{2191}/\u{2193} try",
+                )
             } else {
-                "\u{2191}/\u{2193} nav"
+                localized_named_static(
+                    locale,
+                    "settings.shortcut.arrows_nav",
+                    "\u{2191}/\u{2193} nav",
+                )
             };
-            let esc_label = if *sp { "Esc revert" } else { "Esc cancel" };
+            let esc_label = if *sp {
+                localized_named_static(locale, "settings.shortcut.esc_revert", "Esc revert")
+            } else {
+                localized_named_static(locale, "settings.shortcut.esc_cancel", "Esc cancel")
+            };
             let consent = crate::settings::is_consent_chooser(key);
             let mut shortcuts = vec![
                 Shortcut {
@@ -2702,7 +3195,11 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                 // A chooser picks one of the offered answers, so Enter "selects"
                 // The filter bar and the value editors, where Enter really does commit typed input, keep that wording
                 Shortcut {
-                    label: "Enter select",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.enter_select",
+                        "Enter select",
+                    ),
                     clickable: false,
                     id: 0,
                 },
@@ -2720,7 +3217,7 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
             // Consent choosers hide reset; the key is disabled there too, so this stays a description of what actually works on the pane
             if !consent {
                 shortcuts.push(Shortcut {
-                    label: "d reset",
+                    label: localized_named_static(locale, "settings.shortcut.d_reset", "d reset"),
                     clickable: false,
                     id: 0,
                 });
@@ -2729,7 +3226,7 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
         }
 
         SettingsMode::EditingInt { min, max, .. } => {
-            let (small_label, large_label) = int_step_footer_labels(*min, *max);
+            let (small_label, large_label) = int_step_footer_labels(*min, *max, locale);
             vec![
                 Shortcut {
                     label: small_label,
@@ -2742,17 +3239,25 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
                     id: 0,
                 },
                 Shortcut {
-                    label: "Enter commit",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.enter_commit",
+                        "Enter commit",
+                    ),
                     clickable: false,
                     id: 0,
                 },
                 Shortcut {
-                    label: "Esc cancel",
+                    label: localized_named_static(
+                        locale,
+                        "settings.shortcut.esc_cancel",
+                        "Esc cancel",
+                    ),
                     clickable: false,
                     id: 0,
                 },
                 Shortcut {
-                    label: "d reset",
+                    label: localized_named_static(locale, "settings.shortcut.d_reset", "d reset"),
                     clickable: false,
                     id: 0,
                 },
@@ -2760,42 +3265,95 @@ pub(super) fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'stati
         }
         SettingsMode::EditingString { .. } => vec![
             Shortcut {
-                label: "type to edit",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.type_edit",
+                    "type to edit",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "\u{2190}/\u{2192} cursor",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.arrows_cursor",
+                    "\u{2190}/\u{2192} cursor",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Enter commit",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.enter_commit",
+                    "Enter commit",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Esc cancel",
+                label: localized_named_static(locale, "settings.shortcut.esc_cancel", "Esc cancel"),
                 clickable: false,
                 id: 0,
             },
         ],
         SettingsMode::PickingGroup { .. } => vec![
             Shortcut {
-                label: "\u{2191}/\u{2193}/j/k nav",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.arrows_jk_nav",
+                    "\u{2191}/\u{2193}/j/k nav",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Space/Enter toggle",
+                label: localized_named_static(
+                    locale,
+                    "settings.shortcut.space_enter_toggle",
+                    "Space/Enter toggle",
+                ),
                 clickable: false,
                 id: 0,
             },
             Shortcut {
-                label: "Esc back",
+                label: localized_named_static(locale, "settings.shortcut.esc_back", "Esc back"),
                 clickable: false,
                 id: 0,
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod localization_tests {
+    use super::{int_step_footer_labels, localized_validation_error};
+
+    #[test]
+    fn zh_localization_settings_int_step_footer_uses_locale() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        assert_eq!(
+            int_step_footer_labels(1, 100, Some(&locale)),
+            ("↑/↓ ±1", "←/→ ±5")
+        );
+        assert_eq!(
+            int_step_footer_labels(1, 100, None),
+            ("↑/↓ +/-1", "←/→ +/-5")
+        );
+    }
+
+    #[test]
+    fn zh_localization_model_catalog_loading_validation_uses_locale() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        assert_eq!(
+            localized_validation_error(Some(&locale), "Model catalog still loading, try again"),
+            "模型目录仍在加载，请稍后重试"
+        );
     }
 }

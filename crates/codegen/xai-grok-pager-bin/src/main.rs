@@ -2681,9 +2681,13 @@ async fn async_main(
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                let result = xai_grok_pager::worktree_cmd::run(worktree_args, &agent_config).await;
+                let agent_config = load_disk_agent_config(startup_locale.as_ref())?;
+                let result = xai_grok_pager::worktree_cmd::run_with_locale(
+                    worktree_args,
+                    &agent_config,
+                    startup_locale.as_ref(),
+                )
+                .await;
                 return result;
             }
             Command::DiskUsage(disk_usage_args) => {

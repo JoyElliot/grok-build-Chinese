@@ -3,7 +3,7 @@ use super::{
     ActivePane, AgentPane, AgentView, AgentViewLayout, BlockingCard, ComposerRoute, CtaPhase,
     EscStep, InlineMediaHitAreas, KeyOwner, MODE_BANNER_FADE_TICKS, PromptMode, ViewSurface,
     collect_citation_links, dropdown_content_inset, dropdown_items_width, record_dot_pulse,
-    render_dropdown_chrome, supports_osc22,
+    render_dropdown_chrome_with_locale, supports_osc22,
 };
 use crate::actions::{ActionId, ActionRegistry};
 use crate::key;
@@ -140,34 +140,69 @@ impl AgentView {
     fn plan_approval_shortcut_hints(
         &self,
         pav: &crate::views::plan_approval_view::PlanApprovalViewState,
+        locale: Option<&crate::locale::LocaleContext>,
     ) -> Vec<HintItem> {
         match pav.focus {
             PlanApprovalFocus::Commenting => {
                 vec![
-                    HintItem::new(key!(Enter), "save comment"),
-                    HintItem::new(key!(Esc), "cancel"),
+                    HintItem::new(
+                        key!(Enter),
+                        localized_ui_label(locale, "shortcut.save_comment", "save comment"),
+                    ),
+                    HintItem::new(
+                        key!(Esc),
+                        localized_ui_label(locale, "shortcut.cancel", "cancel"),
+                    ),
                 ]
             }
             PlanApprovalFocus::Prompt => {
                 let has_content = !pav.comments.is_empty() || !self.prompt.text().trim().is_empty();
                 if has_content {
                     vec![
-                        HintItem::new(key!(Enter), "request changes"),
-                        HintItem::new(key!(Tab), "plan"),
-                        HintItem::new(key!(Esc), "back"),
+                        HintItem::new(
+                            key!(Enter),
+                            localized_ui_label(
+                                locale,
+                                "shortcut.request_changes",
+                                "request changes",
+                            ),
+                        ),
+                        HintItem::new(
+                            key!(Tab),
+                            localized_ui_label(locale, "shortcut.plan", "plan"),
+                        ),
+                        HintItem::new(
+                            key!(Esc),
+                            localized_ui_label(locale, "shortcut.back", "back"),
+                        ),
                     ]
                 } else {
                     vec![
-                        HintItem::new(key!('a'), "approve"),
-                        HintItem::new(key!(Tab), "plan"),
-                        HintItem::new(key!(Esc), "back"),
+                        HintItem::new(
+                            key!('a'),
+                            localized_ui_label(locale, "shortcut.approve", "approve"),
+                        ),
+                        HintItem::new(
+                            key!(Tab),
+                            localized_ui_label(locale, "shortcut.plan", "plan"),
+                        ),
+                        HintItem::new(
+                            key!(Esc),
+                            localized_ui_label(locale, "shortcut.back", "back"),
+                        ),
                     ]
                 }
             }
             PlanApprovalFocus::Preview => {
                 vec![
-                    HintItem::new(key!('y'), "copy plan"),
-                    HintItem::new(key!(Tab), "prompt"),
+                    HintItem::new(
+                        key!('y'),
+                        localized_ui_label(locale, "shortcut.copy_plan", "copy plan"),
+                    ),
+                    HintItem::new(
+                        key!(Tab),
+                        localized_ui_label(locale, "shortcut.prompt", "prompt"),
+                    ),
                 ]
             }
         }
@@ -186,10 +221,11 @@ impl AgentView {
     fn question_shortcut_hints(
         &self,
         qv: &crate::views::question_view::QuestionViewState,
+        locale: Option<&crate::locale::LocaleContext>,
     ) -> Vec<HintItem> {
         use crate::views::question_view::QuestionFocus;
         let esc = self.card_esc_hint();
-        match qv.focus {
+        let mut hints = match qv.focus {
             QuestionFocus::InputMode if self.prompt.file_search_visible() => {
                 vec![
                     HintItem::paired(key!(Up), key!(Down), "nav"),
@@ -209,7 +245,9 @@ impl AgentView {
                     HintItem::new(key!('X'), "dismiss"),
                 ]
             }
-        }
+        };
+        agent::localize_hint_labels(&mut hints, locale);
+        hints
     }
     fn permission_shortcut_hints(
         &self,
@@ -270,7 +308,15 @@ impl AgentView {
     /// Single source of truth for context-sensitive shortcuts (pane, overlays, sub-modes, selection state, turn running, plan/queue).
     /// Both the bar renderer and the Ctrl+. cheatsheet Current section delegate here, so the two stay identical in the active context.
     pub fn current_shortcut_hints(&self, registry: &ActionRegistry) -> Vec<HintItem> {
-        match self.shortcuts_bar_content(registry) {
+        self.current_shortcut_hints_with_locale(registry, None)
+    }
+
+    pub fn current_shortcut_hints_with_locale(
+        &self,
+        registry: &ActionRegistry,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> Vec<HintItem> {
+        match self.shortcuts_bar_content(registry, locale) {
             ShortcutsBarContent::Surface(hints) | ShortcutsBarContent::Pane(hints) => hints,
             ShortcutsBarContent::Hidden => vec![],
         }
@@ -278,8 +324,9 @@ impl AgentView {
     fn plan_approval_bar(
         &self,
         pav: &crate::views::plan_approval_view::PlanApprovalViewState,
+        locale: Option<&crate::locale::LocaleContext>,
     ) -> ShortcutsBarContent {
-        let hints = self.plan_approval_shortcut_hints(pav);
+        let hints = self.plan_approval_shortcut_hints(pav, locale);
         if hints.is_empty() {
             ShortcutsBarContent::Hidden
         } else {
@@ -287,10 +334,14 @@ impl AgentView {
         }
     }
     /// The bar names the surface the keys actually reach, so it asks [`AgentView::key_owner`] rather than keeping an order of its own.
-    fn shortcuts_bar_content(&self, registry: &ActionRegistry) -> ShortcutsBarContent {
+    fn shortcuts_bar_content(
+        &self,
+        registry: &ActionRegistry,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> ShortcutsBarContent {
         use crate::views::shortcuts_bar::HintItem;
-        match self.key_owner() {
-            KeyOwner::LineViewer => self.line_viewer_bar(),
+        let mut content = match self.key_owner() {
+            KeyOwner::LineViewer => self.line_viewer_bar(locale),
             KeyOwner::BlockViewer => ShortcutsBarContent::Surface(
                 self.block_viewer
                     .as_ref()
@@ -306,7 +357,7 @@ impl AgentView {
                 .plan_approval_view
                 .as_ref()
                 .map_or(ShortcutsBarContent::Hidden, |pav| {
-                    self.plan_approval_bar(pav)
+                    self.plan_approval_bar(pav, locale)
                 }),
             KeyOwner::Card(BlockingCard::CancelTurn) => ShortcutsBarContent::Surface(vec![
                 HintItem::paired(key!('1'), key!('4'), "select"),
@@ -316,7 +367,7 @@ impl AgentView {
             ]),
             KeyOwner::Card(BlockingCard::Question) => ShortcutsBarContent::Surface(
                 self.focused_question()
-                    .map(|qv| self.question_shortcut_hints(qv))
+                    .map(|qv| self.question_shortcut_hints(qv, locale))
                     .unwrap_or_default(),
             ),
             KeyOwner::Card(BlockingCard::McpElicitation) => ShortcutsBarContent::Surface(vec![
@@ -326,19 +377,31 @@ impl AgentView {
                 HintItem::new(key!(Tab), "next field"),
                 self.card_esc_hint(),
             ]),
-            KeyOwner::Pane => ShortcutsBarContent::Pane(self.normal_pane_hints(registry)),
+            KeyOwner::Pane => ShortcutsBarContent::Pane(self.normal_pane_hints(registry, locale)),
+        };
+        match &mut content {
+            ShortcutsBarContent::Surface(hints) | ShortcutsBarContent::Pane(hints) => {
+                agent::localize_hint_labels(hints, locale);
+            }
+            ShortcutsBarContent::Hidden => {}
         }
+        content
     }
-    /// An open line viewer paints its own hints over this row further down `draw`, so the bar is silent.
-    /// The two exceptions, where the viewer defers: the plan-approval prompt, whose keys the viewer's intercept forwards, and a casual comment draft.
-    fn line_viewer_bar(&self) -> ShortcutsBarContent {
+    /// An open line viewer paints its own hints over this row further down
+    /// `draw`, so the bar is silent — except in the two states where the
+    /// viewer defers: the plan-approval prompt, whose keys the viewer's
+    /// intercept forwards, and a casual comment draft.
+    fn line_viewer_bar(
+        &self,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> ShortcutsBarContent {
         use crate::views::shortcuts_bar::HintItem;
         if let Some(pav) = self
             .plan_approval_view
             .as_ref()
             .filter(|pav| pav.focus != PlanApprovalFocus::Preview)
         {
-            return self.plan_approval_bar(pav);
+            return self.plan_approval_bar(pav, locale);
         }
         if self.is_casual_commenting() {
             return ShortcutsBarContent::Surface(vec![
@@ -350,7 +413,11 @@ impl AgentView {
     }
     /// Shared "normal pane" hints: the flag computation, `build_hints`, and the queue hint.
     /// Single source of truth for the two former duplicated blocks in `current_shortcut_hints` and `draw`.
-    fn normal_pane_hints(&self, registry: &ActionRegistry) -> Vec<HintItem> {
+    fn normal_pane_hints(
+        &self,
+        registry: &ActionRegistry,
+        locale: Option<&crate::locale::LocaleContext>,
+    ) -> Vec<HintItem> {
         let fold_label = self.selected_fold_label();
         let is_editing = matches!(self.prompt_mode, PromptMode::EditingQueued { .. });
         let selected_entry = self
@@ -459,7 +526,7 @@ impl AgentView {
         let thinking_label = self.scrollback.thinking_fold_label();
         let selected_is_user_prompt = selected_entry.is_some_and(|e| e.block.is_user_prompt());
         let selected_is_agent_message = selected_entry.is_some_and(|e| e.block.is_agent_message());
-        let mut hints = agent::build_hints(
+        let mut hints = agent::build_hints_with_locale(
             self.active_pane,
             self.parked_card()
                 .map_or_else(agent::prompt_focus_hint, BlockingCard::focus_hint),
@@ -495,13 +562,14 @@ impl AgentView {
             selected_is_agent_message,
             crate::terminal::terminal_context().prefer_alt_enter_newline(),
             self.scrollback_search.as_ref(),
+            locale,
         );
         if (self.queue.is_visible() || !self.visible_queue_is_empty())
             && self.active_pane != ActivePane::Queue
             && !matches!(self.prompt_mode, PromptMode::EditingQueued { .. })
             && let Some(def) = registry.find(ActionId::ToggleQueue)
         {
-            hints.push(def.hint());
+            hints.push(def.hint_with_locale(locale));
         }
         if self.in_dashboard_overlay {
             hints.insert(
@@ -545,6 +613,7 @@ impl AgentView {
         qv: &crate::views::question_view::QuestionViewState,
         hint_style: Style,
         hint_key: Style,
+        locale: Option<&crate::locale::LocaleContext>,
     ) -> Vec<Span<'static>> {
         let mut left_spans: Vec<Span<'static>> = Vec::new();
         if qv.questions.len() > 1 {
@@ -552,16 +621,31 @@ impl AgentView {
             left_spans.push(Span::styled(counter, hint_style));
         }
         left_spans.push(Span::styled("\u{2191}/\u{2193}", hint_key));
-        left_spans.push(Span::styled(" navigate", hint_style));
+        left_spans.push(Span::styled(
+            format!(
+                " {}",
+                localized_ui_label(locale, "shortcut.navigate", "navigate")
+            ),
+            hint_style,
+        ));
         if qv.questions.len() > 1 {
             left_spans.push(Span::styled(" \u{b7} ", hint_style));
             left_spans.push(Span::styled("\u{2190}/\u{2192}", hint_key));
-            left_spans.push(Span::styled(" question", hint_style));
+            left_spans.push(Span::styled(
+                format!(
+                    " {}",
+                    localized_ui_label(locale, "shortcut.question", "question")
+                ),
+                hint_style,
+            ));
         }
         if !qv.is_prompt_blocked() {
             left_spans.push(Span::styled(" \u{b7} ", hint_style));
             left_spans.push(Span::styled("y", hint_key));
-            left_spans.push(Span::styled(" copy", hint_style));
+            left_spans.push(Span::styled(
+                format!(" {}", localized_ui_label(locale, "shortcut.copy", "copy")),
+                hint_style,
+            ));
         }
         left_spans
     }
@@ -753,7 +837,7 @@ impl AgentView {
             placeholder_when_focused: false,
             placeholder_override: if let Some(ph) = self
                 .prompt_input_mode
-                .placeholder_override(self.multiline_mode)
+                .placeholder_override_with_locale(self.multiline_mode, locale)
             {
                 Some(ph)
             } else if casual_commenting
@@ -762,13 +846,21 @@ impl AgentView {
                     .as_ref()
                     .is_some_and(|pav| pav.focus == PlanApprovalFocus::Commenting)
             {
-                Some("Type your comment...")
+                Some(localized_ui_label(
+                    locale,
+                    "prompt.placeholder.comment",
+                    "Type your comment...",
+                ))
             } else if self
                 .plan_approval_view
                 .as_ref()
                 .is_some_and(|pav| pav.focus == PlanApprovalFocus::Prompt)
             {
-                Some("Type revision notes...")
+                Some(localized_ui_label(
+                    locale,
+                    "prompt.placeholder.revision_notes",
+                    "Type revision notes...",
+                ))
             } else {
                 None
             },
@@ -793,9 +885,10 @@ impl AgentView {
                 if self.session_banner_active {
                     banner_height
                 } else {
-                    banner_height.max(crate::tips::render::tip_height(
+                    banner_height.max(crate::tips::render::tip_height_with_locale(
                         inner_width.saturating_sub(crate::tips::render::HINT_INSET),
                         tip_text,
+                        locale,
                     ))
                 }
             } else {
@@ -805,7 +898,10 @@ impl AgentView {
             banner_height
         };
         let banner_height = if privacy_banner {
-            banner_height.max(crate::views::privacy_banner::height(inner_width))
+            banner_height.max(crate::views::privacy_banner::height_with_locale(
+                inner_width,
+                locale,
+            ))
         } else {
             banner_height
         };
@@ -851,10 +947,11 @@ impl AgentView {
         };
         let elicitation_view_h = if slot_card == Some(BlockingCard::McpElicitation) {
             if let Some(ref ev) = self.elicitation_view {
-                crate::views::elicitation_view::elicitation_view_height(
+                crate::views::elicitation_view::elicitation_view_height_with_locale(
                     ev,
                     area.height,
                     overlay_content_w,
+                    locale,
                 )
             } else {
                 0
@@ -998,11 +1095,12 @@ impl AgentView {
                 }
             }
         }
-        self.tasks.sync(
+        self.tasks.sync_with_locale(
             &self.session.bg_tasks,
             &self.subagent_sessions,
             &self.session.scheduled_tasks,
             &self.workflow_runs,
+            locale,
         );
         if self.active_pane == ActivePane::Tasks && !self.tasks.is_visible() {
             self.active_pane = ActivePane::Scrollback;
@@ -1091,7 +1189,8 @@ impl AgentView {
             _ => 1,
         };
         let follow_ups_height = u16::from(self.follow_ups.is_some());
-        let mut dock_data = (dock_on && !self.dock_hidden).then(|| self.dock_snapshot());
+        let mut dock_data =
+            (dock_on && !self.dock_hidden).then(|| self.dock_snapshot_with_locale(locale));
         let dock_height = dock_data
             .as_ref()
             .map_or(0, crate::views::dock::desired_height);
@@ -1274,20 +1373,27 @@ impl AgentView {
             if self.hit_plan_button.hovered {
                 plan_style = plan_style.add_modifier(ratatui::style::Modifier::BOLD);
             }
-            status.push("plan", Line::from(Span::styled("plan", plan_style)));
+            status.push(
+                "plan",
+                Line::from(Span::styled(
+                    localized_ui_label(locale, "mode.plan.label", "plan"),
+                    plan_style,
+                )),
+            );
         }
         if let Some(ref goal) = self.goal_state {
             let tick = self.tasks.tick_count() as usize;
             let active_subagent_tokens = self.live_standalone_subagent_tokens();
             status.push(
                 "goal",
-                crate::views::agent_status::goal_status_line(
+                crate::views::agent_status::goal_status_line_with_locale(
                     goal,
                     &theme,
                     self.hit_goal_status.hovered,
                     tick,
                     self.context_state.as_ref().map(|c| c.used),
                     active_subagent_tokens,
+                    locale,
                 ),
             );
         }
@@ -1300,7 +1406,7 @@ impl AgentView {
         if self.chat_kind || self.app_chat_mode {
             let label = self
                 .workspace_mode
-                .status_label(self.workspace_mode_cli_locked);
+                .status_label_with_locale(self.workspace_mode_cli_locked, locale);
             let mut mode_style = Style::default().fg(theme.accent_user).bg(theme.bg_base);
             if self.workspace_mode_cli_locked {
                 mode_style = mode_style.add_modifier(ratatui::style::Modifier::DIM);
@@ -1360,7 +1466,7 @@ impl AgentView {
             status.push(
                 "dashboard",
                 Line::from(Span::styled(
-                    "[Dashboard]",
+                    localized_ui_label(locale, "dashboard.session.return", "[Dashboard]"),
                     hover_or(self.hit_dashboard.hovered, bg.fg(theme.gray)),
                 )),
             );
@@ -1417,7 +1523,12 @@ impl AgentView {
             .current_branch
             .clone()
             .or_else(|| lazy_git.as_ref().and_then(|i| i.branch.clone()))
-            .map(crate::views::location::branch_label);
+            .map(|branch| {
+                crate::views::location::branch_label_with_locale(
+                    branch,
+                    Some(self.scrollback.locale()),
+                )
+            });
         if let Some(branch) = branch {
             location.push(Span::styled(branch, dim));
             location.push(Span::styled(" ", bg));
@@ -1426,7 +1537,13 @@ impl AgentView {
             || self.session.is_worktree
             || lazy_git.as_ref().is_some_and(|i| i.is_worktree);
         if show_worktree_label {
-            location.push(crate::views::location::worktree_badge(&theme).patch_style(bg));
+            location.push(
+                crate::views::location::worktree_badge_with_locale(
+                    &theme,
+                    Some(self.scrollback.locale()),
+                )
+                .patch_style(bg),
+            );
         }
         if let Some(profile) = xai_grok_sandbox::profile_name() {
             location.push(Span::styled(
@@ -1523,6 +1640,7 @@ impl AgentView {
             self.ensure_media_link_paths();
             let sb_rendered = crate::scrollback::ScrollbackPane::new()
                 .active(sb_focused)
+                .with_locale(locale)
                 .with_mouse_pos(self.last_mouse_pos)
                 .with_dim_from(rewind_dim_from)
                 .with_hovered_entry(self.hovered_entry)
@@ -1559,15 +1677,24 @@ impl AgentView {
                 let query = search.query();
                 let counter = match search.current_index() {
                     Some(i) => Some(format!("{}/{}", i + 1, search.match_count())),
-                    None if search.has_error() => Some("bad pattern".to_string()),
-                    None if !query.is_empty() => Some("no matches".to_string()),
+                    None if search.has_error() => Some(
+                        localized_ui_label(locale, "picker.search.bad_pattern", "bad pattern")
+                            .to_string(),
+                    ),
+                    None if !query.is_empty() => Some(
+                        localized_ui_label(locale, "picker.search.no_matches", "no matches")
+                            .to_string(),
+                    ),
                     None => None,
                 };
                 let counter_width = counter
                     .as_deref()
                     .map_or(0, |text| UnicodeWidthStr::width(text) as u16);
-                let search_layout =
-                    crate::views::picker::search_bar_layout(layout.scrollback.width, counter_width);
+                let search_layout = crate::views::picker::search_bar_layout_with_locale(
+                    layout.scrollback.width,
+                    counter_width,
+                    locale,
+                );
                 let leading_query;
                 let (rendered_query, viewport) = if search.is_composing() {
                     (
@@ -1579,7 +1706,7 @@ impl AgentView {
                         crate::render::line_utils::truncate_str(query, search_layout.input_width());
                     (leading_query.as_str(), None)
                 };
-                crate::views::picker::render_search_bar_with_viewport(
+                crate::views::picker::render_search_bar_with_viewport_and_locale(
                     buf,
                     layout.scrollback.x,
                     bar_y,
@@ -1593,6 +1720,7 @@ impl AgentView {
                         visible_byte_range: 0..rendered_query.len(),
                         cursor_display_column: 0,
                     }),
+                    locale,
                 );
                 if let Some(counter) = counter
                     && search_layout.trailing_width() > 0
@@ -1773,21 +1901,22 @@ impl AgentView {
             "▲",
             &mut self.hit_response_top_indicator,
         );
-        if let Some(msg) = self.active_toast_message() {
+        if let Some(msg) = self.active_toast_message_with_locale(locale) {
             let sb = layout.scrollback;
-            if let Some(toast_text) = fit_toast_text(msg, sb.width) {
-                let w = toast_text.chars().count() as u16;
+            if let Some(toast_text) = fit_toast_text(&msg, sb.width) {
+                let w = unicode_width::UnicodeWidthStr::width(toast_text.as_str()) as u16;
                 if sb.height > 0 {
                     let x = sb.right().saturating_sub(w + 1);
                     let y = sb.bottom().saturating_sub(1);
-                    for (i, ch) in toast_text.chars().enumerate() {
-                        if let Some(cell) = buf.cell_mut((x + i as u16, y)) {
-                            cell.set_char(ch);
-                            cell.fg = theme.accent_user;
-                            cell.bg = theme.bg_base;
-                            cell.modifier = ratatui::prelude::Modifier::BOLD;
-                        }
-                    }
+                    buf.set_string(
+                        x,
+                        y,
+                        &toast_text,
+                        Style::default()
+                            .fg(theme.accent_user)
+                            .bg(theme.bg_base)
+                            .add_modifier(ratatui::prelude::Modifier::BOLD),
+                    );
                     self.frame_occluder_rects.push(Rect {
                         x,
                         y,
@@ -1799,7 +1928,7 @@ impl AgentView {
         }
         if tasks_height > 0 {
             let bg_focused = self.active_pane == ActivePane::Tasks && !overlay_focused;
-            self.tasks.render(
+            self.tasks.render_with_locale(
                 layout.tasks,
                 buf,
                 bg_focused,
@@ -1807,6 +1936,7 @@ impl AgentView {
                 &self.session.bg_tasks,
                 &self.subagent_sessions,
                 &self.session.scheduled_tasks,
+                locale,
             );
             let close_rect = agent::render_todo_chrome(
                 buf,
@@ -1822,7 +1952,8 @@ impl AgentView {
         }
         if todo_height > 0 {
             let todo_focused = self.active_pane == ActivePane::Todo && !overlay_focused;
-            self.todo.render(layout.todo, buf, todo_focused, layout_cfg);
+            self.todo
+                .render_with_locale(layout.todo, buf, todo_focused, layout_cfg, locale);
             let close_rect = agent::render_todo_chrome(
                 buf,
                 layout.todo,
@@ -1839,13 +1970,14 @@ impl AgentView {
         }
         if queue_height > 0 {
             let queue_focused = self.active_pane == ActivePane::Queue && !overlay_focused;
-            self.queue.render(
+            self.queue.render_with_locale(
                 layout.queue,
                 buf,
                 queue_focused,
                 layout_cfg,
                 Some(layout.scrollback),
                 self.can_send_now(),
+                locale,
             );
             let close_rect = agent::render_todo_chrome_with_close_label(
                 buf,
@@ -1866,18 +1998,19 @@ impl AgentView {
         if let Some(dock) = &dock_data
             && layout.dock.height > 0
         {
-            crate::views::dock::render(buf, layout.dock, &theme, dock);
+            crate::views::dock::render_with_locale(buf, layout.dock, &theme, dock, locale);
             self.cache_dock_stop_at(layout.dock, dock);
             let queue_body = crate::views::dock::queue_body_rect(layout.dock, dock);
             if queue_body.height > 0 {
                 let queue_focused = self.active_pane == ActivePane::Queue && !overlay_focused;
-                self.queue.render(
+                self.queue.render_with_locale(
                     queue_body,
                     buf,
                     queue_focused,
                     layout_cfg,
                     Some(layout.scrollback),
                     self.can_send_now(),
+                    locale,
                 );
             }
         }
@@ -1888,7 +2021,7 @@ impl AgentView {
         {
             let tick = self.scrollback.animation_tick();
             let mut btw_links = crate::render::osc8::LinkOverlay::new();
-            crate::views::btw_overlay::render_btw_panel(
+            crate::views::btw_overlay::render_btw_panel_with_locale(
                 buf,
                 btw,
                 layout.btw,
@@ -1899,6 +2032,7 @@ impl AgentView {
                 Some(&mut btw_links),
                 &self.media_link_paths,
                 self.scrollback.cwd(),
+                locale,
             );
             self.last_btw_area = layout.btw;
             if !btw_links.is_empty() {
@@ -2017,7 +2151,10 @@ impl AgentView {
                     Style::default().fg(theme.gray)
                 };
                 let status_label =
-                    crate::views::plan_approval_view::plan_approval_status_label(pav.has_plan);
+                    crate::views::plan_approval_view::plan_approval_status_label_with_locale(
+                        pav.has_plan,
+                        locale,
+                    );
                 let spans = vec![
                     Span::styled(
                         format!("{} ", crate::glyphs::diamond_filled()),
@@ -2031,7 +2168,8 @@ impl AgentView {
                     &Line::from(spans),
                     turn_area.width,
                 );
-                let item_width: u16 = 2u16.saturating_add(status_label.len() as u16);
+                let item_width: u16 =
+                    2u16.saturating_add(unicode_width::UnicodeWidthStr::width(status_label) as u16);
                 self.hit_plan_approval_status.rect = Some(Rect::new(
                     turn_area.x,
                     turn_area.y,
@@ -2113,7 +2251,13 @@ impl AgentView {
         if privacy_banner_owns_slot {
             self.hit_announcement_hide.clear();
             self.hit_announcement_cta.clear();
-            let rects = crate::views::privacy_banner::render(layout.banner, buf, &theme, mouse_pos);
+            let rects = crate::views::privacy_banner::render_with_locale(
+                layout.banner,
+                buf,
+                &theme,
+                mouse_pos,
+                locale,
+            );
             self.privacy_banner
                 .hit_opt_in
                 .set_unless_dropdown(Some(rects.opt_in), dropdown_open);
@@ -2148,28 +2292,15 @@ impl AgentView {
                     .unwrap_or(base_fg);
                 let text = format!("  {}", msg);
                 let maxw = layout.banner.width.saturating_sub(2) as usize;
-                let display: String = if text.len() > maxw {
-                    text.chars()
-                        .take(maxw.saturating_sub(1))
-                        .collect::<String>()
-                        + "…"
-                } else {
-                    text
-                };
+                let display = crate::views::goal_detail::truncate_to_width(&text, maxw);
                 let x = layout.banner.x;
                 let y = layout.banner.y;
-                for (i, ch) in display.chars().enumerate() {
-                    if let Some(cell) = buf.cell_mut((x + i as u16, y)) {
-                        cell.set_char(ch);
-                        cell.fg = fg;
-                        cell.bg = bg;
-                    }
-                }
+                buf.set_stringn(x, y, display, maxw, Style::default().fg(fg).bg(bg));
             }
         } else {
             let announcement_banner_owns_slot =
                 self.session_banner_active && layout.banner.height > 0;
-            let banner_hits = crate::views::announcements::render_banner(
+            let banner_hits = crate::views::announcements::render_banner_with_locale(
                 layout.banner,
                 buf,
                 banner_announcements,
@@ -2177,6 +2308,7 @@ impl AgentView {
                 self.hit_announcement_hide.hovered,
                 self.hit_announcement_cta.hovered,
                 self.permission_queue.is_empty(),
+                locale,
             );
             self.hit_announcement_hide
                 .set_unless_dropdown(banner_hits.hide, dropdown_open);
@@ -2186,18 +2318,24 @@ impl AgentView {
                 && banner_height > 0
                 && let Some(tip_text) = tip
             {
-                crate::tips::render::render_tip(
+                crate::tips::render::render_tip_with_locale(
                     layout.banner,
                     buf,
                     tip_text,
                     crate::tips::render::HINT_INSET,
+                    locale,
                 );
             }
             if !announcement_banner_owns_slot
                 && tip_row_visible
-                && let Some(line) = self.ephemeral_tip.line()
+                && let Some(tip) = self.ephemeral_tip.active_tip()
             {
-                crate::tips::render::render_ephemeral_tip(layout.banner, buf, line);
+                crate::tips::render::render_ephemeral_tip_with_locale(
+                    layout.banner,
+                    buf,
+                    tip,
+                    locale,
+                );
             }
         }
         self.draw_plugin_cta(buf, layout.plugin_cta, &theme);
@@ -2223,13 +2361,18 @@ impl AgentView {
                 dot,
                 Style::default().fg(dot_color).bg(bg),
             );
+            let recording_label = locale.map_or("Recording", |locale| {
+                locale.named_static_text("voice.recording.label", "Recording")
+            });
             buf.set_string(
                 content_x + 2,
                 rec_area.y,
-                "Recording",
+                recording_label,
                 Style::default().fg(theme.accent_error).bg(bg),
             );
-            let stop_str = "[stop]";
+            let stop_str = locale.map_or("[stop]", |locale| {
+                locale.named_static_text("turn.button.stop", "[stop]")
+            });
             let stop_w = unicode_width::UnicodeWidthStr::width(stop_str) as u16;
             let stop_x = rec_area.x
                 + rec_area
@@ -2282,37 +2425,62 @@ impl AgentView {
             };
             Some(if approval_is_commenting || casual_commenting {
                 commenting_label = match commenting_range {
-                    Some(r) if r.len() == 1 => format!("commenting L{}", r.start),
-                    Some(r) => format!("commenting L{}-{}", r.start, r.end - 1),
-                    None => "commenting".to_string(),
+                    Some(r) if r.len() == 1 => locale
+                        .map(|locale| {
+                            locale
+                                .named_text("mode.commenting.line", "commenting L{line}")
+                                .replace("{line}", &r.start.to_string())
+                        })
+                        .unwrap_or_else(|| format!("commenting L{}", r.start)),
+                    Some(r) => locale
+                        .map(|locale| {
+                            locale
+                                .named_text("mode.commenting.range", "commenting L{start}-{end}")
+                                .replace("{start}", &r.start.to_string())
+                                .replace("{end}", &(r.end - 1).to_string())
+                        })
+                        .unwrap_or_else(|| format!("commenting L{}-{}", r.start, r.end - 1)),
+                    None => localized_ui_label(locale, "mode.commenting.label", "commenting")
+                        .to_string(),
                 };
                 commenting_label.as_str()
             } else if self.plan_approval_view.is_some() {
-                "plan approval"
+                localized_ui_label(locale, "mode.plan_approval.label", "plan approval")
             } else {
-                "plan"
+                localized_ui_label(locale, "mode.plan.label", "plan")
             })
         } else {
             self.published_mode_label()
         };
-        let flags: Vec<PromptFlag> =
+        let mut flags: Vec<PromptFlag> =
             mode_flags(plan_label, self.session.permission_label(), &theme);
+        for flag in &mut flags {
+            flag.text = match flag.text {
+                "auto" => localized_ui_label(locale, "mode.auto.label", "auto"),
+                "always-approve" => {
+                    localized_ui_label(locale, "mode.always_approve.label", "always-approve")
+                }
+                other => other,
+            };
+        }
         let multiline = self.multiline_mode;
         let warning = self.credit_balance.as_ref().and_then(|bal| {
-            crate::views::credit_bar::usage_warning_for_session(
+            crate::views::credit_bar::usage_warning_for_session_with_locale(
                 bal,
                 self.auto_topup.as_ref(),
                 self.billing_surface_visible,
                 self.chat_kind,
+                locale,
             )
         });
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = match self.session.models.reasoning_effort {
-            Some(eff) => format!("{model_id} ({eff})"),
-            None => model_id,
-        };
+        let model_label = crate::views::localized_model_name(
+            model_id,
+            self.session.models.reasoning_effort,
+            locale,
+        );
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
                 model_name: &model_label,
@@ -2323,7 +2491,13 @@ impl AgentView {
             },
             PromptMode::EditingQueued { id, .. } => {
                 let pos = self.session.queue_position(*id).map(|i| i + 1).unwrap_or(1);
-                editing_label = format!("editing queued #{pos}");
+                editing_label = locale
+                    .map(|locale| {
+                        locale
+                            .named_text("prompt.editing_queued", "editing queued #{position}")
+                            .replace("{position}", &pos.to_string())
+                    })
+                    .unwrap_or_else(|| format!("editing queued #{pos}"));
                 PromptInfo {
                     model_name: &editing_label,
                     flags: &flags,
@@ -2333,7 +2507,10 @@ impl AgentView {
                 }
             }
         };
-        let info = if let Some(label) = self.prompt_input_mode.prompt_info_override() {
+        let info = if let Some(label) = self
+            .prompt_input_mode
+            .prompt_info_override_with_locale(locale)
+        {
             PromptInfo {
                 model_name: label,
                 flags: &[],
@@ -2350,16 +2527,23 @@ impl AgentView {
             let perm_area = layout.prompt;
             if let Some(perm) = self.permission_queue.front() {
                 let followup_text = self.prompt.text();
-                let render_result = crate::views::permission_view::render_permission_view(
-                    buf,
-                    perm_area,
-                    perm,
-                    followup_text,
-                    self.permission_pattern_edit.as_ref(),
-                    self.hovered_permission_item,
-                    &theme,
-                    prompt_focused,
-                );
+                let reject_feedback_placeholder = locale
+                    .map_or("No, reject (type to add feedback)", |locale| {
+                        locale.text(crate::locale::TextKey::PermissionRejectFeedback)
+                    });
+                let render_result =
+                    crate::views::permission_view::render_permission_view_with_locale(
+                        buf,
+                        perm_area,
+                        perm,
+                        followup_text,
+                        self.permission_pattern_edit.as_ref(),
+                        self.hovered_permission_item,
+                        &theme,
+                        prompt_focused,
+                        reject_feedback_placeholder,
+                        locale,
+                    );
                 if let Some(ref iarea) = render_result.inline_prompt {
                     let row_bg = theme.bg_visual;
                     let remaining_h = (perm_area.y + perm_area.height).saturating_sub(iarea.y);
@@ -2389,13 +2573,14 @@ impl AgentView {
                         width: iarea.text_w,
                         height: prompt_h,
                     };
-                    let prompt_result_inner = self.prompt.draw(
+                    let prompt_result_inner = self.prompt.draw_with_locale(
                         buf,
                         prompt_draw_area,
                         None,
                         &perm_followup_style,
                         None,
                         None,
+                        locale,
                     );
                     if let Some(pos) = prompt_result_inner.cursor_pos {
                         prompt_cursor_pos = Some(pos);
@@ -2470,14 +2655,20 @@ impl AgentView {
                 }
             }
             if let Some(ref qv) = self.question_view {
-                let render_result = crate::views::question_view::render_question_view(
-                    buf,
-                    question_area,
-                    qv,
-                    self.hovered_question_item,
-                    &theme,
-                    prompt_focused,
-                );
+                let freeform_placeholder = locale.map_or("Type your answer here", |locale| {
+                    locale.text(crate::locale::TextKey::QuestionOtherPlaceholder)
+                });
+                let render_result =
+                    crate::views::question_view::render_question_view_with_placeholder(
+                        buf,
+                        question_area,
+                        qv,
+                        self.hovered_question_item,
+                        &theme,
+                        prompt_focused,
+                        freeform_placeholder,
+                        locale,
+                    );
                 self.question_scroll_region =
                     Some((render_result.options_start_y, render_result.options_end_y));
             }
@@ -2564,13 +2755,14 @@ impl AgentView {
                     width: text_w,
                     height: inline_prompt_h,
                 };
-                let prompt_result_inner = self.prompt.draw(
+                let prompt_result_inner = self.prompt.draw_with_locale(
                     buf,
                     prompt_draw_area,
                     Some(layout.scrollback),
                     &text_style,
                     None,
                     None,
+                    locale,
                 );
                 prompt_cursor_pos = prompt_result_inner.cursor_pos;
                 self.inline_prompt_area = Some(Rect {
@@ -2654,17 +2846,17 @@ impl AgentView {
                         .fg(question_accent)
                         .bg(footer_bg)
                         .add_modifier(Modifier::BOLD);
-                    let left_spans = Self::answer_footer_hints(qv, hint_style, hint_key);
+                    let left_spans = Self::answer_footer_hints(qv, hint_style, hint_key, locale);
                     let left_line = Line::from(left_spans);
                     let avail_w = footer_w.saturating_sub(3);
                     buf.set_line_safe(content_x, footer_y, &left_line, avail_w);
                     let is_last = qv.active_tab >= qv.questions.len().saturating_sub(1);
                     let enter_label = if qv.is_on_freeform_row() {
-                        "edit"
+                        localized_ui_label(locale, "shortcut.edit", "edit")
                     } else if is_last {
-                        "submit"
+                        localized_ui_label(locale, "shortcut.submit", "submit")
                     } else {
-                        "select"
+                        localized_ui_label(locale, "shortcut.select", "select")
                     };
                     let btn_key = "Enter";
                     let btn_bg = theme.bg_base;
@@ -2674,7 +2866,9 @@ impl AgentView {
                         .add_modifier(Modifier::BOLD);
                     let blabel_style = Style::default().fg(theme.gray).bg(btn_bg);
                     let bpad_style = Style::default().bg(btn_bg);
-                    let bw = (1 + btn_key.len() + 1 + enter_label.len() + 1) as u16;
+                    let enter_label_width =
+                        unicode_width::UnicodeWidthStr::width(enter_label) as u16;
+                    let bw = 1 + btn_key.len() as u16 + 1 + enter_label_width + 1;
                     let btn_x = footer_x + footer_w.saturating_sub(3).saturating_sub(bw);
                     if btn_x > content_x {
                         buf.set_span_safe(btn_x, footer_y, &Span::styled(" ", bpad_style), 1);
@@ -2690,10 +2884,10 @@ impl AgentView {
                             cx + 1,
                             footer_y,
                             &Span::styled(enter_label, blabel_style),
-                            enter_label.len() as u16,
+                            enter_label_width,
                         );
                         buf.set_span_safe(
-                            cx + 1 + enter_label.len() as u16,
+                            cx + 1 + enter_label_width,
                             footer_y,
                             &Span::styled(" ", bpad_style),
                             1,
@@ -2740,13 +2934,14 @@ impl AgentView {
                     width: layout.prompt.width,
                     height: layout.prompt.height,
                 };
-                crate::views::elicitation_view::render_elicitation_view(
+                crate::views::elicitation_view::render_elicitation_view_with_locale(
                     buf,
                     elicit_area,
                     ev,
                     &theme,
                     prompt_focused,
                     Some(&mut self.elicit_hits),
+                    locale,
                 );
             }
         } else if rewind_view_h > 0 {
@@ -2761,12 +2956,25 @@ impl AgentView {
             }
         } else if jump_view_h > 0 {
             if let Some(ref js) = self.jump_state {
-                crate::views::jump::render_jump_overlay(buf, layout.prompt, js, prompt_focused);
+                crate::views::jump::render_jump_overlay_with_locale(
+                    buf,
+                    layout.prompt,
+                    js,
+                    prompt_focused,
+                    locale,
+                );
             }
         } else if cancel_turn_view_h > 0 {
             let buttons = &mut self.cancel_turn_buttons;
             if let Some(ctv) = self.cancel_turn_view.as_ref() {
-                modal::render_cancel_turn_panel(buf, layout.prompt, ctv, prompt_focused, buttons);
+                modal::render_cancel_turn_panel_with_locale(
+                    buf,
+                    layout.prompt,
+                    ctv,
+                    prompt_focused,
+                    buttons,
+                    locale,
+                );
             } else {
                 buttons.clear();
             }
@@ -2788,13 +2996,14 @@ impl AgentView {
             } else {
                 None
             };
-            let prompt_result_inner = self.prompt.draw(
+            let prompt_result_inner = self.prompt.draw_with_locale(
                 buf,
                 layout.prompt,
                 Some(layout.scrollback),
                 &prompt_style,
                 Some(&info),
                 voice_overlay,
+                locale,
             );
             if let Some((s, ovr)) = saved_scroll {
                 self.prompt.textarea.set_scroll_override(ovr);
@@ -2882,14 +3091,14 @@ impl AgentView {
         }
         if !self.prompt.file_search_visible() && self.prompt.slash_open() {
             use crate::views::slash_dropdown::{
-                desired_item_rows, render_dropdown as render_slash,
+                desired_item_rows, localized_snapshot, render_dropdown as render_slash,
             };
-            let snap = self.prompt.slash_snapshot();
+            let snap = localized_snapshot(self.prompt.slash_snapshot(), locale);
             let item_count = snap.matches.len();
             let items_width = dropdown_items_width(layout.prompt);
             let item_rows = desired_item_rows(&snap.matches, items_width);
             if item_rows > 0 {
-                if let Some(chrome) = render_dropdown_chrome(
+                if let Some(chrome) = render_dropdown_chrome_with_locale(
                     buf,
                     item_count,
                     item_rows,
@@ -2900,6 +3109,7 @@ impl AgentView {
                     compact,
                     false,
                     &theme,
+                    locale,
                 ) {
                     let hovered = self.prompt.slash_hovered();
                     self.slash_dropdown_hit =
@@ -2929,7 +3139,7 @@ impl AgentView {
             let item_count = dd.items.len();
             let item_rows = (item_count as u16).min(MAX_VISIBLE_ROWS);
             if item_rows > 0 {
-                if let Some(chrome) = render_dropdown_chrome(
+                if let Some(chrome) = render_dropdown_chrome_with_locale(
                     buf,
                     item_count,
                     item_rows,
@@ -2940,6 +3150,7 @@ impl AgentView {
                     compact,
                     false,
                     &theme,
+                    locale,
                 ) {
                     render_completions(buf, chrome.items, dd, &theme);
                     self.completion_dropdown_items_area = Some(chrome.items);
@@ -2989,7 +3200,7 @@ impl AgentView {
                 let caption_style = theme.muted_over_chrome();
                 {
                     let hint = format!("{result_count}");
-                    let hint_w = hint.len() as u16;
+                    let hint_w = unicode_width::UnicodeWidthStr::width(hint.as_str()) as u16;
                     if hint_w + 2 <= panel_width {
                         let hint_x = panel_x + panel_width - hint_w - 1;
                         buf.set_line_safe(
@@ -2999,8 +3210,8 @@ impl AgentView {
                             hint_w,
                         );
                     }
-                    let label = " history ";
-                    let label_w = label.len() as u16;
+                    let label = localized_ui_label(locale, "history.panel.title", " history ");
+                    let label_w = unicode_width::UnicodeWidthStr::width(label) as u16;
                     if label_w + 2 <= panel_width {
                         buf.set_line_safe(
                             panel_x + 1,
@@ -3024,9 +3235,13 @@ impl AgentView {
                     let msg_y = top_border_y + 1;
                     if msg_y < bottom_border_y {
                         let message = if self.prompt_history_loading() {
-                            "  Loading..."
+                            localized_ui_label(locale, "history.panel.loading", "  Loading...")
                         } else {
-                            "  no matching history"
+                            localized_ui_label(
+                                locale,
+                                "history.panel.no_matches",
+                                "  no matching history",
+                            )
                         };
                         buf.set_string_safe(
                             items_x,
@@ -3185,16 +3400,17 @@ impl AgentView {
             self.pane_areas = layout.pane_areas();
             return (None, crate::terminal::overlay::clear().map(Into::into));
         }
-        match self.shortcuts_bar_content(registry) {
+        match self.shortcuts_bar_content(registry, locale) {
             ShortcutsBarContent::Hidden => {}
             ShortcutsBarContent::Surface(hints) => {
                 ShortcutsBar::new(&hints)
+                    .with_locale(locale)
                     .with_pending(pending_hint)
                     .render(layout.shortcuts, buf);
             }
             ShortcutsBarContent::Pane(hints) => {
                 let help_hint = registry.find(ActionId::ShortcutsHelp).map(|def| {
-                    let mut hint = def.hint();
+                    let mut hint = def.hint_with_locale(locale);
                     if in_dashboard_overlay
                         && def.default_key == key!('x', CONTROL)
                         && let Some(alt) = def.alt_keys.first()
@@ -3205,11 +3421,12 @@ impl AgentView {
                 });
                 ShortcutsBar::new(&hints)
                     .compact(5, help_hint)
+                    .with_locale(locale)
                     .with_pending(pending_hint)
                     .render(layout.shortcuts, buf);
             }
         }
-        let line_viewer_toast = self.active_toast_message().map(|s| s.to_string());
+        let line_viewer_toast = self.active_toast_message_with_locale(locale);
         let is_plan_viewer = self.is_plan_viewer();
         let has_plan_comments = !self.plan_comments.is_empty();
         let casual_commenting = self.is_casual_commenting();
@@ -3281,17 +3498,18 @@ impl AgentView {
                 && toast_area.height > 0
                 && let Some(toast_text) = fit_toast_text(msg, toast_area.width.saturating_sub(1))
             {
-                let w = toast_text.chars().count() as u16;
+                let w = unicode_width::UnicodeWidthStr::width(toast_text.as_str()) as u16;
                 let tx = toast_area.right().saturating_sub(w + 1);
                 let ty = toast_area.bottom().saturating_sub(1);
-                for (i, ch) in toast_text.chars().enumerate() {
-                    if let Some(cell) = buf.cell_mut((tx + i as u16, ty)) {
-                        cell.set_char(ch);
-                        cell.fg = theme.accent_user;
-                        cell.bg = theme.bg_base;
-                        cell.modifier = ratatui::prelude::Modifier::BOLD;
-                    }
-                }
+                buf.set_string(
+                    tx,
+                    ty,
+                    &toast_text,
+                    Style::default()
+                        .fg(theme.accent_user)
+                        .bg(theme.bg_base)
+                        .add_modifier(ratatui::prelude::Modifier::BOLD),
+                );
             }
             let in_plan_approval = self.plan_approval_view.is_some();
             let on_comment = in_plan_approval
@@ -3308,7 +3526,7 @@ impl AgentView {
                     .plan_approval_view
                     .as_ref()
                     .is_some_and(|pav| !pav.comments.is_empty());
-            let viewer_hints = if in_plan_approval && on_comment {
+            let mut viewer_hints = if in_plan_approval && on_comment {
                 let mut h = vec![
                     HintItem::new(key!(Enter), "edit"),
                     HintItem::new(key!('x'), "delete"),
@@ -3387,10 +3605,13 @@ impl AgentView {
                 h.push(HintItem::new(key!(Esc), "cancel"));
                 h
             };
+            agent::localize_hint_labels(&mut viewer_hints, locale);
             let input_bar_active = viewer.list_state.input_mode().is_some();
             if !(plan_prompt_focused || casual_commenting || viewer.fullscreen && input_bar_active)
             {
-                ShortcutsBar::new(&viewer_hints).render(layout.shortcuts, buf);
+                ShortcutsBar::new(&viewer_hints)
+                    .with_locale(locale)
+                    .render(layout.shortcuts, buf);
             }
             self.pane_areas = layout.pane_areas();
             let viewer_cursor = if plan_prompt_focused || self.is_casual_commenting() {
@@ -3442,7 +3663,9 @@ impl AgentView {
                 let dim_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
                 let border_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
                 let title_spans: Vec<ratatui::text::Span> = if viewer.loading {
-                    let name = viewer.title.as_deref().unwrap_or("Loading...");
+                    let name = viewer.title.as_deref().unwrap_or_else(|| {
+                        localized_ui_label(locale, "media.loading", "Loading...")
+                    });
                     vec![
                         ratatui::text::Span::styled("\u{2500} ", border_style),
                         ratatui::text::Span::styled(name.to_owned(), title_style),
@@ -3496,7 +3719,11 @@ impl AgentView {
                                 .copied()
                                 .unwrap_or(""),
                         };
-                        let loading = format!("{} Loading...", frame);
+                        let loading = format!(
+                            "{} {}",
+                            frame,
+                            localized_ui_label(locale, "media.loading", "Loading...")
+                        );
                         let lw = loading.width() as u16;
                         let lx = popup_rect.x + 1 + inner_cols.saturating_sub(lw) / 2;
                         let ly = popup_rect.y + 1 + inner_rows / 2;
@@ -3538,14 +3765,21 @@ impl AgentView {
                                     viewer.image_width, viewer.image_height, viewer.mime_type,
                                 )),
                                 ratatui::text::Line::from(""),
-                                ratatui::text::Line::from("  Press Esc to close"),
+                                ratatui::text::Line::from(format!(
+                                    "  {}",
+                                    localized_ui_label(
+                                        locale,
+                                        "media.press_esc_close",
+                                        "Press Esc to close",
+                                    )
+                                )),
                             ];
                             ratatui::widgets::Paragraph::new(meta_lines)
                                 .style(Style::default().fg(theme.gray_dim).bg(theme.bg_base))
                                 .render(inner_rect, buf);
                         } else {
-                            let loading = "Loading...";
-                            let lw = loading.len() as u16;
+                            let loading = localized_ui_label(locale, "media.loading", "Loading...");
+                            let lw = unicode_width::UnicodeWidthStr::width(loading) as u16;
                             let lx = inner_rect.x + inner_cols.saturating_sub(lw) / 2;
                             let ly = inner_rect.y + inner_rows / 2;
                             buf.set_span_safe(
@@ -3566,7 +3800,9 @@ impl AgentView {
                 prompt_post_flush = Some(clear.into());
             }
             let hints = vec![HintItem::new(key!(Esc), "close")];
-            ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+            ShortcutsBar::new(&hints)
+                .with_locale(locale)
+                .render(layout.shortcuts, buf);
             self.pane_areas = layout.pane_areas();
             return (None, prompt_post_flush);
         }
@@ -3610,7 +3846,9 @@ impl AgentView {
                 HintItem::new(key!(Left), "back"),
                 HintItem::new(key!(Right), "fwd"),
             ];
-            ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+            ShortcutsBar::new(&hints)
+                .with_locale(locale)
+                .render(layout.shortcuts, buf);
             self.pane_areas = layout.pane_areas();
             return (None, prompt_post_flush);
         }
@@ -3668,11 +3906,13 @@ impl AgentView {
                 HintItem::new(key!(Esc), "quit"),
                 HintItem::new(key!(' '), "fire"),
             ];
-            ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+            ShortcutsBar::new(&hints)
+                .with_locale(locale)
+                .render(layout.shortcuts, buf);
             self.pane_areas = layout.pane_areas();
             return (None, prompt_post_flush);
         }
-        let block_viewer_toast = self.active_toast_message().map(|s| s.to_string());
+        let block_viewer_toast = self.active_toast_message_with_locale(locale);
         if let Some(ref mut viewer) = self.block_viewer {
             use ratatui::style::Modifier;
             use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear, Widget};
@@ -3839,8 +4079,15 @@ impl AgentView {
                         }
                     }
                     let n = viewer.list_state.copy_range().map(|r| r.len()).unwrap_or(1);
-                    let s = if n == 1 { "" } else { "s" };
-                    let status = format!("Selected: {n} line{s}");
+                    let (id, english) = if n == 1 {
+                        ("selection.selected_line", "Selected: {count} line")
+                    } else {
+                        ("selection.selected_lines", "Selected: {count} lines")
+                    };
+                    let status = locale
+                        .map(|locale| locale.named_text(id, english).into_owned())
+                        .unwrap_or_else(|| english.to_string())
+                        .replace("{count}", &n.to_string());
                     let status_style = Style::default().fg(theme.text_secondary).bg(theme.bg_base);
                     buf.set_string(content_x, status_y, &status, status_style);
                 }
@@ -3849,20 +4096,24 @@ impl AgentView {
                 && popup_area.height > 2
                 && let Some(toast_text) = fit_toast_text(msg, popup_area.width.saturating_sub(1))
             {
-                let w = toast_text.chars().count() as u16;
+                let w = unicode_width::UnicodeWidthStr::width(toast_text.as_str()) as u16;
                 let tx = popup_area.right().saturating_sub(w + 2);
                 let ty = popup_area.bottom().saturating_sub(2);
-                for (i, ch) in toast_text.chars().enumerate() {
-                    if let Some(cell) = buf.cell_mut((tx + i as u16, ty)) {
-                        cell.set_char(ch);
-                        cell.fg = theme.accent_user;
-                        cell.bg = theme.bg_base;
-                        cell.modifier = ratatui::prelude::Modifier::BOLD;
-                    }
-                }
+                buf.set_string(
+                    tx,
+                    ty,
+                    toast_text,
+                    Style::default()
+                        .fg(theme.accent_user)
+                        .bg(theme.bg_base)
+                        .add_modifier(ratatui::prelude::Modifier::BOLD),
+                );
             }
-            let hints = viewer.shortcuts_hints();
-            ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+            let mut hints = viewer.shortcuts_hints();
+            agent::localize_hint_labels(&mut hints, locale);
+            ShortcutsBar::new(&hints)
+                .with_locale(locale)
+                .render(layout.shortcuts, buf);
             self.pane_areas = layout.pane_areas();
             return (prompt_cursor_pos, prompt_post_flush);
         }
@@ -3875,20 +4126,22 @@ impl AgentView {
             };
             let compact = self.scrollback.appearance().prompt.compact;
             let theme = Theme::current();
-            crate::views::agents_modal::render_agents_modal(
+            crate::views::agents_modal::render_agents_modal_with_locale(
                 buf,
                 overlay_area,
                 modal_state,
                 compact,
                 &theme,
+                Some(self.scrollback.locale()),
             );
             if let Some(ref mut detail) = self.persona_detail {
-                crate::views::persona_detail::render_persona_detail(
+                crate::views::persona_detail::render_persona_detail_with_locale(
                     buf,
                     overlay_area,
                     detail,
                     &theme,
                     compact,
+                    Some(self.scrollback.locale()),
                 );
             }
             self.pane_areas = layout.pane_areas();
@@ -3913,7 +4166,7 @@ impl AgentView {
             return (cursor, post_flush);
         }
         if let Some(ref mut modal_state) = self.extensions_modal {
-            use crate::views::extensions_modal::render_extensions_modal;
+            use crate::views::extensions_modal::render_extensions_modal_with_locale;
             use crate::views::shortcuts_bar::HintItem;
             let is_fullscreen = matches!(
                 modal_state.picker_state.mode,
@@ -3931,13 +4184,14 @@ impl AgentView {
             };
             let compact = self.scrollback.appearance().prompt.compact;
             let tick = self.scrollback.animation_tick();
-            render_extensions_modal(
+            render_extensions_modal_with_locale(
                 buf,
                 overlay_area,
                 modal_state,
                 Some(layout.shortcuts),
                 compact,
                 tick,
+                locale,
             );
             if crate::hyperlink_route::hyperlink_route().emit_osc8 {
                 Self::push_managed_connectors_wait_link_spans(link_spans_out, modal_state);
@@ -3947,10 +4201,14 @@ impl AgentView {
                     HintItem::new(key!(Enter), "submit"),
                     HintItem::new(key!(Esc), "cancel"),
                 ];
-                ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+                ShortcutsBar::new(&hints)
+                    .with_locale(locale)
+                    .render(layout.shortcuts, buf);
             } else if modal_state.pending_action.is_some() {
                 let hints = vec![HintItem::new(key!(Esc), "dismiss")];
-                ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+                ShortcutsBar::new(&hints)
+                    .with_locale(locale)
+                    .render(layout.shortcuts, buf);
             } else if modal_state.picker_state.search_active
                 && !modal_state.is_managed_connectors_wait()
             {
@@ -3958,7 +4216,9 @@ impl AgentView {
                     HintItem::new(key!(Esc), "clear search"),
                     HintItem::new(key!(Enter), "keep filter"),
                 ];
-                ShortcutsBar::new(&hints).render(layout.shortcuts, buf);
+                ShortcutsBar::new(&hints)
+                    .with_locale(locale)
+                    .render(layout.shortcuts, buf);
             }
             self.pane_areas = layout.pane_areas();
             return (None, crate::terminal::overlay::clear().map(Into::into));
@@ -3995,19 +4255,30 @@ impl AgentView {
                 if !self.inline_media_cache.contains_key(path) && placement.screen_rect.height >= 1
                 {
                     let rect = placement.screen_rect;
-                    let center_x = |len: usize| rect.x + rect.width.saturating_sub(len as u16) / 2;
+                    let center_x =
+                        |width: usize| rect.x + rect.width.saturating_sub(width as u16) / 2;
                     if placement.info.is_video && !crate::inline_media_ffmpeg::ffmpeg_available() {
                         use crate::inline_media_ffmpeg::{FFMPEG_HINT_TEXT, ffmpeg_install_cmd};
+                        let hint = localized_ui_label(
+                            locale,
+                            "media.inline.ffmpeg_hint",
+                            FFMPEG_HINT_TEXT,
+                        );
                         let warn = Style::default().fg(theme.warning);
                         buf.set_string_safe(
-                            center_x(FFMPEG_HINT_TEXT.len()),
+                            center_x(unicode_width::UnicodeWidthStr::width(hint)),
                             rect.y,
-                            FFMPEG_HINT_TEXT,
+                            hint,
                             warn,
                         );
                         if let Some(cmd) = ffmpeg_install_cmd() {
                             let dim = Style::default().fg(theme.gray_dim);
-                            buf.set_string_safe(center_x(cmd.len()), rect.y + 1, cmd, dim);
+                            buf.set_string_safe(
+                                center_x(unicode_width::UnicodeWidthStr::width(cmd)),
+                                rect.y + 1,
+                                cmd,
+                                dim,
+                            );
                         }
                     } else {
                         let spinner_frames = crate::glyphs::braille_spinner_frames();
@@ -4016,10 +4287,11 @@ impl AgentView {
                             0 => "",
                             n => spinner_frames.get(tick % n).copied().unwrap_or(""),
                         };
-                        let label = format!("{spinner} Loading...");
+                        let loading = localized_ui_label(locale, "media.loading", "Loading...");
+                        let label = format!("{spinner} {loading}");
                         let cy = rect.y + rect.height / 2;
                         buf.set_string_safe(
-                            center_x(label.len()),
+                            center_x(unicode_width::UnicodeWidthStr::width(label.as_str())),
                             cy,
                             &label,
                             Style::default().fg(theme.gray_dim),
@@ -4060,11 +4332,17 @@ impl AgentView {
                                     dur_s as u32 % 60,
                                 )
                             } else {
-                                "[Play]".to_string()
+                                localized_ui_label(locale, "media.inline.play", "[Play]")
+                                    .to_string()
                             };
-                            let open_label = "[Open]";
+                            let open_label =
+                                localized_ui_label(locale, "media.inline.open", "[Open]");
                             let gap = 3u16;
-                            let total = play_label.len() as u16 + gap + open_label.len() as u16;
+                            let play_width =
+                                unicode_width::UnicodeWidthStr::width(play_label.as_str()) as u16;
+                            let open_width =
+                                unicode_width::UnicodeWidthStr::width(open_label) as u16;
+                            let total = play_width + gap + open_width;
                             let start_x = rect.x + rect.width.saturating_sub(total) / 2;
                             buf.set_string_safe(
                                 start_x,
@@ -4077,13 +4355,13 @@ impl AgentView {
                                     Rect {
                                         x: start_x,
                                         y: button_y,
-                                        width: play_label.len() as u16,
+                                        width: play_width,
                                         height: 1,
                                     },
                                     path.clone(),
                                 ));
                             }
-                            let open_x = start_x + play_label.len() as u16 + gap;
+                            let open_x = start_x + play_width + gap;
                             buf.set_string_safe(
                                 open_x,
                                 button_y,
@@ -4094,7 +4372,7 @@ impl AgentView {
                                 Rect {
                                     x: open_x,
                                     y: button_y,
-                                    width: open_label.len() as u16,
+                                    width: open_width,
                                     height: 1,
                                 },
                                 path.clone(),
@@ -4105,10 +4383,16 @@ impl AgentView {
                             .media_areas
                             .push((rect, path.clone()));
                         if button_visible {
-                            let open_label = "[Open]";
-                            let copy_label = "[Copy]";
+                            let open_label =
+                                localized_ui_label(locale, "media.inline.open", "[Open]");
+                            let copy_label =
+                                localized_ui_label(locale, "media.inline.copy", "[Copy]");
                             let gap = 3u16;
-                            let total = open_label.len() as u16 + gap + copy_label.len() as u16;
+                            let open_width =
+                                unicode_width::UnicodeWidthStr::width(open_label) as u16;
+                            let copy_width =
+                                unicode_width::UnicodeWidthStr::width(copy_label) as u16;
+                            let total = open_width + gap + copy_width;
                             let start_x = rect.x + rect.width.saturating_sub(total) / 2;
                             buf.set_string_safe(
                                 start_x,
@@ -4120,12 +4404,12 @@ impl AgentView {
                                 Rect {
                                     x: start_x,
                                     y: button_y,
-                                    width: open_label.len() as u16,
+                                    width: open_width,
                                     height: 1,
                                 },
                                 path.clone(),
                             ));
-                            let copy_x = start_x + open_label.len() as u16 + gap;
+                            let copy_x = start_x + open_width + gap;
                             buf.set_string_safe(
                                 copy_x,
                                 button_y,
@@ -4136,7 +4420,7 @@ impl AgentView {
                                 Rect {
                                     x: copy_x,
                                     y: button_y,
-                                    width: copy_label.len() as u16,
+                                    width: copy_width,
                                     height: 1,
                                 },
                                 path.clone(),
@@ -4215,10 +4499,11 @@ impl AgentView {
             && let Some(ref goal) = self.goal_state
         {
             let todos = self.todo.todos();
-            let overlay_rect = crate::views::goal_detail::goal_detail_area(area, goal, todos);
+            let overlay_rect =
+                crate::views::goal_detail::goal_detail_area_with_locale(area, goal, todos, locale);
             let tick = self.tasks.tick_count() as usize;
             let active_subagent_tokens = self.live_standalone_subagent_tokens();
-            let close_rect = crate::views::goal_detail::render_goal_detail(
+            let close_rect = crate::views::goal_detail::render_goal_detail_with_locale(
                 buf,
                 overlay_rect,
                 goal,
@@ -4227,6 +4512,7 @@ impl AgentView {
                 self.context_state.as_ref().map(|c| c.used),
                 active_subagent_tokens,
                 self.hit_goal_close.hovered,
+                locale,
             );
             self.hit_goal_close.rect = close_rect;
             self.frame_occluder_rects.push(overlay_rect);
@@ -4252,8 +4538,9 @@ impl AgentView {
                     )
                 })
                 .collect();
-            let popup =
-                crate::views::workflows::render_workflows(buf, area, &runs, &mut view, tick, &live);
+            let popup = crate::views::workflows::render_workflows_with_locale(
+                buf, area, &runs, &mut view, tick, &live, locale,
+            );
             self.workflows_view = view;
             if let Some(popup) = popup {
                 self.frame_occluder_rects.push(popup);
@@ -4358,16 +4645,15 @@ fn draw_scroll_arrow(
 /// (Long clipboard toasts embed backup file paths; dropping the whole toast would hide the copy feedback entirely.)
 /// Returns `None` only when the slot is too narrow for any text.
 fn fit_toast_text(msg: &str, avail_width: u16) -> Option<String> {
-    let max_msg_chars = (avail_width as usize).saturating_sub(4);
-    if max_msg_chars == 0 {
+    let max_msg_width = (avail_width as usize).saturating_sub(4);
+    if max_msg_width == 0 {
         return None;
     }
-    let msg_chars = msg.chars().count();
-    if msg_chars <= max_msg_chars {
+    if unicode_width::UnicodeWidthStr::width(msg) <= max_msg_width {
         return Some(format!(" {msg} "));
     }
-    let truncated: String = msg.chars().take(max_msg_chars.saturating_sub(1)).collect();
-    Some(format!(" {}… ", truncated.trim_end()))
+    let truncated = crate::views::goal_detail::truncate_to_width(msg.trim_end(), max_msg_width);
+    Some(format!(" {truncated} "))
 }
 #[cfg(test)]
 mod toast_fit_tests {
@@ -4380,7 +4666,7 @@ mod toast_fit_tests {
     fn long_message_truncates_with_ellipsis_instead_of_vanishing() {
         let msg = "Copied via OSC 52 — also saved to /tmp/grok-0/last-copy.txt. If paste fails, hold Shift (or Fn) and drag to select & copy natively.";
         let fitted = fit_toast_text(msg, 60).expect("must render truncated");
-        assert!(fitted.chars().count() <= 58);
+        assert!(unicode_width::UnicodeWidthStr::width(fitted.as_str()) <= 58);
         assert!(fitted.ends_with("… "));
         assert!(fitted.contains("also saved to"));
     }
@@ -4388,6 +4674,12 @@ mod toast_fit_tests {
     fn zero_width_slot_yields_none() {
         assert_eq!(fit_toast_text("Copied!", 4), None);
         assert_eq!(fit_toast_text("Copied!", 0), None);
+    }
+    #[test]
+    fn cjk_message_obeys_terminal_column_budget() {
+        let fitted = fit_toast_text("已复制到剪贴板并保存了备份文件", 20).expect("must fit");
+        assert!(unicode_width::UnicodeWidthStr::width(fitted.as_str()) <= 18);
+        assert!(fitted.ends_with("… "));
     }
 }
 #[cfg(test)]

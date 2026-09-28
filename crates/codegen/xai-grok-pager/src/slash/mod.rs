@@ -38,6 +38,121 @@ pub use mode_support::{ModeSupport, Remedy};
 /// Maximum number of visible rows in the dropdown (scroll beyond this).
 pub const MAX_VISIBLE_SUGGESTIONS: usize = 8;
 
+pub(crate) fn localize_command_error(
+    message: &str,
+    locale: &crate::locale::LocaleContext,
+) -> String {
+    // Match only exact client-owned diagnostics; server text stays opaque.
+    let owned_id = match message {
+        "/memory takes no arguments. Open it, then press t to turn memory on or off and s for status." => {
+            Some("slash.command.memory.error.arguments")
+        }
+        "No themes available" => Some("slash.command.theme.error.none_available"),
+        "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
+        "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
+        _ => None,
+    };
+    if let Some(id) = owned_id {
+        return locale.named_text(id, message).into_owned();
+    }
+    if let Some(command) = message.strip_prefix("Usage: ") {
+        return format!(
+            "{}{command}",
+            locale.named_text("slash.error.usage", "Usage: ")
+        );
+    }
+    if let Some(model) = message.strip_prefix("Unknown model: ") {
+        return locale
+            .named_text(
+                "slash.command.model.error.unknown",
+                "Unknown model: {model}",
+            )
+            .replace("{model}", model);
+    }
+    if message == "No active model" || message == "no active model to apply effort to" {
+        return locale
+            .named_text("reasoning.error.no_active_model", message)
+            .into_owned();
+    }
+    if message == "current model does not support reasoning effort" {
+        return locale
+            .named_text("reasoning.error.unsupported", message)
+            .into_owned();
+    }
+    if let Some(rest) = message.strip_prefix("unknown effort level '") {
+        if let Some(token) = rest.strip_suffix("'; this model has no selectable effort levels") {
+            return locale
+                .named_text(
+                    "reasoning.error.unknown_no_options",
+                    "unknown effort level '{token}'; this model has no selectable effort levels",
+                )
+                .replace("{token}", token);
+        }
+        if let Some((token, options)) = rest.split_once("'; use one of: ") {
+            // Keep ambiguous user/provider values opaque instead of parsing them
+            // as client punctuation or expanding a placeholder inside the token.
+            if options.contains("'; use one of: ") || token.contains("{options}") {
+                return message.to_owned();
+            }
+            return locale
+                .named_text(
+                    "reasoning.error.unknown_options",
+                    "unknown effort level '{token}'; use one of: {options}",
+                )
+                .replace("{token}", token)
+                .replace("{options}", options);
+        }
+    }
+    if let Some(rest) = message.strip_prefix("Unknown theme: ")
+        && let Some((theme, available)) = rest.rsplit_once(". Available: ")
+    {
+        if theme.contains(". Available: ") || theme.contains("{available}") {
+            return message.to_owned();
+        }
+        return locale
+            .named_text(
+                "slash.command.theme.error.unknown",
+                "Unknown theme: {theme}. Available: {available}",
+            )
+            .replace("{theme}", theme)
+            .replace("{available}", available);
+    }
+    if message == "/usage is not available." {
+        return locale
+            .named_text(
+                "slash.command.usage.error.unavailable",
+                "/usage is not available.",
+            )
+            .into_owned();
+    }
+    if let Some(rest) = message.strip_prefix("Unknown argument: ")
+        && let Some((argument, hint)) = rest.rsplit_once(". Use ")
+    {
+        if argument.contains(". Use ") || argument.contains("{hint}") {
+            return message.to_owned();
+        }
+        return locale
+            .named_text(
+                "slash.command.usage.error.unknown_argument",
+                "Unknown argument: {argument}. Use {hint}",
+            )
+            .replace("{argument}", argument)
+            .replace("{hint}", hint);
+    }
+    if let Some(mode) = message
+        .strip_prefix("No active session to reopen in ")
+        .and_then(|rest| rest.strip_suffix(" mode"))
+    {
+        return locale
+            .named_text(
+                "slash.command.screen_mode.error.no_session",
+                "No active session to reopen in {mode} mode",
+            )
+            .replace("{mode}", mode);
+    }
+    message.to_owned()
+}
+
 /// Grouping for the bare `/` menu, ordered top to bottom. Skills sink below the commands because there can be far more of them than fit on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MenuGroup {
@@ -259,7 +374,6 @@ impl SuggestionRow {
     }
 }
 
-
 /// Locale catalog id for a fixed, client-owned argument placeholder.
 ///
 /// ACP argument hints are normally opaque server/user/plugin content. Only
@@ -385,7 +499,6 @@ fn args_placeholder_catalog_id(
         CommandProvenance::Skill { .. } => None,
     }
 }
-
 
 /// Argument rows plus the row the dropdown opens on when no selection carries over.
 #[derive(Default)]

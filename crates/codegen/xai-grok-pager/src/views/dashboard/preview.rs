@@ -66,7 +66,9 @@ impl DashboardState {
             self.set_peek(None);
             return result;
         };
-        let Some(fields) = peek::compute_peek_fields(&selected, agents) else {
+        let Some(fields) =
+            peek::compute_peek_fields_with_locale(&selected, agents, Some(self.ui_locale()))
+        else {
             self.set_peek_reply_target_cwd(None);
             self.set_peek(None);
             return result;

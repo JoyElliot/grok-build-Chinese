@@ -3,8 +3,10 @@ use super::state::{DashboardRowId, Filter, RowState};
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
 use crate::app::roster::{RosterActivity, RosterEntry};
+use crate::locale::LocaleContext;
 use crate::views::dashboard::row_activity::{
-    has_live_parent_activity, live_work_badges, top_level_activity, top_level_secondary_line,
+    has_live_parent_activity, live_work_badges, top_level_activity_with_locale,
+    top_level_secondary_line_with_locale,
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -13,6 +15,24 @@ use std::time::{Instant, SystemTime};
 /// Title prefix for a session that has no name / generated title / prompt yet.
 /// [`RowTitle::render_wide`](crate::views::dashboard::row_title::RowTitle::render_wide) paints the trailing ` #<id>` suffix dimly.
 pub(crate) const NEW_SESSION_LABEL: &str = "New session";
+
+pub(crate) fn new_session_label(locale: Option<&LocaleContext>) -> &'static str {
+    locale
+        .map(|locale| locale.named_static_text("dashboard.row.new_session", NEW_SESSION_LABEL))
+        .unwrap_or(NEW_SESSION_LABEL)
+}
+
+fn row_static(locale: Option<&LocaleContext>, id: &str, english: &'static str) -> &'static str {
+    locale
+        .map(|locale| locale.named_static_text(id, english))
+        .unwrap_or(english)
+}
+
+fn row_text(locale: Option<&LocaleContext>, id: &str, english: &str) -> String {
+    locale
+        .map(|locale| locale.named_text(id, english).into_owned())
+        .unwrap_or_else(|| english.to_string())
+}
 /// A single row in the dashboard. Built per-frame from `app.agents`.
 #[derive(Debug, Clone)]
 pub struct DashboardRow {
@@ -60,15 +80,19 @@ pub enum RowBadge {
 }
 impl RowBadge {
     pub fn label(self) -> &'static str {
+        self.label_with_locale(None)
+    }
+
+    pub fn label_with_locale(self, locale: Option<&LocaleContext>) -> &'static str {
         match self {
-            Self::Worktree => "worktree",
-            Self::NeedsInput => "needs-input",
-            Self::Subagents(_) => "subagents",
-            Self::Tasks(_) => "tasks",
-            Self::Watchers(_) => "watchers",
-            Self::Workflows(_) => "workflows",
-            Self::Pinned => "pinned",
-            Self::Failed => "failed",
+            Self::Worktree => row_static(locale, "dashboard.badge.worktree", "worktree"),
+            Self::NeedsInput => row_static(locale, "dashboard.badge.needs_input", "needs-input"),
+            Self::Pinned => row_static(locale, "dashboard.badge.pinned", "pinned"),
+            Self::Failed => row_static(locale, "dashboard.badge.failed", "failed"),
+            Self::Subagents(_) => row_static(locale, "dashboard.badge.subagents", "subagents"),
+            Self::Tasks(_) => row_static(locale, "dashboard.badge.tasks", "tasks"),
+            Self::Watchers(_) => row_static(locale, "dashboard.badge.watchers", "watchers"),
+            Self::Workflows(_) => row_static(locale, "dashboard.badge.workflows", "workflows"),
         }
     }
 }
@@ -90,8 +114,24 @@ pub fn build_rows_with_roster(
     home: Option<&str>,
     roster: &[RosterEntry],
 ) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, home);
-    append_roster_rows(&mut rows, roster, agents, pinned, home);
+    build_rows_with_roster_and_locale(
+        agents, pinned, reorder, grouping, filter, home, roster, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_rows_with_roster_and_locale(
+    agents: &IndexMap<AgentId, AgentView>,
+    pinned: &std::collections::BTreeSet<DashboardRowId>,
+    reorder: &[DashboardRowId],
+    grouping: super::state::Grouping,
+    filter: &Filter,
+    home: Option<&str>,
+    roster: &[RosterEntry],
+    locale: Option<&LocaleContext>,
+) -> Vec<DashboardRow> {
+    let mut rows = build_local_rows(agents, pinned, home, locale);
+    append_roster_rows(&mut rows, roster, agents, pinned, home, locale);
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, grouping, reorder);
     rows
@@ -118,6 +158,16 @@ pub(crate) fn build_rows_with_workspace(
     inputs: WorkspaceRowInputs<'_>,
     filter: &Filter,
     home: Option<&str>,
+) -> Vec<DashboardRow> {
+    build_rows_with_workspace_and_locale(agents, inputs, filter, home, None)
+}
+
+pub(crate) fn build_rows_with_workspace_and_locale(
+    agents: &IndexMap<AgentId, AgentView>,
+    inputs: WorkspaceRowInputs<'_>,
+    filter: &Filter,
+    home: Option<&str>,
+    locale: Option<&LocaleContext>,
 ) -> Vec<DashboardRow> {
     let live_by_session: HashMap<&str, (AgentId, &AgentView)> = agents
         .iter()
@@ -155,7 +205,9 @@ pub(crate) fn build_rows_with_workspace(
                 return None;
             }
             if let Some((id, agent)) = live {
-                return Some(top_level_row(id, agent, is_pinned, home));
+                return Some(top_level_row_with_locale(
+                    id, agent, is_pinned, home, locale,
+                ));
             }
             Some(workspace_member_row(member, is_pinned, home))
         })
@@ -165,7 +217,7 @@ pub(crate) fn build_rows_with_workspace(
         if is_empty_idle_top_level(agent) {
             return None;
         }
-        Some(top_level_row(*id, agent, false, home))
+        Some(top_level_row_with_locale(*id, agent, false, home, locale))
     }));
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, inputs.grouping(), &reorder);
@@ -257,6 +309,7 @@ fn build_local_rows(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
     home: Option<&str>,
+    locale: Option<&LocaleContext>,
 ) -> Vec<DashboardRow> {
     let mut rows = Vec::new();
     for (id, agent) in agents.iter() {
@@ -264,7 +317,13 @@ fn build_local_rows(
         if is_empty_idle_top_level(agent) && !pinned.contains(&top_id) {
             continue;
         }
-        rows.push(top_level_row(*id, agent, pinned.contains(&top_id), home));
+        rows.push(top_level_row_with_locale(
+            *id,
+            agent,
+            pinned.contains(&top_id),
+            home,
+            locale,
+        ));
     }
     rows
 }
@@ -287,6 +346,7 @@ fn append_roster_rows(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
     home: Option<&str>,
+    locale: Option<&LocaleContext>,
 ) {
     if roster.is_empty() {
         return;
@@ -330,8 +390,12 @@ fn append_roster_rows(
             .unwrap_or_else(|| sanitize(&entry.session_id));
         let state = roster_activity_to_state(entry.activity);
         let activity = match state {
-            RowState::NeedsInput => Some("Awaiting input".to_string()),
-            RowState::Working => Some("Working".to_string()),
+            RowState::NeedsInput => Some(
+                row_static(locale, "dashboard.row.awaiting_input", "Awaiting input").to_string(),
+            ),
+            RowState::Working => {
+                Some(row_static(locale, "dashboard.row.working", "Working").to_string())
+            }
             _ => None,
         };
         let mut badges = Vec::new();
@@ -427,6 +491,10 @@ pub(crate) fn is_empty_idle_top_level(agent: &AgentView) -> bool {
         )
 }
 fn top_level_label(agent: &AgentView) -> String {
+    top_level_label_with_locale(agent, None)
+}
+
+fn top_level_label_with_locale(agent: &AgentView, locale: Option<&LocaleContext>) -> String {
     if let Some(name) = agent.display_name.as_deref() {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
@@ -453,16 +521,27 @@ fn top_level_label(agent: &AgentView) -> String {
     }
     if let Some(sid) = agent.session.session_id.as_ref() {
         let short: String = sid.0.chars().take(8).collect();
-        return format!("{NEW_SESSION_LABEL} #{short}");
+        return format!("{} #{short}", new_session_label(locale));
     }
-    NEW_SESSION_LABEL.to_string()
+    new_session_label(locale).to_string()
 }
 fn top_level_row(id: AgentId, agent: &AgentView, pinned: bool, home: Option<&str>) -> DashboardRow {
+    top_level_row_with_locale(id, agent, pinned, home, None)
+}
+
+fn top_level_row_with_locale(
+    id: AgentId,
+    agent: &AgentView,
+    pinned: bool,
+    home: Option<&str>,
+    locale: Option<&LocaleContext>,
+) -> DashboardRow {
     let state = classify_top_level(agent);
-    let label = top_level_label(agent);
-    let subtitle = top_level_subtitle(agent);
-    let activity = top_level_activity(agent, state);
-    let secondary_line = top_level_secondary_line(agent, state, activity.as_deref());
+    let label = top_level_label_with_locale(agent, locale);
+    let subtitle = top_level_subtitle_with_locale(agent, locale);
+    let activity = top_level_activity_with_locale(agent, state, locale);
+    let secondary_line =
+        top_level_secondary_line_with_locale(agent, state, activity.as_deref(), locale);
     let last_change_at = top_level_last_change_at(agent, state);
     let mut badges = Vec::new();
     if agent.is_worktree {
@@ -515,6 +594,13 @@ fn cwd_basename(cwd: &std::path::Path) -> Option<String> {
 }
 /// The branch shown is therefore the latest, not a stale notification value.
 fn top_level_subtitle(agent: &AgentView) -> Option<String> {
+    top_level_subtitle_with_locale(agent, None)
+}
+
+fn top_level_subtitle_with_locale(
+    agent: &AgentView,
+    locale: Option<&LocaleContext>,
+) -> Option<String> {
     let lazy = crate::git_info::cwd_git_info_lazy(&agent.session.cwd);
     let trimmed = |s: &str| {
         let t = s.trim();
@@ -555,7 +641,7 @@ fn top_level_subtitle(agent: &AgentView) -> Option<String> {
         return None;
     }
     if is_worktree {
-        parts.push("worktree".to_string());
+        parts.push(row_static(locale, "dashboard.badge.worktree", "worktree").to_string());
     }
     Some(parts.join(" "))
 }
@@ -730,13 +816,14 @@ mod tests {
         provisional: &[AgentId],
     ) -> Vec<DashboardRow> {
         let workspace = snapshot.map(crate::app::workspace_layout::WorkspaceView::from_snapshot);
-        build_rows_with_workspace(
+        build_rows_with_workspace_and_locale(
             agents,
             WorkspaceRowInputs {
                 workspace: workspace.as_ref(),
                 provisional,
             },
             &Filter::None,
+            None,
             None,
         )
     }
@@ -1342,6 +1429,7 @@ mod tests {
             &IndexMap::new(),
             &std::collections::BTreeSet::new(),
             None,
+            None,
         );
         assert_eq!(rows.len(), 1);
         nth(&rows, 0).last_change_at.elapsed().unwrap_or_default()
@@ -1375,6 +1463,7 @@ mod tests {
             &agents,
             &pinned,
             None,
+            None,
         );
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
         assert_eq!(
@@ -1407,7 +1496,7 @@ mod tests {
         pinned: &std::collections::BTreeSet<DashboardRowId>,
     ) -> Vec<DashboardRow> {
         let mut rows = Vec::new();
-        append_roster_rows(&mut rows, entries, &IndexMap::new(), pinned, None);
+        append_roster_rows(&mut rows, entries, &IndexMap::new(), pinned, None, None);
         rows
     }
     /// An untitled, inactive roster session is the "New session" noise the dashboard hides; every pager launch leaves one behind.
@@ -1809,9 +1898,13 @@ mod tests {
     fn workspace_manual_order_is_global_and_survives_filtering() {
         let mut a = workspace_member("a", "Alpha", None);
         a.order_rank = Some(2 * xai_grok_dashboard_store::RANK_GAP);
-        let b = workspace_member("b", "Beta", None);
+        let mut b = workspace_member("b", "Beta", None);
         let mut c = workspace_member("c", "Charlie", None);
         c.order_rank = Some(xai_grok_dashboard_store::RANK_GAP);
+        // Keep this title-filter test independent of the platform's temporary path.
+        for member in [&mut a, &mut b, &mut c] {
+            member.cwd = None;
+        }
         let snapshot = workspace_snapshot(vec![a, b, c]);
         let rows = workspace_rows(&IndexMap::new(), &snapshot);
         assert_eq!(
@@ -1821,13 +1914,14 @@ mod tests {
             vec!["Charlie", "Alpha", "Beta"]
         );
         let workspace = crate::app::workspace_layout::WorkspaceView::from_snapshot(&snapshot);
-        let rows = build_rows_with_workspace(
+        let rows = build_rows_with_workspace_and_locale(
             &IndexMap::new(),
             WorkspaceRowInputs {
                 workspace: Some(&workspace),
                 provisional: &[],
             },
             &Filter::Substring("l".into()),
+            None,
             None,
         );
         assert_eq!(

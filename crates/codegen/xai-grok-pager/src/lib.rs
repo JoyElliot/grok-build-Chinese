@@ -28,6 +28,7 @@ pub mod headless;
 pub mod hyperlink_route;
 pub mod inline_media_ffmpeg;
 pub mod input_log;
+pub(crate) mod localized_text;
 pub mod mcp_cmd;
 pub mod memory_cmd;
 pub mod memory_release;
