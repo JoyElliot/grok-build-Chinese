@@ -1,0 +1,199 @@
+name: Build Windows ARM64 MSVC
+description: 在原生 Windows ARM64 runner 上构建、打包并验证 MSVC 制品
+inputs:
+  version:
+    description: 正式 Release 的 SemVer；预览版可留空
+    required: false
+    default: ''
+  release_build:
+    description: 是否为正式 Release
+    required: true
+  phase:
+    description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
+    required: false
+    default: all
+outputs:
+  package_name:
+    value: ${{ steps.meta.outputs.package_name }}
+  archive_name:
+    value: ${{ steps.meta.outputs.archive_name }}
+  artifact_name:
+    value: ${{ steps.meta.outputs.artifact_name }}
+runs:
+  using: composite
+  steps:
+    - name: 选择版本并验证原生 ARM64 runner
+      id: meta
+      shell: pwsh
+      env:
+        REQUESTED_VERSION: ${{ inputs.version }}
+        IS_RELEASE_BUILD: ${{ inputs.release_build }}
+        BUILD_PHASE: ${{ inputs.phase }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:BUILD_PHASE -notin @('all', 'test', 'build')) { throw '无效的构建阶段。' }
+        if ($env:IS_RELEASE_BUILD -eq 'true' -and $env:BUILD_PHASE -ne 'all') {
+          throw '正式 Release 必须执行完整测试与构建。'
+        }
+        $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        if ($arch -cne 'Arm64') { throw "期望原生 Windows ARM64 runner，实际为 $arch。" }
+        $version = $env:REQUESTED_VERSION.Trim()
+        if (!$version) {
+          if ($env:IS_RELEASE_BUILD -eq 'true') { throw '正式构建必须显式提供版本。' }
+          $line = Get-Content -LiteralPath 'crates/codegen/xai-grok-pager-bin/Cargo.toml' |
+            Where-Object { $_ -match '^version\s*=\s*"([^"]+)"\s*$' } | Select-Object -First 1
+          if ($line -notmatch '^version\s*=\s*"([^"]+)"\s*$') { throw '无法读取 Cargo 版本。' }
+          $version = "$($matches[1])-zh.ci.$env:GITHUB_RUN_NUMBER"
+        }
+        if ($version.Length -gt 64 -or $version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$') {
+          throw "无效的发布版本：$version"
+        }
+        $packageName = "grok-zh-$version-windows-aarch64-msvc"
+        $archiveName = "$packageName.zip"
+        $artifactName = "$packageName-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+        "GROK_VERSION=$version" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "PACKAGE_NAME=$packageName" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "ARCHIVE_NAME=$archiveName" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "package_name=$packageName" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "archive_name=$archiveName" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "artifact_name=$artifactName" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: 配置 Rust ARM64、MSVC 和宿主 protoc
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --component rustfmt
+        if ($LASTEXITCODE -ne 0) { throw 'Rust ARM64 toolchain 安装失败。' }
+        rustup target add --toolchain $env:RUSTUP_TOOLCHAIN $env:TARGET
+        if ($LASTEXITCODE -ne 0) { throw 'Rust ARM64 target 安装失败。' }
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (!(Test-Path -LiteralPath $vswhere)) { throw 'runner 缺少 vswhere。' }
+        $vsRoot = (& $vswhere -latest -products '*' -property installationPath | Select-Object -First 1).Trim()
+        if (!$vsRoot) { throw 'runner 缺少 Visual Studio。' }
+        $vsDevCmd = Join-Path $vsRoot 'Common7\Tools\VsDevCmd.bat'
+        if (!(Test-Path -LiteralPath $vsDevCmd)) { throw 'runner 缺少 ARM64 MSVC 开发环境。' }
+        "VS_DEV_CMD=$vsDevCmd" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        $protocArchive = Join-Path $env:RUNNER_TEMP 'protoc-29.3-win64.zip'
+        $protocRoot = Join-Path $env:RUNNER_TEMP 'protoc-29.3'
+        Invoke-WebRequest -Uri 'https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-win64.zip' -OutFile $protocArchive -MaximumRetryCount 3 -RetryIntervalSec 5 -TimeoutSec 120
+        $protocHash = (Get-FileHash -LiteralPath $protocArchive -Algorithm SHA256).Hash
+        if ($protocHash -cne '57EA59E9F551AD8D71FFAA9B5CFBE0CA1F4E720972A1DB7EC2D12AB44BFF9383') {
+          throw "protoc SHA-256 不匹配：$protocHash"
+        }
+        Expand-Archive -LiteralPath $protocArchive -DestinationPath $protocRoot
+        $protoc = Join-Path $protocRoot 'bin\protoc.exe'
+        & $protoc --version
+        if ($LASTEXITCODE -ne 0) { throw 'ARM64 runner 无法执行宿主 protoc。' }
+        "PROTOC=$protoc" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'grok-zh-cargo')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'grok-zh-target')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: 恢复 ARM64 Cargo 依赖缓存
+      id: cargo_home_cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/grok-zh-cargo/registry
+          ${{ runner.temp }}/grok-zh-cargo/git
+        key: grok-zh-arm64-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock') }}
+
+    - name: 恢复 ARM64 release-dist 编译缓存
+      if: inputs.phase != 'test'
+      id: cargo_build_cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/grok-zh-target/release-dist
+          ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
+        key: grok-zh-arm64-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-ltothin-debug0-cgu1-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'Cargo.lock') }}
+
+    - name: 获取锁定版本的 Cargo 依赖
+      shell: pwsh
+      run: |
+        cargo fetch --locked --target $env:TARGET
+        if ($LASTEXITCODE -ne 0) { throw 'Cargo 依赖获取失败。' }
+
+    - name: 运行 ARM64 更新器测试
+      if: inputs.phase != 'build'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $false
+        cargo fmt --all -- --check
+        if ($LASTEXITCODE -ne 0) { throw 'Rust 格式检查失败。' }
+        $dev = $env:VS_DEV_CMD
+        $command = "call `"$dev`" -arch=arm64 -host_arch=arm64 >nul && where cl && where link && cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-update --features community-build --lib"
+        & $env:ComSpec /d /s /c $command
+        if ($LASTEXITCODE -ne 0) { throw "ARM64 MSVC 测试失败：$LASTEXITCODE" }
+
+    - name: 构建 ARM64 MSVC
+      if: inputs.phase != 'test'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $false
+        $dev = $env:VS_DEV_CMD
+        $command = "call `"$dev`" -arch=arm64 -host_arch=arm64 >nul && where cl && where link && cargo build --frozen --timings -j $env:CARGO_BUILD_JOBS --target $env:TARGET -p xai-grok-pager-bin --profile release-dist --features release-dist --config profile.release-dist.debug=0"
+        & $env:ComSpec /d /s /c $command
+        if ($LASTEXITCODE -ne 0) { throw "ARM64 MSVC 构建失败：$LASTEXITCODE" }
+
+    - name: 上传 ARM64 Cargo timings
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-arm64-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7
+
+    - name: 打包并验证 ARM64 ZIP
+      if: inputs.phase != 'test'
+      shell: pwsh
+      run: |
+        & ./.github/scripts/package-windows-arm.ps1
+        if ($LASTEXITCODE -ne 0) { throw "Windows ARM64 打包失败：$LASTEXITCODE" }
+
+    - name: 上传 Windows ARM64 制品
+      if: inputs.phase != 'test'
+      id: artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.meta.outputs.artifact_name }}
+        path: |
+          dist/${{ steps.meta.outputs.archive_name }}
+          dist/${{ steps.meta.outputs.archive_name }}.sha256
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 14
+
+    - name: 记录 ARM64 构建摘要
+      if: inputs.phase != 'test'
+      shell: pwsh
+      run: |
+        @"
+        ## Windows ARM64 MSVC 构建
+
+        - 版本：$env:GROK_VERSION
+        - 目标：$env:TARGET
+        - ZIP：$env:ARCHIVE_NAME
+        - 制品：${{ steps.artifact.outputs.artifact-url }}
+        - 已在 ARM64 runner 上执行原生程序和 ZIP 冒烟；预览更新器测试由独立原生测试门禁检查。
+        "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+    - name: 保存 ARM64 release-dist 编译缓存
+      if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_build_cache.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/save-cargo-cache
+      with:
+        path: |
+          ${{ runner.temp }}/grok-zh-target/release-dist
+          ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
+        key: ${{ steps.cargo_build_cache.outputs.cache-primary-key }}
+
+    - name: 保存 ARM64 Cargo 依赖缓存
+      if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/save-cargo-cache
+      with:
+        path: |
+          ${{ runner.temp }}/grok-zh-cargo/registry
+          ${{ runner.temp }}/grok-zh-cargo/git
+        key: ${{ steps.cargo_home_cache.outputs.cache-primary-key }}

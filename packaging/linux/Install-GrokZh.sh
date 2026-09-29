@@ -47,7 +47,11 @@ for required_command in $required_commands; do
 done
 
 [ "$(uname -s)" = Linux ] || die "此安装器只支持 Linux。"
-[ "$(uname -m)" = x86_64 ] || die "此安装器只支持 x86_64。"
+case "$(uname -m)" in
+  x86_64) PACKAGE_ARCH=x86_64; ELF_MACHINE='Advanced Micro Devices X86-64' ;;
+  aarch64) PACKAGE_ARCH=aarch64; ELF_MACHINE='AArch64' ;;
+  *) die "此安装器只支持 Linux x86_64 或 aarch64。" ;;
+esac
 [ ! -L "$0" ] || die "请直接运行软件包中的安装器，不要通过符号链接启动。"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P) || die "无法定位软件包目录。"
@@ -118,10 +122,10 @@ done
 
 (cd "$SCRIPT_DIR" && sha256sum -c SHA256SUMS.txt) || die "软件包 SHA-256 校验失败。"
 file_output=$(file -b "$SCRIPT_DIR/grok-zh") || die "无法检查 grok-zh 文件类型。"
-printf '%s\n' "$file_output" | grep -Eq '^ELF 64-bit .* x86-64,' || die "grok-zh 不是 x86_64 ELF 可执行文件。"
+printf '%s\n' "$file_output" | grep -Eq '^ELF 64-bit ' || die "grok-zh 不是 ELF64 可执行文件。"
 machine=$(readelf -h "$SCRIPT_DIR/grok-zh" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p') || \
   die "无法检查 grok-zh 架构。"
-[ "$machine" = 'Advanced Micro Devices X86-64' ] || die "grok-zh 必须是 x86_64 ELF，实际架构：$machine"
+[ "$machine" = "$ELF_MACHINE" ] || die "grok-zh 必须是 ${PACKAGE_ARCH} ELF，实际架构：$machine"
 
 version_output=$("$SCRIPT_DIR/grok-zh" --version 2>/dev/null) || die "软件包中的 grok-zh 无法运行。"
 version_line=$(printf '%s\n' "$version_output" | sed -n '1p')
@@ -220,7 +224,7 @@ is_managed_canonical_target() {
   case "$canonical_name" in
     ''|.|..|*/*|*\\*|*:*) return 1 ;;
   esac
-  printf '%s\n' "$canonical_name" | grep -Eq "^grok-zh-${semver_body}-linux-x86_64-gnu\\.[0-9A-Za-z-]+\\.installed$" || return 1
+  printf '%s\n' "$canonical_name" | grep -Eq "^grok-zh-${semver_body}-linux-${PACKAGE_ARCH}-gnu\\.[0-9A-Za-z-]+\\.installed$" || return 1
   managed_target="$BIN_DIR/$canonical_target"
   [ ! -L "$managed_target" ] && [ -f "$managed_target" ] || return 1
   [ "$(stat -c '%u' "$managed_target")" = "$(id -u)" ] || return 1
@@ -330,7 +334,7 @@ stage_version_line=$(printf '%s\n' "$stage_version_output" | sed -n '1p')
 
 FINAL_RESERVATION=$(mktemp "$DOWNLOAD_DIR/.grok-zh-final.XXXXXX") || die "无法预留版本目标。"
 final_nonce=${FINAL_RESERVATION##*.grok-zh-final.}
-FINAL_FILE="$DOWNLOAD_DIR/grok-zh-$version-linux-x86_64-gnu.${final_nonce}.installed"
+FINAL_FILE="$DOWNLOAD_DIR/grok-zh-$version-linux-${PACKAGE_ARCH}-gnu.${final_nonce}.installed"
 rm -f -- "$FINAL_RESERVATION" || die "无法释放版本目标预留。"
 FINAL_RESERVATION=
 if ! ln "$STAGE_FILE" "$FINAL_FILE"; then

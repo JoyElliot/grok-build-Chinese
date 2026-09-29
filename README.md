@@ -29,11 +29,11 @@
 
 ## 安装
 
-正式版从[最新 Release](https://github.com/JoyElliot/grok-build-Chinese/releases/latest) 下载。请使用社区版完整包及其安装器；仓库内保留的上游安装脚本和 npm 包装面向官方 `grok`。
+正式版从[最新 Release](https://github.com/JoyElliot/grok-build-Chinese/releases/latest) 下载。构建覆盖以下六种系统与架构组合，可下载的平台以 Release 实际附件为准。请使用社区版完整包及其安装器；仓库内保留的上游安装脚本和 npm 包装面向官方 `grok`。
 
 ### Windows
 
-支持 Windows x64、Windows PowerShell 5.1 和 PowerShell 7，无需管理员权限。在 PowerShell 中运行，按中文菜单安装或更新，也可创建便携版：
+安装器支持 Windows x64 / ARM64，以及 Windows PowerShell 5.1 和 PowerShell 7，无需管理员权限。在 PowerShell 中运行，按中文菜单安装或更新，也可创建便携版：
 
 ```powershell
 $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1'); $tls=[Net.ServicePointManager]::SecurityProtocol; try { [Net.ServicePointManager]::SecurityProtocol=$tls -bor [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/JoyElliot/grok-build-Chinese/zh-dev/packaging/windows/Install-GrokZhOnline.ps1' -OutFile $p; & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $p; if ($LASTEXITCODE -ne 0) { throw "安装未完成，退出码：$LASTEXITCODE" } } finally { [Net.ServicePointManager]::SecurityProtocol=$tls; Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
@@ -53,8 +53,8 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 
 | 平台 | 支持范围与详细步骤 |
 | --- | --- |
-| macOS | [Apple Silicon（M1 及后续机型）](packaging/macos/INSTALL-MACOS.md) |
-| Linux | [x86_64 GNU](packaging/linux/INSTALL-LINUX.md) |
+| macOS | [Apple Silicon（M1 及后续机型）与 Intel](packaging/macos/INSTALL-MACOS.md) |
+| Linux | [x86_64 与 ARM64 GNU](packaging/linux/INSTALL-LINUX.md) |
 
 Windows 包未签名，macOS 包未签名或公证，首次运行可能出现系统安全提示；处理方式见对应安装说明。
 

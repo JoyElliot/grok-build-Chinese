@@ -28,6 +28,7 @@ jobs:
       legacy_release: ${{ steps.release_meta.outputs.legacy_release }}
       include_macos: ${{ steps.release_meta.outputs.include_macos }}
       include_linux: ${{ steps.release_meta.outputs.include_linux }}
+      include_new_platforms: ${{ steps.release_meta.outputs.include_new_platforms }}
       windows_artifact_name: ${{ steps.release_meta.outputs.windows_artifact_name }}
       notes_artifact_name: ${{ steps.release_meta.outputs.notes_artifact_name }}
       publish_legacy_sha256: ${{ steps.release_meta.outputs.publish_legacy_sha256 }}
@@ -144,6 +145,11 @@ jobs:
           # cross-platform contract and are intentionally invisible to v1.0.5.
           $includeMacos = !$legacyRelease
           $includeLinux = !$legacyRelease
+          # Earlier immutable release-v* versions published only the original
+          # three targets; the first six-platform release starts at 1.0.36.
+          $includeNewPlatforms = !$legacyRelease -and ($major -gt 1 -or
+            ($major -eq 1 -and $minor -gt 0) -or
+            ($major -eq 1 -and $minor -eq 0 -and $patch -ge 36))
           $windowsArtifactName = "grok-zh-windows-release-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           $notesArtifactName = "grok-zh-release-notes-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           "RELEASE_TAG=$tag" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -164,6 +170,7 @@ jobs:
             legacy_release = $legacyRelease.ToString().ToLowerInvariant()
             include_macos = $includeMacos.ToString().ToLowerInvariant()
             include_linux = $includeLinux.ToString().ToLowerInvariant()
+            include_new_platforms = $includeNewPlatforms.ToString().ToLowerInvariant()
             windows_artifact_name = $windowsArtifactName
             notes_artifact_name = $notesArtifactName
             publish_legacy_sha256 = $publishLegacySha256.ToString().ToLowerInvariant()
@@ -631,6 +638,38 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  windows-arm64-msvc-release:
+    name: Windows ARM64 MSVC 构建
+    needs: release-plan
+    if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 240
+    outputs:
+      package_name: ${{ steps.build.outputs.package_name }}
+      archive_name: ${{ steps.build.outputs.archive_name }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_CACHE_SCHEMA: windows-arm64-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-pc-windows-msvc
+      TARGET: aarch64-pc-windows-msvc
+    steps:
+      - name: 检出发布标签
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+
+      - name: 构建并验证 Windows ARM64 MSVC
+        id: build
+        uses: ./.github/actions/build-windows-arm
+        with:
+          version: ${{ needs.release-plan.outputs.grok_version }}
+          release_build: 'true'
+
   macos-arm-release:
     name: macOS ARM64 构建
     needs: release-plan
@@ -697,20 +736,91 @@ jobs:
           version: ${{ needs.release-plan.outputs.grok_version }}
           release_build: 'true'
 
+  macos-intel-release:
+    name: macOS Intel 构建
+    needs: release-plan
+    if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 240
+    outputs:
+      package_name: ${{ steps.build.outputs.package_name }}
+      archive_name: ${{ steps.build.outputs.archive_name }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "3"
+      CARGO_CACHE_SCHEMA: macos-intel-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-apple-darwin
+      TARGET: x86_64-apple-darwin
+    steps:
+      - name: 检出发布标签
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+
+      - name: 构建并验证 macOS Intel
+        id: build
+        uses: ./.github/actions/build-macos-arm
+        with:
+          version: ${{ needs.release-plan.outputs.grok_version }}
+          release_build: 'true'
+
+  linux-arm64-gnu-release:
+    name: Linux ARM64 GNU 构建
+    needs: release-plan
+    if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    outputs:
+      package_name: ${{ steps.build.outputs.package_name }}
+      archive_name: ${{ steps.build.outputs.archive_name }}
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "3"
+      CARGO_CACHE_SCHEMA: linux-arm64-v1
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      DOTSLASH_VERSION: "0.5.9"
+      DOTSLASH_SHA256: 6e358adfd2125ab3f49967107a60a2683231d4f07f0e136735328fa1f21809b2
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-unknown-linux-gnu
+      TARGET: aarch64-unknown-linux-gnu
+    steps:
+      - name: 检出发布标签
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+
+      - name: 构建并验证 Linux ARM64 GNU
+        id: build
+        uses: ./.github/actions/build-linux-x64
+        with:
+          version: ${{ needs.release-plan.outputs.grok_version }}
+          release_build: 'true'
+
   release-attestations:
     name: 生成 Release 资产构建来源证明
     needs:
       - release-plan
       - windows-x64-gnu-validation
       - windows-x64-gnu
+      - windows-arm64-msvc-release
       - macos-arm-release
+      - macos-intel-release
       - linux-x64-gnu-release
+      - linux-arm64-gnu-release
     if: >-
       ${{
         !cancelled() &&
         needs.release-plan.result == 'success' &&
         needs.windows-x64-gnu-validation.result == 'success' &&
         needs.windows-x64-gnu.result == 'success' &&
+        (needs.windows-arm64-msvc-release.result == 'success' ||
+          (needs.windows-arm64-msvc-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false')) &&
         (
           needs.macos-arm-release.result == 'success' ||
           (
@@ -724,7 +834,11 @@ jobs:
             needs.linux-x64-gnu-release.result == 'skipped' &&
             needs.release-plan.outputs.include_linux == 'false'
           )
-        )
+        ) &&
+        (needs.macos-intel-release.result == 'success' ||
+          (needs.macos-intel-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false')) &&
+        (needs.linux-arm64-gnu-release.result == 'success' ||
+          (needs.linux-arm64-gnu-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false'))
       }}
     runs-on: windows-2022
     timeout-minutes: 15
@@ -734,13 +848,23 @@ jobs:
       attestations: write
     env:
       ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      WINDOWS_ARM_ARCHIVE_NAME: ${{ needs.windows-arm64-msvc-release.outputs.archive_name }}
       MAC_ARCHIVE_NAME: ${{ needs.macos-arm-release.outputs.archive_name }}
+      MAC_INTEL_ARCHIVE_NAME: ${{ needs.macos-intel-release.outputs.archive_name }}
       LINUX_ARCHIVE_NAME: ${{ needs.linux-x64-gnu-release.outputs.archive_name }}
+      LINUX_ARM_ARCHIVE_NAME: ${{ needs.linux-arm64-gnu-release.outputs.archive_name }}
     steps:
       - name: 下载 Windows Release 资产
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.release-plan.outputs.windows_artifact_name }}
+          path: dist
+
+      - name: 下载 Windows ARM64 Release 资产
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.windows-arm64-msvc-release.outputs.artifact_name }}
           path: dist
 
       - name: 下载 macOS Release 资产
@@ -750,11 +874,25 @@ jobs:
           name: ${{ needs.macos-arm-release.outputs.artifact_name }}
           path: dist
 
+      - name: 下载 macOS Intel Release 资产
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.macos-intel-release.outputs.artifact_name }}
+          path: dist
+
       - name: 下载 Linux Release 资产
         if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.linux-x64-gnu-release.outputs.artifact_name }}
+          path: dist
+
+      - name: 下载 Linux ARM64 Release 资产
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.linux-arm64-gnu-release.outputs.artifact_name }}
           path: dist
 
       - name: 为 Windows Release 资产生成构建来源证明
@@ -764,6 +902,14 @@ jobs:
             ${{ github.workspace }}/dist/${{ env.ZIP_NAME }}
             ${{ github.workspace }}/dist/${{ env.ZIP_NAME }}.sha256
 
+      - name: 为 Windows ARM64 Release 资产生成构建来源证明
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/${{ env.WINDOWS_ARM_ARCHIVE_NAME }}
+            ${{ github.workspace }}/dist/${{ env.WINDOWS_ARM_ARCHIVE_NAME }}.sha256
+
       - name: 为 macOS Release 资产生成构建来源证明
         if: ${{ needs.release-plan.outputs.include_macos == 'true' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -771,6 +917,14 @@ jobs:
           subject-path: |
             ${{ github.workspace }}/dist/${{ env.MAC_ARCHIVE_NAME }}
             ${{ github.workspace }}/dist/${{ env.MAC_ARCHIVE_NAME }}.sha256
+
+      - name: 为 macOS Intel Release 资产生成构建来源证明
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/${{ env.MAC_INTEL_ARCHIVE_NAME }}
+            ${{ github.workspace }}/dist/${{ env.MAC_INTEL_ARCHIVE_NAME }}.sha256
 
       - name: 为 Linux Release 资产生成构建来源证明
         if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
@@ -780,14 +934,25 @@ jobs:
             ${{ github.workspace }}/dist/${{ env.LINUX_ARCHIVE_NAME }}
             ${{ github.workspace }}/dist/${{ env.LINUX_ARCHIVE_NAME }}.sha256
 
+      - name: 为 Linux ARM64 Release 资产生成构建来源证明
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/${{ env.LINUX_ARM_ARCHIVE_NAME }}
+            ${{ github.workspace }}/dist/${{ env.LINUX_ARM_ARCHIVE_NAME }}.sha256
+
   release-publisher:
     name: 核验并发布唯一 Release
     needs:
       - release-plan
       - windows-x64-gnu-validation
       - windows-x64-gnu
+      - windows-arm64-msvc-release
       - macos-arm-release
+      - macos-intel-release
       - linux-x64-gnu-release
+      - linux-arm64-gnu-release
       - release-attestations
     if: >-
       ${{
@@ -796,6 +961,8 @@ jobs:
         needs.windows-x64-gnu-validation.result == 'success' &&
         needs.windows-x64-gnu.result == 'success' &&
         needs.release-attestations.result == 'success' &&
+        (needs.windows-arm64-msvc-release.result == 'success' ||
+          (needs.windows-arm64-msvc-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false')) &&
         (
           needs.macos-arm-release.result == 'success' ||
           (
@@ -809,7 +976,11 @@ jobs:
             needs.linux-x64-gnu-release.result == 'skipped' &&
             needs.release-plan.outputs.include_linux == 'false'
           )
-        )
+        ) &&
+        (needs.macos-intel-release.result == 'success' ||
+          (needs.macos-intel-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false')) &&
+        (needs.linux-arm64-gnu-release.result == 'success' ||
+          (needs.linux-arm64-gnu-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false'))
       }}
     runs-on: windows-2022
     timeout-minutes: 30
@@ -821,10 +992,14 @@ jobs:
       RELEASE_TAG: ${{ needs.release-plan.outputs.release_tag }}
       GROK_VERSION: ${{ needs.release-plan.outputs.grok_version }}
       ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      WINDOWS_ARM_ARCHIVE_NAME: ${{ needs.windows-arm64-msvc-release.outputs.archive_name }}
       MAC_ARCHIVE_NAME: ${{ needs.macos-arm-release.outputs.archive_name }}
+      MAC_INTEL_ARCHIVE_NAME: ${{ needs.macos-intel-release.outputs.archive_name }}
       LINUX_ARCHIVE_NAME: ${{ needs.linux-x64-gnu-release.outputs.archive_name }}
+      LINUX_ARM_ARCHIVE_NAME: ${{ needs.linux-arm64-gnu-release.outputs.archive_name }}
       INCLUDE_MACOS: ${{ needs.release-plan.outputs.include_macos }}
       INCLUDE_LINUX: ${{ needs.release-plan.outputs.include_linux }}
+      INCLUDE_NEW_PLATFORMS: ${{ needs.release-plan.outputs.include_new_platforms }}
       IS_PRERELEASE: ${{ needs.release-plan.outputs.is_prerelease }}
       DIST_DIR: ${{ github.workspace }}\dist
       RELEASE_NOTES_PATH: ${{ github.workspace }}\release-notes\release-notes.md
@@ -834,6 +1009,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.release-plan.outputs.windows_artifact_name }}
+          path: dist
+
+      - name: 下载 Windows ARM64 Release 资产
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.windows-arm64-msvc-release.outputs.artifact_name }}
           path: dist
 
       - name: 下载 Release 更新日志
@@ -849,11 +1031,25 @@ jobs:
           name: ${{ needs.macos-arm-release.outputs.artifact_name }}
           path: dist
 
+      - name: 下载 macOS Intel Release 资产
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.macos-intel-release.outputs.artifact_name }}
+          path: dist
+
       - name: 下载 Linux Release 资产
         if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.linux-x64-gnu-release.outputs.artifact_name }}
+          path: dist
+
+      - name: 下载 Linux ARM64 Release 资产
+        if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.linux-arm64-gnu-release.outputs.artifact_name }}
           path: dist
 
       - name: 创建 Draft、核验资产并发布
@@ -878,6 +1074,13 @@ jobs:
               (Join-Path $dist $env:LINUX_ARCHIVE_NAME),
               (Join-Path $dist "$env:LINUX_ARCHIVE_NAME.sha256")
             )
+          }
+          # Only the original platforms have clients that need public sidecars.
+          $legacySidecars = @($assets | Where-Object { $_.EndsWith('.sha256', [StringComparison]::Ordinal) })
+          if ($env:INCLUDE_NEW_PLATFORMS -eq 'true') {
+            foreach ($name in @($env:WINDOWS_ARM_ARCHIVE_NAME, $env:MAC_INTEL_ARCHIVE_NAME, $env:LINUX_ARM_ARCHIVE_NAME)) {
+              $assets += @((Join-Path $dist $name), (Join-Path $dist "$name.sha256"))
+            }
           }
           $notes = $env:RELEASE_NOTES_PATH
           if (!(Test-Path -LiteralPath $notes -PathType Leaf)) {
@@ -909,6 +1112,11 @@ jobs:
           if ($env:INCLUDE_LINUX -eq 'true') {
             Assert-ChecksumSidecar (Join-Path $dist $env:LINUX_ARCHIVE_NAME)
           }
+          if ($env:INCLUDE_NEW_PLATFORMS -eq 'true') {
+            foreach ($name in @($env:WINDOWS_ARM_ARCHIVE_NAME, $env:MAC_INTEL_ARCHIVE_NAME, $env:LINUX_ARM_ARCHIVE_NAME)) {
+              Assert-ChecksumSidecar (Join-Path $dist $name)
+            }
+          }
           $expectedLocalNames = @($assets | ForEach-Object { Split-Path $_ -Leaf })
           [Array]::Sort($expectedLocalNames, [StringComparer]::Ordinal)
           $actualLocalNames = @(
@@ -918,11 +1126,16 @@ jobs:
           if (($expectedLocalNames -join "`n") -cne ($actualLocalNames -join "`n")) {
             throw "发布目录不是精确资产集合：$($actualLocalNames -join ', ')"
           }
-          # Sidecars remain internal build/attestation inputs after retirement.
-          # The public asset list, including all later API checks, uses archives only.
+          # Select public Release assets after all local hashes have been checked.
+          # All sidecars remain internal build/attestation inputs. New platforms
+          # use GitHub asset digests from their first release, with no sidecar.
           if ($env:PUBLISH_LEGACY_SHA256 -eq 'false') {
             $assets = @($assets | Where-Object { !$_.EndsWith('.sha256', [StringComparison]::Ordinal) })
-          } elseif ($env:PUBLISH_LEGACY_SHA256 -ne 'true') {
+          } elseif ($env:PUBLISH_LEGACY_SHA256 -eq 'true') {
+            $assets = @($assets | Where-Object {
+              !$_.EndsWith('.sha256', [StringComparison]::Ordinal) -or $legacySidecars -ccontains $_
+            })
+          } else {
             throw '发布计划未提供明确的独立校验文件策略。'
           }
 
