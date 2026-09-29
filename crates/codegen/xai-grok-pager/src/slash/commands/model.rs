@@ -168,7 +168,28 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
             match_text: info.name.clone(),
             insert_text,
             description: info.description.clone().unwrap_or_default(),
-            presentation: None,
+            presentation: Some(if super::effort_levels::is_official_model(info) {
+                crate::slash::command::ArgPresentation::OfficialModel {
+                    model_id: id.0.to_string(),
+                    is_current,
+                }
+            } else {
+                info.meta
+                    .as_ref()
+                    .and_then(|meta| {
+                        meta.get(xai_grok_shell::agent::config::BUNDLED_MODEL_META_KEY)
+                    })
+                    .and_then(serde_json::Value::as_bool)
+                    .filter(|is_bundled| *is_bundled)
+                    .and_then(|_| match id.0.as_ref() {
+                        "grok-4.6" => Some(crate::slash::command::ArgPresentation::BundledModel {
+                            model_id: "grok-4.6",
+                            is_current,
+                        }),
+                        _ => None,
+                    })
+                    .unwrap_or(crate::slash::command::ArgPresentation::DynamicModel { is_current })
+            }),
         });
     }
     items
