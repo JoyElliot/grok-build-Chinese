@@ -190,10 +190,7 @@ Yes, and don't ask again / No）。“Yes, and don't ask again”会关闭该设
 
 ```
 /compact
-/compact [context]
 ```
-
-可选的 `context` 参数允许你提供关于压缩期间应保留哪些内容的附加说明。
 
 ### 自动压缩
 
@@ -339,6 +336,8 @@ Worktree 会话在内部通过 `x.ai/git/worktree/*` 扩展方法管理。关键
 - **Remove**：会话结束后清理 worktree
 
 使用 `grok-zh -w -r <session-id>` 在新的 worktree 中恢复会话。
+
+`grok-zh worktree create [NAME]` 会创建与 `grok-zh -w [NAME]` 相同的工作树，但不启动会话。它会输出原本将作为会话工作目录的路径；标准输出中只有这条路径，因此可以使用 `cd "$(grok-zh worktree create my-fix)"` 直接进入。默认以 HEAD 为基准创建工作树，并复制尚未提交的更改。传入 `--ref <ref>` 可从指定分支、标签或提交创建干净的检出。如果新工作树中不存在运行命令时所在的目录（例如 `--ref` 指向该目录创建之前的提交，或该目录被忽略），则输出工作树根目录。
 
 ### 检查磁盘用量
 

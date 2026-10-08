@@ -2563,7 +2563,7 @@ fn zh_localization_subagent_wait_preserves_new_and_dynamic_subjects() {
         (Some(waiting_on_subagents_subject(1)), "正在等待子代理…"),
         (
             Some(waiting_on_subagents_subject(2)),
-            "Waiting for 2 subagents…",
+            "正在等待 2 个子代理…",
         ),
         (Some("Audit workspace".to_owned()), "Audit workspace…"),
     ] {

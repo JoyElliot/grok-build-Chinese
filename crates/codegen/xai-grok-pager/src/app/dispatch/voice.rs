@@ -101,7 +101,10 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
     }
     // A new press would abort the clip reader and lose the recording; its final (or error) ends the wait
     if app.voice_state.blocks_new_capture() {
-        app.show_toast(TRANSCRIBING_TOAST);
+        app.show_toast(
+            app.locale
+                .named_static_text("voice.transcribing_last", TRANSCRIBING_TOAST),
+        );
         return vec![];
     }
     // Tier gate: free / X Basic personal users can't use voice (the server zero-limits these tiers)
@@ -145,7 +148,10 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
 /// Running `/voice` first is not required.
 pub(super) fn dispatch_voice_toggle(app: &mut AppView) -> Vec<Effect> {
     if app.voice_state.blocks_new_capture() {
-        app.show_toast(TRANSCRIBING_TOAST);
+        app.show_toast(
+            app.locale
+                .named_static_text("voice.transcribing_last", TRANSCRIBING_TOAST),
+        );
         return vec![];
     }
     if app.voice_listening() {

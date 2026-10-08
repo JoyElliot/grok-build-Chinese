@@ -2187,6 +2187,17 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             error,
             remaining,
         } => {
+            let error = error
+                .strip_prefix("couldn't send interjection: ")
+                .map(|detail| {
+                    locale
+                        .named_text(
+                            "session.interjection.failed",
+                            "couldn't send interjection: {detail}",
+                        )
+                        .replace("{detail}", detail)
+                })
+                .unwrap_or(error);
             let failure_message = localized_template(
                 locale.as_ref(),
                 "turn.interject.failed_requeued",

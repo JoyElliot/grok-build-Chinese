@@ -1098,7 +1098,7 @@ async fn run_doctor(json: bool, name: Option<String>, locale: &LocaleContext) ->
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
     } else {
-        xai_grok_shell::mcp_doctor::print_report(&report);
+        xai_grok_shell::mcp_doctor::print_report_with_locale(&report, locale);
     }
 
     if report.failing_count > 0 {

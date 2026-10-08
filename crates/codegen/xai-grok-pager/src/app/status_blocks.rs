@@ -320,7 +320,7 @@ pub(crate) fn session_usage_block_text_with_locale(
         rows.push(String::new());
         rows.push(status_text(locale, "status.usage.by_model", "  By model:").into_owned());
         for (model, m) in &usage.model_usage {
-            rows.push(format_by_model_row(model, m));
+            rows.push(format_by_model_row_with_locale(model, m, locale));
         }
     }
     if usage.usage_is_incomplete {
@@ -344,16 +344,28 @@ pub(crate) fn session_usage_block_text_with_locale(
     )
 }
 /// Formats one `By model:` row. The cost cell is omitted when `cost_usd_ticks` is `None`.
-fn format_by_model_row(
+fn format_by_model_row_with_locale(
     model: &str,
     m: &xai_grok_shell::extensions::notification::PromptUsageModel,
+    locale: Option<&crate::locale::LocaleContext>,
 ) -> String {
     let tokens = group_thousands(m.total_tokens);
-    if m.cost_usd_ticks.is_some() {
-        format!("    {model}: {tokens} Tokens · {}", format_cost(m, None))
+    let (id, english) = if m.cost_usd_ticks.is_some() {
+        (
+            "status.usage.model_total_cost",
+            "    {model}: {tokens} Tokens · {cost}",
+        )
     } else {
-        format!("    {model}: {tokens} Tokens")
-    }
+        ("status.usage.model_total", "    {model}: {tokens} Tokens")
+    };
+    crate::localized_text::format_template(
+        &status_text(locale, id, english),
+        &[
+            ("{model}", model),
+            ("{tokens}", &tokens),
+            ("{cost}", &format_cost(m, locale)),
+        ],
+    )
 }
 
 /// Cost cell. Ticks are 1e10 per USD; partial sums are scrubbed to absent.
@@ -623,5 +635,23 @@ mod tests {
             format_queue_row_with_locale(3, "first\nsecond\nthird", Some(&locale)),
             "  #3  first  （另有 2 行）"
         );
+    }
+}
+
+#[cfg(test)]
+mod model_total_translation_tests {
+    #[test]
+    fn model_name_is_opaque_in_localized_total_row() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let usage = xai_grok_shell::extensions::notification::PromptUsageModel {
+            total_tokens: 1_234,
+            ..Default::default()
+        };
+        let row =
+            super::format_by_model_row_with_locale("model-{tokens}-{cost}", &usage, Some(&locale));
+        assert_eq!(row, "    model-{tokens}-{cost}：1,234 Token");
     }
 }

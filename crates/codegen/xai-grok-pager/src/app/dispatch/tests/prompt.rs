@@ -3623,10 +3623,44 @@ fn palette_dispatch_preserves_prompt_draft() {
     );
 }
 
-#[test]
-fn slash_compact_with_trailing_text_is_refused() {
+#[rstest::rstest]
+#[case::english_fullscreen(
+    crate::locale::UiLocale::EnUs,
+    crate::app::ScreenMode::Fullscreen,
+    "/compact takes no arguments."
+)]
+#[case::chinese_fullscreen(
+    crate::locale::UiLocale::ZhCn,
+    crate::app::ScreenMode::Fullscreen,
+    "/compact 不接受参数。"
+)]
+#[case::english_minimal(
+    crate::locale::UiLocale::EnUs,
+    crate::app::ScreenMode::Minimal,
+    "/compact takes no arguments."
+)]
+#[case::chinese_minimal(
+    crate::locale::UiLocale::ZhCn,
+    crate::app::ScreenMode::Minimal,
+    "/compact 不接受参数。"
+)]
+fn slash_compact_with_trailing_text_is_refused(
+    #[case] locale: crate::locale::UiLocale,
+    #[case] screen_mode: crate::app::ScreenMode,
+    #[case] expected: &str,
+) {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
+    app.locale = Arc::new(crate::locale::LocaleContext::new(
+        crate::locale::ResolvedLocale {
+            locale,
+            source: crate::locale::LocaleSource::Cli,
+        },
+    ));
+    app.screen_mode = screen_mode;
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.set_locale_recursive(&app.locale);
+    agent.prompt.set_text("/compact focus on auth");
 
     let effects = dispatch(
         Action::SendPrompt("/compact focus on auth".into()),
@@ -3634,14 +3668,20 @@ fn slash_compact_with_trailing_text_is_refused() {
     );
 
     assert!(effects.is_empty(), "nothing runs, got {effects:?}");
-    assert_eq!(
+    let notice = if screen_mode.is_minimal() {
+        Some(last_system_text(&app, id))
+    } else {
         agent_ref(&app, id)
             .toast
             .as_ref()
-            .map(|(text, _)| text.as_str()),
-        Some("/compact takes no arguments."),
+            .map(|(text, _)| text.clone())
+    };
+    assert_eq!(
+        notice.as_deref(),
+        Some(expected),
         "the send path refuses before the command runs"
     );
+    assert_eq!(agent_ref(&app, id).prompt.text(), "/compact focus on auth");
 }
 
 #[test]

@@ -1048,6 +1048,15 @@ pub enum PermissionLabel {
 }
 impl PermissionLabel {
     /// The text the info-line flags and the scrollback rows show. It can differ from the config id.
+    pub fn display_name_with_locale(self, locale: &crate::locale::LocaleContext) -> &'static str {
+        match self {
+            Self::Auto => locale.named_static_text("mode.auto_review.label", self.display_name()),
+            Self::Ask => locale.named_static_text("mode.ask.label", self.display_name()),
+            Self::AlwaysApprove => {
+                locale.named_static_text("mode.always_approve.label", self.display_name())
+            }
+        }
+    }
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Ask => "ask",

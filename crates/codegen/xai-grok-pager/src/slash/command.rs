@@ -67,6 +67,11 @@ pub enum CommandResult {
 /// A suggestion item for command argument completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArgPresentation {
+    ContextWindow {
+        window: u64,
+        active: bool,
+        default: bool,
+    },
     OfficialSkill {
         skill_id: String,
     },

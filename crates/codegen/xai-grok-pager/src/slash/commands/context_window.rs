@@ -151,7 +151,11 @@ pub(crate) fn window_arg_items(
                 match_text: format!("{sort_prefix} {insert_text}"),
                 insert_text,
                 description: format!("{default_prefix}{window} tokens"),
-                presentation: None,
+                presentation: Some(crate::slash::command::ArgPresentation::ContextWindow {
+                    window,
+                    active: active == Some(window),
+                    default: default == Some(window),
+                }),
             }
         })
         .collect()

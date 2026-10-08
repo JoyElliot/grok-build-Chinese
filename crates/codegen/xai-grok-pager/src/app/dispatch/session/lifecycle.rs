@@ -2161,10 +2161,11 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 } else if let Some(selection) = context_window_selection.filter(|selection| {
                     agent.session.models.context_window_selection == Some(selection.get())
                 }) {
-                    agent.scrollback.push_block(RenderBlock::system(format!(
-                        "Context window set to {}",
-                        format_window(selection.get())
-                    )));
+                    agent.scrollback.push_block(RenderBlock::system(
+                        locale
+                            .named_text("session.context.set", "Context window set to {window}")
+                            .replace("{window}", &format_window(selection.get())),
+                    ));
                 }
                 if unchanged {
                     vec![]
@@ -2181,21 +2182,27 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 }
                 agent.active_modal = None;
                 if context_window_selection.is_some() {
-                    agent.scrollback.push_block(RenderBlock::system(
+                    agent
+                        .scrollback
+                        .push_block(RenderBlock::system(locale.named_static_text(
+                        "session.context.after_start",
                         "Context window applies once the session starts; run /context-window then",
-                    ));
+                    )));
                 }
                 let display_name = agent.session.models.display_name_for(&model_id);
                 return open_agent_type_mismatch_question(app, model_id, effort, &display_name);
             }
             Err(SwitchModelError::Other(msg)) => {
                 let text = match context_window_selection {
-                    Some(selection) => {
-                        format!(
-                            "Couldn't set context window to {}: {msg}",
-                            format_window(selection.get())
-                        )
-                    }
+                    Some(selection) => localized_template(
+                        locale.as_ref(),
+                        "session.context.failed",
+                        "Couldn't set context window to {window}: {error}",
+                        &[
+                            ("{window}", &format_window(selection.get())),
+                            ("{error}", &msg),
+                        ],
+                    ),
                     None => localized_template(
                         locale.as_ref(),
                         "session.model.switch_failed",

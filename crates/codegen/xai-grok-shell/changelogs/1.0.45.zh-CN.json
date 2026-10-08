@@ -1,0 +1,22 @@
+[
+  {
+    "category": "fixes",
+    "description": "父轮次等待子代理而无法继续时，**子代理等待状态**现在会正确显示“正在等待 N 个子代理…”。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "插件或配置中的**自定义智能体**现在可直接通过 `spawn_subagent` 选择。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP 服务器**现在支持令牌文件，每次请求都会重新读取，确保轮换后的凭据及时生效。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**模型现在可显示彩色通知横幅**，在选中该模型期间显示于输入框上方。",
+    "breaking_change": false
+  }
+]

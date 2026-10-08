@@ -429,20 +429,29 @@ impl AgentView {
 
     fn push_unanswered_elicitation_notice(&mut self, server: &str, outcome: UnansweredElicitation) {
         let server = notice_server_name(server);
-        let text = match outcome {
-            UnansweredElicitation::Declined => {
-                format!("Declined MCP “{server}” request for input.")
-            }
-            UnansweredElicitation::Cancelled => {
-                format!("Dismissed MCP “{server}” request for input without answering.")
-            }
-            UnansweredElicitation::ClosedElsewhere => format!(
-                "MCP “{server}” request for input closed before it was answered here (it timed out or was answered elsewhere)."
+        let (id, english) = match outcome {
+            UnansweredElicitation::Declined => (
+                "mcp.input.declined",
+                "Declined MCP “{server}” request for input.",
             ),
-            UnansweredElicitation::Superseded => {
-                format!("Cancelled MCP “{server}” request for input to show a newer one.")
-            }
+            UnansweredElicitation::Cancelled => (
+                "mcp.input.dismissed",
+                "Dismissed MCP “{server}” request for input without answering.",
+            ),
+            UnansweredElicitation::ClosedElsewhere => (
+                "mcp.input.closed",
+                "MCP “{server}” request for input closed before it was answered here (it timed out or was answered elsewhere).",
+            ),
+            UnansweredElicitation::Superseded => (
+                "mcp.input.superseded",
+                "Cancelled MCP “{server}” request for input to show a newer one.",
+            ),
         };
+        let text = self
+            .scrollback
+            .locale()
+            .named_text(id, english)
+            .replace("{server}", &server);
         crate::app::mode_switch::push_block_behind_live_stream(
             &mut self.scrollback,
             crate::scrollback::block::RenderBlock::system(text),

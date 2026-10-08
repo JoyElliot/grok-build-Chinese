@@ -240,9 +240,15 @@ impl AppView {
             let kept = crate::voice::commit_interim_into_prompt(self).is_some();
             self.voice_reset();
             self.show_toast(if kept {
-                crate::voice::TRANSCRIPTION_TIMED_OUT_KEPT_TOAST
+                self.locale.named_static_text(
+                    "voice.timeout_kept",
+                    crate::voice::TRANSCRIPTION_TIMED_OUT_KEPT_TOAST,
+                )
             } else {
-                crate::voice::TRANSCRIPTION_TIMED_OUT_TOAST
+                self.locale.named_static_text(
+                    "voice.timeout_discarded",
+                    crate::voice::TRANSCRIPTION_TIMED_OUT_TOAST,
+                )
             });
         }
     }

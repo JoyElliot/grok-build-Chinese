@@ -48,12 +48,62 @@ pub(crate) fn localize_command_error(
             Some("slash.command.memory.error.arguments")
         }
         "No themes available" => Some("slash.command.theme.error.none_available"),
+        "/compact takes no arguments." => Some("slash.command.compact.error.arguments"),
+        "No active session yet; retry once it starts" => {
+            Some("slash.command.context-window.error.no_session")
+        }
+        "current model has no selectable context windows" => {
+            Some("slash.command.context-window.error.no_options")
+        }
         "/flush takes no arguments." => Some("slash.command.flush.error.arguments"),
         "/dream takes no arguments." => Some("slash.command.dream.error.arguments"),
         _ => None,
     };
     if let Some(id) = owned_id {
         return locale.named_text(id, message).into_owned();
+    }
+    if message == "Usage: /model <name> [window] [effort]" {
+        return locale
+            .named_text("slash.command.model.usage", message)
+            .into_owned();
+    }
+    if let Some(rest) = message.strip_prefix("unknown context window '")
+        && let Some((token, offered)) = rest.rsplit_once("'; use one of: ")
+        && offered
+            .split(", ")
+            .all(|value| commands::context_window::parse_window_token(value).is_some())
+    {
+        return crate::localized_text::format_template(
+            &locale.named_text(
+                "slash.command.context-window.unknown",
+                "unknown context window '{token}'; use one of: {offered}",
+            ),
+            &[("{token}", token), ("{offered}", offered)],
+        );
+    }
+    if let Some(rest) = message.strip_prefix("Usage: /context-window <")
+        && let Some((options, suffix)) = rest.split_once('>')
+    {
+        let current = suffix
+            .strip_prefix(" (current: ")
+            .and_then(|value| value.strip_suffix(')'));
+        let current = current
+            .map(|window| {
+                locale
+                    .named_text(
+                        "slash.command.context-window.current",
+                        " (current: {window})",
+                    )
+                    .replace("{window}", window)
+            })
+            .unwrap_or_else(|| suffix.to_owned());
+        return crate::localized_text::format_template(
+            &locale.named_text(
+                "slash.command.context-window.usage",
+                "Usage: /context-window <{options}>{current}",
+            ),
+            &[("{options}", options), ("{current}", &current)],
+        );
     }
     if let Some(command) = message.strip_prefix("Usage: ") {
         return format!(
@@ -159,7 +209,11 @@ pub(crate) fn localize_command_error(
             )
             .replace("{mode}", &localized_mode);
     }
-    message.to_owned()
+    xai_grok_locale::diagnostics::localize(
+        locale,
+        xai_grok_locale::diagnostics::DiagnosticDomain::Model,
+        message,
+    )
 }
 
 /// Grouping for the bare `/` menu, ordered top to bottom. Skills sink below the commands because there can be far more of them than fit on screen.
@@ -400,6 +454,7 @@ fn args_placeholder_catalog_id(
             ("compact", "compaction instructions") => Some("slash.command.compact.arg_placeholder"),
             ("copy", "[N] [file]") => Some("slash.command.copy.arg_placeholder"),
             ("docs", "[web|title]") => Some("slash.command.docs.arg_placeholder"),
+            ("context-window", "<size>") => Some("slash.command.context-window.arg_placeholder"),
             ("effort", "<level>") => Some("slash.command.effort.arg_placeholder"),
             ("export", "[filename]") => Some("slash.command.export.arg_placeholder"),
             ("feedback", "[feedback text]") => Some("slash.command.feedback.arg_placeholder"),
@@ -412,7 +467,7 @@ fn args_placeholder_catalog_id(
                 Some("slash.command.imagine-video.arg_placeholder")
             }
             ("loop", "[interval] <prompt>") => Some("slash.command.loop.arg_placeholder"),
-            ("model", "<model> [effort]") => Some("slash.command.model.arg_placeholder"),
+            ("model", "<model> [window] [effort]") => Some("slash.command.model.arg_placeholder"),
             ("plan", "[description]") => Some("slash.command.plan.arg_placeholder"),
             ("remember", "[memory note text]") => Some("slash.command.remember.arg_placeholder"),
             ("rename", "<title>") => Some("slash.command.rename.arg_placeholder"),
@@ -4193,6 +4248,27 @@ mod tests {
         assert_eq!(
             reg.get_for_dispatch("theme").map(|cmd| cmd.name()),
             Some("theme")
+        );
+    }
+}
+
+#[cfg(test)]
+mod context_window_error_translation_tests {
+    #[test]
+    fn window_error_preserves_opaque_token_and_offered_values() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let message = "unknown context window '{offered}/private'; use one of: 256k, 1m";
+        let translated = super::localize_command_error(message, &locale);
+        assert_eq!(
+            translated,
+            "未知上下文窗口“{offered}/private”；可选值：256k, 1m"
+        );
+        assert_eq!(
+            super::localize_command_error(message, &crate::locale::LocaleContext::default()),
+            message
         );
     }
 }

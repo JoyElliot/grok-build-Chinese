@@ -156,6 +156,13 @@ impl WaitingReason {
                     .unwrap_or_else(|| waiting_on_subagents_subject(1));
                 if subject == waiting_on_subagents_subject(1) {
                     text("turn.waiting.subagent", "Waiting for subagent…")
+                } else if let Some(count) = subject
+                    .strip_prefix("Waiting for ")
+                    .and_then(|value| value.strip_suffix(" subagents"))
+                    .filter(|value| value.parse::<usize>().is_ok())
+                {
+                    text("turn.waiting.subagents", "Waiting for {count} subagents…")
+                        .replace("{count}", count)
                 } else {
                     format!("{subject}…")
                 }

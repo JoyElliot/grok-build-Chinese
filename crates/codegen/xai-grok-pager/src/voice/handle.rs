@@ -14,6 +14,36 @@ pub(crate) const TRANSCRIPTION_TIMED_OUT_TOAST: &str =
 pub(crate) const TRANSCRIPTION_TIMED_OUT_KEPT_TOAST: &str =
     "Voice: transcription timed out; the words shown so far were kept";
 
+fn localized_clip_message(locale: &crate::locale::LocaleContext, message: &str) -> String {
+    if message == "Transcription timed out. Try again in a moment." {
+        return locale
+            .named_text("voice.clip.timeout", message)
+            .into_owned();
+    }
+    if let Some(rest) = message.strip_prefix("Recording stopped at the ") {
+        for (suffix, id, english) in [
+            (
+                "-minute limit; the captured part was transcribed.",
+                "voice.clip.duration_limit",
+                "Recording stopped at the {minutes}-minute limit; the captured part was transcribed.",
+            ),
+            (
+                "-minute upload limit; the captured part was transcribed.",
+                "voice.clip.upload_limit",
+                "Recording stopped at the {minutes}-minute upload limit; the captured part was transcribed.",
+            ),
+        ] {
+            if let Some(minutes) = rest
+                .strip_suffix(suffix)
+                .filter(|value| value.parse::<u64>().is_ok())
+            {
+                return locale.named_text(id, english).replace("{minutes}", minutes);
+            }
+        }
+    }
+    message.to_owned()
+}
+
 /// Whether a draft counts as blank for voice insertion: an empty or whitespace-only draft is
 /// replaced wholesale rather than dictated into. Shared by the insert, submit-merge, and ghost
 /// preview paths so they agree on what "blank" means.
@@ -130,6 +160,42 @@ fn prompt_for_target_mut(app: &mut AppView, target: VoiceTarget) -> Option<&mut 
     }
 }
 
+#[cfg(test)]
+mod translation_tests {
+    use super::localized_clip_message;
+
+    #[test]
+    fn clip_notices_translate_only_owned_messages_and_numeric_limits() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let english = crate::locale::LocaleContext::default();
+        for (message, translated) in [
+            (
+                "Recording stopped at the 10-minute limit; the captured part was transcribed.",
+                "录音已达到 10 分钟上限，已停止录音并转写已录制的部分。",
+            ),
+            (
+                "Recording stopped at the 3-minute upload limit; the captured part was transcribed.",
+                "录音已达到 3 分钟上传上限，已停止录音并转写已录制的部分。",
+            ),
+            (
+                "Transcription timed out. Try again in a moment.",
+                "转写超时，请稍后重试。",
+            ),
+        ] {
+            assert_eq!(localized_clip_message(&locale, message), translated);
+            assert_eq!(localized_clip_message(&english, message), message);
+        }
+        let opaque = "provider {minutes}: /private/file";
+        assert_eq!(localized_clip_message(&locale, opaque), opaque);
+        let spoof =
+            "Recording stopped at the {minutes}-minute limit; the captured part was transcribed.";
+        assert_eq!(localized_clip_message(&locale, spoof), spoof);
+    }
+}
+
 /// Inserts `fragment` at the caret with smart spacing; replaces a blank draft outright. The caret ends right after
 /// the fragment: before a space added for the text that follows, so typing on continues the sentence.
 fn insert_voice_fragment_into_widget(prompt: &mut PromptWidget, fragment: &str) {
@@ -243,7 +309,12 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
             true
         }
         VoiceEvent::Notice { message } => {
-            app.show_toast(&format!("Voice: {message}"));
+            let message = localized_clip_message(app.locale.as_ref(), &message);
+            app.show_toast(
+                &app.locale
+                    .named_text("voice.message", "Voice: {message}")
+                    .replace("{message}", &message),
+            );
             true
         }
         VoiceEvent::UtteranceFinal { text } => {
@@ -258,6 +329,7 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
             true
         }
         VoiceEvent::Error { message, hint } => {
+            let message = localized_clip_message(app.locale.as_ref(), &message);
             let target = app.voice_recording_target();
             // A clip's shown partial is the best transcript there is (streaming committed on the way); a failed final
             // must not take a whole dictation with it
@@ -265,7 +337,11 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
                 let _ = commit_interim_into_prompt(app);
             }
             app.voice_reset();
-            app.show_toast(&format!("Voice: {message}"));
+            app.show_toast(
+                &app.locale
+                    .named_text("voice.message", "Voice: {message}")
+                    .replace("{message}", &message),
+            );
             // The hint holds long fix steps, so it goes to the agent or peek scrollback; a toast is one line, and dashboard dispatch has no scrollback
             if let Some(hint) = hint
                 && let Some(VoiceTarget::Agent(id) | VoiceTarget::DashboardPeekReply(id)) = target
@@ -273,9 +349,13 @@ pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
             {
                 agent
                     .scrollback
-                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
-                        "Voice: {message}. {hint}"
-                    )));
+                    .push_block(crate::scrollback::block::RenderBlock::system(
+                        crate::localized_text::format_template(
+                            &app.locale
+                                .named_text("voice.message_hint", "Voice: {message}. {hint}"),
+                            &[("{message}", &message), ("{hint}", &hint)],
+                        ),
+                    ));
             }
             true
         }

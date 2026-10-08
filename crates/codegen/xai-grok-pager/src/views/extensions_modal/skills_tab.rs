@@ -39,6 +39,14 @@ impl ExtensionsModalState {
 /// A header that counts the folders, then one row per folder with its error; nothing while the
 /// user searches. The picker selects no header row, so every row is one.
 pub(super) fn scan_error_rows(errors: &[SkillScanError], query: &str) -> Vec<String> {
+    scan_error_rows_with_locale(errors, query, None)
+}
+
+pub(super) fn scan_error_rows_with_locale(
+    errors: &[SkillScanError],
+    query: &str,
+    locale: Option<&crate::locale::LocaleContext>,
+) -> Vec<String> {
     if errors.is_empty() || !query.is_empty() {
         return Vec::new();
     }
@@ -46,6 +54,13 @@ pub(super) fn scan_error_rows(errors: &[SkillScanError], query: &str) -> Vec<Str
         1 => "Couldn't scan (1 folder) · r to reload".to_owned(),
         count => format!("Couldn't scan ({count} folders) · r to reload"),
     };
+    let header = locale
+        .map(|locale| {
+            locale
+                .named_text("extensions.skills.scan_failed", &header)
+                .replace("{count}", &errors.len().to_string())
+        })
+        .unwrap_or(header);
     std::iter::once(header)
         .chain(
             errors

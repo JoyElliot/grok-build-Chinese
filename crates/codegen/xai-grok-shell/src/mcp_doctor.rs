@@ -43,6 +43,8 @@ pub struct Check {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    #[serde(skip)]
+    token_path_error: Option<(String, xai_grok_config::BearerTokenPathError)>,
 }
 
 impl Check {
@@ -52,6 +54,7 @@ impl Check {
             passed: true,
             detail: Some(detail.into()),
             hint: None,
+            token_path_error: None,
         }
     }
 
@@ -61,6 +64,7 @@ impl Check {
             passed: false,
             detail: Some(detail.into()),
             hint: Some(hint.into()),
+            token_path_error: None,
         }
     }
 
@@ -70,6 +74,7 @@ impl Check {
             passed: false,
             detail: Some(detail.into()),
             hint: None,
+            token_path_error: None,
         }
     }
 }
@@ -299,6 +304,20 @@ async fn check_server_start(
     acp_server: agent_client_protocol::McpServer,
     cwd: &Path,
 ) -> Result<(mcp_servers::McpClient, Check), Check> {
+    let token_path_error = match &acp_server {
+        agent_client_protocol::McpServer::Http(server) => {
+            xai_grok_config::BearerTokenPath::from_meta(server.meta.as_ref())
+                .err()
+                .map(|error| (server.name.clone(), error))
+        }
+        agent_client_protocol::McpServer::Sse(server) => {
+            xai_grok_config::BearerTokenPath::from_meta(server.meta.as_ref())
+                .err()
+                .map(|error| (server.name.clone(), error))
+        }
+        agent_client_protocol::McpServer::Stdio(_) => None,
+        _ => None,
+    };
     let start = std::time::Instant::now();
     let noop = xai_grok_session_events::EventWriter::noop();
     let ctx = mcp_servers::McpSpawnCtx::standalone(&noop)
@@ -311,7 +330,16 @@ async fn check_server_start(
                 Check::pass("server started", format!("{:.1}s", elapsed.as_secs_f64())),
             ))
         }
-        Err(e) => Err(format_mcp_error("server failed to start", &e)),
+        Err(e) => {
+            let mut check = format_mcp_error("server failed to start", &e);
+            if let Some((server, error)) = token_path_error
+                && matches!(&e, mcp_servers::McpError::ClientError(message)
+                    if message == &format!("MCP server '{server}': {error}"))
+            {
+                check.token_path_error = Some((server, error));
+            }
+            Err(check)
+        }
     }
 }
 
@@ -788,7 +816,29 @@ pub async fn run_doctor(cwd: &Path, name_filter: Option<&str>) -> DoctorReport {
 
 // ── Human-readable output ───────────────────────────────────────
 
+fn check_display_detail(check: &Check, locale: &xai_grok_locale::LocaleContext) -> String {
+    match &check.token_path_error {
+        Some((server, error)) => {
+            let english = error.to_string();
+            let detail = xai_grok_locale::diagnostics::localize(
+                locale,
+                xai_grok_locale::diagnostics::DiagnosticDomain::Mcp,
+                &english,
+            );
+            if detail == english {
+                return check.detail.as_deref().unwrap_or("").to_owned();
+            }
+            format!("MCP client error: MCP server '{server}': {detail}")
+        }
+        None => check.detail.as_deref().unwrap_or("").to_owned(),
+    }
+}
+
 pub fn print_report(report: &DoctorReport) {
+    print_report_with_locale(report, &xai_grok_locale::LocaleContext::default());
+}
+
+pub fn print_report_with_locale(report: &DoctorReport, locale: &xai_grok_locale::LocaleContext) {
     println!();
     println!("MCP Doctor");
     println!();
@@ -824,7 +874,7 @@ pub fn print_report(report: &DoctorReport) {
         );
         for check in &server.checks {
             let icon = if check.passed { "\u{2713}" } else { "\u{2717}" };
-            let detail = check.detail.as_deref().unwrap_or("");
+            let detail = check_display_detail(check, locale);
             if detail.is_empty() {
                 println!("    {} {}", icon, check.label);
             } else {
@@ -854,6 +904,66 @@ pub fn print_report(report: &DoctorReport) {
 mod tests {
     use super::*;
     use mcp_servers::McpError;
+
+    fn diagnostic_zh_locale() -> xai_grok_locale::LocaleContext {
+        xai_grok_locale::LocaleContext::new(xai_grok_locale::ResolvedLocale {
+            locale: xai_grok_locale::UiLocale::ZhCn,
+            source: xai_grok_locale::LocaleSource::Requirement,
+        })
+    }
+
+    #[test]
+    fn doctor_does_not_translate_opaque_command_or_server_error() {
+        let command = "bearer_token_file /tmp/{0} is empty";
+        let check = check_command_exists(command);
+        assert!(!check.passed);
+        assert_eq!(
+            check_display_detail(&check, &diagnostic_zh_locale()),
+            command
+        );
+        let error = McpError::ClientError(
+            "MCP server 'opaque': bearer_token_file `relative` must be an absolute or ~/ path"
+                .into(),
+        );
+        let check = format_mcp_error("server failed to start", &error);
+        assert_eq!(
+            check_display_detail(&check, &diagnostic_zh_locale()),
+            error.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_localizes_verified_token_path_failure_and_preserves_json() {
+        let server: agent_client_protocol::McpServer = serde_json::from_value(serde_json::json!({
+            "type": "http",
+            "name": "opaque {0}",
+            "url": "http://127.0.0.1:1/mcp",
+            "headers": [],
+            "_meta": { "x.ai/mcp/bearerTokenFile": "relative {1}" }
+        }))
+        .unwrap();
+        let check = match check_server_start(server, Path::new("/tmp")).await {
+            Ok(_) => panic!("relative token path must fail before network access"),
+            Err(check) => check,
+        };
+        let raw = "MCP client error: MCP server 'opaque {0}': bearer_token_file `relative {1}` must be an absolute or ~/ path";
+        assert_eq!(check.detail.as_deref(), Some(raw));
+        assert_eq!(
+            check_display_detail(&check, &diagnostic_zh_locale()),
+            "MCP client error: MCP server 'opaque {0}': bearer_token_file `relative {1}` 必须是绝对路径或以 ~/ 开头的路径"
+        );
+        assert_eq!(
+            check_display_detail(&check, &xai_grok_locale::LocaleContext::default()),
+            raw
+        );
+        assert_eq!(
+            serde_json::to_value(&check).unwrap(),
+            serde_json::json!({
+                "label": "server failed to start", "passed": false,
+                "detail": raw, "hint": "check server logs"
+            })
+        );
+    }
 
     /// A hint must only survive on the first barrier.
     #[test]

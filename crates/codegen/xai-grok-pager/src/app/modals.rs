@@ -1860,6 +1860,11 @@ impl AgentView {
                         "Pick model" => {
                             modal_static_text(locale, "picker.title.model", "Pick model")
                         }
+                        "Pick context window" => modal_static_text(
+                            locale,
+                            "picker.title.context_window",
+                            "Pick context window",
+                        ),
                         title => title,
                     },
                     "theme" | "t" => modal_static_text(locale, "picker.title.theme", "Pick theme"),

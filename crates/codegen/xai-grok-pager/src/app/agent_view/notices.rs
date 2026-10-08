@@ -255,7 +255,7 @@ impl AgentView {
         let locale = self.scrollback.locale();
         let localized_mode = match mode_name {
             "Plan" => locale.named_text("mode.plan.label", mode_name),
-            "Auto" => locale.named_text("mode.auto.label", mode_name),
+            "Auto" | "Auto-review" => locale.named_text("mode.auto_review.label", mode_name),
             "Normal" => locale.named_text("mode.normal.label", mode_name),
             "Always-Approve" => locale.named_text("mode.always_approve.label", mode_name),
             _ => std::borrow::Cow::Borrowed(mode_name),

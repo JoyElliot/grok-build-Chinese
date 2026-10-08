@@ -539,7 +539,10 @@ fn permission_mode_toast_with_locale(
     use crate::app::actions::PermissionModeKind;
     let (id, english) = match kind {
         PermissionModeKind::AlwaysApprove => return yolo_toast_with_locale(true, locale),
-        PermissionModeKind::Auto => return "\u{2713} Permission mode: Auto-review".to_string(),
+        PermissionModeKind::Auto => (
+            "toast.permission.mode_auto",
+            "\u{2713} Permission mode: Auto-review",
+        ),
         PermissionModeKind::Ask => ("toast.permission.mode_ask", "\u{2713} Permission mode: Ask"),
         PermissionModeKind::Default => (
             "toast.permission.mode_default",
@@ -815,7 +818,12 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                     agent.session.yolo_mode = false;
                     app.default_yolo = false;
                     app.current_ui.permission_mode = Some("auto".into());
-                    agent.show_mode_switch_banner("Auto-review");
+                    agent.show_mode_switch_banner(
+                        agent
+                            .scrollback
+                            .locale()
+                            .named_static_text("mode.auto_review.label", "Auto-review"),
+                    );
                     tracing::info!("Mode cycle (pre-session): Plan → Auto");
                     Some("auto")
                 } else if let Some(warning) = yolo_locked {
@@ -882,7 +890,12 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                 // A launch-seeded default_yolo would start the session in yolo while the UI shows Auto
                 app.default_yolo = false;
                 app.current_ui.permission_mode = Some("auto".into());
-                agent.show_mode_switch_banner("Auto-review");
+                agent.show_mode_switch_banner(
+                    agent
+                        .scrollback
+                        .locale()
+                        .named_static_text("mode.auto_review.label", "Auto-review"),
+                );
                 tracing::info!("Mode cycle (pre-session): Plan+Auto → Auto");
                 Some("auto")
             }
@@ -986,7 +999,14 @@ fn mode_choices(
         ];
     }
     if auto_gate {
-        choices.push((ModeChoice::Auto, "Auto-review".into()));
+        choices.push((
+            ModeChoice::Auto,
+            agent
+                .scrollback
+                .locale()
+                .named_text("mode.auto_review.label", "Auto-review")
+                .into_owned(),
+        ));
     }
     choices.push((ModeChoice::AlwaysApprove, "Always-Approve".into()));
     choices

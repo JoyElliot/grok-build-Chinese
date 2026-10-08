@@ -573,9 +573,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
         return vec![];
     }
     if crate::app::is_daemon_or_remote_control_row(&source) {
-        app.show_toast(
+        app.show_toast(app.locale.named_static_text(
+            "session.worktree.remote_forbidden",
             "Sessions from the daemon or another machine can't be resumed in a worktree",
-        );
+        ));
         return vec![];
     }
     #[cfg(feature = "local-workspace")]
@@ -1523,15 +1524,23 @@ fn restore_prompts_held_during_load(agent: &mut AgentView) {
             }
         })
         .collect();
+    let locale = agent.scrollback.locale();
     let images = match dropped_images {
         0 => String::new(),
-        1 => " (1 image dropped)".to_owned(),
-        n => format!(" ({n} images dropped)"),
+        1 => locale
+            .named_text("session.images.dropped_one", " (1 image dropped)")
+            .into_owned(),
+        n => locale
+            .named_text("session.images.dropped_many", " ({count} images dropped)")
+            .replace("{count}", &n.to_string()),
     };
-    agent.scrollback.push_block(RenderBlock::system(format!(
-        "Not sent, since the session didn't open{images}:\n{}",
-        lines.join("\n")
-    )));
+    let message = localized_template(
+        locale,
+        "session.not_sent",
+        "Not sent, since the session didn't open{images}:\n{content}",
+        &[("{images}", &images), ("{content}", &lines.join("\n"))],
+    );
+    agent.scrollback.push_block(RenderBlock::system(message));
 }
 pub(in crate::app::dispatch) fn handle_session_search_debounce_expired(
     app: &mut AppView,

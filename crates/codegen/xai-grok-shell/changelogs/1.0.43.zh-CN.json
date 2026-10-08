@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**MCP 工具输入请求**现在能在精简模式中正确显示；请求未获答复时，也会通知用户。",
+    "breaking_change": false
+  }
+]

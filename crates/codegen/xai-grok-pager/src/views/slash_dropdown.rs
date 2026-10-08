@@ -147,6 +147,15 @@ fn localized_argument_display_with_presentation(
     description: &str,
     presentation: Option<ArgPresentation>,
 ) -> String {
+    if let Some(ArgPresentation::ContextWindow { window, active, .. }) = &presentation {
+        let label = crate::slash::commands::context_window::format_window(*window);
+        let suffix = if *active {
+            locale.named_static_text("slash.window.active", " (active)")
+        } else {
+            ""
+        };
+        return format!("{label}{suffix}");
+    }
     if let Some(ArgPresentation::OfficialModel { is_current, .. }) = &presentation {
         return if *is_current && locale.locale() == crate::locale::UiLocale::ZhCn {
             text.strip_suffix(" (current)")
@@ -250,6 +259,7 @@ fn localized_argument_display_with_presentation(
         Some(ArgPresentation::OfficialSkill { .. }) => None,
         Some(
             ArgPresentation::Opaque
+            | ArgPresentation::ContextWindow { .. }
             | ArgPresentation::OfficialModel { .. }
             | ArgPresentation::OfficialEffort { .. },
         ) => unreachable!("handled above"),
@@ -325,6 +335,20 @@ fn localized_argument_description_with_presentation(
     english: &str,
     presentation: Option<ArgPresentation>,
 ) -> String {
+    if let Some(ArgPresentation::ContextWindow {
+        window, default, ..
+    }) = &presentation
+    {
+        let prefix = if *default {
+            locale.named_static_text("slash.window.default", "Default • ")
+        } else {
+            ""
+        };
+        return crate::localized_text::format_template(
+            &locale.named_text("slash.window.tokens", "{prefix}{window} tokens"),
+            &[("{prefix}", prefix), ("{window}", &window.to_string())],
+        );
+    }
     match &presentation {
         Some(ArgPresentation::OfficialSkill { skill_id }) => {
             return locale
@@ -1959,5 +1983,38 @@ mod tests {
         let desc_x = (PREFIX_W + LABEL_CAP + 1) as u16;
         assert_eq!(desc_col(0, "cache help"), desc_x, "{}", row_text(0));
         assert_eq!(desc_col(1, "long name"), desc_x, "{}", row_text(1));
+    }
+}
+
+#[cfg(test)]
+mod context_window_translation_tests {
+    use super::*;
+
+    #[test]
+    fn window_chrome_localizes_without_changing_inserted_value_or_opaque_rows() {
+        let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+            locale: crate::locale::UiLocale::ZhCn,
+            source: crate::locale::LocaleSource::Cli,
+        });
+        let rows = crate::slash::commands::context_window::window_arg_items(
+            &[256_000],
+            Some(256_000),
+            Some(256_000),
+            |label, _| format!("model-{label}"),
+        );
+        let item = &rows[0];
+        assert_eq!(localized_arg_item_display(&locale, item), "256k（使用中）");
+        assert_eq!(
+            localized_arg_item_description(&locale, item),
+            "默认 • 256000 Token"
+        );
+        assert_eq!(item.insert_text, "model-256k");
+        let mut opaque = item.clone();
+        opaque.presentation = Some(ArgPresentation::Opaque);
+        assert_eq!(localized_arg_item_display(&locale, &opaque), item.display);
+        assert_eq!(
+            localized_arg_item_description(&locale, &opaque),
+            item.description
+        );
     }
 }

@@ -441,7 +441,7 @@ fn paint_peek_config_badge(
     );
     for flag in &mut flags {
         flag.text = match flag.text {
-            "auto" => peek_static(locale, "mode.auto.label", "auto"),
+            "auto-review" => peek_static(locale, "mode.auto_review.label", "auto-review"),
             "always-approve" => peek_static(locale, "mode.always_approve.label", "always-approve"),
             other => other,
         };

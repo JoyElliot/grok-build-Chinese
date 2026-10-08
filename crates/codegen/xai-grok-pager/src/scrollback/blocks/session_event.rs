@@ -853,7 +853,7 @@ impl SessionEvent {
                 "scrollback.session_event.plan_mode_entered",
                 "Agent entered plan mode · active permission mode: {permission} · file edits outside session plan.md blocked until plan mode exits",
             )
-            .replace("{permission}", permission.display_name()),
+            .replace("{permission}", permission.display_name_with_locale(locale)),
             SessionEvent::PlanReviewClosed {
                 outcome,
                 permission,
@@ -868,7 +868,7 @@ impl SessionEvent {
                         "Plan abandoned · plan mode off · active permission mode: {permission}",
                     ),
                 };
-                text(id, english).replace("{permission}", permission.display_name())
+                text(id, english).replace("{permission}", permission.display_name_with_locale(locale))
             }
         }
     }
@@ -1384,18 +1384,17 @@ mod tests {
         };
         assert_eq!(hook.message_with_locale(&zh), payload);
         assert_eq!(hook.message_with_locale(&en), hook.message());
-        for permission in [
-            PermissionLabel::Ask,
-            PermissionLabel::Auto,
-            PermissionLabel::AlwaysApprove,
+        for (permission, expected_label) in [
+            (PermissionLabel::Ask, "询问"),
+            (PermissionLabel::Auto, "自动审查"),
+            (PermissionLabel::AlwaysApprove, "始终批准"),
         ] {
             let entered = SessionEvent::PlanModeEnteredByAgent { permission };
             assert_eq!(entered.message_with_locale(&en), entered.message());
             assert_eq!(
                 entered.message_with_locale(&zh),
                 format!(
-                    "代理已进入计划模式 · 当前权限模式：{} · 退出计划模式前，禁止编辑会话 plan.md 以外的文件",
-                    permission.display_name(),
+                    "代理已进入计划模式 · 当前权限模式：{expected_label} · 退出计划模式前，禁止编辑会话 plan.md 以外的文件",
                 )
             );
             for (outcome, verdict) in [
@@ -1409,10 +1408,7 @@ mod tests {
                 assert_eq!(closed.message_with_locale(&en), closed.message());
                 assert_eq!(
                     closed.message_with_locale(&zh),
-                    format!(
-                        "计划已{verdict} · 计划模式已关闭 · 当前权限模式：{}",
-                        permission.display_name(),
-                    )
+                    format!("计划已{verdict} · 计划模式已关闭 · 当前权限模式：{expected_label}",)
                 );
             }
         }

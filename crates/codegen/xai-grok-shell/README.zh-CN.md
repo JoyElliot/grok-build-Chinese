@@ -70,6 +70,8 @@ Windows 云构建包下载后只需解压一次。要自动安装并把 `grok-zh
 - 使用 `/tutorial` 打开中文上手教程。
 - 使用 `/settings` 调整界面与行为设置。
 - 使用 `/model` 选择可用模型。
+- 模型提供多种上下文窗口大小时，使用 `/context-window` 为当前会话选择窗口大小。
+- 使用 `/compact` 压缩会话历史，释放上下文空间。
 - 使用 `/sessions` 浏览或恢复会话。
 - 使用 `/new` 开始新会话。
 - 使用 `/quit` 退出。
@@ -105,6 +107,8 @@ Windows 云构建包下载后只需解压一次。要自动安装并把 `grok-zh
 项目规则通常使用仓库中的 `AGENTS.md`。上层目录和更靠近当前文件的规则可能共同生效；修改前应确认作用域。
 
 配置键沿用官方格式。升级上游版本后，配置能力可能变化；以 `grok-zh --help`、设置界面和当前源码为准。
+
+上下文窗口、自定义模型通知及模型列表认证方式见[自定义模型指南](../xai-grok-pager/docs/user-guide/zh-CN/11-custom-models.md)；完整配置键说明见[配置参考](../xai-grok-pager/docs/user-guide/zh-CN/26-config-reference.md)。
 
 ## 会话与数据
 

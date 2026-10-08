@@ -10,6 +10,35 @@ use xai_acp_lib::acp_send;
 use xai_fast_worktree::WorktreeRecord;
 use xai_grok_shell::agent::config::Config as AgentConfig;
 
+fn create_help(id: &str, english: &'static str) -> &'static str {
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let cli = args
+        .windows(2)
+        .find_map(|pair| match pair {
+            [flag, value] if flag == "--locale" => Some(value.as_str()),
+            _ => None,
+        })
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--locale=")));
+    let environment = std::env::var(xai_grok_product::LOCALE_ENV).ok();
+    create_help_locale(cli, environment.as_deref()).named_static_text(id, english)
+}
+
+fn create_help_locale(
+    cli: Option<&str>,
+    environment: Option<&str>,
+) -> crate::locale::LocaleContext {
+    crate::locale::LocaleContext::new(crate::locale::ResolvedLocale::resolve(
+        crate::locale::LocalePreferences {
+            cli,
+            environment,
+            product_default: Some(xai_grok_product::DEFAULT_UI_LOCALE),
+            ..Default::default()
+        },
+    ))
+}
+
 fn localized_named(
     locale: &crate::locale::LocaleContext,
     id: &str,
@@ -37,11 +66,13 @@ pub struct WorktreeArgs {
 #[derive(Debug, Subcommand, Clone)]
 enum WorktreeCommand {
     /// Create a worktree the way `grok -w` does, without starting a session
+    #[command(about = create_help("worktree.create.help", "Create a worktree the way `grok -w` does, without starting a session"))]
     Create {
         /// Worktree name; generated when omitted
+        #[arg(help = create_help("worktree.create.name.help", "Worktree name; generated when omitted"))]
         name: Option<String>,
         /// Branch, tag, or commit to base the worktree on; without it, HEAD plus uncommitted changes
-        #[arg(long = "ref", value_name = "REF")]
+        #[arg(long = "ref", value_name = "REF", help = create_help("worktree.create.ref.help", "Branch, tag, or commit to base the worktree on; without it, HEAD plus uncommitted changes"))]
         git_ref: Option<String>,
     },
     /// 列出已跟踪的工作树
@@ -143,13 +174,19 @@ async fn dispatch(
 ) -> Result<()> {
     match command {
         WorktreeCommand::Create { name, git_ref } => {
-            let source_cwd =
-                std::env::current_dir().context("couldn't read the current directory")?;
+            let source_cwd = std::env::current_dir().with_context(|| {
+                locale
+                    .named_text(
+                        "worktree.cwd.read_failed",
+                        "couldn't read the current directory",
+                    )
+                    .into_owned()
+            })?;
             let spec = WorktreeSpec {
                 label: name,
                 git_ref,
             };
-            cmd_create(tx, &source_cwd, &spec, &mut std::io::stdout()).await
+            cmd_create(tx, &source_cwd, &spec, &mut std::io::stdout(), locale).await
         }
         WorktreeCommand::List {
             repo,
@@ -209,6 +246,7 @@ async fn cmd_create(
     source_cwd: &Path,
     spec: &WorktreeSpec,
     out: &mut impl Write,
+    locale: &crate::locale::LocaleContext,
 ) -> Result<()> {
     let created = create_worktree(tx, source_cwd, spec, &new_worktree_id(None)).await?;
     if let Some(summary) = &created.strategy_summary {
@@ -217,9 +255,11 @@ async fn cmd_create(
     let dir = if created.session_cwd.is_dir() {
         &created.session_cwd
     } else {
-        crate::best_effort_stderr::eprint_line(&format!(
-            "{} is not in the new worktree; printing the worktree root",
-            created.session_cwd.display()
+        crate::best_effort_stderr::eprint_line(&localized_named(
+            locale,
+            "worktree.create.fallback",
+            "{path} is not in the new worktree; printing the worktree root",
+            &[("path", &created.session_cwd.display().to_string())],
         ));
         &created.worktree_root
     };
@@ -405,6 +445,39 @@ async fn cmd_db(
         }
     }
 }
+
+#[cfg(test)]
+mod create_translation_tests {
+    #[test]
+    fn create_help_respects_explicit_locale_without_changing_environment() {
+        let zh = super::create_help_locale(Some("zh-CN"), Some("en-US"));
+        let en = super::create_help_locale(Some("en-US"), Some("zh-CN"));
+        assert_eq!(
+            zh.named_static_text(
+                "worktree.create.name.help",
+                "Worktree name; generated when omitted"
+            ),
+            "工作树名称；省略时自动生成"
+        );
+        assert_eq!(
+            en.named_static_text(
+                "worktree.create.name.help",
+                "Worktree name; generated when omitted"
+            ),
+            "Worktree name; generated when omitted"
+        );
+        let opaque = "/tmp/{path}/用户";
+        assert_eq!(
+            super::localized_named(
+                &zh,
+                "worktree.create.fallback",
+                "{path} is not in the new worktree; printing the worktree root",
+                &[("path", opaque)]
+            ),
+            "/tmp/{path}/用户 不在新工作树中，将输出工作树根目录"
+        );
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,7 +526,15 @@ mod tests {
             git_ref: Some("origin/main".to_owned()),
         };
         let mut out = Vec::new();
-        cmd_create(&tx, &launch_cwd, &spec, &mut out).await.unwrap();
+        cmd_create(
+            &tx,
+            &launch_cwd,
+            &spec,
+            &mut out,
+            &crate::locale::LocaleContext::default(),
+        )
+        .await
+        .unwrap();
         let (method, params) = seen.recv().await.unwrap();
         assert_eq!(CREATE_METHOD, method);
         let worktree_id = params.get("newSessionId").and_then(|v| v.as_str()).unwrap();
@@ -482,7 +563,15 @@ mod tests {
             git_ref: Some("v1".to_owned()),
         };
         let mut out = Vec::new();
-        cmd_create(&tx, &launch_cwd, &spec, &mut out).await.unwrap();
+        cmd_create(
+            &tx,
+            &launch_cwd,
+            &spec,
+            &mut out,
+            &crate::locale::LocaleContext::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             format!("{}\n", wt.path().display()),
             String::from_utf8(out).unwrap()
@@ -493,9 +582,15 @@ mod tests {
         let src = tempfile::tempdir().unwrap();
         let (tx, _seen) = spawn_ext_agent(serde_json::json!({"error": "disk full"}));
         let mut out = Vec::new();
-        let error = cmd_create(&tx, src.path(), &WorktreeSpec::default(), &mut out)
-            .await
-            .unwrap_err();
+        let error = cmd_create(
+            &tx,
+            src.path(),
+            &WorktreeSpec::default(),
+            &mut out,
+            &crate::locale::LocaleContext::default(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!("couldn't create worktree: disk full", error.to_string());
         assert!(out.is_empty());
     }

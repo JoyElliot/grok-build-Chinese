@@ -261,12 +261,14 @@ fn refuse_on_failed_tab(agent: &mut AgentView, minimal: bool) -> bool {
     if !agent.load_failed {
         return false;
     }
+    let notice = agent
+        .scrollback
+        .locale()
+        .named_static_text("session.open_failed", LOAD_FAILED_NOTICE);
     if minimal {
-        agent
-            .scrollback
-            .push_block(RenderBlock::system(LOAD_FAILED_NOTICE.to_owned()));
+        agent.scrollback.push_block(RenderBlock::system(notice));
     } else {
-        agent.show_toast(LOAD_FAILED_NOTICE);
+        agent.show_toast(notice);
     }
     true
 }
@@ -737,14 +739,14 @@ pub(super) fn dispatch_send_prompt_submission(
                 && app.voice_recording_target()
                     == Some(crate::app::app_view::VoiceTarget::Agent(id));
             if let Some(refusal) = command.submission_refusal(invocation.args, voice_owns_prompt) {
+                let refusal =
+                    crate::slash::localize_command_error(refusal, agent.scrollback.locale());
                 if app.screen_mode.is_minimal() {
                     with_active_agent(app, |agent| {
-                        agent
-                            .scrollback
-                            .push_block(RenderBlock::system(refusal.to_string()));
+                        agent.scrollback.push_block(RenderBlock::system(refusal));
                     });
                 } else {
-                    app.show_toast(refusal);
+                    app.show_toast(&refusal);
                 }
                 return vec![];
             }

@@ -3551,9 +3551,11 @@ pub fn render_extensions_modal_with_locale(
                             }
                         }
                     }
-                    for label in
-                        skills_tab::scan_error_rows(scan_errors, state.picker_state.query())
-                    {
+                    for label in skills_tab::scan_error_rows_with_locale(
+                        scan_errors,
+                        state.picker_state.query(),
+                        locale,
+                    ) {
                         entry_labels.push(label);
                         entry_right_labels.push(String::new());
                         entry_desc_lines.push(vec![]);

@@ -2488,7 +2488,9 @@ impl AgentView {
             mode_flags(mode_label, self.session.permission_label(), &theme);
         for flag in &mut flags {
             flag.text = match flag.text {
-                "auto" => localized_ui_label(locale, "mode.auto.label", "auto"),
+                "auto-review" => {
+                    localized_ui_label(locale, "mode.auto_review.label", "auto-review")
+                }
                 "always-approve" => {
                     localized_ui_label(locale, "mode.always_approve.label", "always-approve")
                 }

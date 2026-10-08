@@ -474,7 +474,13 @@ pub fn filter_entries_with_locale(
                 let desc =
                     localized_entry_text(locale, identity, "description", english_desc.as_str());
                 let label = localized_entry_text(locale, identity, "label", h.label.as_ref());
-                let localized = format!("{label} {desc}").to_lowercase();
+                let help = localized_entry_text(
+                    locale,
+                    identity,
+                    "long_help",
+                    long_help.unwrap_or_default(),
+                );
+                let localized = format!("{label} {desc} {help}").to_lowercase();
                 if tokens.iter().all(|token| {
                     hint_matches_query(h, *long_help, &[*token]) || localized.contains(token)
                 }) {

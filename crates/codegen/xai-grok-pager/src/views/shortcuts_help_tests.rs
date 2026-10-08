@@ -198,6 +198,34 @@ fn filter_finds_stash_by_natural_queries() {
     );
 }
 
+#[rstest::rstest]
+#[case::translated_help("分类器", true)]
+#[case::mixed_fields("分类器 shift", true)]
+#[case::english_help("classifier", true)]
+#[case::missing_word("分类器 zzz", false)]
+fn filter_matches_localized_long_help(#[case] query: &str, #[case] expected: bool) {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let registry = crate::actions::ActionRegistry::defaults();
+    let entries = build_entries(&[When::PromptFocused], &registry, false);
+
+    let filtered =
+        filter_entries_with_locale(&entries, query, false, &no_collapsed(), Some(&locale));
+
+    let contains_mode = filtered.iter().any(|&index| {
+        matches!(
+            entries.get(index),
+            Some(ShortcutsHelpEntry::Hint {
+                action_id: Some(ActionId::CycleMode),
+                ..
+            })
+        )
+    });
+    assert_eq!(contains_mode, expected, "query: {query}");
+}
+
 #[test]
 fn filter_keeps_both_headers_when_both_sections_match() {
     let entries = vec![

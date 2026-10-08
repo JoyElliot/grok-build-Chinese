@@ -1399,7 +1399,12 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
                 && let Some(d) = app.dashboard.as_mut()
             {
                 d.error_toast = Some(
-                    "Context window applies per session; run /context-window after spawn".into(),
+                    app.locale
+                        .named_text(
+                            "session.context.after_spawn",
+                            "Context window applies per session; run /context-window after spawn",
+                        )
+                        .into_owned(),
                 );
             }
             vec![]

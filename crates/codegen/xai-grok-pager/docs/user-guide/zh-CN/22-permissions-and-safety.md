@@ -99,11 +99,12 @@ grok-zh -p "Deploy the service" --always-approve --deny 'Bash(rm -rf *)'
 
 Deny 始终优先于 allow，也优先于 always-approve 的常规直通行为。参见[配置权限](#configuring-permissions)。
 
-### Auto 模式
+<a id="auto-review-mode"></a>
+### 自动审查模式
 
-在许多工具调用运行前先进行检查，以减少交互提示。日常本地工作通常会继续；其他调用可能被阻止或升级。在非交互会话中，被阻止的调用会失败并报告给模型（例如 Auto mode blocked this action …）。grok-zh -p、agent stdio 和 agent serve 的行为相同。
+通过 `permission_mode = "auto"`、`/auto` 或 `Shift+Tab` 启用。在许多工具调用执行前进行检查，以减少交互提示。日常本地操作通常可以直接执行；分类器不予自动放行的调用会弹出权限提示，供你批准或拒绝。在非交互会话（`grok-zh -p`、未标识身份的 stdio）中，同样的调用会失败并报告给模型，例如 `Auto mode blocked this action …`。
 
-若自动化必须在无交互批准的情况下运行工具，请使用 always-approve（如需硬阻止则添加 deny 规则），不要只使用 auto。
+如果自动化任务必须在无需交互批准的情况下运行工具，请使用始终批准模式；如需强制阻止特定操作，可添加 deny 规则。仅使用自动审查模式不能保证无交互执行。
 
 ### 禁用 Always-approve（管理员）
 
@@ -174,7 +175,7 @@ Grok 仍可从受管设置加载 Claude 风格的权限**规则**；always-appro
 **Kubernetes（只读）：**
 - kubectl get、kubectl logs、kubectl describe
 
-> **注意：**此列表不包含 tee，因为它可以把输入写入任意文件。此列表也不包含 cargo check，因为它会编译并运行仓库中的 build.rs、proc-macros 以及任何 build.rustc-wrapper（在 Ask 模式下因此会提示；Auto 模式可能仍会将 cargo 作为项目代码运行器按启发式放行）。sort --compress-program=…（包括唯一的长选项缩写）、git -c / --config-env 覆盖，以及本地/工作树配置安装了可执行钩子的 git 命令（core.fsmonitor、diff.*.command/textconv/external 驱动，或 shell alias.<safe-subcommand> = !…）会提高请求级下限并提示，而不是自动批准；除非用户授予了那个完整且精确的脚本，或已启用 always-approve。
+> **注意：**此列表不包含 tee，因为它可以把输入写入任意文件。此列表也不包含 cargo check，因为它会编译并运行仓库中的 build.rs、proc-macros 以及任何 build.rustc-wrapper（在 Ask 模式下因此会提示；自动审查模式可能仍会将 cargo 作为项目代码运行器按启发式放行）。sort --compress-program=…（包括唯一的长选项缩写）、git -c / --config-env 覆盖，以及本地/工作树配置安装了可执行钩子的 git 命令（core.fsmonitor、diff.*.command/textconv/external 驱动，或 shell alias.<safe-subcommand> = !…）会提高请求级下限并提示，而不是自动批准；除非用户授予了那个完整且精确的脚本，或已启用 always-approve。
 
 这些检查按分段应用。例如 ls && rm -rf / 中，ls 分段被识别为只读，但 rm 分段不在列表中。在 default 模式下 rm 分段会提示；在 dontAsk 下会被拒绝。
 

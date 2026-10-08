@@ -1844,7 +1844,10 @@ impl AppView {
             Some(InputOutcome::Changed)
         } else if self.voice_state.blocks_new_capture() {
             self.voice_reset();
-            self.show_toast(crate::voice::RECORDING_DISCARDED_TOAST);
+            self.show_toast(self.locale.named_static_text(
+                "voice.recording_discarded",
+                crate::voice::RECORDING_DISCARDED_TOAST,
+            ));
             Some(InputOutcome::Changed)
         } else {
             None
@@ -4460,8 +4463,11 @@ impl AppView {
                                 }
                                 Some((false, false, true)) if welcome_auto_gate => {
                                     flags_vec.push(crate::views::prompt_widget::PromptFlag {
-                                        text: crate::app::actions::PermissionLabel::Auto
-                                            .display_name(),
+                                        text: self.locale.named_static_text(
+                                            "mode.auto_review.label",
+                                            crate::app::actions::PermissionLabel::Auto
+                                                .display_name(),
+                                        ),
                                         color: Some(theme.accent_system),
                                         bold: false,
                                     });

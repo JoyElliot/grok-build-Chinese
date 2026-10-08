@@ -980,7 +980,10 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
                 agent
                     .scrollback
                     .push_block(crate::scrollback::block::RenderBlock::system(
-                        "Model switch in progress; retry once it completes",
+                        app.locale.named_static_text(
+                            "session.model.switch_pending",
+                            "Model switch in progress; retry once it completes",
+                        ),
                     ));
                 return vec![];
             }
@@ -995,7 +998,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
                         .scrollback
                         .push_block(
                             crate::scrollback::block::RenderBlock::system(
-                                "Context window applies once the session starts; run /context-window then",
+                                app.locale.named_static_text("session.context.after_start", "Context window applies once the session starts; run /context-window then"),
                             ),
                         );
                 }
