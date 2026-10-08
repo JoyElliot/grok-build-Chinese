@@ -21,53 +21,6 @@ fn get_env_keys_parses_strings_and_rejects_non_strings() {
     assert_eq!(parse(serde_json::json!(["A", 123])), None);
     assert_eq!(parse(serde_json::json!([])), None);
 }
-/// Mock cli-chat-proxy serving `GET /settings` with a fixed status and body.
-async fn start_settings_server(
-    status: StatusCode,
-    body: String,
-) -> (String, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-    let app = Router::new().route(
-        "/settings",
-        get(move || {
-            let body = body.clone();
-            async move { (status, body) }
-        }),
-    );
-    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (base, handle)
-}
-/// `fetch_settings_blocking` maps each HTTP outcome to the [`SettingsFetch`] variant the external-OTEL gate relies on.
-/// Only 401 yields `Rejected`; every other non-2xx outcome fails closed as `Retry`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn settings_fetch_maps_status_to_outcome() {
-    let auth = GrokAuth::test_default();
-    let cases: [(StatusCode, &str, &str); 6] = [
-        (StatusCode::OK, "{}", "Fetched"),
-        (StatusCode::UNAUTHORIZED, "{}", "Rejected"),
-        (StatusCode::FORBIDDEN, "{}", "Retry"),
-        (StatusCode::TOO_MANY_REQUESTS, "{}", "Retry"),
-        (StatusCode::INTERNAL_SERVER_ERROR, "{}", "Retry"),
-        (StatusCode::OK, "not json", "Retry"),
-    ];
-    for (status, body, expected) in cases {
-        let (base, server) = start_settings_server(status, body.to_string()).await;
-        let a = auth.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            fetch_settings_blocking_with_attempts(&base, &a, None, 1)
-        })
-        .await
-        .unwrap();
-        server.abort();
-        let got = match outcome {
-            SettingsFetch::Fetched(_) => "Fetched",
-            SettingsFetch::Rejected => "Rejected",
-            SettingsFetch::Retry => "Retry",
-        };
-        assert_eq!(got, expected, "status {status}, body {body:?}");
-    }
-}
 #[derive(Debug, Default, Clone)]
 struct SeenHeaders {
     authorization: Option<String>,
@@ -320,6 +273,38 @@ fn parse_reads_rate_limit_retry_threshold() {
     assert_eq!(result.rate_limit_retry_threshold, Some(7));
 }
 #[test]
+fn parse_reads_notice_from_top_level_or_meta() {
+    use xai_grok_sampling_types::{ModelNotice, ModelNoticeSeverity};
+    let deprecated = ModelNotice {
+        severity: ModelNoticeSeverity::Warning,
+        text: "Deprecated Oct 15".to_owned(),
+        label: Some("deprecated".to_owned()),
+    };
+    let top_level = serde_json::json!({
+        "id": "old-model",
+        "notice": {"severity": "warning", "text": "Deprecated Oct 15", "label": "deprecated"},
+        "_meta": {"notice": {"severity": "critical", "text": "ignored"}}
+    });
+    let in_meta = serde_json::json!({
+        "id": "old-model",
+        "_meta": {"notice": {"severity": "warning", "text": "Deprecated Oct 15", "label": "deprecated"}}
+    });
+    let from_top_level = parse_remote_model_value(&top_level, "https://default.url")
+        .expect("entry with an id parses");
+    let from_meta =
+        parse_remote_model_value(&in_meta, "https://default.url").expect("entry with an id parses");
+    assert_eq!(Some(deprecated.clone()), from_top_level.notice);
+    assert_eq!(Some(deprecated), from_meta.notice);
+}
+#[test]
+fn parse_keeps_the_model_when_its_notice_is_malformed() {
+    let value = serde_json::json!({"id": "old-model", "notice": {"severity": "warning"}});
+    let result =
+        parse_remote_model_value(&value, "https://default.url").expect("entry with an id parses");
+    assert_eq!("old-model", result.model);
+    assert_eq!(None, result.notice);
+}
+#[test]
 fn parse_reads_model_family() {
     let value = serde_json::json!({
         "model": "grok-4.5",
@@ -499,6 +484,42 @@ fn parse_reads_meta_fallback_fields() {
         std::num::NonZeroU64::new(131072).unwrap()
     );
     assert_eq!(result.agent_type, "concise");
+}
+#[test]
+fn parse_remote_model_value_context_window_is_default_and_context_windows_are_choices() {
+    let camel = serde_json::json!({ "contextWindows": [500_000, 256_000] });
+    let snake = serde_json::json!({ "context_windows": [500_000, 256_000] });
+    let meta = serde_json::json!({ "_meta": { "contextWindows": [500_000, 256_000] } });
+    for listed in [camel, snake, meta] {
+        let mut value = serde_json::json!({ "model": "grok-4.7", "context_window": 256_000 });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(listed.as_object().unwrap().clone());
+        let result = parse_remote_model_value(&value, "https://default.url").expect("model parses");
+        assert_eq!(result.context_window.get(), 256_000, "{listed}");
+        let windows: Vec<u64> = result.context_windows.iter().map(|w| w.get()).collect();
+        assert_eq!(windows, [500_000, 256_000], "{listed}");
+    }
+}
+#[test]
+fn parse_remote_model_value_bad_context_windows_fall_back_to_context_window() {
+    for bad in [
+        serde_json::json!([256_000, "big"]),
+        serde_json::json!([0]),
+        serde_json::json!(500_000),
+    ] {
+        let value = serde_json::json!({
+            "model": "grok-4",
+            "context_window": 300_000,
+            "context_windows": bad.clone(),
+        });
+        let result = parse_remote_model_value(&value, "https://default.url").expect("model parses");
+        assert_eq!(result.context_window.get(), 300_000, "{bad}");
+        assert!(result.context_windows.is_empty(), "{bad}");
+    }
+    let value = serde_json::json!({ "model": "grok-4", "context_window": 0 });
+    assert!(parse_remote_model_value(&value, "https://default.url").is_none());
 }
 #[test]
 fn parse_remote_model_value_no_laziness_detector_block_yields_default() {
@@ -781,76 +802,6 @@ fn get_object_returns_some_for_actual_object() {
     assert_eq!(
         nested.pointer("/b").unwrap_or(&serde_json::Value::Null),
         &serde_json::json!("two")
-    );
-}
-fn endpoints(
-    proxy: &str,
-    models_base_url: Option<&str>,
-    models_list_url: Option<&str>,
-) -> crate::agent::config::EndpointsConfig {
-    crate::agent::config::EndpointsConfig {
-        cli_chat_proxy_base_url: Some(proxy.to_owned()),
-        models_base_url: models_base_url.map(|s| s.to_owned()),
-        models_list_url: models_list_url.map(|s| s.to_owned()),
-        ..Default::default()
-    }
-}
-#[test]
-fn inference_url_defaults_to_proxy() {
-    let ep = endpoints("https://proxy.grok.com/v1", None, None);
-    assert_eq!(ep.resolve_inference_base_url(), "https://proxy.grok.com/v1");
-}
-#[test]
-fn inference_url_uses_models_base_url() {
-    let ep = endpoints(
-        "https://proxy.grok.com/v1",
-        Some("https://enterprise.acme.com/v1"),
-        None,
-    );
-    assert_eq!(
-        ep.resolve_inference_base_url(),
-        "https://enterprise.acme.com/v1"
-    );
-}
-#[test]
-fn inference_url_base_url_wins_over_proxy() {
-    let ep = endpoints(
-        "https://proxy.grok.com/v1",
-        Some("https://inference.acme.com/v1"),
-        Some("https://registry.acme.com/api/models"),
-    );
-    assert_eq!(
-        ep.resolve_inference_base_url(),
-        "https://inference.acme.com/v1"
-    );
-}
-#[test]
-fn list_url_defaults_to_proxy_models() {
-    let ep = endpoints("https://proxy.grok.com/v1", None, None);
-    assert_eq!(
-        ep.resolve_models_list_url(),
-        "https://proxy.grok.com/v1/models"
-    );
-}
-#[test]
-fn list_url_derived_from_base_url() {
-    let ep = endpoints(
-        "https://proxy.grok.com/v1",
-        Some("https://api.x.ai/v1"),
-        None,
-    );
-    assert_eq!(ep.resolve_models_list_url(), "https://api.x.ai/v1/models");
-}
-#[test]
-fn list_url_explicit_overrides_derivation() {
-    let ep = endpoints(
-        "https://proxy.grok.com/v1",
-        Some("https://inference.acme.com/v1"),
-        Some("https://registry.acme.com/api/list-models"),
-    );
-    assert_eq!(
-        ep.resolve_models_list_url(),
-        "https://registry.acme.com/api/list-models"
     );
 }
 /// REGRESSION: `grok setup` must send the deployment key to the proxy, never the inference endpoint.

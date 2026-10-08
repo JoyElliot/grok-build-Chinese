@@ -522,6 +522,8 @@ pub(super) fn extensions_modal_tab_fetches(
         Effect::FetchSkillsList {
             agent_id,
             session_id: session_id.clone(),
+            refresh: false,
+            fetch: modal.next_skills_fetch(),
         },
         Effect::FetchWorkflowsList {
             agent_id,
@@ -950,19 +952,15 @@ pub(super) fn handle_marketplace_list_loaded(
 pub(super) fn handle_skills_toggle_done(
     app: &mut AppView,
     agent_id: AgentId,
-    result: Result<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>, String>,
+    result: Result<xai_grok_shell::extensions::skills::SkillsListResponse, String>,
 ) -> Vec<Effect> {
-    use crate::views::extensions_modal::TabDataState;
     if let Some(agent) = app.agents.get_mut(&agent_id)
         && let Some(ref mut modal) = agent.extensions_modal
     {
         modal.pending_action = None;
         modal.pending_entry_index = None;
         match result {
-            Ok(skills) => {
-                modal.seed_skills_groups_once(&skills);
-                modal.skills_data = TabDataState::Loaded(skills);
-            }
+            Ok(listing) => modal.apply_skills_listing(listing),
             Err(e) => {
                 modal.modal_message = Some(crate::views::extensions_modal::ModalMessage::Error(e));
             }

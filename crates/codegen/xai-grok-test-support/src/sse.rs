@@ -3,30 +3,96 @@
 //! These produce the exact wire format that the grok sampling client expects, validated against the real sampling client.
 
 use axum::response::sse::Event;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::scripted::SseEvent;
 use crate::tool_call_turn::{ToolCallTurn, chat_completion_tool_call_events};
 
-/// Generate Messages API SSE events: one text block streamed as a
-/// single delta, terminated by a `message_delta` carrying `stop_reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageReport {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost_usd_ticks: Option<i64>,
+}
+
+/// Without an override the mock keeps its fixed 10 input and one-per-delta output.
+fn chat_completion_usage_block(delta_count: usize, usage: Option<&UsageReport>) -> Value {
+    let Some(report) = usage else {
+        return json!({
+            "prompt_tokens": 10,
+            "completion_tokens": delta_count,
+            "total_tokens": 10 + delta_count,
+        });
+    };
+    with_cost(
+        json!({
+            "prompt_tokens": report.prompt_tokens,
+            "completion_tokens": report.completion_tokens,
+            "total_tokens": report.prompt_tokens + report.completion_tokens,
+        }),
+        report,
+    )
+}
+
+fn responses_usage_block(report: &UsageReport) -> Value {
+    with_cost(
+        json!({
+            "input_tokens": report.prompt_tokens,
+            "output_tokens": report.completion_tokens,
+            "total_tokens": report.prompt_tokens + report.completion_tokens,
+            "input_tokens_details": { "cached_tokens": 0 },
+            "output_tokens_details": { "reasoning_tokens": 0 },
+        }),
+        report,
+    )
+}
+
+fn with_cost(mut block: Value, report: &UsageReport) -> Value {
+    if let (Some(ticks), Some(fields)) = (report.cost_usd_ticks, block.as_object_mut()) {
+        fields.insert("cost_in_usd_ticks".to_owned(), json!(ticks));
+    }
+    block
+}
+
+// Sampler leaves Messages `cost_usd_ticks` unset, so these blocks carry tokens only.
+fn messages_start_usage(usage: Option<&UsageReport>) -> Value {
+    json!({
+        "input_tokens": usage.map_or(10, |report| report.prompt_tokens),
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+    })
+}
+
+fn messages_delta_usage(usage: Option<&UsageReport>) -> Value {
+    json!({
+        "output_tokens": usage.map_or(5, |report| report.completion_tokens),
+        "input_tokens": usage.map_or(10, |report| report.prompt_tokens)
+    })
+}
+
 pub fn messages_api_events(text: &str, model: &str, stop_reason: &str) -> Vec<Event> {
     scripted_to_axum(messages_api_script(text, model, stop_reason))
 }
 
-/// [`messages_api_events`] as [`SseEvent`]s for a [`crate::ScriptedResponse`].
 pub fn messages_api_script(text: &str, model: &str, stop_reason: &str) -> Vec<SseEvent> {
-    vec![
+    messages_api_script_chunks(&[text], model, stop_reason, None)
+}
+
+pub fn messages_api_script_chunks<S: AsRef<str>>(
+    chunks: &[S],
+    model: &str,
+    stop_reason: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    let mut events = vec![
         SseEvent::data(
             json!({
                 "type": "message_start",
                 "message": {
                     "id": "msg_test", "type": "message", "role": "assistant",
                     "content": [], "model": model, "stop_reason": null,
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 0,
-                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
-                    }
+                    "usage": messages_start_usage(usage)
                 }
             })
             .to_string(),
@@ -35,17 +101,24 @@ pub fn messages_api_script(text: &str, model: &str, stop_reason: &str) -> Vec<Ss
             json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})
                 .to_string(),
         ),
-        SseEvent::data(
-            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+    ];
+
+    for chunk in chunks {
+        events.push(SseEvent::data(
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":chunk.as_ref()}})
                 .to_string(),
-        ),
-        SseEvent::data(json!({"type":"content_block_stop","index":0}).to_string()),
-        SseEvent::data(
-            json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage":{"output_tokens":5,"input_tokens":10}})
-                .to_string(),
-        ),
-        SseEvent::data(json!({"type":"message_stop"}).to_string()),
-    ]
+        ));
+    }
+
+    events.push(SseEvent::data(
+        json!({"type":"content_block_stop","index":0}).to_string(),
+    ));
+    events.push(SseEvent::data(
+        json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage": messages_delta_usage(usage)})
+            .to_string(),
+    ));
+    events.push(SseEvent::data(json!({"type":"message_stop"}).to_string()));
+    events
 }
 
 /// Messages API turn that streams a `thinking` block before the visible text block, so the sampler
@@ -55,6 +128,7 @@ pub fn messages_api_script_with_reasoning(
     text: &str,
     model: &str,
     stop_reason: &str,
+    usage: Option<&UsageReport>,
 ) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -63,10 +137,7 @@ pub fn messages_api_script_with_reasoning(
                 "message": {
                     "id": "msg_test", "type": "message", "role": "assistant",
                     "content": [], "model": model, "stop_reason": null,
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 0,
-                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
-                    }
+                    "usage": messages_start_usage(usage)
                 }
             })
             .to_string(),
@@ -90,20 +161,18 @@ pub fn messages_api_script_with_reasoning(
         ),
         SseEvent::data(json!({"type":"content_block_stop","index":1}).to_string()),
         SseEvent::data(
-            json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage":{"output_tokens":5,"input_tokens":10}})
+            json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage": messages_delta_usage(usage)})
                 .to_string(),
         ),
         SseEvent::data(json!({"type":"message_stop"}).to_string()),
     ]
 }
 
-/// Generate ChatCompletions SSE events that stream `text` word-by-word, collapsing whitespace.
-/// Use [`chat_completion_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
+/// Collapses whitespace. Use [`chat_completion_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
 pub fn chat_completion_events(text: &str, model: &str) -> Vec<Event> {
     scripted_to_axum(chat_completion_script(text, model))
 }
 
-/// Echo-style Chat Completions events for a [`crate::ScriptedResponse`].
 pub(crate) fn chat_completion_script(text: &str, model: &str) -> Vec<SseEvent> {
     chat_completion_script_from_deltas(
         &space_prefixed_deltas(text.split_whitespace()),
@@ -118,9 +187,17 @@ pub fn chat_completion_events_exact(text: &str, model: &str) -> Vec<Event> {
     scripted_to_axum(chat_completion_script_exact(text, model))
 }
 
-/// Byte-exact Chat Completions events for a [`crate::ScriptedResponse`].
 pub fn chat_completion_script_exact(text: &str, model: &str) -> Vec<SseEvent> {
     chat_completion_script_from_deltas(&chat_completion_deltas(text), model, "stop")
+}
+
+/// One Chat Completions `delta.content` per chunk, in order, reconstructing `chunks` byte-for-byte.
+pub fn chat_completion_script_chunks<S: AsRef<str>>(chunks: &[S], model: &str) -> Vec<SseEvent> {
+    let deltas: Vec<String> = chunks
+        .iter()
+        .map(|chunk| chunk.as_ref().to_owned())
+        .collect();
+    chat_completion_script_from_deltas(&deltas, model, "stop")
 }
 
 /// Split `text` into deltas that reconstruct it byte-for-byte: the first carries no leading space; each subsequent one is ` {word}`.
@@ -149,6 +226,15 @@ pub(crate) fn chat_completion_script_from_deltas(
     deltas: &[String],
     model: &str,
     final_finish_reason: &str,
+) -> Vec<SseEvent> {
+    chat_completion_script_from_deltas_with_usage(deltas, model, final_finish_reason, None)
+}
+
+pub(crate) fn chat_completion_script_from_deltas_with_usage(
+    deltas: &[String],
+    model: &str,
+    final_finish_reason: &str,
+    usage: Option<&UsageReport>,
 ) -> Vec<SseEvent> {
     let n = deltas.len();
     let mut events = Vec::new();
@@ -195,11 +281,7 @@ pub(crate) fn chat_completion_script_from_deltas(
             "created": 1234567890,
             "model": model,
             "choices": [],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": n,
-                "total_tokens": 10 + n
-            }
+            "usage": chat_completion_usage_block(n, usage),
         })
         .to_string(),
     ));
@@ -207,12 +289,12 @@ pub(crate) fn chat_completion_script_from_deltas(
     events
 }
 
-/// ChatCompletions turn that streams a `reasoning_content` delta before the visible content, so the
-/// sampler routes the reasoning to `SamplingChannel::Reasoning` ahead of the answer text.
+/// ChatCompletions turn that streams a `reasoning_content` delta before the visible content, so the sampler routes the reasoning to `SamplingChannel::Reasoning` ahead of the answer text.
 pub fn chat_completion_script_with_reasoning(
     reasoning: &str,
     text: &str,
     model: &str,
+    usage: Option<&UsageReport>,
 ) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -250,7 +332,7 @@ pub fn chat_completion_script_with_reasoning(
                 "created": 1234567890,
                 "model": model,
                 "choices": [],
-                "usage": { "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12 }
+                "usage": chat_completion_usage_block(2, usage),
             })
             .to_string(),
         ),
@@ -258,13 +340,11 @@ pub fn chat_completion_script_with_reasoning(
     ]
 }
 
-/// Generate Responses API SSE events that stream `text` word-by-word, collapsing whitespace.
-/// Use [`responses_api_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
+/// Collapses whitespace. Use [`responses_api_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
 pub fn responses_api_events(text: &str, model: &str) -> Vec<Event> {
     scripted_to_axum(responses_api_script(text, model))
 }
 
-/// Echo-style Responses API events for a [`crate::ScriptedResponse`].
 pub(crate) fn responses_api_script(text: &str, model: &str) -> Vec<SseEvent> {
     let deltas: Vec<String> = text
         .split_whitespace()
@@ -278,19 +358,47 @@ pub fn responses_api_events_exact(text: &str, model: &str) -> Vec<Event> {
     scripted_to_axum(responses_api_script_exact(text, model))
 }
 
-/// Byte-exact Responses API events for a [`crate::ScriptedResponse`].
 pub fn responses_api_script_exact(text: &str, model: &str) -> Vec<SseEvent> {
     responses_api_script_from_deltas(&responses_api_deltas(text), text, model)
 }
 
+/// One Responses `output_text.delta` per chunk. The completed text is the chunks concatenated.
+pub fn responses_api_script_chunks<S: AsRef<str>>(chunks: &[S], model: &str) -> Vec<SseEvent> {
+    let deltas: Vec<String> = chunks
+        .iter()
+        .map(|chunk| chunk.as_ref().to_owned())
+        .collect();
+    let text = deltas.concat();
+    responses_api_script_from_deltas(&deltas, &text, model)
+}
+
 /// `split_inclusive(' ')` keeps each chunk's trailing space, so concatenating the chunks reconstructs `text` byte-for-byte (newlines included).
-fn responses_api_deltas(text: &str) -> Vec<String> {
+pub(crate) fn responses_api_deltas(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_owned).collect()
 }
 
-// `deltas` and `text` deliberately disagree in echo mode: collapsed deltas, uncollapsed `response.completed` text
-// The shell depends on that mismatch, so do not unify them
 fn responses_api_script_from_deltas(deltas: &[String], text: &str, model: &str) -> Vec<SseEvent> {
+    responses_api_script_from_deltas_with_usage(deltas, text, model, None)
+}
+
+pub(crate) fn responses_api_script_from_deltas_with_usage(
+    deltas: &[String],
+    text: &str,
+    model: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    let usage = usage.map_or_else(
+        || {
+            json!({
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens_details": { "reasoning_tokens": 0 }
+            })
+        },
+        responses_usage_block,
+    );
     let mut events = Vec::new();
     let mut seq = 0;
 
@@ -347,13 +455,7 @@ fn responses_api_script_from_deltas(deltas: &[String], text: &str, model: &str) 
                         "annotations": []
                     }]
                 }],
-                "usage": {
-                    "input_tokens": 10,
-                    "output_tokens": 5,
-                    "total_tokens": 15,
-                    "input_tokens_details": { "cached_tokens": 0 },
-                    "output_tokens_details": { "reasoning_tokens": 0 }
-                }
+                "usage": usage
             }
         })
         .to_string(),
@@ -375,59 +477,6 @@ fn scripted_to_axum(events: Vec<SseEvent>) -> Vec<Event> {
         .collect()
 }
 
-/// Responses API zero-arg tool call: `function_call` on `output_item.added`, no arguments delta.
-pub fn responses_api_zero_arg_tool_call_events(
-    call_id: &str,
-    name: &str,
-    model: &str,
-) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "in_progress", "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.output_item.added",
-                "sequence_number": 1,
-                "output_index": 0,
-                "item": {
-                    "type": "function_call", "call_id": call_id, "name": name, "arguments": ""
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.completed",
-                "sequence_number": 2,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "completed",
-                    "output": [{
-                        "type": "function_call", "call_id": call_id, "name": name, "arguments": ""
-                    }],
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 1, "total_tokens": 11,
-                        "input_tokens_details": { "cached_tokens": 0 },
-                        "output_tokens_details": { "reasoning_tokens": 0 }
-                    }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]"),
-    ]
-}
-
-/// Responses API completion with empty output: `response.created` then `response.completed`.
 pub fn responses_api_completed_only_events(model: &str) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -461,41 +510,6 @@ pub fn responses_api_completed_only_events(model: &str) -> Vec<SseEvent> {
     ]
 }
 
-/// Responses API incomplete turn with no content: `response.created` then `response.incomplete`.
-pub fn responses_api_incomplete_only_events(model: &str) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "in_progress", "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.incomplete",
-                "sequence_number": 1,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "incomplete", "output": [],
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 0, "total_tokens": 10,
-                        "input_tokens_details": { "cached_tokens": 0 },
-                        "output_tokens_details": { "reasoning_tokens": 0 }
-                    }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]"),
-    ]
-}
-
-/// Chat Completions turn with no content: role-only chunk, usage-only chunk, `[DONE]`.
 pub fn chat_completions_no_content_events(model: &str) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -519,7 +533,6 @@ pub fn chat_completions_no_content_events(model: &str) -> Vec<SseEvent> {
     ]
 }
 
-/// Messages API turn with no content: `message_start`, stop delta, `message_stop`.
 pub fn messages_api_no_content_events(model: &str) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -548,44 +561,12 @@ pub fn messages_api_no_content_events(model: &str) -> Vec<SseEvent> {
     ]
 }
 
-/// Responses API failure before content: `response.created` then `response.failed`.
-pub fn responses_api_failed_events(message: &str, model: &str) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "in_progress", "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.failed",
-                "sequence_number": 1,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "failed", "output": [],
-                    "error": { "code": "server_error", "message": message }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]"),
-    ]
-}
-
-/// Generate a reasoning-only Responses API completion: reasoning summary deltas, then a `reasoning` output item with no
-/// message and no tool call. Reasoning-only is a scripted scenario, not an echo/fixed response mode, so it is not wired
+/// Reasoning-only is a scripted scenario, not an echo/fixed response mode, so it is not wired
 /// into the `mock_server` mode handlers.
 pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<SseEvent> {
     let mut events = Vec::new();
     let mut seq = 0;
 
-    // response.created
     events.push(SseEvent::data(
         json!({
             "type": "response.created",
@@ -603,7 +584,6 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
     ));
     seq += 1;
 
-    // Reasoning summary deltas, the only content the model streams
     for word in reasoning.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -619,8 +599,6 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
         seq += 1;
     }
 
-    // response.completed: a single `reasoning` output item carrying the full summary and NO message item
-    // `response_to_conversation_items` appends an empty assistant, yielding `[Reasoning, Assistant("")]`, which classifies as reasoning_only
     events.push(SseEvent::data(
         json!({
             "type": "response.completed",
@@ -655,18 +633,36 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
     events
 }
 
-/// `response.completed` carries both items (`reasoning` and `message`), so the collector yields `[Reasoning,
-/// Assistant(text)]`, a non-empty turn. Returns [`SseEvent`]s for use with [`crate::ScriptedResponse::sse`] or
-/// `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
+/// `response.completed` carries both items (`reasoning` and `message`), so the collector yields `[Reasoning, Assistant(text)]`, a non-empty turn.
 pub fn responses_api_reasoning_and_text_events(
     reasoning: &str,
     text: &str,
     model: &str,
 ) -> Vec<SseEvent> {
+    responses_api_reasoning_and_text_events_with_usage(reasoning, text, model, None)
+}
+
+pub(crate) fn responses_api_reasoning_and_text_events_with_usage(
+    reasoning: &str,
+    text: &str,
+    model: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    let usage = usage.map_or_else(
+        || {
+            json!({
+                "input_tokens": 10,
+                "output_tokens": 10,
+                "total_tokens": 20,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens_details": { "reasoning_tokens": 5 }
+            })
+        },
+        responses_usage_block,
+    );
     let mut events = Vec::new();
     let mut seq = 0;
 
-    // response.created
     events.push(SseEvent::data(
         json!({
             "type": "response.created",
@@ -684,7 +680,6 @@ pub fn responses_api_reasoning_and_text_events(
     ));
     seq += 1;
 
-    // Reasoning summary deltas stream before any answer text.
     for word in reasoning.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -700,7 +695,6 @@ pub fn responses_api_reasoning_and_text_events(
         seq += 1;
     }
 
-    // Then the visible answer.
     for word in text.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -716,7 +710,6 @@ pub fn responses_api_reasoning_and_text_events(
         seq += 1;
     }
 
-    // response.completed with BOTH items: reasoning and the assistant message
     events.push(SseEvent::data(
         json!({
             "type": "response.completed",
@@ -749,13 +742,7 @@ pub fn responses_api_reasoning_and_text_events(
                         }]
                     }
                 ],
-                "usage": {
-                    "input_tokens": 10,
-                    "output_tokens": 10,
-                    "total_tokens": 20,
-                    "input_tokens_details": { "cached_tokens": 0 },
-                    "output_tokens_details": { "reasoning_tokens": 5 }
-                }
+                "usage": usage
             }
         })
         .to_string(),
@@ -809,16 +796,14 @@ fn with_terminal_doom_loop_field(mut events: Vec<SseEvent>, triggers: &[&str]) -
     events
 }
 
-/// Generate Responses API SSE events for a server-detected doom loop: a reasoning-only stream (the model loops in its
-/// thinking and never answers). Returns [`SseEvent`]s for use with [`crate::ScriptedResponse::sse`] or
-/// `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
+/// A reasoning-only stream: the model loops in its thinking and never answers.
 pub fn responses_api_doom_loop_check_events(
     triggers: &[&str],
     reasoning: &str,
     model: &str,
 ) -> Vec<SseEvent> {
     let mut events = responses_api_reasoning_only_events(reasoning, model);
-    // Cumulative frames land between the deltas and the terminal event; the frame seq roughly continues the stream (clients never validate it)
+    // Cumulative frames land between the deltas and the terminal event; the frame seq roughly continues the stream (clients...
     for prefix_len in 1..=triggers.len() {
         let at = events.len() - 2;
         events.insert(
@@ -829,8 +814,7 @@ pub fn responses_api_doom_loop_check_events(
     with_terminal_doom_loop_field(events, triggers)
 }
 
-/// Generate a reasoning-and-text turn whose terminal `response.completed` carries `doom_loop_check.triggers`, with no mid-stream check frame.
-/// This is the terminal-only copy of the signal; the turn itself mirrors [`responses_api_reasoning_and_text_events`].
+/// The terminal `response.completed` carries `doom_loop_check.triggers`, with no mid-stream check frame.
 pub fn responses_api_doom_loop_terminal_only_events(
     triggers: &[&str],
     reasoning: &str,
@@ -880,7 +864,6 @@ pub fn with_terminal_output_items(
     events
 }
 
-/// Index of a turn's terminal `response.completed` frame.
 fn completed_frame_index(events: &[SseEvent]) -> usize {
     events
         .iter()
@@ -991,9 +974,6 @@ pub fn responses_api_with_doom_loop_frame_after_text(
     events
 }
 
-/// Generate a Responses API turn that streams reasoning summary deltas first and then issues one `function_call`. This is
-/// the shape a reasoning-capable model produces when it thinks before its first tool call. Returns [`SseEvent`]s for use
-/// with [`crate::ScriptedResponse::sse`] or `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
 pub fn responses_api_reasoning_then_tool_call_events(
     reasoning: &str,
     call_id: &str,
@@ -1004,7 +984,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     let mut events = Vec::new();
     let mut seq = 0;
 
-    // response.created
     events.push(SseEvent::data(
         json!({
             "type": "response.created",
@@ -1022,7 +1001,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     ));
     seq += 1;
 
-    // Reasoning summary deltas stream before the tool call.
     for word in reasoning.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -1038,7 +1016,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
         seq += 1;
     }
 
-    // Then the tool invocation.
     events.push(SseEvent::data(
         json!({
             "type": "response.function_call_arguments.delta",
@@ -1051,7 +1028,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     ));
     seq += 1;
 
-    // response.completed: the reasoning item plus the function_call item.
     events.push(SseEvent::data(
         json!({
             "type": "response.completed",
@@ -1094,8 +1070,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     events
 }
 
-/// Chat Completions twin of [`responses_api_reasoning_then_tool_call_events`].
-/// Streams `reasoning_content` deltas, then one `tool_calls` delta, then a `finish_reason: "tool_calls"` chunk with usage.
 pub fn chat_completions_reasoning_then_tool_call_events(
     reasoning: &str,
     call_id: &str,
@@ -1143,7 +1117,6 @@ mod tests {
         assert_eq!(chat_completion_deltas(text).concat(), text);
         assert_eq!(responses_api_deltas(text).concat(), text);
 
-        // The reconstruction preserves the fence as a real, newline-delimited code block (the property diagram detection depends on)
         assert!(
             chat_completion_deltas(text)
                 .concat()
@@ -1167,7 +1140,6 @@ mod tests {
         let events = responses_api_reasoning_only_events("alpha beta gamma", "m");
         assert_eq!(events.last().map(|e| e.data.as_str()), Some("[DONE]"));
 
-        // Parse every non-terminal event into JSON and key off the `type` tag.
         let parsed: Vec<serde_json::Value> = events
             .iter()
             .filter(|e| e.data != "[DONE]")
@@ -1250,7 +1222,6 @@ mod tests {
             })
             .collect();
 
-        // Reasoning streams strictly before the visible answer.
         let first_reasoning = types
             .iter()
             .position(|t| *t == "response.reasoning_summary_text.delta")
@@ -1316,7 +1287,6 @@ mod tests {
             })
             .collect();
 
-        // Reasoning streams strictly before the tool invocation; no text.
         let first_reasoning = types
             .iter()
             .position(|t| *t == "response.reasoning_summary_text.delta")
@@ -1379,7 +1349,6 @@ mod tests {
         );
     }
 
-    /// Shape guard for the Chat Completions think-then-call twin.
     #[test]
     fn chat_reasoning_then_tool_call_events_carry_reasoning_then_tool_call() {
         let events = chat_completions_reasoning_then_tool_call_events(

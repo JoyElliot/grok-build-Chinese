@@ -367,23 +367,31 @@ pub fn init_tracing() -> TracingHandle {
 }
 /// Curated per-crate directives for the TUI subscriber.
 /// `acp_update` is the always-on compact summary; `acp_update_payload` is the full JSON dump (dev only).
-/// `xai_grok_gateway` carries the bridge diagnostics that moved out of `xai_grok_shell`.
+/// Crates that took code out of `xai_grok_shell` are listed so their events stay visible.
 /// Built from the target constants so a rename can't silently turn a directive into a no-op token.
 fn default_directives() -> String {
     use xai_grok_telemetry::debug_log::RMCP_SSE_NOISE_TARGET;
     let payload_level = "off";
     format!(
-        "xai_grok_shell=info,xai_grok_gateway=info,xai_grok_login=info,xai_grok_pager=trace,xai_grok_tools=info,xai_grok_session_search=info,xai_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
+        "xai_grok_shell=info,xai_grok_gateway=info,xai_grok_config=info,xai_grok_cloud_config=info,xai_grok_agent_config=info,xai_grok_external_agent_migration=info,xai_grok_login=info,xai_grok_pager=trace,xai_grok_tools=info,xai_grok_session_search=info,xai_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
     )
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::style::Modifier;
-    /// Bridge diagnostics moved to `xai_grok_gateway`; the curated TUI filter must allowlist it.
     #[test]
-    fn default_directives_allowlist_gateway_target() {
-        assert!(default_directives().contains("xai_grok_gateway=info"));
+    fn default_directives_allowlist_crates_split_from_the_shell() {
+        let directives = default_directives();
+        for target in [
+            "xai_grok_gateway",
+            "xai_grok_config",
+            "xai_grok_cloud_config",
+            "xai_grok_agent_config",
+            "xai_grok_external_agent_migration",
+        ] {
+            assert!(directives.contains(&format!("{target}=info")), "{target}");
+        }
     }
     /// Records whether `Serialize` ever ran.
     struct SerializeProbe(std::sync::Arc<std::sync::atomic::AtomicBool>);

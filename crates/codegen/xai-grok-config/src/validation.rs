@@ -31,7 +31,7 @@ pub(crate) const FAIL_CLOSED_ENV: &str = "GROK_MANAGED_CONFIG_FAIL_CLOSED";
 
 /// Where a requirements layer came from: a file on disk, or the macOS MDM managed-preferences layer (admin-forced, no file).
 /// The typed split keeps a caller from calling `exists()` on or reading a layer that has no path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequirementsSource {
     File(PathBuf),
     Mdm,

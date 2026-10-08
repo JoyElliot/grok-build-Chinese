@@ -22,7 +22,7 @@
             "remote kill switch disarms voice mode"
         );
         assert!(
-            !app.voice_state.pending_cold_start(),
+            !app.voice_state.is_pending_cold_start(),
             "queued lazy spawn must be dropped"
         );
     }

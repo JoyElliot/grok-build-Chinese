@@ -14,6 +14,7 @@ use crate::v2::{
     V2ManifestBudget, V2MemoryScope, V2StorageError, bump_manifest_revision,
     bump_manifest_revision_in_transaction, is_durably_excluded, regenerate_scope_manifest,
 };
+use crate::v2_topic_reads::record_topic_read;
 
 const MAX_PREVIOUS_CONTENT_BYTES: u64 = 8 * 1024 * 1024;
 /// Largest topic a write may produce. Dream's `read_topics` and forget both
@@ -355,7 +356,7 @@ impl V2MemoryAccessPolicy {
             None => bump_manifest_revision(root),
         }
         .and_then(|()| {
-            regenerate_scope_manifest(root, scope, V2ManifestBudget::default()).map(|_| ())
+            regenerate_scope_manifest(root, scope, V2ManifestBudget::configured()).map(|_| ())
         })
     }
 
@@ -402,15 +403,38 @@ impl V2MemoryAccessPolicy {
         Ok(true)
     }
 
+    /// Snapshot only. Internal callers (Dream, forget, carry-over) use this
+    /// path, some while holding the scope's state write lock, so it must never
+    /// touch the state database.
     fn record_read_inner(&self, path: &Path, contents: &[u8]) -> V2AccessResult<()> {
+        self.record_read_classified(path, contents).map(|_| ())
+    }
+
+    fn record_read_classified(
+        &self,
+        path: &Path,
+        contents: &[u8],
+    ) -> V2AccessResult<Option<(V2PathClass, PathBuf)>> {
         let class = self.classify_path(path)?;
-        if class != V2PathClass::Outside {
-            let canonical = self.validate_containment(path, class)?;
-            self.snapshots
-                .lock()
-                .insert(canonical, blake3::hash(contents));
+        if class == V2PathClass::Outside {
+            return Ok(None);
         }
-        Ok(())
+        let canonical = self.validate_containment(path, class)?;
+        self.snapshots
+            .lock()
+            .insert(canonical.clone(), blake3::hash(contents));
+        Ok(Some((class, canonical)))
+    }
+
+    /// Ranking data only: a failed count must never fail the read itself.
+    fn count_topic_read(&self, scope: V2MemoryScope, canonical: &Path) {
+        let Ok(relative) = canonical.strip_prefix(self.canonical_root_for_scope(scope)) else {
+            return;
+        };
+        let relative = relative.to_string_lossy();
+        if let Err(error) = record_topic_read(self.root_for_scope(scope), &relative) {
+            tracing::warn!(path = %canonical.display(), %error, "failed to count memory topic read");
+        }
     }
 
     fn validate_write_locked(
@@ -493,8 +517,36 @@ impl V2MemoryAccessPolicy {
             .map(|validated| validated.is_some())
     }
 
+    /// Ordinary writes hold the scope's state-database write lock while they
+    /// publish, so they serialize with Dream commits instead of interleaving.
     fn write_file_inner(&self, path: &Path, contents: &[u8]) -> V2AccessResult<MemoryV2Write> {
-        self.write_file_inner_with_transaction(path, contents, None)
+        let class = self.classify_path(path)?;
+        let Some(scope) = class.scope() else {
+            return Ok(MemoryV2Write::Outside);
+        };
+        if !class.is_writable() {
+            return self.write_file_inner_with_transaction(path, contents, None);
+        }
+        self.validate_containment(path, class)?;
+        let state_path = self.root_for_scope(scope).join("memory_state.sqlite");
+        reject_symlink_components(self.root_for_scope(scope), &state_path)?;
+        let database_error = |source| V2AccessError::ExclusionState {
+            path: path.to_path_buf(),
+            source: V2StorageError::Database {
+                database: "state",
+                path: state_path.clone(),
+                source,
+            },
+        };
+        let mut connection = xai_sqlite_journal::JournalMode::for_db_path(&state_path)
+            .open(&state_path)
+            .map_err(database_error)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let result = self.write_file_inner_with_transaction(path, contents, Some(&transaction))?;
+        transaction.commit().map_err(database_error)?;
+        Ok(result)
     }
 
     fn write_file_inner_with_transaction(
@@ -561,8 +613,15 @@ impl MemoryV2Access for V2MemoryAccessPolicy {
             .map_err(|error| error.to_string())
     }
 
+    /// The tool-facing read: the only place a topic read is counted for the
+    /// compact index ranking.
     fn record_read(&self, path: &Path, contents: &[u8]) -> Result<(), String> {
-        self.record_read_inner(path, contents)
+        self.record_read_classified(path, contents)
+            .map(|classified| {
+                if let Some((V2PathClass::Topic(scope), canonical)) = classified {
+                    self.count_topic_read(scope, &canonical);
+                }
+            })
             .map_err(|error| error.to_string())
     }
 

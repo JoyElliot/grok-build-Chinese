@@ -295,9 +295,17 @@ async fn reload_project_servers_after_grant(ctx: ReloadAfterGrant<'_>) {
         // Plugins (and plugin-contributed hooks) are built for this session's own cwd on the folder-trust verdict
         // This mirrors `broadcast_plugin_registry_to_sessions`
         // The grant and `resolve_and_record` above flipped the cached verdict to trusted
-        let disk_cfg =
-            crate::config::resolve_effective_plugins_config(session_cwd).to_discovery_config();
         let project_trusted = folder_trust::project_scope_allowed(session_cwd);
+        let disk_cfg = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+            xai_grok_workspace::plugins::PluginConfigInputs {
+                effective_config: crate::config::load_effective_config().ok().as_ref(),
+                home: xai_dirs::home_dir().as_deref(),
+                grok_home: xai_grok_config::user_grok_home().as_deref(),
+                cwd: session_cwd,
+                trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+                claude_import: crate::claude_import::import_marker(),
+            },
+        );
         // Session `_meta.pluginDirs` are re-merged by the receiving actor (`preserve_session_plugin_dirs` on `ReloadPlugins`)
         let registry =
             ctx.plugin_handle

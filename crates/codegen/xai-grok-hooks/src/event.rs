@@ -217,6 +217,8 @@ impl HookEventName {
     }
 }
 
+pub const END_TURN_STOP_REASON: &str = "end_turn";
+
 pub const MAX_STOP_ENTRY_TEXT_CHARS: usize = 1000;
 
 pub const MAX_CANCEL_TRIGGER_CHARS: usize = 64;

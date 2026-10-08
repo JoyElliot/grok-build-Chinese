@@ -4,6 +4,8 @@ mod history_provider;
 mod path_provider;
 mod shell_token;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +15,8 @@ use crate::agent::MvpAgent;
 pub(crate) use file_provider::FilePathProvider;
 pub(crate) use history_provider::HistoryProvider;
 pub(crate) use path_provider::PathProvider;
+
+pub const SUGGEST_METHOD: &str = "x.ai/suggest";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +135,27 @@ impl From<RankedSuggestion> for CompletionItem {
     }
 }
 
+/// Holds a provider's cache-refresh flag and clears it on drop.
+/// A caller that drops a completion mid-scan must not leave the flag set, or every later refresh
+/// is skipped and the stale cache is served until the process exits.
+#[must_use]
+pub(crate) struct RefreshGuard(&'static AtomicBool);
+
+impl RefreshGuard {
+    /// `None` while another refresh holds `flag`.
+    pub(crate) fn try_acquire(flag: &'static AtomicBool) -> Option<RefreshGuard> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .ok()
+            .map(|_| RefreshGuard(flag))
+    }
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Mark whole-line suggestions (history/AI carry the full command as `insert_text`) as replacing the entire request text.
 fn stamp_whole_line_range(results: &mut [RankedSuggestion], text_len: usize) {
     results
@@ -156,7 +181,7 @@ fn splice_token_into_line(results: &mut [RankedSuggestion], text: &str, range: (
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
-        "x.ai/suggest" => handle_suggest(agent, args).await,
+        SUGGEST_METHOD => handle_suggest(agent, args).await,
         "x.ai/suggestPrompt" => handle_suggest_prompt(agent, args).await,
         _ => Err(acp::Error::method_not_found()),
     }
@@ -244,17 +269,8 @@ async fn handle_suggest(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     } = req;
     let ctx = SuggestContext::new(text, cursor, cwd);
 
-    let (history_results, path_results, file_results) = tokio::join!(
-        async {
-            if token_only {
-                Vec::new()
-            } else {
-                HistoryProvider.suggest(&ctx).await
-            }
-        },
-        PathProvider.suggest(&ctx),
-        FilePathProvider.suggest(&ctx),
-    );
+    let (history_results, path_results, file_results) =
+        history_path_and_file_rows(&ctx, token_only).await;
 
     let mut ai_results =
         if include_ai && !token_only && !should_skip_ai(&history_results, ctx.prefix()) {
@@ -284,6 +300,62 @@ async fn handle_suggest(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         completions,
         generation,
     })
+}
+
+/// Answers `x.ai/suggest` with history, `PATH` and file rows, even when `includeAi` is set.
+/// The returned future is `Send`.
+pub async fn answer_without_session(args: &acp::ExtRequest) -> ExtResult {
+    let req: SuggestRequest = parse_params(args)?;
+    let ctx = SuggestContext::new(req.text, req.cursor, req.cwd);
+    let (history_results, path_results, file_results) =
+        history_path_and_file_rows(&ctx, req.token_only).await;
+
+    let (ghost, completions) = aggregate(
+        history_results,
+        path_results,
+        file_results,
+        Vec::new(),
+        ctx.prefix(),
+        req.limit,
+    );
+
+    to_raw_response(&SuggestResponse {
+        ghost,
+        completions,
+        generation: req.generation,
+    })
+}
+
+/// Answers `x.ai/suggest` with no rows and the request's `generation`.
+/// An error reply would leave the client's pending request waiting.
+pub fn answer_empty(args: &acp::ExtRequest) -> ExtResult {
+    let req: SuggestRequest = parse_params(args)?;
+    to_raw_response(&SuggestResponse {
+        ghost: None,
+        completions: Vec::new(),
+        generation: req.generation,
+    })
+}
+
+async fn history_path_and_file_rows(
+    ctx: &SuggestContext,
+    token_only: bool,
+) -> (
+    Vec<RankedSuggestion>,
+    Vec<RankedSuggestion>,
+    Vec<RankedSuggestion>,
+) {
+    tokio::join!(
+        async {
+            if token_only {
+                Vec::new()
+            } else {
+                HistoryProvider.suggest(ctx).await
+            }
+        },
+        PathProvider.suggest(ctx),
+        FilePathProvider.suggest(ctx),
+    )
 }
 
 fn find_session(
@@ -659,5 +731,33 @@ mod tests {
         assert_eq!(a.priority, 10);
         assert_eq!(b.priority, 5);
         assert_eq!(b.source, "file");
+    }
+
+    #[tokio::test]
+    async fn refresh_dropped_mid_scan_frees_its_flag() {
+        static REFRESHING: AtomicBool = AtomicBool::new(false);
+        let (_scan_done, scan) = tokio::sync::oneshot::channel::<()>();
+        let refresh = async {
+            let _refreshing = RefreshGuard::try_acquire(&REFRESHING).expect("the flag is free");
+            let _ = scan.await;
+        };
+
+        // The refresh parks on its scan, then loses the race and is dropped, as on a session cancel
+        tokio::select! {
+            biased;
+            () = refresh => panic!("the scan never finishes"),
+            () = std::future::ready(()) => {}
+        }
+
+        assert!(RefreshGuard::try_acquire(&REFRESHING).is_some());
+    }
+
+    #[test]
+    fn failed_acquire_leaves_the_holders_flag_set() {
+        static REFRESHING: AtomicBool = AtomicBool::new(false);
+        let _holder = RefreshGuard::try_acquire(&REFRESHING).expect("the flag is free");
+
+        assert!(RefreshGuard::try_acquire(&REFRESHING).is_none());
+        assert!(RefreshGuard::try_acquire(&REFRESHING).is_none());
     }
 }

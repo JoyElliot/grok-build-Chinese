@@ -181,6 +181,7 @@ pub(crate) fn test_app() -> AppView {
         bootstrap_acp_commands: Vec::new(),
         auth_methods: Vec::new(),
         auth_state: AuthState::Done,
+        logout_pending: false,
         trust_state: TrustState::Done,
         consent_state: crate::app::consent::ConsentState::Done,
         account_email: None,
@@ -343,9 +344,13 @@ pub(crate) fn test_app() -> AppView {
         dashboard_persisted: None,
         keyboard_normalizer: KeyboardNormalizer::from_terminal_context(),
         voice_mode_enabled: false,
+        distribution: xai_grok_config::Distribution::STOCK,
         voice_ui_active: false,
         voice_config: xai_grok_voice::VoiceConfig::default(),
         voice_auth: None,
+        voice_session: xai_grok_voice::VoiceSessionId::default(),
+        voice_trailing_final: None,
+        voice_clip_deadline: None,
         voice_cmd_tx: None,
         voice_state: VoiceState::Idle,
     }
@@ -6253,7 +6258,8 @@ fn esc_on_dashboard_while_listening_stops_voice() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
@@ -6272,7 +6278,8 @@ fn esc_stops_voice_before_closing_dashboard_picker() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::DashboardDispatch,
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Action(Action::VoiceToggle)));
@@ -6307,12 +6314,40 @@ fn esc_cancels_pending_voice_cold_start() {
     let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(
-        !app.voice_state.pending_cold_start(),
+        !app.voice_state.is_pending_cold_start(),
         "Esc must cancel the queued cold-start"
     );
     assert!(
         app.voice_recording_target().is_none(),
         "target dropped on cancel"
+    );
+}
+/// Esc on a stopped/uploading clip aborts it rather than falling through to the surface's Esc.
+#[test]
+fn esc_abandons_an_outstanding_clip() {
+    let mut app = test_app();
+    pin_non_vscode_registry(&mut app);
+    app.active_view = ActiveView::AgentDashboard;
+    app.dashboard = Some(crate::views::dashboard::DashboardState::new());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    app.voice_cmd_tx = Some(tx);
+    app.voice_state = VoiceState::Transcribing {
+        target: VoiceTarget::DashboardDispatch,
+        partial: Partial::None,
+    };
+    let outcome = app.handle_input(&key_event(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert_eq!(VoiceState::Idle, app.voice_state);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(xai_grok_voice::VoiceCommand::Abort)
+    ));
+    assert_eq!(
+        Some(crate::voice::RECORDING_DISCARDED_TOAST),
+        app.dashboard
+            .as_ref()
+            .and_then(|d| d.error_toast.as_deref()),
+        "the key's effect is named; nothing else on screen showed a recording in flight"
     );
 }
 /// The dictation overlay must only render on the surface that owns the bound target.
@@ -6323,7 +6358,8 @@ fn voice_overlay_bound_to_target_surface() {
     let mut app = test_app();
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(id),
-        interim: Some("partial".into()),
+        partial: Partial::Shown("partial".into()),
+        route: Some(xai_grok_voice::VoiceRoute::Streaming),
     };
     app.active_view = ActiveView::Agent(id);
     assert!(
@@ -6346,7 +6382,8 @@ fn voice_target_on_agent_entered_from_dashboard() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.active_view = ActiveView::Agent(id);
     app.dashboard = Some(crate::views::dashboard::DashboardState::new());

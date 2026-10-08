@@ -405,12 +405,16 @@ async fn build_report(cwd: &Path) -> InspectReport {
     let project_trusted = crate::agent::folder_trust::project_scope_allowed(cwd);
 
     let trust_store = xai_grok_agent::plugins::TrustStore::load();
-    let mut plugins_cfg: crate::agent::config::PluginsConfig = effective_config
-        .get("plugins")
-        .and_then(|v| v.clone().try_into().ok())
-        .unwrap_or_default();
-    plugins_cfg.merge_claude_enabled_plugins(Some(cwd));
-    let mut plugin_config = plugins_cfg.to_discovery_config();
+    let mut plugin_config = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+        xai_grok_workspace::plugins::PluginConfigInputs {
+            effective_config: effective_config_result.as_ref().ok(),
+            home: xai_dirs::home_dir().as_deref(),
+            grok_home: xai_grok_config::user_grok_home().as_deref(),
+            cwd,
+            trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+            claude_import: crate::claude_import::import_marker(),
+        },
+    );
     // Project plugins gate on the same folder-trust verdict as hooks and the live session/doctor sites
     // The listing's `enabled` flags therefore match runtime gating
     let discovered_plugins = xai_grok_agent::plugins::discover_plugins(
@@ -427,7 +431,7 @@ async fn build_report(cwd: &Path) -> InspectReport {
         &plugin_config.enabled,
     );
 
-    let external_compat = resolve_inspect_compat(effective_config_result.as_ref().map_err(|_| ()));
+    let external_compat = resolve_inspect_compat(effective_config_result.as_ref().ok());
 
     // This is the same `[skills]` table the runtime loads: `paths` skills appear, `ignore`d ones are hidden, `disabled` ones show as disabled
     let skills_config = crate::config::parse_skills_config(&effective_config);
@@ -817,9 +821,12 @@ fn list_hooks(
     // Route through the same assembly as session startup
     // Config-layer hooks (config.toml / managed_config.toml / requirements.toml) then appear in `/hooks` status alongside file hooks
     // Each carries its provenance name prefix
-    let config_layers = xai_grok_config::hook_config_layers();
-    let (registry, _errors) =
-        crate::util::hooks::assemble_hooks(&config_layers, git_root, &all_on, project_trusted);
+    let (registry, _errors) = crate::util::hooks::discover_hooks(
+        &crate::util::hooks::process_hook_inputs(),
+        git_root,
+        &all_on,
+        xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+    );
 
     let mut entries: Vec<HookEntry> = registry
         .all_hooks()
@@ -1079,7 +1086,7 @@ fn list_mcp_servers(
 
     sourced
         .into_iter()
-        .map(|(server, source)| {
+        .map(|(server, origin)| {
             let (name, transport, target) =
                 match &server {
                     agent_client_protocol::McpServer::Stdio(
@@ -1094,7 +1101,8 @@ fn list_mcp_servers(
                     // TODO(acp-0.10): `McpServer` is #[non_exhaustive].
                     _ => ("unknown".to_string(), "unknown", String::new()),
                 };
-            let subject = crate::session::managed_mcp::mcp_subject(&server, &source, &project);
+            let subject = crate::session::managed_mcp::mcp_subject(&server, &origin, &project);
+            let source = ConfigSource::from(origin);
             // The verdict mirrors the merge's deny/allow and project-MCP pin
             // so the report matches what actually loads.
             let disabled_reason = match ms.mcp_verdict(&server, subject) {
@@ -1847,7 +1855,7 @@ mod tests {
     fn harness_compatibility_human_output_stays_compact() {
         let effective_config: toml::Value =
             toml::from_str("[compat.cursor]\nrules = false").unwrap();
-        let report = compat::resolve_inspect_compat_with_env(Ok(&effective_config), |_| None);
+        let report = compat::resolve_inspect_compat_with_env(Some(&effective_config), |_| None);
 
         let human = render_harness_compatibility(&report);
 

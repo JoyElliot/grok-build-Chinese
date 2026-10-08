@@ -19,7 +19,6 @@ tokio = { workspace = true, features = ["process", "rt", "macros", "time"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-xai-dirs = { workspace = true }
 xai-grok-config = { workspace = true }
 # Child-network restriction on hook command spawns; enforce is feature-unified
 # from the binary crate, matching the other consumers.
@@ -29,6 +28,7 @@ xai-grok-tools = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true, features = ["registry"] }
 
 [lints]
 workspace = true

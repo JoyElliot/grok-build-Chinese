@@ -25,6 +25,29 @@ const INVALID_SERVER_ID_MARKER: &str = "workspace-server: invalid --server-id";
 const WORKSPACE_HUB_AUTH_FAILED_MARKER: &str = "workspace hub auth failed";
 /// Post-failure dwell so the host can poll `/ready` before exit ([500ms, 2s]).
 const HUB_CONNECT_FAILED_DWELL: Duration = Duration::from_millis(750);
+/// Capped log of pre-stop exec handler output, in the server's temp dir next to the daemon log.
+#[cfg(unix)]
+const LIFECYCLE_EXEC_LOG_FILE: &str = "workspace-server-lifecycle.log";
+/// Bound on building the pre-stop broker; past it the diagnostics socket binds without the lifecycle routes.
+#[cfg(unix)]
+const LIFECYCLE_BROKER_START_TIMEOUT: Duration = Duration::from_secs(5);
+/// The pre-stop broker: image manifests from `image_dir`, registrations under the durable workspace home.
+///
+/// Unix only. On Windows the diagnostics listener is loopback TCP, which every local account can reach, and the host
+/// never sends pre-stop to Windows guests, so the lifecycle routes are not served there.
+#[cfg(unix)]
+fn lifecycle_broker(
+    image_dir: &std::path::Path,
+    workspace_home: &std::path::Path,
+    temp_dir: &std::path::Path,
+) -> xai_grok_lifecycle::LifecycleBroker {
+    use xai_grok_lifecycle::{LifecycleBroker, LifecycleConfig};
+    LifecycleBroker::new(LifecycleConfig {
+        image_dir: image_dir.to_path_buf(),
+        state_dir: Some(workspace_home.join("lifecycle").join("handlers")),
+        exec_log: temp_dir.join(LIFECYCLE_EXEC_LOG_FILE),
+    })
+}
 fn server_id_startup_error(id: &str) -> Option<String> {
     id.parse::<xai_tool_protocol::ServerId>()
         .err()
@@ -431,8 +454,53 @@ async fn run(
     #[cfg(windows)]
     let diag_listener = diag_server::DiagListener::Tcp(args.diag_port);
     let diag_log_file = args.daemonize.then_some(args.log_file);
-    let _diag_server = match diag_server::serve(diag_listener, diag_handle.clone(), diag_log_file)
-        .await
+    #[cfg(unix)]
+    let broker = tokio::time::timeout(
+        LIFECYCLE_BROKER_START_TIMEOUT,
+        tokio::task::spawn_blocking(|| {
+            lifecycle_broker(
+                std::path::Path::new(xai_grok_lifecycle::DEFAULT_IMAGE_HANDLER_DIR),
+                &xai_grok_workspace::handle::resolve_workspace_home(),
+                &std::env::temp_dir(),
+            )
+        }),
+    )
+    .await;
+    #[cfg(unix)]
+    let diag_options = match broker {
+        Ok(Ok(broker)) => diag_server::DiagServeOptions {
+            log_file: diag_log_file,
+            extra_routes: broker.router(),
+        },
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "pre-stop lifecycle broker failed to start; serving diagnostics without it");
+            diag_server::DiagServeOptions {
+                log_file: diag_log_file,
+                ..diag_server::DiagServeOptions::default()
+            }
+        }
+        Err(_elapsed) => {
+            tracing::error!(
+                timeout_s = LIFECYCLE_BROKER_START_TIMEOUT.as_secs(),
+                "pre-stop lifecycle broker start timed out; serving diagnostics without it"
+            );
+            diag_server::DiagServeOptions {
+                log_file: diag_log_file,
+                ..diag_server::DiagServeOptions::default()
+            }
+        }
+    };
+    #[cfg(windows)]
+    let diag_options = diag_server::DiagServeOptions {
+        log_file: diag_log_file,
+        ..diag_server::DiagServeOptions::default()
+    };
+    let _diag_server = match diag_server::serve_with(
+        diag_listener,
+        diag_handle.clone(),
+        diag_options,
+    )
+    .await
     {
         Ok(bound) => {
             tracing::info!(addr = %bound.addr, "diagnostics server listening");
@@ -483,6 +551,7 @@ async fn run(
             on_handshake_refused: None,
             bind_mcp: None,
             host_kind,
+            sandbox: None,
         },
     )
     .await
@@ -637,6 +706,87 @@ mod tests {
             argv,
             vec!["--control-port", "6015"],
             "without the env the flag must be omitted"
+        );
+    }
+    /// Raw HTTP/1.1 over loopback TCP.
+    #[cfg(unix)]
+    async fn http(port: u16, method: &str, path: &str, body: &str) -> (u16, serde_json::Value) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect");
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: ws\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut response))
+            .await
+            .expect("response in time")
+            .expect("read response");
+        let response = String::from_utf8(response).expect("utf8 response");
+        let (head, body) = response.split_once("\r\n\r\n").expect("header end");
+        let status = head
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .expect("status code");
+        let body = if body.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(body).expect("json body")
+        };
+        (status, body)
+    }
+    /// The broker answers on the diag listener next to `/ready`, and runs what a process registers there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lifecycle_broker_is_served_on_the_diag_listener() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let broker = lifecycle_broker(&home.path().join("image"), home.path(), home.path());
+        let bound = diag_server::serve_with(
+            diag_server::DiagListener::Tcp(0),
+            DiagHandle::new(None),
+            diag_server::DiagServeOptions {
+                log_file: None,
+                extra_routes: broker.router(),
+            },
+        )
+        .await
+        .expect("bind");
+        let port = bound.port.expect("tcp port");
+        let trigger = r#"{"v":1,"reason":"manual","disk":"kept","deadline_ms":5000}"#;
+        let (status, body) = http(port, "POST", "/lifecycle/pre-stop", trigger).await;
+        assert_eq!(200, status);
+        assert_eq!(
+            Some("no_handlers"),
+            body.get("verdict").and_then(serde_json::Value::as_str)
+        );
+        let registration = r#"{"v":1,"argv":["/bin/sh","-c","exit 0"]}"#;
+        let (status, _) = http(port, "PUT", "/lifecycle/handlers/flush", registration).await;
+        assert_eq!(200, status);
+        let (status, body) = http(port, "POST", "/lifecycle/pre-stop", trigger).await;
+        assert_eq!(200, status);
+        assert_eq!(
+            Some("ok"),
+            body.get("verdict").and_then(serde_json::Value::as_str)
+        );
+        assert_eq!(
+            Some("flush"),
+            body.pointer("/handlers/0/name")
+                .and_then(serde_json::Value::as_str)
+        );
+        #[cfg(target_os = "linux")]
+        assert!(home.path().join("lifecycle/handlers/flush.json").is_file());
+        let (status, ready) = http(port, "GET", "/ready", "").await;
+        assert_eq!(503, status);
+        assert_eq!(
+            Some("starting"),
+            ready.get("state").and_then(serde_json::Value::as_str)
         );
     }
     #[test]

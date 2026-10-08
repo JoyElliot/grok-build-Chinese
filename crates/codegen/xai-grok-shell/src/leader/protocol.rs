@@ -1,11 +1,13 @@
 use std::io;
 use std::path::PathBuf;
 
+use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::cpu_profile::{ControlError, ProfileArtifactFormat};
 
 const MAX_MESSAGE_SIZE: u32 = 64 * 1024 * 1024;
+const FRAME_HEADER_LEN: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -39,6 +41,64 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
+}
+
+/// Reads length-prefixed frames into a buffer that outlives each read, so [`FrameReader::read_message`]
+/// is cancel-safe: a `select!` branch that wins mid-frame leaves the partial frame for the next read
+/// instead of desynchronizing the stream.
+pub(crate) struct FrameReader<R> {
+    reader: R,
+    buf: BytesMut,
+}
+
+impl<R: AsyncRead + Unpin> FrameReader<R> {
+    pub(crate) fn new(reader: R) -> Self {
+        FrameReader {
+            reader,
+            buf: BytesMut::new(),
+        }
+    }
+
+    /// Cancel-safe: only `read_buf` awaits, and it appends to `buf` or reads nothing.
+    pub(crate) async fn read_frame(&mut self) -> Result<Vec<u8>, ProtocolError> {
+        loop {
+            if let Some(frame) = self.take_frame()? {
+                return Ok(frame);
+            }
+            if self.reader.read_buf(&mut self.buf).await? == 0 {
+                // Matches `read_frame`: EOF inside the length prefix is a close, inside a body an error.
+                return Err(if self.buf.len() < FRAME_HEADER_LEN {
+                    ProtocolError::ConnectionClosed
+                } else {
+                    ProtocolError::Io(io::ErrorKind::UnexpectedEof.into())
+                });
+            }
+        }
+    }
+
+    pub(crate) async fn read_message<T: serde::de::DeserializeOwned>(
+        &mut self,
+    ) -> Result<T, ProtocolError> {
+        let data = self.read_frame().await?;
+        Ok(serde_json::from_slice(&data)?)
+    }
+
+    fn take_frame(&mut self) -> Result<Option<Vec<u8>>, ProtocolError> {
+        let Some(header) = self.buf.first_chunk::<FRAME_HEADER_LEN>() else {
+            return Ok(None);
+        };
+        let len = u32::from_be_bytes(*header);
+        if len > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::MessageTooLarge(len));
+        }
+        let frame_len = FRAME_HEADER_LEN + len as usize;
+        if self.buf.len() < frame_len {
+            self.buf.reserve(frame_len - self.buf.len());
+            return Ok(None);
+        }
+        self.buf.advance(FRAME_HEADER_LEN);
+        Ok(Some(self.buf.split_to(len as usize).to_vec()))
+    }
 }
 
 pub(crate) async fn write_frame<W: AsyncWrite + Unpin>(
@@ -583,6 +643,66 @@ mod tests {
         let received = read_frame(&mut server).await.unwrap();
 
         assert_eq!(received, data);
+    }
+
+    /// A read cancelled mid-frame, as when an outbound write wins the client loop's `select!`, must
+    /// leave the partial frame for the next read; `read_frame` over `read_exact` drops it and
+    /// desynchronizes the stream.
+    #[tokio::test]
+    async fn frame_reader_survives_cancellation_mid_frame() {
+        let (mut client, server) = duplex(1024);
+        let mut reader = FrameReader::new(server);
+        let data = b"hello world";
+        let mut frame = (data.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(data);
+
+        let (head, tail) = frame.split_at(6);
+        client.write_all(head).await.unwrap();
+        tokio::select! {
+            biased;
+            _ = reader.read_frame() => panic!("a partial frame must not complete a read"),
+            () = tokio::task::yield_now() => {}
+        }
+        client.write_all(tail).await.unwrap();
+        write_frame(&mut client, b"next").await.unwrap();
+
+        assert_eq!(data.as_slice(), reader.read_frame().await.unwrap());
+        assert_eq!(b"next".as_slice(), reader.read_frame().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn frame_reader_eof_in_prefix_is_a_close_and_in_body_an_error() {
+        let (client, server) = duplex(64);
+        drop(client);
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_frame().await,
+            Err(ProtocolError::ConnectionClosed)
+        ));
+
+        let (mut client, server) = duplex(64);
+        client.write_all(&8u32.to_be_bytes()).await.unwrap();
+        client.write_all(b"abc").await.unwrap();
+        drop(client);
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_frame().await,
+            Err(ProtocolError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[tokio::test]
+    async fn frame_reader_rejects_an_oversized_prefix() {
+        let (mut client, server) = duplex(64);
+        client
+            .write_all(&(MAX_MESSAGE_SIZE + 1).to_be_bytes())
+            .await
+            .unwrap();
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_frame().await,
+            Err(ProtocolError::MessageTooLarge(len)) if len == MAX_MESSAGE_SIZE + 1
+        ));
     }
 
     #[tokio::test]

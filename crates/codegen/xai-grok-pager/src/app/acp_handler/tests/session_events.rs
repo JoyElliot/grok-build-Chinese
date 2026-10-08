@@ -1097,6 +1097,81 @@
 
     // ── handle_child_session_notification ──────────────────────────────
 
+    /// A hook's note for a child (a PreCompact hook's message, for one) lands in the child's view
+    #[test]
+    fn child_hook_note_shows_in_child_view() {
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::blocks::SessionEvent;
+        use xai_grok_shell::extensions::notification::HookAnnotationKind;
+
+        for (kind, expected) in [
+            (HookAnnotationKind::Note, "note"),
+            (HookAnnotationKind::ToolOutcome, "outcome"),
+        ] {
+            let mut agent = make_agent(Some("root-sess"));
+            let child_sid = "child-sess-1";
+            agent
+                .insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+            let root_len = agent.scrollback.len();
+
+            let update = XaiSessionUpdate::HookAnnotation {
+                message: "Saved 3 working notes to memory".into(),
+                kind,
+            };
+            assert!(handle_child_session_notification(update, child_sid, &mut agent, false, None));
+
+            assert_eq!(agent.scrollback.len(), root_len, "the root transcript is untouched");
+            let child_view = agent.subagent_views.get_mut(child_sid).unwrap();
+            let entry = child_view.scrollback.entries_mut().last().expect("note pushed");
+            match (&entry.block, expected) {
+                (RenderBlock::SessionEvent(b), "note") => {
+                    assert!(matches!(&b.event, SessionEvent::HookAnnotation { message, kind: Some(HookAnnotationKind::Note) } if message == "Saved 3 working notes to memory"));
+                }
+                (RenderBlock::SessionEvent(b), _) => {
+                    assert!(matches!(&b.event, SessionEvent::HookOutcome { message } if message == "Saved 3 working notes to memory"));
+                }
+                (other, _) => panic!("expected a session event block, got {other:?}"),
+            }
+        }
+    }
+
+    /// The from-disk child replay renders through `apply_child_view_session_event`, so a rebuilt
+    /// child transcript keeps the note the live one showed
+    #[test]
+    fn child_hook_note_kept_on_replay() {
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::blocks::SessionEvent;
+        use xai_grok_shell::extensions::notification::HookAnnotationKind;
+
+        let mut child_view = make_agent(Some("child-sess-1"));
+        child_view.session.loading_replay = true;
+        let update = XaiSessionUpdate::HookAnnotation {
+            message: "Saved 3 working notes to memory".into(),
+            kind: HookAnnotationKind::Note,
+        };
+
+        assert!(apply_child_view_session_event(&mut child_view, &update, false));
+
+        let entry = child_view.scrollback.entries_mut().last().expect("note pushed");
+        match &entry.block {
+            RenderBlock::SessionEvent(b) => {
+                assert!(matches!(&b.event, SessionEvent::HookAnnotation { message, kind: Some(HookAnnotationKind::Note) } if message == "Saved 3 working notes to memory"));
+            }
+            other => panic!("expected a session event block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn child_hook_note_without_child_view_is_ignored() {
+        let mut agent = make_agent(Some("root-sess"));
+        let update = XaiSessionUpdate::HookAnnotation {
+            message: "Saved 3 working notes to memory".into(),
+            kind: xai_grok_shell::extensions::notification::HookAnnotationKind::Note,
+        };
+        assert!(!handle_child_session_notification(update, "child-gone", &mut agent, false, None));
+        assert_eq!(agent.scrollback.len(), 0);
+    }
+
     #[test]
     fn child_compact_completed_updates_subagent_info() {
         let mut agent = make_agent(Some("root-sess"));

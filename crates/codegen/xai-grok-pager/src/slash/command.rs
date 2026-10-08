@@ -347,7 +347,7 @@ pub trait SlashCommand: Send + Sync {
     }
 
     /// Placeholder text shown in the prompt when args are empty.
-    /// E.g., `"[context]"` for `/compact`.
+    /// E.g., `"<question>"` for `/btw`.
     fn arg_placeholder(&self) -> Option<&str> {
         None
     }

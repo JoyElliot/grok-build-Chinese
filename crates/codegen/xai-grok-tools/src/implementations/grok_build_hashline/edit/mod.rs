@@ -229,6 +229,10 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineEditTool {
         ToolNamespace::GrokBuildHashline
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("file_path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }

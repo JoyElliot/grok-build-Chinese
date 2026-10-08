@@ -259,26 +259,14 @@ fn acquire_store_lock(store_path: &Path) -> Option<std::fs::File> {
     None
 }
 
-/// Config URLs can embed secrets.
+/// Config URLs can embed secrets. Written through a `GROK_HOME`-overlay link, like `auth.json`.
 fn write_owner_only_atomic(path: &Path, content: &str) -> Result<()> {
-    use std::io::Write;
-
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
     std::fs::create_dir_all(parent)?;
-
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    tmp.write_all(content.as_bytes())?;
-    tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    xai_grok_config::fs_atomic::write_user_file_atomically(path, content, Some(0o600))?;
     Ok(())
 }
 

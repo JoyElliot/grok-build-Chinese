@@ -408,6 +408,26 @@ mod tests {
     }
 
     #[test]
+    fn large_watcher_list_stays_one_registration() {
+        let root = workspace();
+        let watched = WatchedFiles::new(root.path().to_path_buf());
+        let watchers: Vec<_> = (0..4096)
+            .map(|index| {
+                serde_json::json!({
+                    "globPattern": format!("/tmp/fake-nuget/packages/pkg{index}/**/*.dll")
+                })
+            })
+            .collect();
+        let registration = Registration {
+            id: "roslyn".into(),
+            method: METHOD.into(),
+            register_options: Some(serde_json::json!({ "watchers": watchers })),
+        };
+        watched.accept(std::slice::from_ref(&registration));
+        assert_eq!(watched.accepted(), 1);
+    }
+
+    #[test]
     fn advertise_dynamic_registration_and_relative_patterns() {
         let cap = client_capability();
         assert_eq!(cap.dynamic_registration, Some(true));

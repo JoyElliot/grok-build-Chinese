@@ -15,6 +15,7 @@ use crate::settings::{
     SettingValue, StringValidator, dynamic_enum_choices,
 };
 use crate::theme::Theme;
+use crate::views::modal_list::render_section_header;
 use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, Shortcut,
 };
@@ -790,21 +791,14 @@ pub(super) fn render_rows_with_locale(
 
         match row {
             RowEntry::Header { category } => {
-                let label = localized_category_label(*category, locale);
-                let header_style = Style::default()
-                    .fg(theme.gray)
-                    .bg(theme.bg_base)
-                    .add_modifier(Modifier::BOLD);
-                let sep_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
-                let title = format!(" {label} ");
-                let title_w = title.width();
-                let remaining = (area.width as usize).saturating_sub(title_w);
-                let sep: String = std::iter::repeat_n('\u{2500}', remaining).collect();
-                let line = Line::from(vec![
-                    Span::styled(title, header_style),
-                    Span::styled(sep, sep_style),
-                ]);
-                buf.set_line(area.x, y_cursor, &line, area.width);
+                render_section_header(
+                    buf,
+                    area.x,
+                    area.width,
+                    y_cursor,
+                    localized_category_label(*category, locale),
+                    theme,
+                );
                 y_cursor = y_cursor.saturating_add(1);
             }
             RowEntry::Setting {

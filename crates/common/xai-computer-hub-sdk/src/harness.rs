@@ -1487,9 +1487,8 @@ impl ToolHarness {
 
     /// Send a `hook` frame to the server.
     ///
-    /// The server routes the hook to the tool server that owns the targeted
-    /// tool (or broadcasts to all servers bound to the session for
-    /// session-wide hooks like `Pause` / `Resume` / `SessionEnded`).
+    /// The server routes the hook to the tool server that owns `tool_id`.
+    /// A hook with no `tool_id` goes to every tool server bound to this session.
     /// The frame is fire-and-forget: this method returns `Ok` once the
     /// outbound message is queued, without waiting for a server ack.
     /// Server-side errors (e.g. unknown tool, invalid session) are not

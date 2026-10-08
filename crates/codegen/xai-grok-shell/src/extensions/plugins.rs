@@ -222,6 +222,7 @@ mod tests {
             lsp_server_count: 0,
             has_inline_lsp_only: false,
             inline_hooks: None,
+            hook_specs: Vec::new(),
             inline_mcp_servers: None,
             inline_lsp_servers: None,
             conflict: None,

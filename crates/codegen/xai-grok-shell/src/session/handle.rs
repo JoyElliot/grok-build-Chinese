@@ -104,6 +104,8 @@ pub struct SessionHandle {
     /// Per-session tracking prevents cross-client contamination in leader mode where `MvpAgent.current_model_id` is shared mutable state.
     pub model_id: acp::ModelId,
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// The selected context window in tokens, 0 for none, shared with the session actor.
+    pub context_window_selection: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// YOLO (auto-approve) mode for this session.
     /// Per-session tracking prevents cross-client contamination in leader mode where one client enabling YOLO could affect another client's sessions.
     pub yolo_mode: bool,
@@ -155,6 +157,11 @@ pub struct SessionHandle {
         Option<xai_grok_tools::implementations::grok_build::scheduler::types::SchedulerHandle>,
     pub registry_write_order: RegistryWriteOrder,
 }
+pub(crate) fn load_context_window_selection(
+    selection: &std::sync::atomic::AtomicU64,
+) -> Option<std::num::NonZeroU64> {
+    std::num::NonZeroU64::new(selection.load(std::sync::atomic::Ordering::Relaxed))
+}
 #[derive(Clone, Default)]
 pub struct RegistryWriteOrder {
     inner: std::sync::Arc<RegistryWriteOrderInner>,
@@ -164,6 +171,7 @@ struct RegistryWriteOrderInner {
     restorable_apply: tokio::sync::Mutex<()>,
     last_turn_floor: std::sync::atomic::AtomicI32,
     restorable_floor: std::sync::atomic::AtomicI32,
+    registration_claimed: std::sync::atomic::AtomicBool,
 }
 impl Default for RegistryWriteOrderInner {
     fn default() -> Self {
@@ -172,6 +180,7 @@ impl Default for RegistryWriteOrderInner {
             restorable_apply: tokio::sync::Mutex::new(()),
             last_turn_floor: std::sync::atomic::AtomicI32::new(-1),
             restorable_floor: std::sync::atomic::AtomicI32::new(-1),
+            registration_claimed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -248,6 +257,25 @@ impl RegistryWriteOrder {
         self.inner
             .restorable_floor
             .fetch_max(turn, std::sync::atomic::Ordering::AcqRel);
+    }
+    /// True for the first caller on this handle only, until [`Self::release_registration`] re-arms it.
+    /// A session registers on the first turn its handle runs, whatever that turn's number: a remote-restored child inherits its parent's trace counter and never runs turn 0.
+    /// A register that succeeded or that the server refused (4xx) keeps the claim; only a transient failure releases it for the next turn.
+    ///
+    /// This does not dedupe against `publish_restored_child_session`'s register, which runs before this handle exists.
+    /// That register must land first: it carries `parent_session_id`, this one sends none, and the server's `ON CONFLICT (session_id)` upsert keeps whichever insert won.
+    pub(crate) fn claim_registration(&self) -> bool {
+        !self
+            .inner
+            .registration_claimed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+    /// Re-arms [`Self::claim_registration`] after a register that a later turn may still land.
+    /// Only the claim holder calls this, inside its turn-end chain slot, so the next turn's claim observes it.
+    pub(crate) fn release_registration(&self) {
+        self.inner
+            .registration_claimed
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 }
 impl SessionHandle {

@@ -32,7 +32,7 @@ use xai_grok_shell::session::storage::chunk_meta_flag;
 use xai_grok_tools::types::output::{BashOutput, ToolOutput};
 use xai_grok_tools::types::output::{ReadFileOutput, SearchToolOutput, WebFetchOutput};
 use xai_grok_tools::util::strip_redundant_session_cd;
-use xai_tool_types::ReadLineCounts;
+use xai_tool_types::{ReadLineCounts, parse_lenient_u64_value};
 /// Convert a UTC millisecond timestamp to local time.
 fn utc_ms_to_local(ms: i64) -> DateTime<Local> {
     chrono::Utc
@@ -49,8 +49,8 @@ pub enum WaitingReason {
     /// Waiting for the model to (re)start streaming.
     /// This covers the gap before the first token after the prompt is sent, and the gap after a tool completes before the next inference step begins.
     Model,
-    /// Blocked on a running foreground subagent (`task` / `spawn_subagent`). The view fills it in; the tracker always
-    /// leaves it `None`.
+    /// Blocked on a running foreground subagent (`task` / `spawn_subagent`).
+    /// Only the view sets `display`, to `Waiting for subagent` or `Waiting for N subagents`.
     Subagent { display: Option<String> },
     /// Blocked polling/awaiting a background task's output (`get_command_or_subagent_output` / `get_task_output`). The
     /// tracker itself always leaves it `None`.
@@ -86,6 +86,15 @@ pub fn clamp_activity_subject(s: &str) -> String {
         line.to_string()
     } else {
         line.chars().take(MAX_ACTIVITY_SUBJECT_CHARS).collect()
+    }
+}
+/// `n == 0` is treated as 1: a `Subagent` wait means at least one child.
+pub fn waiting_on_subagents_subject(n: usize) -> String {
+    let n = n.max(1);
+    if n == 1 {
+        "Waiting for subagent".to_string()
+    } else {
+        format!("Waiting for {n} subagents")
     }
 }
 /// Shared in-progress subject label (clamped description/command) used by turn-status, title bar, and dashboard/subagent activity columns.
@@ -139,10 +148,18 @@ impl WaitingReason {
         };
         match self {
             Self::Model => text("turn.waiting.response", "Waiting for response…"),
-            Self::Subagent { display } => match display.as_deref().map(clamp_activity_subject) {
-                Some(display) if !display.is_empty() => format!("{display}…"),
-                _ => text("turn.waiting.subagent", "Waiting on subagent…"),
-            },
+            Self::Subagent { display } => {
+                let subject = display
+                    .as_deref()
+                    .map(clamp_activity_subject)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| waiting_on_subagents_subject(1));
+                if subject == waiting_on_subagents_subject(1) {
+                    text("turn.waiting.subagent", "Waiting for subagent…")
+                } else {
+                    format!("{subject}…")
+                }
+            }
             Self::TaskOutput {
                 subject: Some(subject),
                 ..
@@ -2642,19 +2659,32 @@ fn task_ids_from_raw_input(raw: &serde_json::Value) -> Vec<String> {
     }
     out
 }
-/// Check if a tool call is a background execute (`is_background=true`). These are deferred from scrollback; the
-/// `x.ai/task_backgrounded` notification creates a `BgTask` block instead of an `Execute` block. Still treat those
-/// as execute tools when `raw_input` requests background so we don't flash the function name.
+/// True when an execute tool call asked to run in the background.
+/// Scrollback skips these; the `x.ai/task_backgrounded` notification adds a `BgTask` block for them.
 fn is_bg_tool(tc: &acp::ToolCall) -> bool {
     let looks_like_execute =
         tc.kind == acp::ToolKind::Execute || is_execute_tool_function_name(&tc.title);
-    looks_like_execute
-        && tc
-            .raw_input
-            .as_ref()
-            .and_then(|v| v.get("is_background").or_else(|| v.get("background")))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+    if !looks_like_execute {
+        return false;
+    }
+    let Some(input) = tc.raw_input.as_ref() else {
+        return false;
+    };
+    raw_input_requests_background(input)
+}
+/// Uses the same precedence as `BashTool::resolve_block_until_ms`.
+/// An explicit `block_until_ms` wins over the legacy flags and `timeout: 0`.
+fn raw_input_requests_background(input: &serde_json::Value) -> bool {
+    let ms = |key: &str| input.get(key).and_then(|v| parse_lenient_u64_value(v).ok());
+    if let Some(block) = ms("block_until_ms") {
+        return block == 0;
+    }
+    let legacy_flag = input
+        .get("is_background")
+        .or_else(|| input.get("background"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    legacy_flag || ms("timeout") == Some(0)
 }
 /// Check if an Edit-kind tool call is a whole-file write (write) rather than a targeted replacement (search_replace / edit).
 ///

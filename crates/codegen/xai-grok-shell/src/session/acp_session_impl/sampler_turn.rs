@@ -2,6 +2,7 @@
 //! It also covers sampling-failure recovery and per-response usage recording.
 
 use super::*;
+use crate::session::persistence::{PersistedAgent, PersistenceMsg};
 use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
@@ -768,8 +769,8 @@ impl SessionActor {
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),
-            deployment_id: crate::managed_config::resolve_deployment_id(
-                crate::managed_config::resolve_deployment_key().as_deref(),
+            deployment_id: xai_grok_cloud_config::managed_config::resolve_deployment_id(
+                xai_grok_cloud_config::managed_config::resolve_deployment_key().as_deref(),
             ),
             user_id: self
                 .auth_manager
@@ -1274,7 +1275,7 @@ impl SessionActor {
                     && let Some(new_cw) = std::num::NonZeroU64::new(cw)
                     && self.compaction.context_window_override.is_none()
                 {
-                    cfg.context_window = new_cw;
+                    cfg.context_window = self.context_window_after_overflow(&cfg, new_cw);
                     self.chat_state_handle.update_sampling_config(cfg);
                 }
 
@@ -1649,6 +1650,50 @@ impl SessionActor {
                 error.kind,
             )),
         )
+    }
+
+    /// The window after a server overflow at `server_window`: a selection that fits stays, a larger one is cleared.
+    pub(in crate::session) fn context_window_after_overflow(
+        &self,
+        cfg: &xai_grok_sampling_types::SamplingConfig,
+        server_window: std::num::NonZeroU64,
+    ) -> std::num::NonZeroU64 {
+        let selection = crate::session::handle::load_context_window_selection(
+            &self.compaction.context_window_selection,
+        );
+        let Some(selection) = selection.filter(|selection| *selection == cfg.context_window) else {
+            return server_window;
+        };
+        if selection <= server_window {
+            return selection;
+        }
+
+        self.compaction
+            .context_window_selection
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // The summary and clients key models by catalog id, not by the routing slug `cfg.model` may hold
+        let model_id = self
+            .models_manager
+            .catalog_key(&cfg.model)
+            .unwrap_or_else(|| acp::ModelId::new(cfg.model.clone()));
+        let agent_name = self.agent.borrow().definition().name.clone();
+        let _ = self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::CurrentModel {
+                model_id: model_id.clone(),
+                agent: PersistedAgent::Named(agent_name),
+                reasoning_effort: None,
+                context_window: Some(None),
+            });
+
+        self.send_xai_notification_transient(XaiSessionUpdate::model_changed(
+            model_id.0.to_string(),
+            cfg.reasoning_effort.map(|effort| effort.to_string()),
+            None,
+        ));
+        server_window
     }
 
     async fn wait_for_stream_drain(

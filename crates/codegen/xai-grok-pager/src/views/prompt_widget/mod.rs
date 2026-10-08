@@ -23,6 +23,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
+use xai_grok_tools::types::SessionMode;
 use xai_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState, TextElement};
 
 use crate::app::actions::PermissionLabel;
@@ -298,24 +299,31 @@ pub struct PromptFlag<'a> {
     pub bold: bool,
 }
 
-/// Info-line mode flags shared by the chat prompt and the dashboard peek badge: plan label, then permission.
-/// Plan and permission are independent axes, so neither hides the other.
+/// Info-line mode flags shared by the chat prompt and the dashboard peek badge: mode label, then permission.
+/// Mode and permission are independent axes, so neither hides the other.
 pub fn mode_flags<'a>(
-    plan_label: Option<&'a str>,
+    mode_label: Option<&'a str>,
     permission: PermissionLabel,
     theme: &Theme,
 ) -> Vec<PromptFlag<'a>> {
     let mut flags = Vec::new();
-    if let Some(text) = plan_label {
+    if let Some(text) = mode_label {
+        // Ask must stay distinct from the plan-family accent.
+        let color = if text == SessionMode::Ask.as_id() {
+            theme.accent_success
+        } else {
+            theme.accent_plan
+        };
+
         flags.push(PromptFlag {
             text,
-            color: Some(theme.accent_plan),
+            color: Some(color),
             bold: false,
         });
     }
     if permission != PermissionLabel::Ask {
         flags.push(PromptFlag {
-            text: permission.as_canonical(),
+            text: permission.display_name(),
             // Blue `accent_system` reads as "system/automation", distinct from plan
             color: (permission == PermissionLabel::Auto).then_some(theme.accent_system),
             bold: false,
@@ -3359,6 +3367,8 @@ impl PromptWidget {
 
         // Interim STT: muted italic overlay (not in the textarea)
         // Finalized text remains the real, editable draft
+        // While it shows, the caret is drawn after the ghost words, where the final will leave it
+        let mut interim_caret: Option<(u16, u16)> = None;
         let voice_interim_shown = if let Some(v) = voice
             && let Some(interim) = v.interim.filter(|t| !t.trim().is_empty())
             && ta_area.width > 0
@@ -3377,6 +3387,19 @@ impl PromptWidget {
                     wrap_voice_interim(interim, ta_area.width as usize, ta_area.height as usize);
                 for (i, line) in lines.iter().enumerate() {
                     buf.set_string(ta_area.x, ta_area.y + i as u16, line, interim_style);
+                }
+                if let Some(last) = lines.last() {
+                    let end_x =
+                        ta_area.x + unicode_width::UnicodeWidthStr::width(last.as_str()) as u16;
+                    let last_y = ta_area.y + (lines.len() - 1) as u16;
+                    // Mirror the textarea: a full row wraps the caret to the next row, or pins it to the last cell on the last row
+                    interim_caret = Some(if end_x < ta_area.x + ta_area.width {
+                        (end_x, last_y)
+                    } else if last_y + 1 < ta_area.y + ta_area.height {
+                        (ta_area.x, last_y + 1)
+                    } else {
+                        (end_x - 1, last_y)
+                    });
                 }
             } else {
                 // Ghost preview of the interim inserted at the caret, or replacing the active selection.
@@ -3398,7 +3421,7 @@ impl PromptWidget {
                         (std::borrow::Cow::Borrowed(text), cursor, cursor)
                     }
                 };
-                let display = crate::voice::space_voice_fragment(&base, at, interim);
+                let (display, _) = crate::voice::space_voice_fragment(&base, at, interim);
 
                 if let Some((start_x, row_y)) =
                     self.textarea
@@ -3422,6 +3445,11 @@ impl PromptWidget {
                         let ghost_w =
                             unicode_width::UnicodeWidthStr::width(truncated.as_str()) as u16;
                         buf.set_string(start_x, row_y, &truncated, interim_style);
+                        // trim_end: the caret sits before the spacing added for the text that follows
+                        let words_w =
+                            unicode_width::UnicodeWidthStr::width(truncated.trim_end()) as u16;
+                        interim_caret =
+                            Some(((start_x + words_w).min(row_right.saturating_sub(1)), row_y));
                         let mut x = start_x.saturating_add(ghost_w);
                         for cell in saved {
                             if x >= row_right {
@@ -3527,14 +3555,15 @@ impl PromptWidget {
             crate::render::color::recede_area(buf, dim_area, bg, 0.66);
         }
 
-        // Finalized draft stays editable during voice; hide the caret only when the box is empty and interim is standing in for it
-        let hide_caret_for_empty_interim = self.textarea.text().is_empty()
-            && voice.is_some_and(|v| v.interim.is_some_and(|t| !t.trim().is_empty()));
-        let cursor_pos = if style.focused && !hide_caret_for_empty_interim {
-            self.textarea
-                .cursor_pos_with_state(ta_area, self.textarea_state)
-        } else {
+        // Finalized draft stays editable during voice; while interim words show, the caret follows their end
+        let cursor_pos = if !style.focused {
             None
+        } else {
+            // `interim_caret` is only set while the interim shows
+            interim_caret.or_else(|| {
+                self.textarea
+                    .cursor_pos_with_state(ta_area, self.textarea_state)
+            })
         };
 
         // Ghost suffixes (shell completion / predicted prompt)
@@ -3711,11 +3740,20 @@ impl PromptWidget {
             };
             let warning_style = Style::default().fg(fg).bg(bg);
             left_spans.push(Span::styled(warning.to_owned(), warning_style));
-            left_spans.push(Span::styled(" · ", sep_style));
         }
-        left_spans.push(Span::styled(info.model_name, model_style));
+        let mut needs_sep = info.usage_warning.is_some();
+        if !info.model_name.is_empty() {
+            if needs_sep {
+                left_spans.push(Span::styled(" · ", sep_style));
+            }
+            left_spans.push(Span::styled(info.model_name, model_style));
+            needs_sep = true;
+        }
         for flag in info.flags {
-            left_spans.push(Span::styled(" · ", sep_style));
+            if needs_sep {
+                left_spans.push(Span::styled(" · ", sep_style));
+            }
+            needs_sep = true;
             let mut style = if let Some(color) = flag.color {
                 if flag.bold {
                     // Bold flags use full color for visibility.

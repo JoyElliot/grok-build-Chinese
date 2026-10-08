@@ -1,7 +1,7 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "1.0.41"
+version = "1.0.45"
 edition.workspace = true
 
 [features]
@@ -13,6 +13,7 @@ dhat-heap = ["dep:dhat"]
 # `test-support` so downstream test builds see those crates' test seams
 # (`isolated_spawn_e2e` uses `WorkspaceOps::for_test`).
 test-support = [
+    "xai-grok-cloud-config/test-support",
     "xai-grok-login/test-support",
     "xai-grok-sampler/test-support",
     "xai-grok-workspace/test-support",
@@ -49,8 +50,6 @@ ignore = { workspace = true }
 jsonschema = { workspace = true }
 futures = { workspace = true }
 glob = { workspace = true }
-globset = { workspace = true }
-kanal = "0.1"
 regex = { workspace = true }
 # rmcp 2.1 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
 # MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
@@ -119,7 +118,6 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
 moka = { workspace = true, features = ["future"] }
 dhat = { workspace = true, optional = true }
 base64 = { workspace = true }
-hmac = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
@@ -161,7 +159,9 @@ xai-grok-foreign-sessions = { workspace = true }
 xai-grok-subagent-resolution = { path = "../xai-grok-subagent-resolution" }
 xai-grok-agent = { path = "../xai-grok-agent" }
 xai-grok-bundle = { workspace = true }
+xai-grok-cloud-config = { workspace = true }
 xai-grok-config = { workspace = true }
+xai-grok-external-agent-migration = { workspace = true }
 xai-grok-feedback = { workspace = true }
 xai-grok-config-types = { workspace = true }
 xai-grok-env = { workspace = true }
@@ -213,6 +213,7 @@ criterion = { workspace = true }
 ctor = { workspace = true }
 filetime = { workspace = true }
 pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 tempfile = { workspace = true }
 # `extensions::bundle` tests build archives with `bundle::test_helpers`, which
 # is `#[cfg(test)]`-only inside xai-grok-bundle without this feature.
@@ -221,6 +222,8 @@ xai-grok-memory = { workspace = true, features = ["test-support"] }
 # sandbox-enforce: keep tests running against the enforcing sandbox build.
 xai-grok-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 xai-grok-config = { workspace = true, features = [] }
+# Shell tests call the test-only functions in `xai_grok_cloud_config::settings_get`.
+xai-grok-cloud-config = { workspace = true, features = ["test-support"] }
 tar = { workspace = true }
 flate2 = { workspace = true }
 semver = { workspace = true }
@@ -294,10 +297,6 @@ required-features = ["test-support"]
 
 [[test]]
 name = "session_create_hook_deferral"
-required-features = ["test-support"]
-
-[[test]]
-name = "e2e_grove_worktree"
 required-features = ["test-support"]
 
 [[test]]

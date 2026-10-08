@@ -36,6 +36,7 @@ fn row_text(locale: Option<&LocaleContext>, id: &str, english: &str) -> String {
 /// A single row in the dashboard. Built per-frame from `app.agents`.
 #[derive(Debug, Clone)]
 pub struct DashboardRow {
+    /// The row's identity on the dashboard, which a loaded saved session replaces.
     pub id: DashboardRowId,
     /// Unlike the row id, this stays the same when a saved session is loaded.
     pub session_id: Option<String>,
@@ -54,7 +55,7 @@ pub struct DashboardRow {
     pub secondary_line: Option<String>,
     /// Working directory display string (already compacted to `~/...`).
     pub cwd_display: String,
-    /// Raw cwd for downstream filter / grouping consumers.
+    /// Raw location for downstream filter / grouping consumers, the same one `cwd_display` shows.
     pub cwd: PathBuf,
     /// Wall-clock moment of the row's last change. A wall-clock [`SystemTime`]: roster timestamps can
     /// predate this process, even the machine's boot, which an [`Instant`] cannot represent.
@@ -544,7 +545,8 @@ fn top_level_row_with_locale(
         top_level_secondary_line_with_locale(agent, state, activity.as_deref(), locale);
     let last_change_at = top_level_last_change_at(agent, state);
     let mut badges = Vec::new();
-    if agent.is_worktree {
+    let local_worktree = agent.is_worktree;
+    if local_worktree {
         badges.push(RowBadge::Worktree);
     }
     if state == RowState::NeedsInput {
@@ -554,7 +556,7 @@ fn top_level_row_with_locale(
     if pinned {
         badges.push(RowBadge::Pinned);
     }
-    let cwd_display = super::state::compact_cwd(&agent.session.cwd, home);
+    let cwd_display = super::state::compact_cwd(agent.location_path(), home);
     DashboardRow {
         id: DashboardRowId::TopLevel(id),
         session_id: agent.session.session_id.as_ref().map(|id| id.0.to_string()),
@@ -564,7 +566,7 @@ fn top_level_row_with_locale(
         activity,
         secondary_line,
         cwd_display,
-        cwd: agent.session.cwd.clone(),
+        cwd: agent.location_path().to_path_buf(),
         last_change_at,
         pinned,
         badges,

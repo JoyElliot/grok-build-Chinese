@@ -27,13 +27,12 @@ fn pick_uses_grok_build_name_else_none_when_unoffered() {
 }
 #[test]
 fn every_kind_with_a_grok_build_name_resolves_under_it() {
-    let cases: [(Tool, &str); 27] = [
+    let cases: [(Tool, &str); 29] = [
         (Tool::Shell, "run_terminal_command"),
         (Tool::Read, "read_file"),
         (Tool::Edit, "search_replace"),
         (Tool::Write, "write"),
         (Tool::Grep, "grep"),
-        (Tool::Glob, "glob"),
         (Tool::List, "list_dir"),
         (Tool::MemorySearch, "memory_search"),
         (Tool::MemoryGet, "memory_get"),
@@ -44,10 +43,13 @@ fn every_kind_with_a_grok_build_name_resolves_under_it() {
         (Tool::ExitPlanMode, "exit_plan_mode"),
         (Tool::WebFetch, "web_fetch"),
         (Tool::WebSearch, "web_search"),
+        (Tool::ImageGen, "image_gen"),
+        (Tool::ReferenceToVideo, "reference_to_video"),
         (Tool::Question, "ask_user_question"),
         (Tool::Todo, "todo_write"),
         (Tool::SearchTool, "search_tool"),
         (Tool::KillTask, "kill_command_or_subagent"),
+        (Tool::TaskOutput, "get_command_or_subagent_output"),
         (Tool::SchedulerCreate, "scheduler_create"),
         (Tool::SchedulerList, "scheduler_list"),
         (Tool::SchedulerDelete, "scheduler_delete"),

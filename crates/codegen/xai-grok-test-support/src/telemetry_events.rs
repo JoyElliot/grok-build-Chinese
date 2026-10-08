@@ -4,6 +4,7 @@
 //! `{url()}/events`. Events are flattened out of each batch so a test asserts on one `event_name` at a time.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -13,11 +14,21 @@ use serde_json::{Value, json};
 #[derive(Default)]
 pub(crate) struct TelemetryEventsState {
     events: Mutex<Vec<Value>>,
+    observed: AtomicUsize,
 }
 
 impl TelemetryEventsState {
     pub(crate) fn events(&self) -> Vec<Value> {
         self.events.lock().unwrap().clone()
+    }
+
+    /// Events pushed since the previous call. [`Self::events`] stays the whole log.
+    pub(crate) fn take_for_observation(&self) -> Vec<Value> {
+        let events = self.events.lock().unwrap();
+        let start = self.observed.load(Ordering::SeqCst);
+        let fresh: Vec<Value> = events.iter().skip(start).cloned().collect();
+        self.observed.store(events.len(), Ordering::SeqCst);
+        fresh
     }
 
     /// An unparseable body is kept as `{"unparsed_events_body": ..}` so a wire-shape regression stays visible.

@@ -643,6 +643,7 @@ impl WorkspaceHandle {
             tool_approval: config.tool_approval,
             host_kind: config.host_kind,
             root_cwd: config.root_cwd.clone(),
+            sandbox: config.sandbox,
             sessions: parking_lot::RwLock::new(sessions),
             session_factory: config.session_factory,
             bind_mcp: config.bind_mcp.map(parking_lot::RwLock::new),
@@ -712,6 +713,11 @@ impl WorkspaceHandle {
     pub async fn hub_server_blocking(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
         self.shared.hub_server_blocking().await
     }
+    /// The folder's per-command shell sandbox, when the host built the workspace with one (the
+    /// daemon does; the CLI and the remote sandbox server do not).
+    pub fn sandbox(&self) -> Option<Arc<crate::sandbox::WorkspaceSandbox>> {
+        self.shared.sandbox()
+    }
     pub(crate) fn root_cwd(&self) -> crate::error::WorkspaceResult<PathBuf> {
         Ok(self.shared.root_cwd.clone())
     }
@@ -742,6 +748,29 @@ impl WorkspaceHandle {
         viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
         system_notifications: bool,
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
+        self.create_session_with_config_and_env(
+            session_id,
+            cwd,
+            tool_config,
+            capability,
+            viewer_ctx,
+            system_notifications,
+            std::collections::HashMap::new(),
+        )
+    }
+    /// [`Self::create_session_with_config`] with the session's shell env
+    /// (see [`crate::bind_env`]). Fixed for the session's lifetime.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_session_with_config_and_env(
+        &self,
+        session_id: impl Into<String>,
+        cwd: Option<std::path::PathBuf>,
+        tool_config: Option<xai_grok_tools::registry::types::ToolServerConfig>,
+        capability: CapabilityMode,
+        viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        system_notifications: bool,
+        session_env: std::collections::HashMap<String, String>,
+    ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         let session_id = session_id.into();
         let session_cwd = cwd.unwrap_or_else(|| self.shared.root_cwd.clone());
         let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -762,6 +791,7 @@ impl WorkspaceHandle {
             capability,
             viewer_ctx,
             system_notifications,
+            session_env,
         );
         if result.is_err() {
             hunk_cancel.cancel();
@@ -809,6 +839,7 @@ impl WorkspaceHandle {
             capability,
             viewer_ctx,
             system_notifications,
+            std::collections::HashMap::new(),
         )
     }
     /// Shared creation body.
@@ -825,6 +856,7 @@ impl WorkspaceHandle {
         capability: CapabilityMode,
         viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
         system_notifications: bool,
+        session_env: std::collections::HashMap<String, String>,
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         let session_id = session_id.into();
         if session_id.is_empty() {
@@ -839,7 +871,7 @@ impl WorkspaceHandle {
                 return Err(WorkspaceError::SessionAlreadyExists(session_id));
             }
         }
-        let session_env = Arc::new(std::collections::HashMap::new());
+        let session_env = Arc::new(session_env);
         let config = tool_config.unwrap_or_else(|| self.shared.default_tool_config.clone());
         let mcp_snapshot = self.shared.mcp_tools_snapshot.load_full();
         let hub_snapshot = self.shared.hub_tools_snapshot.load_full();
@@ -1654,6 +1686,11 @@ impl WorkspaceHandle {
     /// Does **not** drop the session; the server's `unbind_session` path handles that.
     pub fn on_session_ended(&self, session_id: &str) {
         self.shared.activity_tracker.session_ended(session_id);
+        if let Some(sandbox) = self.shared.sandbox() {
+            let session_id = session_id.to_owned();
+            let owner = sandbox.clone();
+            owner.spawn_owned(async move { sandbox.end_session(&session_id).await });
+        }
         self.shared.session_event_writers.remove(session_id);
         self.shared
             .inflight_enqueues
@@ -3051,7 +3088,7 @@ impl WorkspaceHandle {
         let hook = self.shared.bind_mount_hook.load_full();
         let session_id = session.session_id().to_owned();
         let real_root = mapping.real_root_path();
-        const BIND_MOUNT_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const BIND_MOUNT_HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(50);
         match tokio::time::timeout(
             BIND_MOUNT_HOOK_TIMEOUT,
             tokio::task::spawn_blocking(move || {
@@ -3342,18 +3379,29 @@ impl WorkspaceHandle {
                         "session.bind: resolving workspace session toolset"
                     );
                     let bind_cwd_for_rebind = bind_cwd.clone();
+                    let session_env = path_virt
+                        .as_ref()
+                        .and_then(|v| crate::bind_env::bind_session_env(
+                            v.real_root(),
+                            &sid_str,
+                        ))
+                        .unwrap_or_default();
+                    let expected_jwt_file = session_env
+                        .get(crate::bind_env::TERMINAL_JWT_FILE)
+                        .cloned();
                     let created = {
                         let _span = LocalSpan::enter_with_local_parent(
                                 "tool_server.session_bind.create_session",
                             )
                             .with_property(|| ("session_id", sid_str.clone()));
-                        ws.create_session_with_config(
+                        ws.create_session_with_config_and_env(
                             sid_str.clone(),
                             bind_cwd,
-                            tool_config,
+                            tool_config.clone(),
                             capability,
                             bind_config.viewer_ctx.clone(),
                             bind_config.system_notifications,
+                            session_env.clone(),
                         )
                     };
                     let session = match created {
@@ -3384,58 +3432,163 @@ impl WorkspaceHandle {
                             session
                         }
                         Err(crate::error::WorkspaceError::SessionAlreadyExists(_)) => {
-                            if let Some(existing) = ws.session(&sid_str) {
-                                existing.set_yolo_mode(yolo_mode);
-                                existing
-                                    .approval
-                                    .set_policy(bind_config.tool_approval_policy);
-                                if let Some(mapping) = path_virt.clone() {
-                                    if let Some(cwd) = bind_cwd_for_rebind.clone()
-                                        && let Err(e) = existing
-                                            .set_cwd_for_virtualization(cwd)
-                                            .await
-                                    {
-                                        return Err(
-                                            xai_tool_runtime::ToolError::service_unavailable(
-                                                format!(
-                                                    "path-virt remount failed for `{sid_str}`: {e}"
-                                                ),
-                                            ),
-                                        );
-                                    }
-                                    existing.set_path_virtualization(mapping);
-                                }
-                            }
-                            match ws
-                                .rebind_existing_hub_session(
-                                    &sid_str,
-                                    explicit_cfg,
-                                    bind_fingerprint,
-                                )
-                                .await
-                            {
-                                Some((session, RebindOutcome::Reresolved)) => session,
-                                Some((session, _)) => {
-                                    unserved_tool_ids.clear();
-                                    if resolve_zero_reason != Some("invalid_tool_config")
-                                        && !session.effective_tool_config().tools.is_empty()
-                                    {
-                                        resolve_error = None;
-                                        resolve_zero_reason = None;
-                                    }
-                                    session
-                                }
-                                None => {
+                            let recreate = ws
+                                .session(&sid_str)
+                                .is_some_and(|existing| {
+                                    expected_jwt_file
+                                        .as_deref()
+                                        .is_some_and(|expected| {
+                                            existing
+                                                .session_env()
+                                                .get(crate::bind_env::TERMINAL_JWT_FILE)
+                                                .map(String::as_str) != Some(expected)
+                                        })
+                                });
+                            if recreate {
+                                let in_flight = ws
+                                    .shared
+                                    .activity_tracker
+                                    .session_active_tool_calls(&sid_str);
+                                let turn_active = ws
+                                    .shared
+                                    .activity_tracker
+                                    .is_turn_active(&sid_str);
+                                if in_flight > 0 || turn_active {
+                                    let reason = if in_flight > 0 {
+                                        "recreate_in_flight"
+                                    } else {
+                                        "recreate_turn_active"
+                                    };
                                     WORKSPACE_BIND_FAILED_TOTAL
-                                        .with_label_values(&["session_lookup_failed"])
+                                        .with_label_values(&[reason])
+                                        .inc();
+                                    tracing::warn!(
+                                        session_id = %sid_str,
+                                        in_flight,
+                                        turn_active,
+                                        "session.bind: refusing to recreate a live session"
+                                    );
+                                    let why = if in_flight > 0 {
+                                        "tool calls in flight"
+                                    } else {
+                                        "turn is active"
+                                    };
+                                    return Err(
+                                        xai_tool_runtime::ToolError::service_unavailable(
+                                            format!("session rebind refused for `{sid_str}`: {why}"),
+                                        ),
+                                    );
+                                }
+                                if let Err(e) = ws
+                                    .drop_session_with_teardown(&sid_str, &sid_str)
+                                    .await
+                                {
+                                    tracing::error!(
+                                        session_id = %sid_str,
+                                        error = %e,
+                                        "session.bind: recreate teardown failed"
+                                    );
+                                    WORKSPACE_BIND_FAILED_TOTAL
+                                        .with_label_values(&["recreate_teardown_failed"])
                                         .inc();
                                     return Err(
                                         xai_tool_runtime::ToolError::service_unavailable(
                                             format!(
-                                            "session rebind raced teardown for `{sid_str}`; retry"
+                                            "failed to tear down workspace session before \
+                                             recreate: {e}"
                                         ),
                                         ),
                                     );
+                                }
+                                let session = ws
+                                    .create_session_with_config_and_env(
+                                        sid_str.clone(),
+                                        bind_cwd_for_rebind.clone(),
+                                        tool_config.clone(),
+                                        capability,
+                                        bind_config.viewer_ctx.clone(),
+                                        bind_config.system_notifications,
+                                        session_env.clone(),
+                                    )
+                                    .map_err(|e| xai_tool_runtime::ToolError::service_unavailable(
+                                        format!(
+                                            "failed to recreate workspace session: {e}"
+                                        ),
+                                    ))?;
+                                session.set_yolo_mode(yolo_mode);
+                                session
+                                    .approval
+                                    .set_policy(bind_config.tool_approval_policy);
+                                session
+                                    .set_bind_tool_config_fingerprint_if_unset(
+                                        bind_fingerprint.clone(),
+                                    );
+                                if let Some(mapping) = path_virt.clone() {
+                                    session.set_path_virtualization(mapping);
+                                }
+                                ws.finalize_session_setup(&session)
+                                    .in_span(
+                                        fastrace::Span::enter_with_local_parent(
+                                                "tool_server.session_bind.finalize",
+                                            )
+                                            .with_property(|| ("session_id", sid_str.clone())),
+                                    )
+                                    .await;
+                                session
+                            } else {
+                                if let Some(existing) = ws.session(&sid_str) {
+                                    existing.set_yolo_mode(yolo_mode);
+                                    existing
+                                        .approval
+                                        .set_policy(bind_config.tool_approval_policy);
+                                    if let Some(mapping) = path_virt.clone() {
+                                        if let Some(cwd) = bind_cwd_for_rebind.clone()
+                                            && let Err(e) = existing
+                                                .set_cwd_for_virtualization(cwd)
+                                                .await
+                                        {
+                                            return Err(
+                                                xai_tool_runtime::ToolError::service_unavailable(
+                                                    format!(
+                                                    "path-virt remount failed for `{sid_str}`: {e}"
+                                                ),
+                                                ),
+                                            );
+                                        }
+                                        existing.set_path_virtualization(mapping);
+                                    }
+                                }
+                                match ws
+                                    .rebind_existing_hub_session(
+                                        &sid_str,
+                                        explicit_cfg,
+                                        bind_fingerprint,
+                                    )
+                                    .await
+                                {
+                                    Some((session, RebindOutcome::Reresolved)) => session,
+                                    Some((session, _)) => {
+                                        unserved_tool_ids.clear();
+                                        if resolve_zero_reason != Some("invalid_tool_config")
+                                            && !session.effective_tool_config().tools.is_empty()
+                                        {
+                                            resolve_error = None;
+                                            resolve_zero_reason = None;
+                                        }
+                                        session
+                                    }
+                                    None => {
+                                        WORKSPACE_BIND_FAILED_TOTAL
+                                            .with_label_values(&["session_lookup_failed"])
+                                            .inc();
+                                        return Err(
+                                            xai_tool_runtime::ToolError::service_unavailable(
+                                                format!(
+                                            "session rebind raced teardown for `{sid_str}`; retry"
+                                        ),
+                                            ),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -4348,6 +4501,10 @@ pub struct LocalWorkspaceConnectOptions {
     /// the gen and search tools and the upload queue; the default (`Daemon`)
     /// is hub-only.
     pub host_kind: crate::host_kind::WorkspaceHostKind,
+    /// The folder's per-command shell sandbox (`crate::sandbox`): its launch hook is handed to
+    /// every session's terminal backend and tool registry, and the hub's result path decodes
+    /// denials through it. `None` (the default) runs commands unwrapped.
+    pub sandbox: Option<Arc<crate::sandbox::WorkspaceSandbox>>,
 }
 /// Create a [`WorkspaceHandle`] and connect it to the hub. Sessions are bound dynamically by clients calling `bind_server`.
 pub async fn connect_local_workspace(
@@ -4400,6 +4557,7 @@ pub(crate) async fn build_local_workspace(
         bind_mcp,
         on_handshake_refused,
         host_kind,
+        sandbox,
     } = options;
     let identity: crate::upload::environment::WorkspaceIdentity =
         auth.identity().map(Into::into).unwrap_or_default();
@@ -4417,6 +4575,11 @@ pub(crate) async fn build_local_workspace(
     let mut factory = host_kind.session_context_factory(auth.clone(), api_base_url.clone());
     if crate::session::tool_config::tool_state_enabled() {
         factory = factory.with_tool_state_home(workspace_home.clone());
+    }
+    if let Some(sandbox) = &sandbox {
+        factory = factory.with_sandbox_launch(
+            xai_grok_tools::sandbox_launch::SandboxLaunchHook::new(sandbox.clone()),
+        );
     }
     let hub_cfg = crate::hub::HubConfig {
         url: hub_url,
@@ -4447,6 +4610,7 @@ pub(crate) async fn build_local_workspace(
     }
     ws_config.tool_approval = crate::permission::approval_gate_for(host_kind);
     ws_config.host_kind = host_kind;
+    ws_config.sandbox = sandbox;
     if let Ok(dir) = std::env::var("GROK_WORKSPACE_SERVER_SKILLS_DIR")
         && !dir.is_empty()
     {
@@ -4526,6 +4690,7 @@ pub(crate) async fn build_local_workspace(
     )
     .map_err(|e| WorkspaceError::HubError(format!("failed to create workspace: {e}")))?;
     let _maintenance = crate::file_system::client_fs::spawn_staged_upload_maintenance(&ws_handle);
+    ws_handle.set_bind_mount_hook(crate::path_virtualization::BindMountHook::from_env());
     Ok(ws_handle)
 }
 /// Resolve `$GROK_WORKSPACE_HOME`, the workspace-owned on-disk state root. `<grok_home>/workspace`, where `<grok_home>` honours `$GROK_HOME` and otherwise falls back to `~/.grok` (see [`xai_grok_config::grok_home`]).
@@ -5019,6 +5184,7 @@ impl WorkspaceHandle {
             bind_mcp: None,
             tool_approval: crate::permission::ToolApprovalGate::Off,
             host_kind: Default::default(),
+            sandbox: None,
         };
         Self::build(
             config,
@@ -5064,6 +5230,7 @@ impl WorkspaceHandle {
             bind_mcp: None,
             tool_approval: crate::permission::ToolApprovalGate::Off,
             host_kind: Default::default(),
+            sandbox: None,
         }
     }
     /// Test handle backed by a temp dir. Zero sessions; `TempDir` kept alive via `Arc`.
@@ -5080,6 +5247,24 @@ impl WorkspaceHandle {
         let factory = std::sync::Arc::new(TestSessionContextFactory::new());
         Self::new(Self::test_config(root.to_path_buf(), factory))
             .expect("test workspace handle construction must succeed")
+    }
+    /// Like [`Self::for_test_in`] with the folder's command sandbox wired the way
+    /// `build_local_workspace` wires it: every shell spawn goes through `sandbox`, the hub's
+    /// result path decodes what it stopped, and hub calls meet `tool_approval` first (the
+    /// daemon's is `approval_gate_for(WorkspaceHostKind::Daemon)`).
+    pub fn for_test_in_with_sandbox(
+        root: &std::path::Path,
+        sandbox: std::sync::Arc<crate::sandbox::WorkspaceSandbox>,
+        tool_approval: crate::permission::ToolApprovalGate,
+    ) -> Self {
+        use crate::session::tool_config::test_support::TestSessionContextFactory;
+        let factory = std::sync::Arc::new(TestSessionContextFactory::new().with_sandbox_launch(
+            xai_grok_tools::sandbox_launch::SandboxLaunchHook::new(sandbox.clone()),
+        ));
+        let mut config = Self::test_config(root.to_path_buf(), factory);
+        config.tool_approval = tool_approval;
+        config.sandbox = Some(sandbox);
+        Self::new(config).expect("test workspace handle construction must succeed")
     }
 }
 #[cfg(test)]

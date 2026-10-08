@@ -165,6 +165,10 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineGrepTool {
         ToolNamespace::GrokBuildHashline
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }

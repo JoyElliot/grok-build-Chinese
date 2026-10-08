@@ -785,6 +785,9 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
     fn tool_namespace(&self) -> ToolNamespace {
         ToolNamespace::GrokBuild
     }
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("file_path")
+    }
     fn description_template(&self) -> &str {
         DESCRIPTION_FULL
     }

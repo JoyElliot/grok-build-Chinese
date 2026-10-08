@@ -319,7 +319,7 @@ pub async fn spawn_grok_shell(
     xai_grok_shell::agent::app::apply_otel_config(&auth_manager, &agent_config.grok_com_config);
 
     // Policy repair must finish before any authenticated settings load.
-    xai_grok_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     // This worker is a current-thread runtime. Resolve settings here so the
     // sync bootstrap below observes a finished wait instead of falling open.
     let mut agent_config = agent_config;

@@ -18,6 +18,7 @@ mod errors;
 mod extensions;
 mod external_otel;
 mod feedback;
+mod file_acceleration;
 mod git;
 mod hooks;
 mod mcp;
@@ -31,6 +32,7 @@ mod plugin;
 mod process;
 mod prompt;
 mod redirect;
+mod sandbox;
 mod session;
 mod skills;
 mod slash;
@@ -54,6 +56,7 @@ pub use errors::*;
 pub use extensions::*;
 pub use external_otel::*;
 pub use feedback::*;
+pub use file_acceleration::*;
 pub use git::*;
 pub use hooks::*;
 pub use mcp::*;
@@ -67,6 +70,7 @@ pub use plugin::*;
 pub use process::*;
 pub use prompt::*;
 pub use redirect::*;
+pub use sandbox::*;
 pub use session::*;
 pub use skills::*;
 pub use slash::*;
@@ -127,6 +131,10 @@ telemetry_event!(RedirectFixupFailed, "redirect_fixup_failed");
 telemetry_event!(RedirectDemoted, "redirect_demoted");
 telemetry_event!(RedirectOverwrite, "redirect_overwrite");
 telemetry_event!(RedirectLimitHit, "redirect_limit_hit");
+telemetry_event!(SandboxCommandEnded, "sandbox_command_ended");
+telemetry_event!(SandboxViolationSettled, "sandbox_violation_settled");
+telemetry_event!(SandboxGrantRecorded, "sandbox_grant_recorded");
+telemetry_event!(SandboxGrantRevoked, "sandbox_grant_revoked");
 
 telemetry_event!(Login, "login", external = crate::external::schema::map_auth);
 telemetry_event!(LoginPickerShown, "login_picker_shown");
@@ -194,6 +202,18 @@ telemetry_event!(
 telemetry_event!(ActiveAgentMessageLimitHit, "active_agent_message_limit_hit");
 telemetry_event!(ActiveAgentMessageQuotaHit, "active_agent_message_quota_hit");
 telemetry_event!(ActiveAgentMessageSettled, "active_agent_message_settled");
+telemetry_event!(
+    FileAccelerationSessionStarted,
+    "file_acceleration_session_started"
+);
+telemetry_event!(
+    FileAccelerationSessionEnded,
+    "file_acceleration_session_ended"
+);
+telemetry_event!(
+    FileAccelerationUnavailableHit,
+    "file_acceleration_unavailable_hit"
+);
 telemetry_event!(WorkflowRunStarted, "workflow_run_started");
 telemetry_event!(WorkflowRunEnded, "workflow_run_ended");
 telemetry_event!(
@@ -481,6 +501,10 @@ telemetry_event!(
     "memory_v2_dream_lifecycle"
 );
 telemetry_event!(
+    crate::memory_telemetry::MemoryV2BatchDreamEnded,
+    "memory_v2_batch_dream_ended"
+);
+telemetry_event!(
     crate::memory_telemetry::MemoryV2GcCompleted,
     "memory_v2_gc_completed"
 );
@@ -516,6 +540,7 @@ mod tests {
             include_str!("extensions.rs"),
             include_str!("external_otel.rs"),
             include_str!("feedback.rs"),
+            include_str!("file_acceleration.rs"),
             include_str!("git.rs"),
             include_str!("hooks.rs"),
             include_str!("mcp.rs"),
@@ -529,6 +554,7 @@ mod tests {
             include_str!("process.rs"),
             include_str!("prompt.rs"),
             include_str!("redirect.rs"),
+            include_str!("sandbox.rs"),
             include_str!("session.rs"),
             include_str!("skills.rs"),
             include_str!("slash.rs"),
@@ -627,6 +653,10 @@ mod tests {
             ("LongReasoningReminderTurn", "turn_number"),
             ("FeedbackDraftOp", "session_id"),
             ("FeedbackModalOpened", "session_id"),
+            // Intentional: the shell can emit these outside the session's telemetry scope.
+            ("FileAccelerationSessionEnded", "session_id"),
+            ("FileAccelerationSessionStarted", "session_id"),
+            ("FileAccelerationUnavailableHit", "session_id"),
             ("MemoryFlushComplete", "session_id"),
             ("MemoryFlushStart", "session_id"),
             ("MemoryInjection", "session_id"),
@@ -1811,7 +1841,6 @@ mod tests {
             context_window: 128_000,
             percentage: 78,
             model_id: "grok-4".into(),
-            user_context_provided: false,
             compaction_id: "cid-1".into(),
             compaction_mode: CompactionModeLabel::Segments,
             two_pass_enabled: true,
@@ -1826,7 +1855,6 @@ mod tests {
                 "context_window": 128_000,
                 "percentage": 78,
                 "model_id": "grok-4",
-                "user_context_provided": false,
                 "compaction_id": "cid-1",
                 "compaction_mode": "segments",
                 "two_pass_enabled": true,
@@ -1840,7 +1868,6 @@ mod tests {
             context_window: 128_000,
             percentage: 8,
             model_id: "grok-4".into(),
-            user_context_provided: false,
             compaction_id: "cid-2".into(),
             compaction_mode: CompactionModeLabel::Summary,
             two_pass_enabled: false,
@@ -1855,7 +1882,6 @@ mod tests {
                 "context_window": 128_000,
                 "percentage": 8,
                 "model_id": "grok-4",
-                "user_context_provided": false,
                 "compaction_id": "cid-2",
                 "compaction_mode": "summary",
                 "two_pass_enabled": false,

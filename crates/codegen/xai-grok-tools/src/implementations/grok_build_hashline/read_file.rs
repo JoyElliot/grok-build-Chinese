@@ -106,6 +106,10 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineReadTool {
         ToolNamespace::GrokBuildHashline
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("target_file")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }

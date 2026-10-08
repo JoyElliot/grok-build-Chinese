@@ -624,6 +624,13 @@ mod tests {
     }
 
     #[test]
+    fn gc_rejects_a_malformed_max_age() {
+        let err = parse_duration("7x").unwrap_err().to_string();
+        assert!(err.contains("invalid duration: 7x"), "{err}");
+        assert_eq!(parse_duration("7d").unwrap(), 7 * 86_400);
+    }
+
+    #[test]
     fn gc_request_with_all_fields() {
         let json = r#"{"dryRun": true, "maxAge": "7d", "force": true}"#;
         let req: GcWorktreeRequest = serde_json::from_str(json).unwrap();

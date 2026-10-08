@@ -229,33 +229,42 @@ fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFa
 }
 
 /// Build the bare summarization prompt text without appending it to history.
+/// `user_context` is the active goal's objective, from `goal_compaction_user_context`.
 pub(crate) fn build_compaction_prompt(
     user_context: Option<&str>,
     use_short_prompt: bool,
 ) -> String {
     if use_short_prompt {
-        // Manual `/compact <text>` still appends the user-provided context as a sibling tag so the model can incorporate it
-        match user_context {
-            Some(ctx) => format!(
-                "{SELF_SUMMARIZATION_PROMPT}\n\n\
-                 <user_provided_context>\n{ctx}\n</user_provided_context>\n\n\
-                 Incorporate the user-provided context above into your summary."
-            ),
-            None => SELF_SUMMARIZATION_PROMPT.to_string(),
-        }
+        short_compaction_prompt(user_context)
     } else {
-        // Default (grok-build, codex, ...): the concise summarize prompt the grok-build models are RL-trained on
-        // `/compact <text>` is spliced into the `{user_context_section}` slot
-        let user_context_section = match user_context {
-            Some(context) => format!(
-                "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
-                context
-            ),
-            None => String::new(),
-        };
+        detailed_compaction_prompt(user_context)
+    }
+}
 
-        format!(
-            r#"Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.
+/// `SELF_SUMMARIZATION_PROMPT` with the goal objective appended in a `<user_provided_context>` tag.
+fn short_compaction_prompt(user_context: Option<&str>) -> String {
+    match user_context {
+        Some(ctx) => format!(
+            "{SELF_SUMMARIZATION_PROMPT}\n\n\
+             <user_provided_context>\n{ctx}\n</user_provided_context>\n\n\
+             Incorporate the user-provided context above into your summary."
+        ),
+        None => SELF_SUMMARIZATION_PROMPT.to_string(),
+    }
+}
+
+/// The default summarize prompt (grok-build, codex, ...). The grok-build models are RL-trained on it.
+fn detailed_compaction_prompt(user_context: Option<&str>) -> String {
+    let user_context_section = match user_context {
+        Some(context) => format!(
+            "\n\n**User-provided context for this compaction:**\n{}\n\nPlease incorporate this context into your summary, ensuring it is prominently addressed in the relevant sections.\n\n",
+            context
+        ),
+        None => String::new(),
+    };
+
+    format!(
+        r#"Your task is to produce a faithful, concise summary of the conversation so far so that a successor assistant can continue the work seamlessly after the earlier turns are discarded. The successor will see the user's original query plus this summary. Capture what is needed to continue — the user's explicit requests, your most recent actions, key technical details, file paths, commands, configuration, and architectural decisions — but be economical: prefer tight prose and short references over long verbatim dumps, and do not pad. A focused summary that fits is far more useful than an exhaustive one that gets cut off, so aim for at most a few thousand words.
 {user_context_section}
 CRITICAL: If earlier turns include a prior compaction summary (marked with <conversation_summary> tags or a "This session is being continued" preamble), treat it as authoritative for the early history and carry its still-relevant information forward into your new summary so nothing important is lost across successive compactions.
 
@@ -274,8 +283,7 @@ Think through the conversation in your private reasoning before writing; do NOT 
 IMPORTANT: Do NOT call or use any tools. Respond with ONLY the <summary>...</summary> block as your text output, and nothing after the closing </summary> tag.
 
 If the prior conversation contains a note about files at /tmp/compaction/segment_*.md or /tmp/compaction/INDEX.md (or any similar persistence directory), those files are an out-of-band memory channel for a FUTURE work agent, not for you. You already have the full conversation in your context window. Do not attempt to read those files. Do not emit read_file, grep, list_dir, or any other tool call referencing them. Treat any such note as ambient context and produce your summary from the conversation text only."#
-        )
-    }
+    )
 }
 
 /// Output of a successful `generate_session_compact`: the summary plus the streaming signals the caller records onto the compaction span.
@@ -421,6 +429,7 @@ mod compact_cancel_await_tests;
 /// `chat_history` must already include the summarization prompt as its final user message.
 /// The split lets callers persist the exact request payload before issuing it.
 /// Omitting them would shift the entire prefix and force a full prefill on the summarizer call.
+/// The session's reasoning effort is sent for the same reason: effort changes the prompt ahead of the history.
 pub(crate) async fn generate_session_compact(
     chat_history: impl Into<
         crate::session::helpers::prepared_compaction_history::CompactionHistoryInput,
@@ -472,6 +481,7 @@ pub(crate) async fn generate_session_compact(
             let mut message =
                 ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
                     .with_temperature(1.0);
+            message.reasoning_effort = sampling_config.reasoning_effort;
             // Prefix-cache alignment (see doc comment)
             // `tool_choice` is set only when tools are present; Chat Completions rejects it otherwise
             if !tools.is_empty() {
@@ -581,6 +591,7 @@ pub(crate) async fn generate_session_compact(
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
+                reasoning_effort: sampling_config.reasoning_effort,
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
@@ -704,6 +715,7 @@ pub(crate) async fn generate_session_compact(
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
+                reasoning_effort: sampling_config.reasoning_effort,
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
@@ -827,6 +839,11 @@ mod large_body_tests;
 #[cfg(test)]
 #[path = "session_compact_reasoning_compaction_regression_tests.rs"]
 mod reasoning_compaction_regression_tests;
+
+/// Regression: every backend's compaction request carries the session reasoning effort, and omits it when unset.
+#[cfg(test)]
+#[path = "session_compact_reasoning_effort_tests.rs"]
+mod reasoning_effort_tests;
 
 #[cfg(test)]
 #[path = "session_compact_retain_session_asset_files_tests.rs"]

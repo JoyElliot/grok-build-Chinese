@@ -58,3 +58,46 @@ fn arg_picker_effort_phase_opens_on_default_row() {
         items.get(1).map(|item| item.insert_text.as_str())
     );
 }
+
+/// Ctrl+M, then Enter twice on a multi-window reasoning model: model, then window, then the effort sub-menu.
+#[test]
+fn arg_picker_chains_through_the_window_phase_to_effort() {
+    let mut agent = make_agent();
+    let id = acp::ModelId::new(Arc::from("grok-4.7"));
+    agent.session.models.available.insert(
+        id.clone(),
+        acp::ModelInfo::new(id, "Grok 4.7").meta(
+            serde_json::json!({
+                "supportsReasoningEffort": true,
+                "totalContextTokens": 256_000,
+                "contextWindows": [256_000, 500_000],
+            })
+            .as_object()
+            .cloned(),
+        ),
+    );
+    agent.set_active_pane(AgentPane::Scrollback, true);
+    let registry = ActionRegistry::defaults();
+    let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    agent.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL)),
+        &registry,
+    );
+    agent.handle_input(&enter, &registry);
+    agent.handle_input(&enter, &registry);
+
+    let Some(ActiveModal::ArgPicker {
+        args_query, items, ..
+    }) = agent.active_modal.as_ref()
+    else {
+        panic!("expected the /model picker to chain through the window phase");
+    };
+    assert_eq!("Grok 4.7 256k ", args_query);
+    assert!(
+        items
+            .iter()
+            .all(|item| item.insert_text.starts_with("Grok 4.7 256k ")),
+        "got {items:?}"
+    );
+}

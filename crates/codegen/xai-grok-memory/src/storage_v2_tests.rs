@@ -4,7 +4,8 @@ use tempfile::TempDir;
 use xai_grok_config_types::MemoryMode;
 
 use crate::storage::{MemoryStorage, SaveRememberNoteError};
-use crate::v2::{MAX_MANUAL_OBSERVATION_BYTES, V2StorageError};
+use crate::v2::{MAX_MANUAL_OBSERVATION_BYTES, V2StorageError, state_ledgers};
+use crate::v2_topic_reads::record_topic_read;
 
 fn make_v2_storage(temp: &TempDir) -> MemoryStorage {
     MemoryStorage::new_for_mode(
@@ -295,4 +296,79 @@ fn v2_read_rejects_symlinked_workspace_root() {
         storage.read_file(&escaped, None, None).unwrap_err().kind(),
         std::io::ErrorKind::PermissionDenied
     );
+}
+
+#[test]
+fn listing_follows_manifest_order_within_each_scope() {
+    let temp = TempDir::new().unwrap();
+    let storage = make_v2_storage(&temp);
+    storage.ensure_initialized().unwrap();
+    let scope = storage.workspace_dir().to_path_buf();
+    for slug in ["alpha", "beta", "gamma"] {
+        std::fs::write(
+            scope.join(format!("topics/{slug}.md")),
+            format!("# {slug}\n\nBody."),
+        )
+        .unwrap();
+    }
+    let older = scope.join("observations/_inbox/older.md");
+    let newer = scope.join("observations/_inbox/newer.md");
+    std::fs::write(&older, "# Older").unwrap();
+    std::fs::write(&newer, "# Newer").unwrap();
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&older)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    let relative = |files: &[std::path::PathBuf]| -> Vec<String> {
+        files
+            .iter()
+            .filter_map(|path| path.strip_prefix(&scope).ok())
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect()
+    };
+
+    // Default index: the manifest, alphabetical topics, then inbox notes newest first.
+    let listed = storage.list_memory_files().unwrap();
+    assert_eq!(
+        relative(&listed),
+        [
+            "MEMORY.md",
+            "topics/alpha.md",
+            "topics/beta.md",
+            "topics/gamma.md",
+            "observations/_inbox/newer.md",
+            "observations/_inbox/older.md",
+        ]
+    );
+
+    // Compact index: the same comparator ranks read topics first.
+    let mut topics: Vec<_> = ["alpha", "beta", "gamma"]
+        .iter()
+        .map(|slug| scope.join(format!("topics/{slug}.md")))
+        .collect();
+    let read_counts = [
+        ("topics/gamma.md".to_owned(), 2),
+        ("topics/beta.md".to_owned(), 1),
+    ]
+    .into_iter()
+    .collect();
+    super::sort_topics(&mut topics, &scope, &read_counts);
+    assert_eq!(
+        relative(&topics),
+        ["topics/gamma.md", "topics/beta.md", "topics/alpha.md"]
+    );
+
+    // Ledger keys are raw paths, so a name the manifest sanitizes still
+    // matches its count in the listing.
+    let odd = scope.join("topics/we`ird.md");
+    std::fs::write(&odd, "# Odd").unwrap();
+    record_topic_read(&scope, "topics/we`ird.md").unwrap();
+    let ledgers = state_ledgers(&scope).unwrap();
+    assert_eq!(ledgers.read_counts.get("topics/we`ird.md"), Some(&1));
+    let mut topics = vec![scope.join("topics/alpha.md"), odd.clone()];
+    super::sort_topics(&mut topics, &scope, &ledgers.read_counts);
+    assert_eq!(topics.first(), Some(&odd));
 }

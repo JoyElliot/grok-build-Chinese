@@ -190,6 +190,41 @@ fn bundled_model_provenance_survives_acp_but_config_override_clears_it() {
 }
 
 #[test]
+fn coding_data_opt_out_does_not_block_uploads_to_own_bucket() {
+    let normal = xai_grok_login::GrokAuth::test_default();
+    let opted_out = xai_grok_login::GrokAuth {
+        coding_data_retention_opt_out: true,
+        ..xai_grok_login::GrokAuth::test_default()
+    };
+    let zdr = xai_grok_login::GrokAuth {
+        team_blocked_reasons: vec!["BLOCKED_REASON_NO_LOGS".into()],
+        ..xai_grok_login::GrokAuth::test_default()
+    };
+    let cases = [
+        (None, &normal, false),
+        (None, &opted_out, true),
+        (None, &zdr, true),
+        (Some("s3://acme-traces"), &normal, false),
+        (Some("s3://acme-traces"), &opted_out, false),
+        (Some("gs://acme-traces"), &opted_out, false),
+        (Some("s3://acme-traces"), &zdr, true),
+        (Some("ftp://acme-traces"), &opted_out, true),
+    ];
+    for (bucket, auth, expected) in cases {
+        let endpoints = EndpointsConfig {
+            trace_upload_bucket: bucket.map(str::to_owned),
+            ..EndpointsConfig::default()
+        };
+        assert_eq!(
+            expected,
+            endpoints.is_trace_upload_blocked_for(auth),
+            "bucket={bucket:?} opt_out={} zdr={}",
+            auth.coding_data_retention_opt_out,
+            auth.is_zdr_team()
+        );
+    }
+}
+#[test]
 fn main_cli_tools_override_preserves_profile_injection_policy() {
     let overrides = CliAgentOverrides {
         tools: Some(vec!["read_file".into()]),
@@ -1288,29 +1323,6 @@ fn provider_model_fails_closed_on_prefetched_custom_base_url() {
         "a prefetched custom base_url must fail closed, not leak the session token",
     );
 }
-fn test_model_entry(
-    model: &str,
-    base_url: &str,
-    api_key: Option<&str>,
-    env_key: Option<&str>,
-    api_base_url: Option<&str>,
-) -> ModelEntry {
-    ModelEntry {
-        bundled_catalog_entry: false,
-        official_catalog_entry: false,
-        info: ModelInfo {
-            model: model.to_string(),
-            base_url: base_url.to_string(),
-            context_window: NonZeroU64::new(200_000).unwrap(),
-            ..Default::default()
-        },
-        mtls_cert_dir: None,
-        api_key: api_key.map(|s| s.to_string()),
-        env_key: env_key.map(EnvKeys::single),
-        auth_provider: None,
-        api_base_url: api_base_url.map(|s| s.to_string()),
-    }
-}
 /// The effective-model RE-support lookup must use the model ACTUALLY used: the resolved aux model when present, else the session model.
 /// An unresolvable slug resolves aux to `None`, so the session model's capability wins.
 #[test]
@@ -2123,6 +2135,57 @@ fn parses_model_context_window() {
     assert_eq!(model.info.context_window, NonZeroU64::new(256_000).unwrap());
 }
 #[test]
+fn context_window_is_the_default_and_context_windows_are_the_choices() {
+    let raw_config: toml::Value = toml::from_str(
+        r#"
+            [model.my-custom-model]
+            model = "custom-llm"
+            base_url = "https://api.example.com/v1"
+            context_window = 256000
+            context_windows = [500000, 256000]
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+    let resolved = resolve_model_list(&cfg, None);
+    let model = resolved.get("my-custom-model").expect("model should exist");
+    assert_eq!(model.info.context_window.get(), 256_000);
+    let windows: Vec<u64> = model.info.context_windows.iter().map(|w| w.get()).collect();
+    assert_eq!(windows, [500_000, 256_000]);
+}
+#[rstest::rstest]
+#[case::scalar_without_list(Some(256_000), &[], Some((256_000, vec![])))]
+#[case::list_without_scalar(
+    None,
+    &[500_000,
+    256_000,
+    500_000],
+    Some((500_000, vec![500_000, 256_000]))
+)]
+#[case::scalar_missing_from_list_is_added(
+    Some(300_000),
+    &[256_000,
+    500_000],
+    Some((300_000, vec![300_000, 256_000, 500_000]))
+)]
+#[case::scalar_in_list_keeps_list_order(
+    Some(500_000),
+    &[256_000,
+    500_000],
+    Some((500_000, vec![256_000, 500_000]))
+)]
+#[case::neither(None, &[], None)]
+fn context_window_choices_resolve(
+    #[case] context_window: Option<u64>,
+    #[case] listed: &[u64],
+    #[case] expected: Option<(u64, Vec<u64>)>,
+) {
+    let listed: Vec<NonZeroU64> = listed.iter().filter_map(|w| NonZeroU64::new(*w)).collect();
+    let got = context_window_choices(context_window.and_then(NonZeroU64::new), &listed)
+        .map(|(default, choices)| (default.get(), choices.iter().map(|w| w.get()).collect()));
+    assert_eq!(got, expected);
+}
+#[test]
 fn sampling_config_context_window_from_entry_or_default() {
     let model = test_model_entry("any-model", "https://api.x.ai/v1", None, None, None);
     let config = sampling_config_for_model(
@@ -2562,6 +2625,89 @@ fn acp_model_meta_always_includes_agent_type() {
     );
 }
 #[test]
+fn config_model_notice_reaches_acp_meta() {
+    use xai_grok_sampling_types::{ModelNotice, ModelNoticeSeverity, parse_model_notice_meta};
+    let raw_config: toml::Value = toml::from_str(
+        r#"
+            [model.old-model]
+            model = "old-model"
+            base_url = "https://api.example.com/v1"
+            context_window = 200000
+            notice = { severity = "warning", text = "Deprecated Oct 15", label = "deprecated" }
+            "#,
+    )
+    .expect("test TOML parses");
+    let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+    let models = resolve_model_list(&cfg, None);
+    let acp_models = to_acp_model_info(&models);
+    let meta = acp_models
+        .get(&acp::ModelId::new("old-model"))
+        .and_then(|model| model.meta.as_ref())
+        .expect("configured model has meta");
+    assert_eq!(
+        Some(
+            &serde_json::json!({"severity": "warning", "text": "Deprecated Oct 15", "label": "deprecated"})
+        ),
+        meta.get("notice")
+    );
+    assert_eq!(
+        Some(ModelNotice {
+            severity: ModelNoticeSeverity::Warning,
+            text: "Deprecated Oct 15".to_owned(),
+            label: Some("deprecated".to_owned()),
+        }),
+        parse_model_notice_meta(Some(meta))
+    );
+}
+#[test]
+fn config_blank_notice_clears_the_inherited_notice() {
+    use xai_grok_sampling_types::{ModelNotice, ModelNoticeSeverity};
+    let mut base = test_model_entry("old-model", "https://test.api/v1", None, None, None);
+    base.info.notice = Some(ModelNotice {
+        severity: ModelNoticeSeverity::Critical,
+        text: "Retired".to_owned(),
+        label: None,
+    });
+    let over: ConfigModelOverride =
+        toml::from_str(r#"notice = { text = "" }"#).expect("override TOML parses");
+    let entry = over.apply("old-model", Some(base), &EndpointsConfig::default());
+    assert_eq!(None, entry.info.notice);
+}
+#[test]
+fn acp_model_meta_omits_notice_when_unset() {
+    let mut models = IndexMap::new();
+    models.insert(
+        "m".to_owned(),
+        test_model_entry("m", "https://test.api/v1", None, None, None),
+    );
+    let acp_models = to_acp_model_info(&models);
+    let meta = acp_models
+        .values()
+        .next()
+        .and_then(|model| model.meta.as_ref())
+        .expect("model has meta");
+    assert_eq!(None, meta.get("notice"));
+}
+#[test]
+fn model_entry_config_notice_survives_a_serde_round_trip() {
+    use xai_grok_sampling_types::{ModelNotice, ModelNoticeSeverity};
+    let entry = ModelEntryConfig {
+        model: "old-model".to_owned(),
+        base_url: "https://test.api/v1".to_owned(),
+        context_window: NonZeroU64::new(200_000).expect("non-zero"),
+        notice: Some(ModelNotice {
+            severity: ModelNoticeSeverity::Warning,
+            text: "Deprecated Oct 15".to_owned(),
+            label: None,
+        }),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&entry).expect("entry serializes");
+    let back: ModelEntryConfig = serde_json::from_value(json).expect("entry deserializes");
+    assert_eq!(entry.notice, back.notice);
+    assert_eq!(entry.notice, ModelInfo::from_config(&back).notice);
+}
+#[test]
 fn acp_model_meta_emits_reasoning_effort_when_supported() {
     let mut models = IndexMap::new();
     let mut entry = test_model_entry("m", "https://test.api/v1", None, None, None);
@@ -2770,6 +2916,32 @@ fn acp_model_meta_always_has_context_window() {
     assert_eq!(
         meta.get("totalContextTokens"),
         Some(&serde_json::json!(200_000))
+    );
+    assert!(
+        !meta.contains_key("contextWindows"),
+        "a single-window model advertises no menu"
+    );
+}
+#[test]
+fn acp_model_meta_advertises_context_windows_menu() {
+    let mut models = IndexMap::new();
+    let mut entry = test_model_entry("multi-window", "https://test.api/v1", None, None, None);
+    entry.info.context_window = NonZeroU64::new(256_000).unwrap();
+    entry.info.context_windows = vec![
+        NonZeroU64::new(256_000).unwrap(),
+        NonZeroU64::new(500_000).unwrap(),
+    ];
+    models.insert("multi-window".to_string(), entry);
+    let acp_models = to_acp_model_info(&models);
+    let meta = acp_models.values().next().unwrap().meta.as_ref().unwrap();
+    assert_eq!(
+        meta.get("totalContextTokens"),
+        Some(&serde_json::json!(256_000)),
+        "the default stays the advertised total"
+    );
+    assert_eq!(
+        meta.get("contextWindows"),
+        Some(&serde_json::json!([256_000, 500_000]))
     );
 }
 #[test]
@@ -3171,7 +3343,7 @@ fn force_login_team_uuid_parses_string_and_array() {
     use xai_grok_login::ForceLoginTeam;
     let _g = crate::env::EnvVarGuard::remove("GROK_FORCE_LOGIN_TEAM_ID");
     assert!(
-        super::force_login_team_from_requirements().is_none(),
+        xai_grok_login::force_login_team_from_requirements().is_none(),
         "clear the force_login_team_uuid pin in requirements.toml to run this test",
     );
     let absent = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
@@ -3223,7 +3395,7 @@ fn force_login_team_id_env_overrides_user_config() {
     use xai_grok_login::ForceLoginTeam;
     let _guard = crate::env::EnvVarGuard::set("GROK_FORCE_LOGIN_TEAM_ID", "env-team");
     assert!(
-        super::force_login_team_from_requirements().is_none(),
+        xai_grok_login::force_login_team_from_requirements().is_none(),
         "clear the force_login_team_uuid pin in requirements.toml to run this test",
     );
     let from_env = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
@@ -3250,7 +3422,7 @@ fn force_login_team_id_env_unset_keeps_config_value() {
     use xai_grok_login::ForceLoginTeam;
     let _guard = crate::env::EnvVarGuard::remove("GROK_FORCE_LOGIN_TEAM_ID");
     assert!(
-        super::force_login_team_from_requirements().is_none(),
+        xai_grok_login::force_login_team_from_requirements().is_none(),
         "clear the force_login_team_uuid pin in requirements.toml to run this test",
     );
     let raw: toml::Value = toml::from_str(
@@ -4607,6 +4779,30 @@ fn resolve_trace_upload_explicit_config_wins_over_telemetry_off() {
 }
 #[test]
 #[serial]
+fn trace_upload_stays_off_under_a_requirements_pin_when_the_distribution_withholds_telemetry() {
+    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
+    unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
+    let mut cfg = Config::default();
+    cfg.telemetry.trace_upload = Some(true);
+    cfg.requirements
+        .trace_upload
+        .pin(true, crate::config::RequirementSource::Unknown);
+    cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+        trace_upload_enabled: Some(true),
+        ..Default::default()
+    });
+    let withheld = cfg.resolve_trace_upload_as(xai_grok_config::Distribution::withholding(&[
+        xai_grok_config::Capability::Telemetry,
+    ]));
+    assert!(!withheld.value);
+    assert_eq!(withheld.source, ConfigSource::Default);
+    assert!(
+        cfg.resolve_trace_upload_as(xai_grok_config::Distribution::STOCK)
+            .value
+    );
+}
+#[test]
+#[serial]
 fn trace_upload_decision_debug_reports_winning_source() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
@@ -5901,6 +6097,8 @@ fn config_accepts_all_known_sections() {
             respect_gitignore = false
             [desktop]
             some_key = "value"
+            [file_acceleration]
+            routes = "fuse=on"
         "#,
     );
     assert!(
@@ -6033,252 +6231,6 @@ fn resolve_upload_method_accepts_deployment_key_without_oauth() {
         }
         other => panic!("expected Proxy upload method, got {other:?}"),
     }
-}
-#[test]
-fn otlp_traces_endpoint_precedence() {
-    let proxy = "https://inference.acme.com/v1".to_string();
-    let derived = EndpointsConfig {
-        cli_chat_proxy_base_url: Some(proxy.clone()),
-        ..Default::default()
-    };
-    assert_eq!(
-        derived.resolve_otlp_traces_endpoint(),
-        "https://inference.acme.com/v1/traces"
-    );
-    let base = EndpointsConfig {
-        cli_chat_proxy_base_url: Some(proxy.clone()),
-        otel_exporter_otlp_endpoint: Some("https://otel.acme.com".to_string()),
-        ..Default::default()
-    };
-    assert_eq!(
-        base.resolve_otlp_traces_endpoint(),
-        "https://otel.acme.com/v1/traces"
-    );
-    let full = EndpointsConfig {
-        cli_chat_proxy_base_url: Some(proxy),
-        otel_exporter_otlp_endpoint: Some("https://ignored.example".to_string()),
-        otel_exporter_otlp_traces_endpoint: Some("https://otel.acme.com/v1/traces".to_string()),
-        ..Default::default()
-    };
-    assert_eq!(
-        full.resolve_otlp_traces_endpoint(),
-        "https://otel.acme.com/v1/traces"
-    );
-}
-#[test]
-fn otlp_headers_parse() {
-    let cfg = EndpointsConfig {
-        otel_exporter_otlp_headers: Some("a=1, b = 2 ,=skip,c=".to_string()),
-        ..Default::default()
-    };
-    assert_eq!(
-        cfg.resolve_otlp_headers(),
-        vec![
-            ("a".to_string(), "1".to_string()),
-            ("b".to_string(), "2".to_string()),
-            ("c".to_string(), String::new()),
-        ]
-    );
-}
-/// Base config for the internal-OTLP tests: pinned proxy, every OTLP knob explicitly unset so ambient env (via `Default`) can't leak in.
-fn internal_otlp_test_config() -> EndpointsConfig {
-    EndpointsConfig {
-        cli_chat_proxy_base_url: Some("https://proxy.example/v1".to_string()),
-        otel_exporter_otlp_endpoint: None,
-        otel_exporter_otlp_traces_endpoint: None,
-        otel_exporter_otlp_headers: None,
-        grok_internal_otlp_traces_endpoint: None,
-        grok_internal_otlp_headers: None,
-        external_otel_master_switch: false,
-        ..Default::default()
-    }
-}
-/// `grok_internal_otlp_traces_endpoint` wins over the legacy `OTEL_*` fields regardless of the master switch.
-#[test]
-fn internal_otlp_endpoint_grok_internal_wins_regardless_of_switch() {
-    for switch in [false, true] {
-        let cfg = EndpointsConfig {
-            grok_internal_otlp_traces_endpoint: Some(
-                "https://internal.example/traces/".to_string(),
-            ),
-            otel_exporter_otlp_traces_endpoint: Some(
-                "https://legacy.example/v1/traces".to_string(),
-            ),
-            otel_exporter_otlp_endpoint: Some("https://legacy-base.example".to_string()),
-            external_otel_master_switch: switch,
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            cfg.resolve_otlp_traces_endpoint(),
-            "https://internal.example/traces",
-            "switch={switch}: GROK_INTERNAL_OTLP_TRACES_ENDPOINT must win verbatim (trailing / trimmed)"
-        );
-    }
-}
-/// Master switch unset: the legacy fallback is preserved (back-compat).
-#[test]
-fn internal_otlp_endpoint_legacy_fallback_when_switch_unset() {
-    let traces = EndpointsConfig {
-        otel_exporter_otlp_traces_endpoint: Some("https://legacy.example/v1/traces".to_string()),
-        ..internal_otlp_test_config()
-    };
-    assert_eq!(
-        traces.resolve_otlp_traces_endpoint(),
-        "https://legacy.example/v1/traces"
-    );
-    let base = EndpointsConfig {
-        otel_exporter_otlp_endpoint: Some("https://legacy-base.example/".to_string()),
-        ..internal_otlp_test_config()
-    };
-    assert_eq!(
-        base.resolve_otlp_traces_endpoint(),
-        "https://legacy-base.example/v1/traces"
-    );
-}
-/// Master switch SET: the internal pipeline ignores legacy `OTEL_*` endpoint/headers entirely (the external stream owns them).
-/// The internal pipeline falls back to the proxy default and `internal_otlp_consumed_standard_vars()` is false.
-#[test]
-fn internal_otlp_ignores_legacy_vars_when_switch_set() {
-    let cfg = EndpointsConfig {
-        otel_exporter_otlp_traces_endpoint: Some(
-            "https://admin-collector.example/v1/traces".to_string(),
-        ),
-        otel_exporter_otlp_endpoint: Some("https://admin-collector.example".to_string()),
-        otel_exporter_otlp_headers: Some("authorization=Bearer admin".to_string()),
-        external_otel_master_switch: true,
-        ..internal_otlp_test_config()
-    };
-    assert_eq!(
-        cfg.resolve_otlp_traces_endpoint(),
-        "https://proxy.example/v1/traces",
-        "internal firehose must never follow OTEL_* to the external collector"
-    );
-    assert_eq!(cfg.resolve_otlp_headers(), Vec::<(String, String)>::new());
-    assert!(!cfg.internal_otlp_consumed_standard_vars());
-}
-/// `internal_otlp_consumed_standard_vars()` truth table.
-#[test]
-fn internal_otlp_consumed_standard_vars_cases() {
-    struct Case {
-        switch: bool,
-        legacy_traces_ep: bool,
-        legacy_base_ep: bool,
-        legacy_headers: bool,
-        internal_ep: bool,
-        internal_headers: bool,
-        expected: bool,
-        why: &'static str,
-    }
-    let unset = Case {
-        switch: false,
-        legacy_traces_ep: false,
-        legacy_base_ep: false,
-        legacy_headers: false,
-        internal_ep: false,
-        internal_headers: false,
-        expected: false,
-        why: "nothing set",
-    };
-    let cases = [
-        Case { ..unset },
-        Case {
-            legacy_traces_ep: true,
-            expected: true,
-            why: "legacy traces endpoint consumed",
-            ..unset
-        },
-        Case {
-            legacy_base_ep: true,
-            expected: true,
-            why: "legacy base endpoint consumed",
-            ..unset
-        },
-        Case {
-            legacy_headers: true,
-            expected: true,
-            why: "legacy headers consumed",
-            ..unset
-        },
-        Case {
-            legacy_traces_ep: true,
-            internal_ep: true,
-            expected: false,
-            why: "internal endpoint shadows legacy",
-            ..unset
-        },
-        Case {
-            legacy_headers: true,
-            internal_headers: true,
-            expected: false,
-            why: "internal headers shadow legacy",
-            ..unset
-        },
-        Case {
-            legacy_traces_ep: true,
-            legacy_headers: true,
-            internal_ep: true,
-            expected: true,
-            why: "endpoint shadowed but legacy headers still consumed (headers half)",
-            ..unset
-        },
-        Case {
-            switch: true,
-            legacy_traces_ep: true,
-            legacy_base_ep: true,
-            legacy_headers: true,
-            expected: false,
-            why: "switch set: legacy vars ignored",
-            ..unset
-        },
-    ];
-    for case in cases {
-        let cfg = EndpointsConfig {
-            external_otel_master_switch: case.switch,
-            otel_exporter_otlp_traces_endpoint: case
-                .legacy_traces_ep
-                .then(|| "https://legacy.example/v1/traces".to_string()),
-            otel_exporter_otlp_endpoint: case
-                .legacy_base_ep
-                .then(|| "https://legacy-base.example".to_string()),
-            otel_exporter_otlp_headers: case.legacy_headers.then(|| "k=v".to_string()),
-            grok_internal_otlp_traces_endpoint: case
-                .internal_ep
-                .then(|| "https://internal.example/traces".to_string()),
-            grok_internal_otlp_headers: case.internal_headers.then(|| "ik=iv".to_string()),
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            cfg.internal_otlp_consumed_standard_vars(),
-            case.expected,
-            "case: {}",
-            case.why
-        );
-    }
-}
-/// Headers precedence: `grok_internal_otlp_headers` wins; legacy `otel_exporter_otlp_headers` only when the master switch is unset.
-#[test]
-fn internal_otlp_headers_precedence() {
-    for switch in [false, true] {
-        let cfg = EndpointsConfig {
-            grok_internal_otlp_headers: Some("x-debug=1".to_string()),
-            otel_exporter_otlp_headers: Some("legacy=1".to_string()),
-            external_otel_master_switch: switch,
-            ..internal_otlp_test_config()
-        };
-        assert_eq!(
-            cfg.resolve_otlp_headers(),
-            vec![("x-debug".to_string(), "1".to_string())],
-            "switch={switch}"
-        );
-    }
-    let legacy = EndpointsConfig {
-        otel_exporter_otlp_headers: Some("legacy=1".to_string()),
-        ..internal_otlp_test_config()
-    };
-    assert_eq!(
-        legacy.resolve_otlp_headers(),
-        vec![("legacy".to_string(), "1".to_string())]
-    );
 }
 fn ext_env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
     let map: std::collections::HashMap<String, String> = pairs
@@ -6881,48 +6833,6 @@ fn external_otel_pin_prompts_true_omitted_assistant_stays_off() {
         "omitted CONTENT sibling must default off across the requirements boundary"
     );
 }
-/// Regression: an org enable via `[telemetry].otel_enabled` (managed config / requirements — no `GROK_EXTERNAL_OTEL` env var) must flip the master switch the *internal* pipeline keys off, so legacy `OTEL_EXPORTER_OTLP_*` repointing shuts off in lockstep with the external stream activating. A desync would point the internally-authed firehose at the customer collector while `internal_pipeline_consumed_otel_vars` blocks the external stream.
-#[test]
-fn external_otel_master_switch_resolves_from_all_layers() {
-    let enabled_table: toml::Value = toml::from_str("[telemetry]\notel_enabled = true").unwrap();
-    let disabled_table: toml::Value = toml::from_str("[telemetry]\notel_enabled = false").unwrap();
-    assert!(external_otel_master_switch_from(
-        None,
-        None,
-        Some(&enabled_table)
-    ));
-    assert!(!external_otel_master_switch_from(None, None, None));
-    assert!(!external_otel_master_switch_from(
-        None,
-        Some(false),
-        Some(&enabled_table)
-    ));
-    assert!(external_otel_master_switch_from(
-        None,
-        Some(true),
-        Some(&disabled_table)
-    ));
-    assert!(!external_otel_master_switch_from(
-        Some(&disabled_table),
-        Some(true),
-        Some(&enabled_table)
-    ));
-    assert!(external_otel_master_switch_from(
-        Some(&enabled_table),
-        Some(false),
-        None
-    ));
-    let cfg = EndpointsConfig {
-        otel_exporter_otlp_traces_endpoint: Some("https://collector.corp:4318/v1/traces".into()),
-        external_otel_master_switch: true,
-        ..internal_otlp_test_config()
-    };
-    assert!(!cfg.internal_otlp_consumed_standard_vars());
-    assert!(
-        !cfg.resolve_otlp_traces_endpoint()
-            .contains("collector.corp")
-    );
-}
 #[test]
 fn external_otel_carries_internal_consumed_flag() {
     let cfg = resolve_external_otel_config_with(
@@ -6959,245 +6869,10 @@ fn clear_managed_mcp_env_vars() {
     }
 }
 fn isolate_compat_env() -> Vec<EnvGuard> {
-    COMPAT_CELLS
+    xai_grok_tools::types::compat::COMPAT_CELLS
         .into_iter()
         .map(|cell| EnvGuard::unset(cell.env_var()))
         .collect()
-}
-fn parse_compat(source: &str) -> CompatConfigToml {
-    let raw: toml::Value = toml::from_str(source).unwrap();
-    raw.get("compat").unwrap().clone().try_into().unwrap()
-}
-fn assert_session_one_disabled(config: CompatConfig, expected: CompatVendor) {
-    for cell in COMPAT_CELLS {
-        if cell.surface() == CompatSurface::Sessions {
-            assert_eq!(
-                config.value(cell),
-                cell.vendor() != expected,
-                "{}.sessions",
-                Into::<&'static str>::into(cell.vendor())
-            );
-        }
-    }
-}
-fn remote_settings_with(key: CompatRemoteKey, value: bool) -> crate::util::config::RemoteSettings {
-    let mut remote = crate::util::config::RemoteSettings::default();
-    match key {
-        CompatRemoteKey::CursorSkills => remote.cursor_skills_enabled = Some(value),
-        CompatRemoteKey::CursorRules => remote.cursor_rules_enabled = Some(value),
-        CompatRemoteKey::CursorAgents => remote.cursor_agents_enabled = Some(value),
-        CompatRemoteKey::CursorMcps => remote.cursor_mcps_enabled = Some(value),
-        CompatRemoteKey::CursorHooks => remote.cursor_hooks_enabled = Some(value),
-        CompatRemoteKey::CursorSessions => remote.cursor_sessions_enabled = Some(value),
-        CompatRemoteKey::ClaudeSkills => remote.claude_skills_enabled = Some(value),
-        CompatRemoteKey::ClaudeRules => remote.claude_rules_enabled = Some(value),
-        CompatRemoteKey::ClaudeAgents => remote.claude_agents_enabled = Some(value),
-        CompatRemoteKey::ClaudeMcps => remote.claude_mcps_enabled = Some(value),
-        CompatRemoteKey::ClaudeHooks => remote.claude_hooks_enabled = Some(value),
-        CompatRemoteKey::ClaudeSessions => remote.claude_sessions_enabled = Some(value),
-        CompatRemoteKey::CodexSessions => remote.codex_sessions_enabled = Some(value),
-    }
-    remote
-}
-#[test]
-#[serial]
-fn resolve_compat_defaults_match_registry() {
-    let _env = isolate_compat_env();
-    assert_eq!(
-        resolve_compat_config(&CompatConfigToml::default(), None),
-        CompatConfig::default()
-    );
-}
-#[test]
-#[serial]
-fn resolve_compat_toml_sessions_disable_independently() {
-    let _env = isolate_compat_env();
-    for (vendor, section) in [
-        (CompatVendor::Cursor, "cursor"),
-        (CompatVendor::Claude, "claude"),
-        (CompatVendor::Codex, "codex"),
-    ] {
-        let config = parse_compat(&format!("[compat.{section}]\nsessions = false"));
-        assert_session_one_disabled(resolve_compat_config(&config, None), vendor);
-    }
-}
-#[test]
-#[serial]
-fn resolve_raw_compat_sessions_fails_closed_per_vendor() {
-    let _env = isolate_compat_env();
-    let raw: toml::Value = toml::from_str(
-        r#"
-[compat.cursor]
-sessions = "malformed"
-[compat.claude]
-sessions = false
-[compat.codex]
-hooks = "unrelated malformed field"
-"#,
-    )
-    .unwrap();
-    let resolved = resolve_compat_sessions_from_raw(Ok(&raw), None);
-    assert!(!resolved.cursor.sessions);
-    assert!(!resolved.claude.sessions);
-    assert!(resolved.codex.sessions);
-}
-#[test]
-#[serial]
-fn resolve_raw_compat_sessions_keeps_absent_and_valid_cells_independent() {
-    let _env = isolate_compat_env();
-    let raw: toml::Value = toml::from_str(
-        r#"
-[compat.cursor]
-sessions = false
-hooks = "malformed but irrelevant"
-[compat.claude]
-sessions = true
-"#,
-    )
-    .unwrap();
-    let remote = crate::util::config::RemoteSettings {
-        codex_sessions_enabled: Some(false),
-        ..Default::default()
-    };
-    let resolved = resolve_compat_sessions_from_raw(Ok(&raw), Some(&remote));
-    assert!(!resolved.cursor.sessions);
-    assert!(resolved.claude.sessions);
-    assert!(!resolved.codex.sessions);
-}
-#[test]
-fn compat_config_cell_is_tolerant_and_fail_closed_per_cell() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-[compat.cursor]
-skills = false
-rules = "malformed"
-[compat.claude]
-hooks = true
-"#,
-    )
-    .unwrap();
-    let cell = |vendor, surface| {
-        COMPAT_CELLS
-            .into_iter()
-            .find(|cell| cell.vendor() == vendor && cell.surface() == surface)
-            .unwrap()
-    };
-    assert_eq!(
-        compat_config_cell(Ok(&raw), cell(CompatVendor::Cursor, CompatSurface::Skills)),
-        Ok(Some(false))
-    );
-    assert_eq!(
-        compat_config_cell(Ok(&raw), cell(CompatVendor::Cursor, CompatSurface::Rules)),
-        Err(CompatConfigCellError::Malformed)
-    );
-    assert_eq!(
-        compat_config_cell(Ok(&raw), cell(CompatVendor::Claude, CompatSurface::Hooks)),
-        Ok(Some(true))
-    );
-    assert_eq!(
-        compat_config_cell(Ok(&raw), cell(CompatVendor::Codex, CompatSurface::Sessions)),
-        Ok(None)
-    );
-    assert_eq!(
-        compat_config_cell(Err(()), cell(CompatVendor::Claude, CompatSurface::Sessions)),
-        Err(CompatConfigCellError::Unavailable)
-    );
-}
-#[test]
-#[serial]
-fn resolve_raw_compat_sessions_load_failure_fails_closed() {
-    let _env = isolate_compat_env();
-    let resolved = resolve_compat_sessions_from_raw(Err(()), None);
-    assert!(!resolved.cursor.sessions);
-    assert!(!resolved.claude.sessions);
-    assert!(!resolved.codex.sessions);
-}
-#[test]
-#[serial]
-fn resolve_raw_compat_sessions_load_failure_allows_env_override() {
-    let _env = isolate_compat_env();
-    let _codex = EnvGuard::set("GROK_CODEX_SESSIONS_ENABLED", "true");
-    let resolved = resolve_compat_sessions_from_raw(Err(()), None);
-    assert!(!resolved.cursor.sessions);
-    assert!(!resolved.claude.sessions);
-    assert!(resolved.codex.sessions);
-}
-#[test]
-#[serial]
-fn resolve_raw_compat_sessions_valid_empty_uses_remote_and_defaults() {
-    let _env = isolate_compat_env();
-    let raw = toml::Value::Table(Default::default());
-    let remote = crate::util::config::RemoteSettings {
-        claude_sessions_enabled: Some(false),
-        ..Default::default()
-    };
-    let resolved = resolve_compat_sessions_from_raw(Ok(&raw), Some(&remote));
-    assert!(resolved.cursor.sessions);
-    assert!(!resolved.claude.sessions);
-    assert!(resolved.codex.sessions);
-}
-#[test]
-#[serial]
-fn remote_keys_are_one_hot_and_false_overrides_default() {
-    let _env = isolate_compat_env();
-    for key in COMPAT_CELLS
-        .into_iter()
-        .filter_map(|cell| cell.remote_key())
-    {
-        let remote = remote_settings_with(key, false);
-        for cell in COMPAT_CELLS {
-            assert_eq!(
-                remote_compat_value(Some(&remote), cell.remote_key()),
-                (cell.remote_key() == Some(key)).then_some(false),
-                "{key:?} mapped to {}.{}",
-                Into::<&'static str>::into(cell.vendor()),
-                Into::<&'static str>::into(cell.surface())
-            );
-        }
-    }
-    let remote = remote_settings_with(CompatRemoteKey::CursorSkills, false);
-    assert!(CompatConfig::default().cursor.skills);
-    assert!(
-        !resolve_compat_config(&CompatConfigToml::default(), Some(&remote))
-            .cursor
-            .skills
-    );
-}
-#[test]
-#[serial]
-fn resolve_compat_env_sessions_disable_independently() {
-    let _env = isolate_compat_env();
-    for (vendor, env_var) in [
-        (CompatVendor::Cursor, "GROK_CURSOR_SESSIONS_ENABLED"),
-        (CompatVendor::Claude, "GROK_CLAUDE_SESSIONS_ENABLED"),
-        (CompatVendor::Codex, "GROK_CODEX_SESSIONS_ENABLED"),
-    ] {
-        let _disabled = EnvGuard::set(env_var, "false");
-        assert_session_one_disabled(
-            resolve_compat_config(&CompatConfigToml::default(), None),
-            vendor,
-        );
-    }
-}
-#[test]
-#[serial]
-fn resolve_compat_precedence_and_reserved_codex_hook() {
-    let _env = isolate_compat_env();
-    let config = parse_compat("[compat.cursor]\nsessions = false\n[compat.codex]\nhooks = false");
-    let remote = crate::util::config::RemoteSettings {
-        cursor_sessions_enabled: Some(true),
-        ..Default::default()
-    };
-    let resolved = resolve_compat_config(&config, Some(&remote));
-    assert!(!resolved.cursor.sessions);
-    assert!(!resolved.codex.hooks);
-    assert!(resolved.cursor.hooks);
-    assert!(resolved.claude.hooks);
-    let _session = EnvGuard::set("GROK_CURSOR_SESSIONS_ENABLED", "true");
-    let _hook = EnvGuard::set("GROK_CODEX_HOOKS_ENABLED", "true");
-    let resolved = resolve_compat_config(&config, Some(&remote));
-    assert!(resolved.cursor.sessions);
-    assert!(resolved.codex.hooks);
 }
 #[test]
 #[serial]
@@ -7579,6 +7254,33 @@ fn resolve_telemetry_mode_disable_env_beats_opt_in_but_not_requirements_pin() {
     let resolved = cfg.resolve_telemetry_mode();
     assert_eq!(
         (resolved.value, resolved.source),
+        (TelemetryMode::Enabled, ConfigSource::Requirement)
+    );
+}
+#[test]
+#[serial]
+fn requirements_telemetry_pin_beats_user_config() {
+    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
+    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
+    let mut cfg = Config::default();
+    cfg.features.telemetry = Some(TelemetryMode::Enabled);
+    cfg.requirements.telemetry.pin(
+        TelemetryMode::Disabled,
+        crate::config::RequirementSource::Unknown,
+    );
+    let off = cfg.resolve_telemetry_mode();
+    assert_eq!(
+        (off.value, off.source),
+        (TelemetryMode::Disabled, ConfigSource::Requirement)
+    );
+    cfg.features.telemetry = Some(TelemetryMode::Disabled);
+    cfg.requirements.telemetry.pin(
+        TelemetryMode::Enabled,
+        crate::config::RequirementSource::Unknown,
+    );
+    let on = cfg.resolve_telemetry_mode();
+    assert_eq!(
+        (on.value, on.source),
         (TelemetryMode::Enabled, ConfigSource::Requirement)
     );
 }
@@ -8315,6 +8017,52 @@ fn resolve_model_list_inherits_context_window_from_default_when_prefetched_has_f
     );
 }
 #[test]
+fn choices_mark_the_window_explicit_and_donate_to_slug_siblings() {
+    let cfg = Config::default();
+    let dm = crate::models::default_model();
+    let choices = vec![
+        NonZeroU64::new(DEFAULT_CONTEXT_WINDOW).unwrap(),
+        NonZeroU64::new(500_000).unwrap(),
+    ];
+    let mut primary = prefetch_model_entry(dm, DEFAULT_CONTEXT_WINDOW, ApiBackend::default());
+    primary.info.context_windows = choices.clone();
+    let sibling = prefetch_model_entry(dm, DEFAULT_CONTEXT_WINDOW, ApiBackend::default());
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(dm.to_owned(), primary);
+    prefetched.insert(format!("{dm}-alias"), sibling);
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let primary = resolved.get(dm).expect("primary must exist");
+    assert_eq!(primary.info.context_window.get(), DEFAULT_CONTEXT_WINDOW);
+    let sibling = resolved
+        .get(&format!("{dm}-alias"))
+        .expect("sibling must exist");
+    assert_eq!(sibling.info.context_windows, choices);
+}
+#[test]
+fn scalar_override_keeps_the_inherited_choices() {
+    let dm = crate::models::default_model();
+    let raw_config: toml::Value = toml::from_str(&format!(
+        r#"
+            [model."{dm}"]
+            context_window = 300000
+            "#
+    ))
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw_config).expect("config should parse");
+    let mut entry = prefetch_model_entry(dm, DEFAULT_CONTEXT_WINDOW, ApiBackend::default());
+    entry.info.context_windows = vec![
+        NonZeroU64::new(DEFAULT_CONTEXT_WINDOW).unwrap(),
+        NonZeroU64::new(500_000).unwrap(),
+    ];
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(dm.to_owned(), entry);
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let model = resolved.get(dm).expect("model must exist");
+    assert_eq!(model.info.context_window.get(), 300_000);
+    let windows: Vec<u64> = model.info.context_windows.iter().map(|w| w.get()).collect();
+    assert_eq!(windows, [300_000, DEFAULT_CONTEXT_WINDOW, 500_000]);
+}
+#[test]
 fn resolve_model_list_does_not_override_explicitly_set_context_window() {
     let cfg = Config::default();
     let dm = crate::models::default_model();
@@ -8981,4 +8729,60 @@ async fn process_key_from_model_env_key() {
             .as_deref(),
         Some(TOKEN)
     );
+}
+#[test]
+fn external_auth_with_a_models_endpoint_ignores_model_tables_and_allowed_models() {
+    let parse = |auth: &str| {
+        let raw: toml::Value = toml::from_str(&format!(
+            r#"
+            {auth}
+            [models]
+            default = "corp-build"
+            allowed_models = ["corp-build"]
+
+            [endpoints]
+            models_base_url = "https://proxy.example.com/v1"
+
+            [model.corp-build]
+            model = "corp-build"
+            base_url = "https://proxy.example.com/v1/"
+            context_window = 500000
+            "#
+        ))
+        .expect("parse test toml");
+        Config::new_from_toml_cfg(&raw).expect("config should parse")
+    };
+    let external = parse("[auth]\nauth_provider_command = \"/usr/local/bin/provider\"");
+    let standard = parse("");
+    assert!(external.config_models.is_empty());
+    assert_eq!(None, external.models.allowed_models);
+    assert!(!resolve_model_list(&external, None).contains_key("corp-build"));
+    assert!(standard.config_models.contains_key("corp-build"));
+    assert_eq!(
+        Some(vec!["corp-build".to_owned()]),
+        standard.models.allowed_models
+    );
+}
+fn test_model_entry(
+    model: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    env_key: Option<&str>,
+    api_base_url: Option<&str>,
+) -> ModelEntry {
+    ModelEntry {
+        bundled_catalog_entry: false,
+        official_catalog_entry: false,
+        info: ModelInfo {
+            model: model.to_string(),
+            base_url: base_url.to_string(),
+            context_window: NonZeroU64::new(200_000).unwrap(),
+            ..Default::default()
+        },
+        mtls_cert_dir: None,
+        api_key: api_key.map(|s| s.to_string()),
+        env_key: env_key.map(EnvKeys::single),
+        auth_provider: None,
+        api_base_url: api_base_url.map(|s| s.to_string()),
+    }
 }

@@ -5,7 +5,7 @@ use super::modal::{drop_other_agents_in_minimal, remove_agent_and_cleanup};
 use crate::acp::model_state::{EffortTokenError, ModelState};
 use crate::acp::tracker::AcpUpdateTracker;
 use crate::app::actions::{
-    Action, AfterSessionDelete, Effect, PermissionModePersist, SwitchModelError,
+    Action, AfterSessionDelete, Effect, ModelChoice, PermissionModePersist, SwitchModelError,
 };
 use crate::app::agent::{AgentCommand, AgentId, AgentSession, AgentState, DeferredModelSwitch};
 use crate::app::agent_view::{ActivePane, AgentView};
@@ -25,6 +25,7 @@ use crate::app::dispatch::transcript::extensions_modal_tab_fetches;
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
 use crate::scrollback::state::ScrollbackState;
+use crate::slash::commands::context_window::format_window;
 use agent_client_protocol as acp;
 use std::time::Instant;
 use xai_grok_shell::sampling::types::ReasoningEffort;
@@ -167,7 +168,7 @@ pub(crate) fn apply_deferred_switch_outcome_with_locale(
     outcome.switch
 }
 /// `Always` skips the popup and creates a worktree, `Never` stays in-cwd, `Ask` opens the worktree question modal (as `/fork` does).
-/// Otherwise proceeds directly via [`dispatch_new_session_inner`].
+/// Otherwise proceeds directly via [`dispatch_new_session_from_tab`].
 /// The persisted `Always` / `Never` modes therefore still take effect.
 pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<Effect> {
     use crate::app::app_view::WorktreeMode;
@@ -201,17 +202,17 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
             WorktreeMode::Always => {
                 dispatch_new_worktree_session(app, None, None, None, None, None, None)
             }
-            WorktreeMode::Never => dispatch_new_session_inner(app, None),
+            WorktreeMode::Never => dispatch_new_session_from_tab(app),
             WorktreeMode::Ask => {
                 if matches!(app.active_view, ActiveView::Agent(_)) {
                     open_new_session_question(app)
                 } else {
-                    dispatch_new_session_inner(app, None)
+                    dispatch_new_session_from_tab(app)
                 }
             }
         }
     } else {
-        dispatch_new_session_inner(app, None)
+        dispatch_new_session_from_tab(app)
     });
     if from_welcome
         && !always
@@ -223,7 +224,7 @@ pub(in crate::app::dispatch) fn dispatch_new_session(app: &mut AppView) -> Vec<E
 }
 /// Open the local worktree question modal for `/new`.
 /// Mirrors [`open_fork_question`] but uses [`LocalQuestionKind::NewSession`].
-/// The answer routes to [`dispatch_new_session_inner`] or [`dispatch_new_worktree_session`].
+/// The answer routes to [`dispatch_new_session_from_tab`] or [`dispatch_new_worktree_session`].
 pub(in crate::app::dispatch) fn open_new_session_question(app: &mut AppView) -> Vec<Effect> {
     use crate::views::question_view::{LocalQuestionKind, QuestionViewState};
     use xai_grok_tools::implementations::grok_build::ask_user_question::{
@@ -490,6 +491,12 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner(
     model_id: Option<acp::ModelId>,
 ) -> Vec<Effect> {
     let (_id, effects) = dispatch_new_session_inner_with_id(app, model_id, false);
+    effects
+}
+/// A plain new session from `/new` or Ctrl+N.
+pub(in crate::app::dispatch) fn dispatch_new_session_from_tab(app: &mut AppView) -> Vec<Effect> {
+    #[allow(unused_mut)]
+    let mut effects = dispatch_new_session_inner(app, None);
     effects
 }
 /// Sibling that returns the new `AgentId` alongside the effects.
@@ -925,10 +932,14 @@ pub(in crate::app::dispatch) fn welcome_always_isolates(app: &AppView) -> bool {
             crate::app::app_view::WorktreeMode::Always
         )
 }
+/// Auth, folder trust and consent are settled, the account has access, and no logout is underway
+fn can_create_session(app: &AppView) -> bool {
+    app.session_startup_allowed() && !app.is_access_blocked() && !app.logout_pending
+}
 /// Create a background session for the home screen without leaving Welcome.
 /// No-ops when the gate is closed, access is blocked, a session already exists, the user is not on home, or deferred startup will leave home.
 pub(crate) fn maybe_create_home_session(app: &mut AppView) -> Vec<Effect> {
-    if !app.session_startup_allowed() || app.is_access_blocked() {
+    if !can_create_session(app) {
         return vec![];
     }
     if !matches!(app.active_view, ActiveView::Welcome) {
@@ -1000,6 +1011,11 @@ pub(crate) fn abandon_unused_home_session(app: &mut AppView) -> Vec<Effect> {
     };
     abandon_agent_as_unused_husk(app, id)
 }
+/// An empty idle top-level session with no draft, so dropping it loses nothing
+fn is_unused_husk(agent: &AgentView) -> bool {
+    crate::views::dashboard::row::is_empty_idle_top_level(agent)
+        && agent.prompt.is_effectively_empty()
+}
 /// Drop the revealed Welcome husk when LoadSession opens a different session.
 /// An empty `/new` is not this husk. A composer draft keeps it.
 pub(crate) fn abandon_unused_empty_for_load(
@@ -1022,9 +1038,7 @@ pub(crate) fn abandon_unused_empty_for_load(
     {
         return effects;
     }
-    if !crate::views::dashboard::row::is_empty_idle_top_level(agent)
-        || !agent.prompt.is_effectively_empty()
-    {
+    if !is_unused_husk(agent) {
         return effects;
     }
     effects.extend(abandon_agent_as_unused_husk(app, id));
@@ -1590,7 +1604,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
             app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
-        apply_session_modes_dropping_auto(agent, modes, &mut app.current_ui.permission_mode);
+        agent.apply_session_modes(modes);
         let deferred = apply_deferred_model_switch_with_locale(
             agent,
             app.cli_effort_token.as_deref(),
@@ -1646,8 +1660,10 @@ pub(in crate::app::dispatch) fn handle_session_created(
             effects.push(Effect::SwitchModel {
                 agent_id,
                 session_id: session_id_clone.clone(),
-                model_id: switch.model_id,
-                effort: switch.effort,
+                choice: ModelChoice {
+                    effort: switch.effort,
+                    ..ModelChoice::new(switch.model_id)
+                },
                 prev_model_id: switch.prev_model_id,
             });
         }
@@ -1670,16 +1686,6 @@ pub(in crate::app::dispatch) fn handle_session_created(
         return effects;
     }
     abandoned_husk_cleanup_effects(app, session_id)
-}
-/// `sync_active_auto_flag` reads Auto back from `current_ui.permission_mode`.
-pub(super) fn apply_session_modes_dropping_auto(
-    agent: &mut AgentView,
-    modes: Option<acp::SessionModeState>,
-    permission_mode: &mut Option<String>,
-) {
-    if agent.apply_session_modes(modes) && permission_mode.as_deref() == Some("auto") {
-        *permission_mode = Some("ask".into());
-    }
 }
 /// Mode changes made before the session was bound (Shift+Tab on a pre-session
 /// agent) go out ahead of the queued first prompt, so the shell enforces the
@@ -1734,7 +1740,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
-        apply_session_modes_dropping_auto(agent, modes, &mut app.current_ui.permission_mode);
+        agent.apply_session_modes(modes);
         agent.prompt.file_search.retarget(&session_cwd);
         let worktree_path = worktree_path.display().to_string();
         let message = localized_template(
@@ -1802,8 +1808,10 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             effects.push(Effect::SwitchModel {
                 agent_id,
                 session_id: session_id_clone.clone(),
-                model_id: switch.model_id,
-                effort: switch.effort,
+                choice: ModelChoice {
+                    effort: switch.effort,
+                    ..ModelChoice::new(switch.model_id)
+                },
                 prev_model_id: switch.prev_model_id,
             });
         }
@@ -2093,14 +2101,20 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
 pub(in crate::app::dispatch) fn handle_switch_model_complete(
     app: &mut AppView,
     agent_id: AgentId,
-    model_id: acp::ModelId,
-    effort: Option<ReasoningEffort>,
+    choice: ModelChoice,
     result: Result<(), SwitchModelError>,
     prev_model_id: Option<acp::ModelId>,
 ) -> Vec<Effect> {
     let locale = app.locale.clone();
+    let ModelChoice {
+        model_id,
+        effort,
+        context_window_selection,
+    } = choice;
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.session.model_switch_pending = false;
+        let model_changed_during_switch =
+            std::mem::take(&mut agent.session.models.model_changed_during_switch);
         let mut effects = match result {
             Ok(()) => {
                 agent.session.user_model_preference = Some(model_id.clone());
@@ -2115,11 +2129,12 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 let prev_effort = agent.session.models.reasoning_effort;
                 agent.session.models.set_current(model_id.clone(), effort);
                 let resolved_effort = agent.session.models.reasoning_effort;
-                if let Some(used) = agent.context_state.as_ref().map(|c| c.used)
-                    && let Some(window) = agent.session.models.get_context_window()
+                if let Some(selection) = context_window_selection
+                    && !model_changed_during_switch
                 {
-                    agent.apply_context_used(used, window);
+                    agent.session.models.context_window_selection = Some(selection.get());
                 }
+                agent.refresh_context_total();
                 let unchanged =
                     prev_model.as_ref() == Some(&model_id) && prev_effort == resolved_effort;
                 if !unchanged {
@@ -2143,6 +2158,13 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                         )
                     };
                     agent.scrollback.push_block(RenderBlock::system(msg));
+                } else if let Some(selection) = context_window_selection.filter(|selection| {
+                    agent.session.models.context_window_selection == Some(selection.get())
+                }) {
+                    agent.scrollback.push_block(RenderBlock::system(format!(
+                        "Context window set to {}",
+                        format_window(selection.get())
+                    )));
                 }
                 if unchanged {
                     vec![]
@@ -2158,17 +2180,30 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                     agent.session.models.set_current(prev.clone(), None);
                 }
                 agent.active_modal = None;
+                if context_window_selection.is_some() {
+                    agent.scrollback.push_block(RenderBlock::system(
+                        "Context window applies once the session starts; run /context-window then",
+                    ));
+                }
                 let display_name = agent.session.models.display_name_for(&model_id);
                 return open_agent_type_mismatch_question(app, model_id, effort, &display_name);
             }
             Err(SwitchModelError::Other(msg)) => {
-                let message = localized_template(
-                    locale.as_ref(),
-                    "session.model.switch_failed",
-                    "Couldn't switch model: {error}",
-                    &[("{error}", &msg)],
-                );
-                agent.scrollback.push_block(RenderBlock::system(message));
+                let text = match context_window_selection {
+                    Some(selection) => {
+                        format!(
+                            "Couldn't set context window to {}: {msg}",
+                            format_window(selection.get())
+                        )
+                    }
+                    None => localized_template(
+                        locale.as_ref(),
+                        "session.model.switch_failed",
+                        "Couldn't switch model: {error}",
+                        &[("{error}", &msg)],
+                    ),
+                };
+                agent.scrollback.push_block(RenderBlock::system(text));
                 vec![]
             }
         };

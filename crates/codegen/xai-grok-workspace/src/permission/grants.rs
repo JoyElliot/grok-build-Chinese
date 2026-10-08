@@ -99,7 +99,10 @@ pub(crate) fn web_fetch_deny_key_from_url(url: &str) -> Option<String> {
 
 /// The persisted "never allow" entry matching a web_fetch host, if any. A deny covers the exact host and its subdomains, but never a parent of the entry.
 /// That is broader than the exact-match allow lookup on purpose: denies fail safe.
-fn denied_web_fetch_domain<'a>(host: &str, disallowed: &'a HashSet<String>) -> Option<&'a str> {
+pub(crate) fn denied_web_fetch_domain<'a>(
+    host: &str,
+    disallowed: &'a HashSet<String>,
+) -> Option<&'a str> {
     if disallowed.is_empty() {
         return None;
     }

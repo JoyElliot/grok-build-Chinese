@@ -3,10 +3,10 @@
 mod input;
 pub use input::{InlineMcpInvocation, UseToolInput, parse_arguments_file};
 use serde::{Deserialize, Serialize};
+use xai_tool_runtime::render_structured_content;
 
 use crate::types::output::{MCPOutput, ToolOutput};
 use crate::types::tool::{ToolKind, ToolNamespace};
-use crate::util::mcp_structured_content::render_structured_content;
 use crate::util::mcp_truncate::{McpTruncateContext, truncate_tool_output};
 
 /// Wire name of the MCP dispatch tool. UIs special-case it: while its

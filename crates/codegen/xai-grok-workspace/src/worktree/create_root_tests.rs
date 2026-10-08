@@ -529,6 +529,63 @@ async fn pinned_streaming_keeps_prepare_source_git_root() {
 }
 
 #[tokio::test]
+async fn create_uses_the_path_captured_before_cwd_changes() {
+    xai_test_utils::require_git!();
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
+    let home = root.join("grok-home");
+    let later_home = root.join("later-home");
+    let later_cwd = root.join("later-cwd");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&later_home).unwrap();
+    std::fs::create_dir_all(&later_cwd).unwrap();
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    xai_test_utils::git::init_git_repo(&repo);
+    std::fs::write(repo.join("tracked.txt"), "x").unwrap();
+    xai_test_utils::git::git_commit_all(&repo, "initial");
+
+    let session_id = format!("pin-cwd-{}", std::process::id());
+    let captured = {
+        let _env = LockedTestEnv::lock().set("GROK_HOME", &home);
+        let prepared = prepare_worktree_creation(&create_req(
+            session_id.clone(),
+            &repo,
+            Some(false),
+            Some("captured"),
+        ))
+        .await;
+        let Ok(CreateWorktreeResponse::Creating { worktree_path, .. }) = prepared.response else {
+            panic!("expected Creating, got {:?}", prepared.response.err());
+        };
+        worktree_path
+    };
+
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&later_cwd).unwrap();
+    let status = {
+        let _later = LockedTestEnv::lock().set("GROK_HOME", &later_home);
+        let mut req = create_req(session_id, &repo, Some(false), Some("moved-after-resolve"));
+        req.worktree_path = Some(captured.clone());
+        create_worktree_streaming(&req, &NoopNotifier).await
+    };
+    let _ = std::env::set_current_dir(&previous);
+
+    let WorktreeStatus::Created {
+        worktree_path: created,
+        ..
+    } = status
+    else {
+        panic!("expected Created at the captured path, got {status:?}");
+    };
+    assert!(created.ends_with("/captured"));
+    assert!(!created.contains("later-home"));
+    assert!(!created.contains("moved-after-resolve"));
+    assert!(Path::new(&captured).join("tracked.txt").is_file());
+    assert!(!later_home.join("worktrees").exists());
+}
+
+#[tokio::test]
 async fn fork_prepare_grove_parent_skips_git_dir_gate() {
     let temp = tempfile::TempDir::new().unwrap();
     let root = dunce::canonicalize(temp.path()).unwrap();

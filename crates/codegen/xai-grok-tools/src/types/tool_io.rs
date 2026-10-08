@@ -176,6 +176,7 @@ mod tests {
             timeout: None,
             description: "list files".into(),
             is_background: false,
+            block_until_ms: None,
         })
         .try_into();
         assert_eq!(bash.unwrap().command, "ls");

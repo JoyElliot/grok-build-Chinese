@@ -9,6 +9,7 @@ use super::agent::AgentId;
 use crate::app::status_line::StatusLineRun;
 use crate::scrollback::entry::EntryId;
 use agent_client_protocol as acp;
+use std::num::NonZeroU64;
 use xai_grok_shell::sampling::types::ReasoningEffort;
 use xai_grok_shell::session::unified_list::SessionKind;
 /// Typed error for model switch failures.
@@ -26,6 +27,24 @@ pub enum SwitchModelError {
     },
     /// Any other failure (network, auth, server error, etc.).
     Other(String),
+}
+/// The model, effort, and context window a session switch requests.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelChoice {
+    pub model_id: acp::ModelId,
+    pub effort: Option<ReasoningEffort>,
+    /// `None` keeps the session's context window selection.
+    pub context_window_selection: Option<NonZeroU64>,
+}
+impl ModelChoice {
+    /// Chooses `model_id` with no effort override and the session's context window.
+    pub fn new(model_id: acp::ModelId) -> Self {
+        ModelChoice {
+            model_id,
+            effort: None,
+            context_window_selection: None,
+        }
+    }
 }
 /// Synchronous, side-effect-free user intent.
 /// Produced by [`super::input`] from key/mouse events.
@@ -310,7 +329,7 @@ pub enum Action {
     /// Disabling it lets the terminal handle native click-drag text selection and copy-paste; re-enabling restores in-app mouse handling.
     /// Bound to Ctrl+R while the scrollback pane is focused.
     ToggleMouseCapture,
-    /// Toggle the scroll-diagnostics HUD (hidden `/scroll-debug` command, also `/debug scroll`; `GROK_SCROLL_DEBUG=1` enables it from startup).
+    /// Toggle the scroll-diagnostics HUD (`/debug scroll`; `GROK_SCROLL_DEBUG=1` enables it from startup).
     ToggleScrollDebugHud,
     /// Toggle the release-safe FPS HUD (`/debug fps`).
     ToggleFpsHud,
@@ -398,10 +417,7 @@ pub enum Action {
     /// Cycle to next model.
     NextModel,
     /// Switch active model.
-    SwitchModel {
-        model_id: acp::ModelId,
-        effort: Option<ReasoningEffort>,
-    },
+    SwitchModel(ModelChoice),
     /// Cancel the currently running turn.
     CancelTurn,
     /// User confirmed a cancel-turn choice from the panel.
@@ -1030,24 +1046,19 @@ pub enum PermissionLabel {
     Auto,
     AlwaysApprove,
 }
-impl From<PermissionLabel> for PermissionModeKind {
-    fn from(label: PermissionLabel) -> Self {
-        match label {
-            PermissionLabel::Ask => Self::Ask,
-            PermissionLabel::Auto => Self::Auto,
-            PermissionLabel::AlwaysApprove => Self::AlwaysApprove,
-        }
-    }
-}
 impl PermissionLabel {
-    /// Shares [`PermissionModeKind::as_canonical`] so the info-line flags and the scrollback rows use one string table.
-    pub fn as_canonical(self) -> &'static str {
-        PermissionModeKind::from(self).as_canonical()
+    /// The text the info-line flags and the scrollback rows show. It can differ from the config id.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto-review",
+            Self::AlwaysApprove => "always-approve",
+        }
     }
 }
 impl std::fmt::Display for PermissionLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_canonical())
+        f.write_str(self.display_name())
     }
 }
 #[cfg(test)]
@@ -1587,7 +1598,6 @@ pub enum Effect {
     Compact {
         agent_id: AgentId,
         session_id: acp::SessionId,
-        user_context: Option<String>,
     },
     /// Kill a background task.
     KillBgTask {
@@ -1614,8 +1624,7 @@ pub enum Effect {
     SwitchModel {
         agent_id: AgentId,
         session_id: acp::SessionId,
-        model_id: acp::ModelId,
-        effort: Option<ReasoningEffort>,
+        choice: ModelChoice,
         /// The model that was active before the optimistic UI update in `set_default_model`.
         /// `None` for `Action::SwitchModel` (no optimistic update).
         /// Threaded through to `SwitchModelComplete` so `IncompatibleAgent` can roll back.
@@ -1874,6 +1883,10 @@ pub enum Effect {
     FetchSkillsList {
         agent_id: AgentId,
         session_id: acp::SessionId,
+        /// Rescan the skill folders; otherwise a backend may answer from its cache.
+        refresh: bool,
+        /// The number the Skills tab gave this fetch; only the newest fetch's answer shows.
+        fetch: u64,
     },
     FetchWorkflowsList {
         agent_id: AgentId,
@@ -2169,6 +2182,12 @@ pub enum Effect {
         last_turn_summary_gen: u64,
     },
     FetchRewindPoints {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+    },
+    /// Stops the running turn, waits for the backend to take the cancel, then fetches the rewind points.
+    /// A backend refuses points while a turn runs, so the order matters.
+    CancelTurnThenFetchRewindPoints {
         agent_id: AgentId,
         session_id: acp::SessionId,
     },
@@ -2665,8 +2684,7 @@ pub enum TaskResult {
     /// Model switch completed (effort, if any, was applied in the same request).
     SwitchModelComplete {
         agent_id: AgentId,
-        model_id: acp::ModelId,
-        effort: Option<ReasoningEffort>,
+        choice: ModelChoice,
         result: Result<(), SwitchModelError>,
         /// Forwarded from `Effect::SwitchModel.prev_model_id` for rollback on `IncompatibleAgent`.
         prev_model_id: Option<acp::ModelId>,
@@ -2789,7 +2807,9 @@ pub enum TaskResult {
     /// Skills list loaded.
     SkillsListLoaded {
         agent_id: AgentId,
-        result: Result<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>, String>,
+        session_id: acp::SessionId,
+        fetch: u64,
+        result: Result<xai_grok_shell::extensions::skills::SkillsListResponse, String>,
     },
     WorkflowsListLoaded {
         agent_id: AgentId,
@@ -2799,7 +2819,7 @@ pub enum TaskResult {
     /// Skill toggle completed (enable/disable).
     SkillsToggleDone {
         agent_id: AgentId,
-        result: Result<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>, String>,
+        result: Result<xai_grok_shell::extensions::skills::SkillsListResponse, String>,
     },
     /// Background marketplace auto-update completed.
     MarketplaceUpdatesAvailable {
@@ -3057,6 +3077,7 @@ pub enum TaskResult {
     /// Available commands refreshed from the shell.
     AvailableCommandsRefreshed {
         agent_id: AgentId,
+        session_id: acp::SessionId,
         commands: Vec<acp::AvailableCommand>,
     },
     /// Shell acknowledged logout (auth cleared).

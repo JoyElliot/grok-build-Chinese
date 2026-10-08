@@ -1,15 +1,17 @@
 //! Every route records an entry; the count stays exact after a long test stops retaining entries.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use axum::http::HeaderMap;
 use serde_json::Value;
+use tokio::sync::watch;
 
 use crate::conversation::ConversationId;
 use crate::failure::ObservedFailure;
 use crate::inference_request::{
-    InferenceRequest, first_system_message, offered_tools, tool_results,
+    InferenceEndpoint, InferenceRequest, InferenceRequestKind, first_system_message, offered_tools,
+    tool_results,
 };
 
 pub(crate) fn authorization_header(headers: &HeaderMap) -> Option<String> {
@@ -26,17 +28,26 @@ pub struct LogEntry {
     sequence: u64,
     pub method: String,
     pub path: String,
+    /// Query string without the leading `?`, absent when the request had none.
+    pub query: Option<String>,
     pub body: Option<Value>,
+    /// Exact body text, set only while request-byte capture is on.
+    pub raw_body: Option<String>,
     pub authorization: Option<String>,
     /// Lowercase names in arrival order. Empty for the GET endpoints.
     pub headers: Vec<(String, String)>,
     /// The latency harness builds request timelines from this.
     pub at: std::time::SystemTime,
+    /// `None` for every route except the three inference endpoints.
+    pub endpoint: Option<InferenceEndpoint>,
     /// Foreground inference requests only.
     pub conversation: Option<usize>,
+    /// Scripted turn that served this request, when a conversation script answered it.
+    pub scripted_reply: Option<usize>,
     /// What the mock decided to do to an inference request on its own; `None` for a plain answer or a
     /// response the test enqueued. Noted before any hold so a stall still shows it.
     pub observed_failure: Option<ObservedFailure>,
+    pub finished: bool,
 }
 
 impl LogEntry {
@@ -70,7 +81,12 @@ const MAX_LOGGED_REQUESTS: usize = 1024;
 pub(crate) struct RequestLog {
     count: AtomicU32,
     entries: std::sync::Mutex<Vec<LogEntry>>,
+    /// Highest sequence already handed to an observation. `entries` itself stays complete.
+    observed_through: AtomicU64,
     keep_entries: AtomicBool,
+    /// Foreground inference requests only, so a test can enqueue or cancel once the turn's request is logged.
+    inference_arrivals: watch::Sender<usize>,
+    capture_request_bytes: AtomicBool,
 }
 
 impl RequestLog {
@@ -78,22 +94,34 @@ impl RequestLog {
         RequestLog {
             count: AtomicU32::new(0),
             entries: std::sync::Mutex::new(Vec::new()),
+            observed_through: AtomicU64::new(0),
             keep_entries: AtomicBool::new(true),
+            inference_arrivals: watch::Sender::new(0),
+            capture_request_bytes: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn record_get(&self, path: &str) {
+        self.record_get_with_authorization(path, None);
+    }
+
+    pub(crate) fn record_get_with_authorization(&self, path: &str, authorization: Option<String>) {
         let sequence = self.next_sequence();
         self.keep(LogEntry {
             sequence,
             method: "GET".to_owned(),
             path: path.to_owned(),
+            query: None,
             body: None,
-            authorization: None,
+            raw_body: None,
+            authorization,
             headers: Vec::new(),
             at: std::time::SystemTime::now(),
+            endpoint: None,
             conversation: None,
+            scripted_reply: None,
             observed_failure: None,
+            finished: false,
         });
     }
 
@@ -103,10 +131,22 @@ impl RequestLog {
     }
 
     /// Returns the sequence that names the entry for [`Self::note_failure`].
-    pub(crate) fn record_inference(&self, request: &InferenceRequest<'_>) -> u64 {
+    pub(crate) fn record_inference(
+        &self,
+        request: &InferenceRequest<'_>,
+        raw: &[u8],
+        query: Option<&str>,
+    ) -> u64 {
         let sequence = self.next_sequence();
+        let raw_body = self
+            .capture_request_bytes
+            .load(Ordering::SeqCst)
+            .then(|| String::from_utf8_lossy(raw).into_owned());
         self.keep(LogEntry {
+            endpoint: Some(request.endpoint()),
             conversation: request.conversation().map(ConversationId::number),
+            raw_body,
+            query: query.map(str::to_owned),
             ..RequestLog::entry(
                 sequence,
                 "POST",
@@ -115,13 +155,31 @@ impl RequestLog {
                 request.headers(),
             )
         });
+        if request.kind() == InferenceRequestKind::Foreground {
+            self.inference_arrivals.send_modify(|count| *count += 1);
+        }
         sequence
+    }
+
+    pub(crate) fn subscribe_inference(&self) -> watch::Receiver<usize> {
+        self.inference_arrivals.subscribe()
+    }
+
+    pub(crate) fn inference_count(&self) -> usize {
+        *self.inference_arrivals.borrow()
     }
 
     pub(crate) fn note_failure(&self, sequence: u64, failure: ObservedFailure) {
         let mut entries = self.entries.lock().unwrap();
         if let Some(entry) = entries.iter_mut().find(|entry| entry.sequence == sequence) {
             entry.observed_failure = Some(failure);
+        }
+    }
+
+    pub(crate) fn note_finished(&self, sequence: u64) {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(entry) = entries.iter_mut().find(|entry| entry.sequence == sequence) {
+            entry.finished = true;
         }
     }
 
@@ -136,7 +194,9 @@ impl RequestLog {
             sequence,
             method: method.to_owned(),
             path: path.to_owned(),
+            query: None,
             body: Some(body.clone()),
+            raw_body: None,
             authorization: authorization_header(headers),
             headers: headers
                 .iter()
@@ -148,8 +208,18 @@ impl RequestLog {
                 })
                 .collect(),
             at: std::time::SystemTime::now(),
+            endpoint: None,
             conversation: None,
+            scripted_reply: None,
             observed_failure: None,
+            finished: false,
+        }
+    }
+
+    pub(crate) fn note_scripted_reply(&self, sequence: u64, reply: usize) {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(entry) = entries.iter_mut().find(|entry| entry.sequence == sequence) {
+            entry.scripted_reply = Some(reply);
         }
     }
 
@@ -173,12 +243,41 @@ impl RequestLog {
         self.count.load(Ordering::SeqCst)
     }
 
+    /// Foreground inference requests logged for `conversation`, counted from 1 in the scripts.
+    pub(crate) fn conversation_requests(&self, conversation: usize) -> usize {
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.conversation == Some(conversation))
+            .count()
+    }
+
     pub(crate) fn set_keep_entries(&self, enabled: bool) {
         self.keep_entries.store(enabled, Ordering::SeqCst);
     }
 
+    pub(crate) fn set_capture_request_bytes(&self, enabled: bool) {
+        self.capture_request_bytes.store(enabled, Ordering::SeqCst);
+    }
+
     pub(crate) fn entries(&self) -> Vec<LogEntry> {
         self.entries.lock().unwrap().clone()
+    }
+
+    /// Entries whose sequence is past the previous call. [`Self::entries`] stays the whole log.
+    pub(crate) fn take_for_observation(&self) -> Vec<LogEntry> {
+        let entries = self.entries.lock().unwrap();
+        let seen = self.observed_through.load(Ordering::SeqCst);
+        let fresh: Vec<LogEntry> = entries
+            .iter()
+            .filter(|entry| entry.sequence > seen)
+            .cloned()
+            .collect();
+        if let Some(last) = entries.iter().map(|entry| entry.sequence).max() {
+            self.observed_through.fetch_max(last, Ordering::SeqCst);
+        }
+        fresh
     }
 
     pub(crate) fn count_for(&self, path: &str) -> usize {

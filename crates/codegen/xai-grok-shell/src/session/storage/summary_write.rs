@@ -43,6 +43,7 @@ impl CounterOp {
 pub(crate) struct ModelPatch {
     pub model_id: acp::ModelId,
     pub reasoning_effort: Option<Option<ReasoningEffort>>,
+    pub context_window: Option<Option<std::num::NonZeroU64>>,
 }
 
 /// `commit` and `branch` are last-writer-wins, including being cleared to `None`.
@@ -152,6 +153,9 @@ impl Summary {
             self.current_model_id = model.model_id.clone();
             if let Some(reasoning_effort) = &model.reasoning_effort {
                 self.reasoning_effort = *reasoning_effort;
+            }
+            if let Some(context_window) = &model.context_window {
+                self.context_window = *context_window;
             }
         }
         if let Some(agent) = &patch.agent {

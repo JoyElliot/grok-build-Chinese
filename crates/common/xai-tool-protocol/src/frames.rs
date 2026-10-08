@@ -370,13 +370,22 @@ pub enum HostKind {
     Sandbox,
 }
 
-impl std::fmt::Display for HostKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl HostKind {
+    pub const ALL: [HostKind; 3] = [HostKind::Desktop, HostKind::Container, HostKind::Sandbox];
+
+    /// The serde wire spelling, so metric labels join against `servers.list`.
+    pub fn as_str(self) -> &'static str {
+        match self {
             Self::Desktop => "desktop",
             Self::Container => "container",
             Self::Sandbox => "sandbox",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for HostKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -932,11 +941,12 @@ pub struct UnsubscribeAck {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookFrame {
     pub session_id: SessionId,
-    /// Omit for session-wide hooks (broadcast); required for call-scoped
-    /// hooks like `Cancel`.
+    /// The tool server that receives the hook.
+    /// `None` sends it to every tool server bound to the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_id: Option<ToolId>,
-    /// Required for call-scoped hooks (`Cancel`); optional otherwise.
+    /// The running call a `Cancel` ends.
+    /// [`HookEvent::Cancel`] documents a `Cancel` with no `call_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<ToolCallId>,
     /// Correlation id for a request/response hook. The requester mints it and
@@ -1383,6 +1393,13 @@ mod tests {
 
     fn sid() -> SessionId {
         SessionId::new("test-session").expect("valid")
+    }
+
+    #[test]
+    fn host_kind_as_str_is_the_wire_spelling() {
+        for kind in HostKind::ALL {
+            assert_eq!(json!(kind.as_str()), serde_json::to_value(kind).unwrap());
+        }
     }
 
     fn tid() -> ToolId {

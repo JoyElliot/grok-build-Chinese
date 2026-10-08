@@ -47,6 +47,18 @@ impl PluginScope {
     }
 }
 
+/// A project's `[plugins].paths` can name a `ConfigPath` plugin, and the plugin does not record
+/// which config named it, so its servers are project servers.
+impl From<PluginScope> for xai_grok_config::mcp_servers::McpServerScope {
+    fn from(scope: PluginScope) -> xai_grok_config::mcp_servers::McpServerScope {
+        use xai_grok_config::mcp_servers::McpServerScope;
+        match scope {
+            PluginScope::Project | PluginScope::ConfigPath => McpServerScope::Project,
+            PluginScope::User | PluginScope::CliOverride => McpServerScope::User,
+        }
+    }
+}
+
 impl std::fmt::Display for PluginScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -864,6 +876,25 @@ mod tests {
         let plugin_dir = tmp.join(name);
         std::fs::create_dir_all(plugin_dir.join("skills")).unwrap();
         plugin_dir
+    }
+
+    #[test]
+    fn mcp_server_scope_follows_the_plugin_install_scope() {
+        use xai_grok_config::mcp_servers::McpServerScope;
+        let cases = [
+            (PluginScope::Project, McpServerScope::Project),
+            (PluginScope::ConfigPath, McpServerScope::Project),
+            (PluginScope::User, McpServerScope::User),
+            (PluginScope::CliOverride, McpServerScope::User),
+        ];
+
+        for (plugin_scope, expected) in cases {
+            assert_eq!(
+                expected,
+                McpServerScope::from(plugin_scope),
+                "{plugin_scope}"
+            );
+        }
     }
 
     #[test]

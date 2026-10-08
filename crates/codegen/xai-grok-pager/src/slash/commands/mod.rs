@@ -8,6 +8,7 @@ pub mod compact;
 pub mod compact_mode;
 pub mod config_agents;
 pub mod context;
+pub mod context_window;
 pub mod copy;
 pub mod dashboard;
 pub mod debug;
@@ -52,7 +53,6 @@ pub mod rename;
 pub mod resume;
 pub mod rewind;
 pub mod screen_mode_switch;
-pub mod scroll_debug;
 pub mod session_info;
 pub mod settings_cmd;
 pub mod share;
@@ -87,6 +87,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(new::NewCommand),
         // Per turn.
         Arc::new(effort::EffortCommand),
+        Arc::new(context_window::ContextWindowCommand),
         Arc::new(model::ModelCommand),
         Arc::new(context::ContextCommand),
         Arc::new(compact::CompactCommand),
@@ -158,8 +159,6 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(exit::ExitCommand),
         // Hidden easter egg: never listed, runs on bare `/gboom`.
         Arc::new(gboom::GboomCommand),
-        // Hidden diagnostic: never listed, toggles the scroll-debug HUD.
-        Arc::new(scroll_debug::ScrollDebugCommand),
         // Debug toggles: always registered, listed only on debug binaries.
         Arc::new(debug::DebugCommand),
     ]
@@ -337,16 +336,16 @@ mod tests {
         }
     }
     #[test]
-    fn compact_with_context_returns_queue_command_with_args() {
+    fn compact_with_args_is_refused() {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
         let cmd = compact::CompactCommand;
         let result = cmd.run(&mut ctx, "focus on auth");
         match result {
-            CommandResult::QueueCommand(text) => {
-                assert_eq!(text, "/compact focus on auth")
+            CommandResult::Error(text) => {
+                assert_eq!(text, "/compact takes no arguments.")
             }
-            other => panic!("expected QueueCommand, got {other:?}"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
     #[test]

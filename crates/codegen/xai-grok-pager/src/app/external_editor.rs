@@ -510,7 +510,8 @@ mod tests {
         app.voice_state = crate::app::app_view::VoiceState::Recording {
             hold: false,
             target: crate::app::app_view::VoiceTarget::Agent(id),
-            interim: None,
+            partial: crate::app::app_view::Partial::None,
+            route: None,
         };
         assert!(prepare(&mut app, request).unwrap().is_none());
         assert!(

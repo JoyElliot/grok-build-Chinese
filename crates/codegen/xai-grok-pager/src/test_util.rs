@@ -126,6 +126,14 @@ impl EnvVarGuard {
         }
         Self { key, original }
     }
+    /// Clear `key` for the guard's lifetime; the original value comes back on drop.
+    pub fn unset(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, original }
+    }
 }
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {

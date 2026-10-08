@@ -340,10 +340,9 @@ async fn handle_compact(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let session_handle = agent.resident_handle(&sid);
     let (tx, rx) = oneshot::channel();
     if let Some(session) = session_handle {
-        let _ = session.cmd_tx.send(SessionCommand::CompactSession {
-            user_context: req.user_context,
-            respond_to: tx,
-        });
+        let _ = session
+            .cmd_tx
+            .send(SessionCommand::CompactSession { respond_to: tx });
     }
     // Pass the session error through; rewrapping buries the detail in a Debug dump.
     rx.await

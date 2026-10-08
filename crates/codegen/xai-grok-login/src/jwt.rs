@@ -30,6 +30,16 @@ pub fn is_jwt_expired_or_near(token: &str, threshold: Duration) -> bool {
         .unwrap_or(false)
 }
 
+/// An unsigned JWT carrying `payload_json`; claims are read without checking the signature.
+#[cfg(test)]
+pub(crate) fn build_test_jwt(payload_json: &str) -> String {
+    use base64::Engine;
+    let enc = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let header = enc.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+    let payload = enc.encode(payload_json);
+    format!("{header}.{payload}.fake-signature")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,13 +58,5 @@ mod tests {
         let token = build_test_jwt(r#"{"aud":["some-audience"],"exp":1772575524}"#);
         let exp = parse_jwt_expiration(&token);
         assert_eq!(exp.unwrap().timestamp(), 1772575524);
-    }
-
-    fn build_test_jwt(payload_json: &str) -> String {
-        use base64::Engine;
-        let enc = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let header = enc.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-        let payload = enc.encode(payload_json);
-        format!("{header}.{payload}.fake-signature")
     }
 }

@@ -247,6 +247,23 @@ pub struct WorkspaceBindMetadata {
         skip_serializing_if = "Option::is_none"
     )]
     pub session_root: Option<String>,
+    /// The conversation this session belongs to, as the harness's hub session
+    /// source (the bare hub session id of the conversation's primary
+    /// workspace). Omitted by emitters that have no conversation.
+    #[serde(
+        default,
+        deserialize_with = "ok_or_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub conversation_id: Option<String>,
+    /// Registry id of the workspace this session serves within
+    /// `conversation_id` (`sandbox` / `computer-<hex>`).
+    #[serde(
+        default,
+        deserialize_with = "ok_or_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspace_id: Option<String>,
 }
 
 /// How far a bound session may go without the session owner answering a prompt. The hub's
@@ -341,6 +358,8 @@ mod bind_metadata_tests {
             system_notifications: Some(true),
             rpc_only: true,
             session_root: Some("/workspace/conv-abc".to_owned()),
+            conversation_id: Some("conv-abc".to_owned()),
+            workspace_id: Some("sandbox".to_owned()),
         };
         let value = serde_json::to_value(&md).unwrap();
         assert_eq!(value["tool_approval_policy"], "always_prompt");
@@ -359,6 +378,35 @@ mod bind_metadata_tests {
         assert_eq!(back.system_notifications, Some(true));
         assert!(back.rpc_only);
         assert_eq!(back.session_root.as_deref(), Some("/workspace/conv-abc"));
+        assert_eq!(back.conversation_id.as_deref(), Some("conv-abc"));
+        assert_eq!(back.workspace_id.as_deref(), Some("sandbox"));
+    }
+
+    /// The identity keys are additive: omitted when unset, tolerated when
+    /// malformed, and a legacy payload without them still parses.
+    #[test]
+    fn bind_metadata_carries_workspace_identity() {
+        let value = serde_json::to_value(WorkspaceBindMetadata::default()).unwrap();
+        assert!(value.get("conversation_id").is_none());
+        assert!(value.get("workspace_id").is_none());
+
+        let md: WorkspaceBindMetadata = serde_json::from_value(serde_json::json!({
+            "conversation_id": "conv-1",
+            "workspace_id": "computer-0a1b2c3d",
+        }))
+        .unwrap();
+        assert_eq!(md.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(md.workspace_id.as_deref(), Some("computer-0a1b2c3d"));
+
+        let md: WorkspaceBindMetadata = serde_json::from_value(serde_json::json!({
+            "preset": "explore",
+            "conversation_id": 7,
+            "workspace_id": ["sandbox"],
+        }))
+        .unwrap();
+        assert_eq!(md.preset.as_deref(), Some("explore"));
+        assert_eq!(md.conversation_id, None);
+        assert_eq!(md.workspace_id, None);
     }
 
     #[test]

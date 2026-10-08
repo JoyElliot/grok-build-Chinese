@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use xai_grok_pager_pty_harness::{
-    ContentController, EnvOp, MockCanAdministerTeam, PtyHarness, keys, pager_binary,
-    seed_fake_oauth_team_member_can_administer, seed_fake_oauth_zdr_team,
+    ContentController, EnvOp, MockCanAdministerTeam, PtyHarness, keys, oauth_credential_ops,
+    pager_binary, seed_fake_oauth_team_member_can_administer, seed_fake_oauth_zdr_team,
 };
 
 const ROWS: u16 = 50;
@@ -62,16 +62,18 @@ async fn team_member_with_unknown_capability_sees_no_banner_and_editable_row() {
         .expect("unknown-capability e2e");
 }
 
-/// Rollout on so a plain opted-out user would see the banner. Fake API key removed so team OAuth is active.
+/// With the rollout flag on, a plain opted-out user would see the banner.
+/// `oauth_credential_ops` makes the seeded team OAuth entry the active auth.
 /// ZDR access must be enabled or the blocked welcome never reaches settings. Lock and suppression key off `is_zdr`.
 /// The seeded team principal would otherwise start a managed-config fetch the mock does not serve.
-fn locked_row_env_ops() -> [EnvOp<'static>; 4] {
-    [
+fn locked_row_env_ops() -> Vec<EnvOp<'static>> {
+    let mut ops = vec![
         EnvOp::set("GROK_PRIVACY_NOTICE_ROLLOUT", "1"),
         EnvOp::set("GROK_ZDR_ACCESS_ENABLED", "1"),
         EnvOp::set("GROK_MANAGED_CONFIG", "0"),
-        EnvOp::remove("XAI_API_KEY"),
-    ]
+    ];
+    ops.extend(oauth_credential_ops());
+    ops
 }
 
 async fn run_zdr() -> Result<()> {

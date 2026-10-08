@@ -1121,6 +1121,44 @@ mod platform {
     /// leaks with it; harmless while the lease keeps the shared backend alive.
     const ARBOARD_READ_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+    /// Copies run on the UI thread, so a write waits only briefly for an in-flight read.
+    const ARBOARD_WRITE_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// Run one arboard operation while no other arboard operation runs in this process, or fail after `wait`.
+    ///
+    /// Windows allows one open clipboard at a time, and arboard opens it inside every operation. Its docs warn that
+    /// parallel operations are likely to fail or deadlock and say to use the clipboard from one thread.
+    ///
+    /// Linux stays unlocked: a Wayland read can block forever, and holding the lock through it would fail every later
+    /// operation.
+    fn run_arboard_exclusive<T>(
+        wait: std::time::Duration,
+        op: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        #[cfg(target_os = "windows")]
+        {
+            static ARBOARD_OP_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+            run_exclusive(&ARBOARD_OP_LOCK, wait, op)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = wait;
+            op()
+        }
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    fn run_exclusive<T>(
+        lock: &parking_lot::Mutex<()>,
+        wait: std::time::Duration,
+        op: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let Some(_guard) = lock.try_lock_for(wait) else {
+            anyhow::bail!("arboard busy: an earlier clipboard operation is still running");
+        };
+        op()
+    }
+
     fn arboard_read_with_deadline<T: Send + 'static>(
         op: impl FnOnce(&mut arboard::Clipboard) -> anyhow::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {
@@ -1129,9 +1167,11 @@ mod platform {
             anyhow::bail!("arboard leg disabled (GROK_CLIPBOARD_NO_DATA_CONTROL)");
         }
         let result = spawn_with_deadline("clipboard-read", ARBOARD_READ_WAIT, move || {
-            arboard::Clipboard::new()
-                .map_err(anyhow::Error::from)
-                .and_then(|mut clipboard| op(&mut clipboard))
+            run_arboard_exclusive(ARBOARD_READ_WAIT, || {
+                arboard::Clipboard::new()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|mut clipboard| op(&mut clipboard))
+            })
         });
         match result {
             Ok(inner) => inner,
@@ -1169,29 +1209,33 @@ mod platform {
     }
 
     fn arboard_set_text(text: &str) -> anyhow::Result<()> {
-        arboard_lease()?.lock().set_text(text)?;
-        Ok(())
+        run_arboard_exclusive(ARBOARD_WRITE_WAIT, || {
+            arboard_lease()?.lock().set_text(text)?;
+            Ok(())
+        })
     }
 
+    /// The PNG encode runs after the read returns so it does not hold [`run_arboard_exclusive`]'s lock.
     fn arboard_get_image() -> anyhow::Result<Option<ImageData>> {
-        arboard_read_with_deadline(|clipboard| {
-            let img_data = match clipboard.get_image() {
-                Ok(data) => data,
-                Err(arboard::Error::ContentNotAvailable) => return Ok(None),
-                Err(err) => return Err(err.into()),
-            };
+        let Some(img_data) = arboard_read_with_deadline(|clipboard| match clipboard.get_image() {
+            Ok(data) => Ok(Some(data)),
+            Err(arboard::Error::ContentNotAvailable) => Ok(None),
+            Err(err) => Err(err.into()),
+        })?
+        else {
+            return Ok(None);
+        };
 
-            let png_bytes = encode_rgba_to_png(
-                &img_data.bytes,
-                img_data.width as u32,
-                img_data.height as u32,
-            )?;
+        let png_bytes = encode_rgba_to_png(
+            &img_data.bytes,
+            img_data.width as u32,
+            img_data.height as u32,
+        )?;
 
-            Ok(Some(ImageData {
-                data: png_bytes,
-                mime_type: "image/png".to_owned(),
-            }))
-        })
+        Ok(Some(ImageData {
+            data: png_bytes,
+            mime_type: "image/png".to_owned(),
+        }))
     }
 
     // arboard is built with `wayland-data-control` On compositors exposing the data-control protocol (probe:
@@ -2001,12 +2045,30 @@ mod platform {
         })
     }
 
-    /// Contract tests for `spawn_with_deadline` (private to this module, so they live here; any non-macOS test host runs them).
+    /// Contract tests for `spawn_with_deadline` and `run_exclusive` (private to this module, so they live here; any
+    /// non-macOS test host runs them).
     #[cfg(test)]
     mod worker_deadline_tests {
         use super::*;
         use std::sync::mpsc::RecvTimeoutError;
         use std::time::Duration;
+
+        #[test]
+        fn run_exclusive_fails_without_running_when_holder_outlives_wait() {
+            let lock = parking_lot::Mutex::new(());
+            let _held = lock.lock();
+            let ran = std::cell::Cell::new(false);
+            let error = run_exclusive(&lock, Duration::from_millis(10), || {
+                ran.set(true);
+                Ok(())
+            })
+            .expect_err("lock is held");
+            assert_eq!(
+                "arboard busy: an earlier clipboard operation is still running",
+                error.to_string()
+            );
+            assert!(!ran.get());
+        }
 
         #[test]
         fn fast_closure_returns_value() {

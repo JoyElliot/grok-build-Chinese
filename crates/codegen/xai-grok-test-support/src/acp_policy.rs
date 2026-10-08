@@ -45,6 +45,12 @@ pub enum TrustDecision {
     Grant,
     /// Answer `reject`, leaving the workspace gated.
     Deny,
+    /// Answer with a JSON-RPC error. A client sends this when its trust prompt fails.
+    Fail,
+    /// Answer a bare `"trust"` string with no `{ "outcome": _ }` object around it.
+    Undecodable,
+    /// Answer an `outcome` the protocol does not define.
+    UnknownOutcome,
 }
 
 /// How the client answers one `x.ai/mcp/elicit` reverse request (an MCP server's `elicitation/create`
@@ -84,6 +90,71 @@ impl ElicitationDecision {
 pub enum Interactivity {
     Headless,
     Interactive { elicitation: ElicitationDecision },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientHookReply {
+    /// `systemMessage` is the field a client sends with a deny.
+    Deny {
+        system_message: String,
+    },
+    Empty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientHook {
+    event: String,
+    matcher: Option<String>,
+    reply: ClientHookReply,
+}
+
+const CLIENT_HOOKS_META_KEY: &str = "x.ai/hooks";
+const CLIENT_HOOK_CALLBACK_ID: &str = "conformance-client-hook";
+
+impl ClientHook {
+    #[must_use]
+    pub fn new(event: impl Into<String>) -> Self {
+        ClientHook {
+            event: event.into(),
+            matcher: None,
+            reply: ClientHookReply::Empty,
+        }
+    }
+
+    #[must_use]
+    pub fn reply(mut self, reply: ClientHookReply) -> Self {
+        self.reply = reply;
+        self
+    }
+
+    #[must_use]
+    pub fn matcher(mut self, matcher: impl Into<String>) -> Self {
+        self.matcher = Some(matcher.into());
+        self
+    }
+
+    pub(crate) fn registration(&self) -> (String, Value) {
+        let mut group = serde_json::Map::new();
+        group.insert(
+            "hookCallbackIds".to_owned(),
+            serde_json::json!([CLIENT_HOOK_CALLBACK_ID]),
+        );
+        if let Some(matcher) = &self.matcher {
+            group.insert("matcher".to_owned(), Value::from(matcher.as_str()));
+        }
+        let mut hooks = serde_json::Map::new();
+        hooks.insert(self.event.clone(), Value::Array(vec![Value::Object(group)]));
+        (CLIENT_HOOKS_META_KEY.to_owned(), Value::Object(hooks))
+    }
+
+    pub(crate) fn run_reply(&self) -> Value {
+        match &self.reply {
+            ClientHookReply::Deny { system_message } => {
+                serde_json::json!({ "decision": "deny", "systemMessage": system_message })
+            }
+            ClientHookReply::Empty => serde_json::json!({}),
+        }
+    }
 }
 
 /// One decision for every request of a kind, with exceptions for particular requests counted from 1 in arrival order.
@@ -130,6 +201,7 @@ pub struct ClientPolicy {
     /// never sends a folder-trust prompt; `Some` advertises the capability and answers every prompt.
     pub trust: Option<TrustDecision>,
     pub interactivity: Interactivity,
+    pub client_hook: Option<ClientHook>,
 }
 
 impl Default for ClientPolicy {
@@ -139,7 +211,32 @@ impl Default for ClientPolicy {
             questions: RequestPolicy::new(QuestionDecision::Cancel),
             trust: None,
             interactivity: Interactivity::Headless,
+            client_hook: None,
         }
+    }
+}
+
+impl ClientPolicy {
+    #[must_use]
+    pub fn decision(decision: PermissionDecision) -> Self {
+        ClientPolicy {
+            permissions: RequestPolicy::new(decision),
+            ..ClientPolicy::default()
+        }
+    }
+
+    /// Counted from 1. Panics when `request_number` is 0.
+    #[must_use]
+    pub fn nth(mut self, request_number: usize, decision: PermissionDecision) -> Self {
+        self.permissions = self.permissions.with_nth(request_number, decision);
+        self
+    }
+
+    /// Advertises the folder-trust capability. Without it the agent never sends the prompt.
+    #[must_use]
+    pub fn trust(mut self, decision: TrustDecision) -> Self {
+        self.trust = Some(decision);
+        self
     }
 }
 
@@ -199,14 +296,16 @@ impl QuestionDecision {
 }
 
 impl TrustDecision {
-    /// The `{ "outcome": _ }` payload the GUI client returns; only `trust` grants, every other value
-    /// (including `reject`) leaves the workspace gated.
-    pub(crate) fn reply(self) -> Reply<Value> {
-        let outcome = match self {
-            TrustDecision::Grant => "trust",
-            TrustDecision::Deny => "reject",
-        };
-        Reply::Now(serde_json::json!({ "outcome": outcome }))
+    /// The reply the GUI client sends to `x.ai/folder_trust/request`.
+    /// Only `{ "outcome": "trust" }` grants folder trust.
+    pub(crate) fn reply(self) -> Result<Value, acp::Error> {
+        match self {
+            TrustDecision::Grant => Ok(serde_json::json!({ "outcome": "trust" })),
+            TrustDecision::Deny => Ok(serde_json::json!({ "outcome": "reject" })),
+            TrustDecision::Fail => Err(acp::Error::internal_error()),
+            TrustDecision::Undecodable => Ok(Value::String("trust".to_owned())),
+            TrustDecision::UnknownOutcome => Ok(serde_json::json!({ "outcome": "trust_later" })),
+        }
     }
 }
 

@@ -9,19 +9,11 @@ const BUILTIN_FILES: &[(&str, &str)] = &[
     (COMMUNITY_README, include_str!("../README.zh-CN.md")),
     (
         COMMUNITY_CHANGELOG_MD,
-        include_str!(concat!(
-            "../changelogs/",
-            env!("CARGO_PKG_VERSION"),
-            ".zh-CN.md"
-        )),
+        include_str!(env!("GROK_SHELL_CHANGELOG_MD_PATH")),
     ),
     (
         COMMUNITY_CHANGELOG_JSON,
-        include_str!(concat!(
-            "../changelogs/",
-            env!("CARGO_PKG_VERSION"),
-            ".zh-CN.json"
-        )),
+        include_str!(env!("GROK_SHELL_CHANGELOG_JSON_PATH")),
     ),
 ];
 

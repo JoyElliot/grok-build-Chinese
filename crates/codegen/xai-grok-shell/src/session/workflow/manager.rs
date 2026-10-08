@@ -161,6 +161,8 @@ impl WorkflowManager {
 
         let allow_fork_context = resolved.source == WorkflowSource::Builtin;
         let mut execution_script = resolved.script;
+        // The tracker suffixes repeat runs in a session (`learn-traces-2`); telemetry reports the registry name
+        let definition_name = resolved.meta.name.clone();
         let (run_id, journal, state) = match &spec.resume_run_id {
             Some(run_id) => {
                 let existing = self
@@ -294,7 +296,7 @@ impl WorkflowManager {
             source_kind,
             WorkflowSourceKind::Builtin | WorkflowSourceKind::Bundled
         )
-        .then(|| state.name.clone());
+        .then(|| definition_name);
         log_run_started(
             &run_id,
             &self.session_id,

@@ -20,12 +20,12 @@
 //! - [`git_workdir`]: Create a git-initialized [`TestSandbox`]
 //! - [`grok_binary`]: Resolve the grok binary path (GROK_BINARY env or cargo_bin)
 //! - [`spawn_counting_server`]: Connection-counting HTTP/1.1 server for wire/pooling tests
-//! - [`uds_proxy::UdsProxy`]: Frame-aware fault-injection proxy for leader IPC sockets (unix)
 //! - [`ResourceSnapshot`]: RSS/threads/fds sampling for soak tests
 //! - [`MockOtelServer`]: OTLP/HTTP collector recording the shell's exported logs, metrics, and traces
 //! - [`OtelRecorder`]: the mock OTLP server's log, which a test reads and waits on, or fills from its own OTLP transport
 //! - [`MockManagedConfigServer`]: mock of the server the managed configuration supervisor fetches policy from
 //! - [`ManagedPolicy`]: the configuration row the mock server serves for one principal, signed by a [`TestSigningKey`] or not
+//! - [`acp_fixtures`]: Constructors for the ACP values that tests build by hand
 #![deny(clippy::indexing_slicing)]
 /// Multiply a harness timeout by `GROK_TEST_TIMEOUT_SCALE` (positive integer, default 1).
 /// CI lanes on shared runner pools raise it so pool load slows tests instead of failing them (see the Grok Build merge CI workflow).
@@ -50,17 +50,20 @@ mod acp_agent_connection;
 mod acp_agent_process;
 mod acp_ask_user_question;
 mod acp_client;
+pub mod acp_fixtures;
 mod acp_hold_registry;
 mod acp_policy;
 mod acp_scripted_client;
 mod acp_test_client;
 mod acp_transcript;
+mod acp_wire;
 mod bounded_log;
 mod conversation;
 mod conversation_replay;
 mod conversation_script;
 pub mod counting_server;
 pub mod env;
+mod envelope_sink;
 mod failure;
 mod feedback_endpoint;
 mod gated_upload_proxy;
@@ -73,6 +76,7 @@ pub mod leader;
 mod loopback;
 #[cfg(test)]
 mod loopback_client;
+mod managed_gateway_endpoint;
 mod mock_otel_server;
 pub mod mock_server;
 mod mock_server_tls;
@@ -92,23 +96,30 @@ mod storage_endpoint;
 mod telemetry_events;
 mod tool_call_turn;
 mod tools;
-#[cfg(unix)]
-pub mod uds_proxy;
 mod watched;
-pub use acp_client::{GrokStdioClient, SpawnOptions};
+pub use acp_agent_connection::SessionParams;
+pub use acp_client::{
+    GrokStdioClient, SpawnOptions, make_fifo, open_fifo_writer_until, read_fifo_until,
+    write_fifo_release,
+};
 pub use acp_policy::{
-    ClientPolicy, ElicitationDecision, Interactivity, PermissionDecision, QuestionDecision,
-    RequestPolicy, TrustDecision,
+    ClientHook, ClientHookReply, ClientPolicy, ElicitationDecision, Interactivity,
+    PermissionDecision, QuestionDecision, RequestPolicy, TrustDecision,
 };
 pub use acp_test_client::AcpTestClient;
 pub use acp_transcript::TranscriptEntry;
+pub use acp_wire::WireLine;
 pub use conversation::ReadConversation;
-pub use conversation_script::{Conversation, MockToolCall, ScriptViolation, mock_call_id};
+pub use conversation_script::{
+    CompiledFailure, CompiledTurn, Conversation, MockToolCall, ScriptViolation, mock_call_id,
+};
 pub use counting_server::spawn_counting_server;
 pub use env::{
-    EnvGuard, ensure_cargo_bin_with_features, git_workdir, grok_binary, isolate_grok_env,
+    EnvGuard, ensure_cargo_bin_with_features, ensure_default_target_with_features, env_binary,
+    git_workdir, grok_binary, isolate_grok_env, resolved_grok_binary_override,
     set_grok_binary_override,
 };
+pub use envelope_sink::EnvelopeSink;
 pub use failure::{
     CUT_REPLY, DOOM_LOOP_CHECK_HEADER, DOOM_LOOP_TRIGGER, ErrorPosition, LOOPING_REPLY,
     ObservedFailure, StatusFailure, StreamError,
@@ -119,14 +130,20 @@ pub use headless::{
     run_headless_in_sandbox_borrowed_with_env, run_headless_in_sandbox_with_env,
     run_headless_with_env, stderr_tail,
 };
-pub use inference_override::{InferenceExpectation, InferenceRequestMatcher};
+pub use inference_override::{
+    ArmedReplyHold, InferenceExpectation, InferenceRequestMatcher, ReceivedWait,
+};
 pub use inference_request::{DEFAULT_MODEL, InferenceEndpoint};
 #[cfg(unix)]
 pub use leader::LeaderFixture;
 pub use mock_otel_server::MockOtelServer;
 pub use mock_server::{
-    FeedbackPost, GatedUploadProxy, MockCanAdministerTeam, MockInferenceServer, MockModelEntry,
-    MockUserTeam, ScriptedResponse, SseEvent, StorageUpload,
+    FeedbackPost, GatedUploadProxy, ManagedGatewayCall, MockCanAdministerTeam, MockInferenceServer,
+    MockModelEntry, MockUserTeam, ScriptedResponse, SseEvent, StorageUpload,
+};
+pub use model_reply::{
+    ModelEvent, ev_assistant_message, ev_completed, ev_completed_with_tokens, ev_function_call,
+    ev_reasoning_item,
 };
 pub use otel_event::{
     OtelAttributes, OtelBody, OtelDecodeError, OtelEvent, OtelExport, OtelFault, OtelLogRecord,
@@ -142,4 +159,5 @@ pub use process::{
 };
 pub use resources::{ResourceGrowth, ResourceSnapshot, RssMeasurement, RssOutcome, RssSampler};
 pub use sandbox::{TestSandbox, TestSandboxBuilder};
+pub use sse::UsageReport;
 pub use tools::{DAEMON_SPAWN_TOOL, GROK_BUILD_SPAWN_TOOL, Tool};

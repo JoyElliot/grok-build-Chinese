@@ -15,6 +15,7 @@ pub mod prompt;
 pub mod repo;
 pub mod system_reminder;
 pub mod timing;
+pub mod tool_list;
 
 pub use agent::Agent;
 pub use builder::AgentBuilder;

@@ -40,7 +40,7 @@ fn voice_on_welcome_creates_session_and_records() {
     assert_eq!(app.voice_recording_target(), Some(VoiceTarget::Agent(id)));
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 }
 #[test]
@@ -54,7 +54,8 @@ fn voice_final_routes_to_recording_session_not_active_view() {
     app.active_view = ActiveView::Agent(other);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(rec),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -87,7 +88,8 @@ fn voice_auto_stops_when_leaving_recording_session() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.active_view = ActiveView::Agent(id);
     app.enforce_voice_session_bound();
@@ -103,7 +105,7 @@ fn voice_auto_stops_when_leaving_recording_session() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttRelease)
+        Ok(xai_grok_voice::VoiceCommand::Abort)
     ));
 }
 #[test]
@@ -909,13 +911,7 @@ fn switch_model_without_session_sends_nothing_to_server() {
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
-    let effects = dispatch(
-        Action::SwitchModel {
-            model_id,
-            effort: None,
-        },
-        &mut app,
-    );
+    let effects = dispatch(Action::SwitchModel(ModelChoice::new(model_id)), &mut app);
     assert!(
         !effects
             .iter()
@@ -1146,10 +1142,7 @@ fn switch_model_deferred_when_no_session_id() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(
@@ -1183,10 +1176,7 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     agent.session.session_id = None;
     agent.session.models.current = Some(model_a.clone());
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     let effects = dispatch(
@@ -1200,8 +1190,8 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(model_a.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(model_a.clone())
     )));
 }
 #[test]
@@ -1229,8 +1219,8 @@ fn deferred_switch_prefers_authoritative_current_as_prev() {
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(server_model.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(server_model.clone())
     )));
 }
 #[test]
@@ -1270,8 +1260,8 @@ fn deferred_model_switch_applied_on_session_created() {
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 #[test]
@@ -1321,8 +1311,8 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 /// The session-startup gate requires BOTH auth AND trust resolved.

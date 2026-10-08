@@ -1490,6 +1490,28 @@ fn prompt_response_resets_turn_state() {
     assert_eq!(agent_ref(&app, id).scrollback.len(), 1);
 }
 
+/// A turn that ends through its prompt response returns freed pages exactly once, counted on the dispatching thread.
+#[test]
+fn prompt_response_releases_retained_memory_once() {
+    use crate::memory_release::test_support;
+    test_support::install_counting_hook();
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+    let before = test_support::calls();
+    dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+            http_status: None,
+            prompt_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(test_support::calls(), before + 1);
+}
+
 /// Turn end with prompt suggestions enabled fires the `x.ai/suggestPrompt` fetch (before the billing refresh).
 /// The loaded suggestion routes back into the agent's controller by id and generation.
 #[test]
@@ -3465,10 +3487,7 @@ fn switch_model_holds_prompt_until_complete() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
 
     dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(agent_ref(&app, id).session.model_switch_pending);
@@ -3483,8 +3502,7 @@ fn switch_model_holds_prompt_until_complete() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -3504,15 +3522,10 @@ fn slash_compact_enqueues_command() {
     let id = AgentId(0);
 
     let effects = dispatch(Action::SendPrompt("/compact".into()), &mut app);
+
     // /compact enqueues as Command and drains immediately (agent was idle).
     assert_eq!(effects.len(), 1);
-    assert!(matches!(
-        effects.first(),
-        Some(Effect::Compact {
-            user_context: None,
-            ..
-        })
-    ));
+    assert!(matches!(effects.first(), Some(Effect::Compact { .. })));
     assert!(agent_ref(&app, id).prompt.text().is_empty());
 }
 
@@ -3611,19 +3624,24 @@ fn palette_dispatch_preserves_prompt_draft() {
 }
 
 #[test]
-fn slash_compact_with_context_enqueues_command() {
+fn slash_compact_with_trailing_text_is_refused() {
     let mut app = test_app_with_agent();
+    let id = AgentId(0);
+
     let effects = dispatch(
         Action::SendPrompt("/compact focus on auth".into()),
         &mut app,
     );
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(effects.first(),Some(
-        Effect::Compact {
-            user_context: Some(ctx),
-            ..
-        }) if ctx == "focus on auth"
-    ));
+
+    assert!(effects.is_empty(), "nothing runs, got {effects:?}");
+    assert_eq!(
+        agent_ref(&app, id)
+            .toast
+            .as_ref()
+            .map(|(text, _)| text.as_str()),
+        Some("/compact takes no arguments."),
+        "the send path refuses before the command runs"
+    );
 }
 
 #[test]
@@ -6202,13 +6220,7 @@ fn compact_with_images_toasts_and_drops() {
     let effects = dispatch(Action::SendPrompt(text), &mut app);
 
     assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::Compact {
-                user_context: None,
-                ..
-            }]
-        ),
+        matches!(effects.as_slice(), [Effect::Compact { .. }]),
         "the command must still run, got {effects:?}"
     );
     assert_eq!(

@@ -254,7 +254,7 @@ impl AgentView {
                     return InputOutcome::Action(Action::DashboardOverlayNext);
                 }
                 if self.hit_cwd.contains(mouse.column, mouse.row) {
-                    let path = self.session.cwd.display().to_string();
+                    let path = self.location_path().display().to_string();
                     self.copy_to_clipboard(&path);
                     return InputOutcome::Changed;
                 }

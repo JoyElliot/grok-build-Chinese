@@ -2098,9 +2098,9 @@ mod tests {
     #[test]
     fn optional_arg_command_is_complete_without_args() {
         let reg = test_registry();
-        // /compact has takes_args=true, args_required=false.
-        assert!(is_command_complete("/compact", &reg));
-        assert!(is_command_complete("/compact some context", &reg));
+        // /copy has takes_args=true, args_required=false.
+        assert!(is_command_complete("/copy", &reg));
+        assert!(is_command_complete("/copy 2 out.md", &reg));
     }
 
     #[test]

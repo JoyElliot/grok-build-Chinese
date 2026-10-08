@@ -795,6 +795,8 @@ pub struct BindMcpConfig {
     /// Server names designated first-party app endpoints — see
     /// [`Self::with_first_party_servers`].
     first_party: std::sync::Arc<std::collections::HashSet<String>>,
+    /// The call gate for each server name, set with [`Self::with_call_gate`].
+    call_gates: Arc<crate::mcp::McpCallGates>,
 }
 impl BindMcpConfig {
     pub const DEFAULT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -814,6 +816,7 @@ impl BindMcpConfig {
             servers: servers.into(),
             discovery_timeout: Self::DEFAULT_DISCOVERY_TIMEOUT,
             first_party: std::sync::Arc::new(std::collections::HashSet::new()),
+            call_gates: Arc::default(),
         }
     }
     pub fn with_discovery_timeout(mut self, timeout: Duration) -> Self {
@@ -829,6 +832,19 @@ impl BindMcpConfig {
     }
     pub fn first_party_servers(&self) -> &std::collections::HashSet<String> {
         &self.first_party
+    }
+    /// `gate` checks every tool call to the server named `server`, a host's own built-in server.
+    /// A server that started before this call keeps the gate it started with.
+    pub fn with_call_gate(
+        mut self,
+        server: impl Into<String>,
+        gate: Arc<dyn crate::mcp::McpCallGate>,
+    ) -> Self {
+        Arc::make_mut(&mut self.call_gates).insert(server.into(), gate);
+        self
+    }
+    pub fn call_gates(&self) -> &crate::mcp::McpCallGates {
+        &self.call_gates
     }
     pub fn servers(&self) -> &[agent_client_protocol::McpServer] {
         &self.servers
@@ -905,6 +921,9 @@ pub struct WorkspaceConfig {
     pub tool_approval: ToolApprovalGate,
     /// Which host runs this server; decides whether the root's `FsChanged` producer is lit.
     pub host_kind: crate::host_kind::WorkspaceHostKind,
+    /// The folder's per-command shell sandbox; `None` on hosts that do not sandbox commands (the
+    /// CLI, the remote sandbox server). The session factory must carry its launch hook.
+    pub sandbox: Option<Arc<crate::sandbox::WorkspaceSandbox>>,
 }
 /// Metadata a tool server announces so hub consumers can identify and route to it.
 /// Re-export of the protocol crate's single catalog of well-known registration-metadata keys; every field is optional and independently sourced.
@@ -967,6 +986,7 @@ impl WorkspaceConfig {
             tool_approval: ToolApprovalGate::Off,
             status_config,
             host_kind: Default::default(),
+            sandbox: None,
         }
     }
 }

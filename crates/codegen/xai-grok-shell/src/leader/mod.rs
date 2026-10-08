@@ -1617,8 +1617,8 @@ fn open_leader_log(log_path: &Path) -> std::io::Result<std::fs::File> {
         .open(log_path)
 }
 /// Fallback leader RUST_LOG when neither GROK_LEADER_LOG nor RUST_LOG is set.
-/// `xai_grok_gateway` carries the bridge diagnostics that moved out of `xai_grok_shell`.
-const LEADER_DEFAULT_LOG_DIRECTIVES: &str = "xai_grok_shell=info,xai_grok_gateway=info,xai_grok_login=info,xai_acp_lib=warn,xai_grok_mcp=warn";
+/// Crates that took code out of `xai_grok_shell` are listed so their events keep reaching the leader log.
+const LEADER_DEFAULT_LOG_DIRECTIVES: &str = "xai_grok_shell=info,xai_grok_gateway=info,xai_grok_config=info,xai_grok_cloud_config=info,xai_grok_agent_config=info,xai_grok_external_agent_migration=info,xai_grok_login=info,xai_acp_lib=warn,xai_grok_mcp=warn";
 fn spawn_leader_subprocess(env_urls: &LeaderEnvUrls) -> Result<u32, ConnectionError> {
     let exe = resolve_exe_for_spawn()?;
     let mut cmd = Command::new(exe);
@@ -1721,10 +1721,20 @@ pub(crate) async fn wait_for_socket_connectable(
 mod tests {
     use super::*;
     use std::fs;
-    /// Bridge diagnostics moved to `xai_grok_gateway`; the leader fallback filter must allowlist it.
     #[test]
-    fn leader_default_log_directives_allowlist_gateway_target() {
-        assert!(LEADER_DEFAULT_LOG_DIRECTIVES.contains("xai_grok_gateway=info"));
+    fn leader_default_log_directives_allowlist_crates_split_from_the_shell() {
+        for target in [
+            "xai_grok_gateway",
+            "xai_grok_config",
+            "xai_grok_cloud_config",
+            "xai_grok_agent_config",
+            "xai_grok_external_agent_migration",
+        ] {
+            assert!(
+                LEADER_DEFAULT_LOG_DIRECTIVES.contains(&format!("{target}=info")),
+                "{target}"
+            );
+        }
     }
     use crate::leader::test_support::{
         FakeLeaderBehavior, FakeVersions, fake_caps, spawn_fake_leader,

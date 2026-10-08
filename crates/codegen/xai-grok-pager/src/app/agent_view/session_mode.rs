@@ -6,22 +6,15 @@ use xai_grok_tools::types::SessionMode;
 use crate::app::agent_view::AgentView;
 
 impl AgentView {
-    /// Stores the modes the agent published and turns Auto off. Ask replaces Auto for these agents.
-    pub(crate) fn apply_session_modes(&mut self, modes: Option<acp::SessionModeState>) -> bool {
+    /// Stores the modes the agent published.
+    pub(crate) fn apply_session_modes(&mut self, modes: Option<acp::SessionModeState>) {
         let Some(modes) = modes else {
-            return false;
+            return;
         };
         self.session_mode = SessionMode::from_id(&modes.current_mode_id.0);
         self.session_mode_pending = None;
         self.plan_mode_active = self.session_mode.is_plan();
         self.available_modes = modes.available_modes;
-
-        self.session.auto_mode = false;
-        if self.deferred_permission_mode == Some("auto") {
-            self.deferred_permission_mode = None;
-        }
-
-        true
     }
 
     /// Optimistic pick, else the confirmed mode. Plan exits through the plan flags must not

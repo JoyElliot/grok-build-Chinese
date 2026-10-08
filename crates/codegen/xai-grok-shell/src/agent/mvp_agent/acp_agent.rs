@@ -14,6 +14,9 @@ use tracing::Instrument;
 use xai_grok_login::{CachedTokenState, SilentRefresh};
 use crate::upload::trace::PromptMetadataParams;
 use crate::leader::protocol::InternalMethod;
+use crate::agent::config::ModelInfo;
+use crate::agent::handlers::model_switch::SwitchContextWindow;
+use xai_grok_sampling_types::CONTEXT_WINDOW_META_KEY;
 /// Which `x_search` sub-tools enforce the date cutoff, sent in `initialize`. `x_user_search` and
 /// `x_thread_fetch` are `false`: they don't honor it yet.
 #[derive(serde::Serialize)]
@@ -43,7 +46,7 @@ impl MvpAgent {
             Err(_) => {
                 self.models_manager
                     .wait_for_first_catalog(
-                        crate::util::config::resolve_remote_fetch_enabled(),
+                        self.models_manager.is_models_fetch_enabled(),
                     )
                     .await;
                 self.resolve_model_id(&args.model_id)?
@@ -67,10 +70,16 @@ impl MvpAgent {
             }
             None => crate::agent::handlers::model_switch::SwitchEffort::Preserve,
         };
+        let switch_window = resolve_switch_window(
+            args.meta.as_ref(),
+            &model.info,
+            &args.model_id,
+        )?;
         let res = crate::agent::handlers::model_switch::apply(
                 self,
                 args,
                 switch_effort,
+                switch_window,
                 crate::agent::handlers::model_switch::ConfigNotice::Send,
             )
             .await;
@@ -87,6 +96,30 @@ impl MvpAgent {
         }
         res
     }
+}
+/// Rejects a `_meta.contextWindow` that is malformed or that the model does not support.
+fn resolve_switch_window(
+    meta: Option<&acp::Meta>,
+    info: &ModelInfo,
+    model_id: &acp::ModelId,
+) -> Result<SwitchContextWindow, acp::Error> {
+    let Some(raw) = meta.and_then(|meta| meta.get(CONTEXT_WINDOW_META_KEY)) else {
+        return Ok(SwitchContextWindow::Preserve);
+    };
+    let window = raw
+        .as_u64()
+        .and_then(std::num::NonZeroU64::new)
+        .filter(|window| info.supports_context_window(*window))
+        .ok_or_else(|| {
+            acp::Error::invalid_params()
+                .data(
+                    format!(
+                "model '{}' does not support context window {raw}",
+                model_id.0
+            ),
+                )
+        })?;
+    Ok(SwitchContextWindow::Set(Some(window)))
 }
 #[async_trait::async_trait(?Send)]
 impl acp::Agent for MvpAgent {
@@ -918,7 +951,9 @@ impl acp::Agent for MvpAgent {
                 self.enforce_grok_code_access(&auth).await;
                 self.maybe_sync_bundle_in_background(false);
                 tokio::task::spawn_local(
-                    crate::managed_config::post_login_sync(Some(auth.clone())),
+                    xai_grok_cloud_config::managed_config::post_login_sync(
+                        Some(auth.clone()),
+                    ),
                 );
                 self.set_auth_method(arguments.method_id.clone());
                 self.models_manager.on_auth_changed().await;
@@ -1019,10 +1054,7 @@ impl acp::Agent for MvpAgent {
             .session_handle_waiting_for_load(&arguments.session_id)
             .await
             .ok_or_else(|| acp::Error::invalid_params().data("unknown session id"))?;
-        if self.models_manager.allowlist_excludes_all() {
-            let deny = crate::agent::remote_config::allowlist_excludes_all_message(
-                &self.cfg.borrow(),
-            );
+        if let Some(deny) = self.models_manager.prompt_block_message().await {
             self.send_model_auto_switched(
                     &arguments.session_id,
                     &acp::ModelId::new(String::new()),
@@ -1067,6 +1099,7 @@ impl acp::Agent for MvpAgent {
                             restore_model_id.clone(),
                         ),
                         crate::agent::handlers::model_switch::SwitchEffort::Preserve,
+                        SwitchContextWindow::Preserve,
                         crate::agent::handlers::model_switch::ConfigNotice::Send,
                     )
                     .await
@@ -1486,13 +1519,8 @@ impl acp::Agent for MvpAgent {
         let cancel_trigger: Option<String> = stop_result
             .as_ref()
             .ok()
-            .and_then(|ok| match &ok.completion_kind {
-                crate::session::commands::PromptCompletionKind::Cancelled {
-                    context: Some(ctx),
-                    ..
-                } => ctx.trigger.clone(),
-                _ => None,
-            });
+            .and_then(|ok| ok.completion_kind.cancel_trigger())
+            .map(str::to_owned);
         let cancellation_category: Option<String> = stop_result
             .as_ref()
             .ok()
@@ -1520,15 +1548,13 @@ impl acp::Agent for MvpAgent {
                 if let Some(tid) = turn_id {
                     obj.insert("turnId".into(), serde_json::json!(tid));
                 }
-                if let Some(ref t) = cancel_trigger {
-                    obj.insert("cancelTrigger".into(), serde_json::json!(t));
-                }
-                if let Some(ref c) = cancellation_category {
-                    obj.insert("cancellationCategory".into(), serde_json::json!(c));
-                }
-                if let Some(ref ctx) = cancellation_context {
-                    obj.insert("cancellationContext".into(), ctx.clone());
-                }
+                obj.extend(
+                    crate::session::commands::cancellation_meta(
+                        cancel_trigger.as_deref(),
+                        cancellation_category.as_deref(),
+                        cancellation_context.clone(),
+                    ),
+                );
             }
             if let Ok(params) = serde_json::value::to_raw_value(&payload) {
                 self.gateway
@@ -2363,12 +2389,10 @@ impl acp::Agent for MvpAgent {
             >(args.params.get())
         {
             let sender_id = params.get("clientIdentifier").and_then(|v| v.as_str());
-            let permission_mode = params
-                .get("permission_mode")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let yolo_signal = params.get("yolo_mode").and_then(|v| v.as_bool());
-            if let Some(yolo_mode) = yolo_signal {
+            let change = crate::session::auto_mode::PermissionModeChange::from_params(
+                &params,
+            );
+            if let Some(yolo_mode) = change.yolo_mode() {
                 let mut updated_sessions = 0;
                 self.session_registry
                     .for_each_resident_mut(|_, handle| {
@@ -2387,15 +2411,7 @@ impl acp::Agent for MvpAgent {
                     "Setting YOLO mode for matching sessions"
                 );
             }
-            let auto_mode_explicit = params.get("auto_mode").and_then(|v| v.as_bool());
-            let want_auto = auto_mode_explicit == Some(true)
-                || permission_mode == "auto";
-            let clear_auto = auto_mode_explicit == Some(false)
-                || (matches!(permission_mode, "always-approve" | "ask" | "default")
-                    && !want_auto);
-            let enable_auto = want_auto && yolo_signal != Some(true);
-            if enable_auto || clear_auto {
-                let enabled = enable_auto;
+            if let Some(enabled) = change.auto_change() {
                 let matches_sender = |h: &crate::session::SessionHandle| -> bool {
                     sender_id.is_none()
                         || h.origin_client.as_ref().map(|c| c.product.as_str())

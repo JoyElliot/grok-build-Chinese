@@ -119,6 +119,11 @@ fn backoff_ladder_clamps_at_last_rung() {
     // These literals pin the bounds so raising one forces a deliberate test edit
     assert_eq!(MAX_TRANSIENT_TURN_RETRIES, 3);
     assert_eq!(MAX_TRANSIENT_RETRIES_PER_PROMPT, 10);
+    let one_submission_plus_resubmits_times_sampler_attempts = 60;
+    assert_eq!(
+        xai_grok_sampler::DEFAULT_MAX_RETRIES * (1 + MAX_TRANSIENT_TURN_RETRIES),
+        one_submission_plus_resubmits_times_sampler_attempts
+    );
     assert_eq!(TRANSIENT_RETRY_WINDOW_FLOOR, Duration::from_secs(600));
 }
 

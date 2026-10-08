@@ -29,10 +29,7 @@ fn saver_has_opened_init_lock(lock_path: &Path) -> bool {
             if linked == lock_path {
                 return true;
             }
-            match (
-                std::fs::canonicalize(&linked),
-                std::fs::canonicalize(lock_path),
-            ) {
+            match (dunce::canonicalize(&linked), dunce::canonicalize(lock_path)) {
                 (Ok(linked), Ok(lock_path)) => linked == lock_path,
                 _ => false,
             }

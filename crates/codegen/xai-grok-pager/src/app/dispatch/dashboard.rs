@@ -430,7 +430,7 @@ pub(super) fn dispatch_dashboard_pick_session(app: &mut AppView, index: usize) -
         return vec![];
     };
     let cwd_hint = (!entry.cwd.is_empty()).then(|| std::path::PathBuf::from(entry.cwd));
-    if crate::app::is_daemon_or_remote_control_row(&entry.source) {
+    if crate::app::is_daemon_session_row(&entry.source) {
         return dispatch_dashboard_load_session(app, entry.id, cwd_hint);
     }
     dispatch_dashboard_load_local_build(app, entry.id, cwd_hint)
@@ -1393,8 +1393,15 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             }
             dispatch(Action::ExitDashboard, app)
         }
-        CommandResult::Action(Action::SwitchModel { model_id, effort }) => {
-            stage_dashboard_model(app, model_id, effort);
+        CommandResult::Action(Action::SwitchModel(choice)) => {
+            stage_dashboard_model(app, choice.model_id, choice.effort);
+            if choice.context_window_selection.is_some()
+                && let Some(d) = app.dashboard.as_mut()
+            {
+                d.error_toast = Some(
+                    "Context window applies per session; run /context-window after spawn".into(),
+                );
+            }
             vec![]
         }
         CommandResult::Action(Action::SetDefaultModel(model_id)) => {
@@ -1595,6 +1602,16 @@ pub(super) fn dispatch_dashboard_peek_reply(
         if let Some(d) = app.dashboard.as_mut() {
             d.set_peek(None);
             d.set_error_toast(session_missing);
+        }
+        return vec![];
+    }
+    if app
+        .agents
+        .get(&agent_id)
+        .is_some_and(|agent| agent.load_failed)
+    {
+        if let Some(d) = app.dashboard.as_mut() {
+            d.set_error_toast(super::prompt::LOAD_FAILED_NOTICE);
         }
         return vec![];
     }

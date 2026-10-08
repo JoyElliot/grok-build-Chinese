@@ -1,5 +1,7 @@
 //! `AuthManager` is the single source of truth for `auth.json` and the in-memory bearer cache.
-//! Mutations go through `refresh_chain` or `update`; lock and enrichment helpers live in submodules.
+//! `with_inner_write` is the only writer of the in-memory bearer.
+//! It publishes every login change to `login_changes` subscribers.
+//! Lock and enrichment helpers live in submodules.
 use chrono::{Duration, Utc};
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,7 @@ use chrono::DateTime;
 use enrichment::apply_user_info_enrichment;
 use lock::{LockAcquire, try_lock_auth_file_async};
 use sleep_gate::SleepGate;
+use xai_grok_config::{Capability, Distribution};
 use xai_grok_shell_base::util::dual_clock::DualClock;
 use xai_grok_telemetry::events::ManualAuthSurface;
 /// Why a token refresh is being requested.
@@ -130,10 +133,10 @@ impl std::fmt::Debug for AuthManager {
 /// `permanent_failure()` reads `permanent_failure` first, then `inner` (via `attempted_verdict_key`, when a verdict is stored), never co-held. Never hold a `parking_lot` guard across `.await`.
 /// Refreshers return [`RefreshOutcome`] for `refresh_chain` to apply.
 pub struct AuthManager {
-    /// In-memory bearer. Mutate via [`Self::with_inner_write`] or [`Self::refresh_chain`].
+    /// The in-memory bearer.
+    /// Only [`Self::with_inner_write`] writes it.
     /// The closure helpers' sync return type enforces "no `.await` while holding the lock".
-    /// `Arc` so the spawned `/user` enrichment task can write back.
-    inner: Arc<RwLock<Option<GrokAuth>>>,
+    inner: RwLock<Option<GrokAuth>>,
     path: PathBuf,
     scope: String,
     grok_com_config: GrokComConfig,
@@ -155,6 +158,11 @@ pub struct AuthManager {
     /// Notified after every successful token refresh (key changed).
     /// Used by `ModelsManager` to trigger model catalog recovery after sleep/wake without relying on the file watcher.
     refresh_notify: Arc<tokio::sync::Notify>,
+    /// The latest served login, for [`Self::login_changes`] subscribers.
+    login_changes: tokio::sync::watch::Sender<LoginSnapshot>,
+    /// The generation of the latest login change.
+    /// `with_inner_write` advances it while it holds the `inner` write lock.
+    login_generation: std::sync::atomic::AtomicU64,
     /// Notified on every OS wake (`DidWake`), including dark wakes. Re-arms the proactive-refresh loop, whose monotonic sleep pauses during suspend.
     /// A pre-sleep schedule would otherwise fire hours of awake-time late, leaving post-wake requests to discover the expired token via 401s. See `start_proactive_refresh`.
     wake_notify: tokio::sync::Notify,
@@ -223,6 +231,54 @@ pub enum CachedTokenState {
     /// Cached but past the early-invalidation buffer (what [`AuthManager::is_expired`] reports).
     Expired,
 }
+/// The account behind the served login.
+/// It carries no secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Login {
+    /// The manager serves no login.
+    SignedOut,
+    /// A bearer without a `sub` claim.
+    Opaque,
+    /// The bearer's `sub` claim.
+    /// `/user` enrichment does not change it.
+    Account(String),
+}
+impl Login {
+    fn of(auth: Option<&GrokAuth>) -> Self {
+        match auth.and_then(|auth| crate::parse_jwt_subject(&auth.key)) {
+            Some(subject) => Self::Account(subject),
+            None if auth.is_some() => Self::Opaque,
+            None => Self::SignedOut,
+        }
+    }
+}
+/// One version of the served login.
+/// An expired bearer is still a login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginSnapshot {
+    pub login: Login,
+    /// The number of bearer or privacy-mode changes so far.
+    pub generation: u64,
+}
+/// A subscription to [`AuthManager::login_changes`].
+/// A subscriber may call back into the manager at any time.
+#[derive(Debug, Clone)]
+pub struct LoginChanges(tokio::sync::watch::Receiver<LoginSnapshot>);
+impl LoginChanges {
+    /// Returns the latest snapshot and marks it seen.
+    pub fn snapshot(&mut self) -> LoginSnapshot {
+        self.0.borrow_and_update().clone()
+    }
+    /// Waits for a snapshot newer than the last one seen and marks it seen.
+    /// Returns `Err` once the manager is gone.
+    pub async fn changed(&mut self) -> Result<(), tokio::sync::watch::error::RecvError> {
+        self.0.changed().await
+    }
+    /// Whether a snapshot newer than the last one seen exists.
+    pub fn has_changed(&self) -> bool {
+        self.0.has_changed().unwrap_or(false)
+    }
+}
 /// On-disk outcome of [`AuthManager::remove_scope_impl`].
 /// It is emitted as the `disk_mutation` field of the `auth: scope removed from auth.json` event.
 /// A deliberate removal thus stays distinguishable from accidental credential loss.
@@ -249,9 +305,6 @@ impl ScopeRemoval {
     }
 }
 impl AuthManager {
-    /// Public default cli-chat-proxy base URL, mirroring `agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT`.
-    #[cfg(any(test, feature = "test-support"))]
-    const DEFAULT_PROXY_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
     /// Test/support-only convenience against the public default proxy. Production callers resolve the
     /// configured proxy and pass it via [`Self::new_with_proxy_base_url`], so this boundary never
     /// silently sends enrichment to the public host.
@@ -260,7 +313,7 @@ impl AuthManager {
         Self::new_with_proxy_base_url(
             grok_home,
             grok_com_config,
-            Self::DEFAULT_PROXY_BASE_URL.to_string(),
+            crate::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_owned(),
         )
     }
     pub fn new_with_proxy_base_url(
@@ -278,11 +331,19 @@ impl AuthManager {
                 "HOME": std::env::var("HOME").unwrap_or_else(|_| "(unset)".into()),
                 "GROK_HOME": std::env::var("GROK_HOME").unwrap_or_else(|_| "(unset)".into()),
                 "GROK_AUTH_PATH": std::env::var("GROK_AUTH_PATH").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_AUTH": std::env::var("GROK_AUTH").map(|_| "(set)".to_string()).unwrap_or_else(|_| "(unset)".into()),
+                "GROK_AUTH": match std::env::var("GROK_AUTH") {
+                    Err(_) => "(unset)",
+                    Ok(_) if !Distribution::current().allows(Capability::AccountLogin) => "(ignored)",
+                    Ok(_) => "(set)",
+                },
             })),
         );
         let path = auth_json_path(grok_home);
-        if let Ok(inline_json) = std::env::var("GROK_AUTH") {
+        let inline_auth = Distribution::current()
+            .allows(Capability::AccountLogin)
+            .then(|| std::env::var("GROK_AUTH").ok())
+            .flatten();
+        if let Some(inline_json) = inline_auth {
             if let Ok(auth) = serde_json::from_str::<GrokAuth>(&inline_json) {
                 return Self::assemble(
                     Some(auth),
@@ -385,8 +446,12 @@ impl AuthManager {
         proxy_base_url: String,
         disk_state: Option<DiskAuthState>,
     ) -> Self {
+        let (login_changes, _) = tokio::sync::watch::channel(LoginSnapshot {
+            login: Login::of(Self::served_login(&grok_com_config, &inner)),
+            generation: 0,
+        });
         Self {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: RwLock::new(inner),
             path,
             scope,
             grok_com_config,
@@ -401,6 +466,8 @@ impl AuthManager {
             #[cfg(test)]
             proactive_starts: std::sync::atomic::AtomicU32::new(0),
             refresh_notify: Arc::new(tokio::sync::Notify::new()),
+            login_changes,
+            login_generation: std::sync::atomic::AtomicU64::new(0),
             wake_notify: tokio::sync::Notify::new(),
             disk_state: RwLock::new(disk_state),
             static_key_cache: parking_lot::Mutex::new(None),
@@ -495,7 +562,7 @@ impl AuthManager {
     /// Sticky `RefreshTokenRejected` still short-circuits with no live credential until a wire-valid login.
     /// Non-sticky verdicts read absent once their scoped key is gone.
     fn clear_inner(&self) {
-        *self.inner.write() = None;
+        self.with_inner_write(|inner| *inner = None);
     }
     /// Re-read `auth.json` and reconcile the in-memory cache with it.
     /// A disk read returning "no usable token" has very different meanings that must not be conflated: [`DiskAuthState::EntryMissing`]: the file is readable but our scope is gone.
@@ -514,7 +581,7 @@ impl AuthManager {
             last_state = state;
             match state {
                 DiskAuthState::Ok => {
-                    *self.inner.write() = auth;
+                    self.with_inner_write(|inner| *inner = auth);
                     self.enforce_pin_on_loaded_token();
                     return;
                 }
@@ -573,22 +640,7 @@ impl AuthManager {
     /// `Some(error)` when a `force_login_team_uuid` pin is set and the token's team principal isn't allowed; `None` when compliant or unpinned. Reads the principal from the token's own (unverified) JWT claim.
     /// This is fail-fast defense-in-depth, not the security boundary (the server is authoritative). An API-key session is rejected under the kill switch, else allowed.
     pub fn cached_token_policy_error(&self, auth: &GrokAuth) -> Option<AuthError> {
-        if auth.auth_mode == AuthMode::ApiKey {
-            return self
-                .grok_com_config
-                .api_key_auth_disabled()
-                .then_some(AuthError::ApiKeyAuthDisabled);
-        }
-        if !ActiveAuthBackend::default().is_xai_authority() {
-            return None;
-        }
-        let policy = crate::oidc::login_principal_policy(&self.grok_com_config)?;
-        let actual = crate::oidc::peek_access_token_principal_id(&auth.key);
-        crate::oidc::enforce_login_principal(Some(&policy), actual.as_deref())
-            .err()
-            .map(|e| AuthError::PinnedTeamMismatch {
-                message: e.to_string(),
-            })
+        Self::login_policy_error(&self.grok_com_config, auth)
     }
     /// Log and clear a policy-violating session (disk and memory) so the next launch forces a fresh, compliant login.
     pub(crate) fn reject_and_clear(&self, error: &AuthError) {
@@ -633,18 +685,76 @@ impl AuthManager {
         let auth = self.owned_inner().filter(|a| !self.is_token_expired(a))?;
         self.vet_cached(auth)
     }
-    /// Closure-scoped write. Sync return type prevents `.await` while the lock is held.
-    /// Prefer this over `self.inner.write()`.
+    /// The only writer of `inner`.
+    /// It publishes a [`LoginSnapshot`] if the write changed the served login.
     #[inline]
     pub(crate) fn with_inner_write<R>(&self, f: impl FnOnce(&mut Option<GrokAuth>) -> R) -> R {
+        let fingerprint = |auth: &GrokAuth| auth.key.clone();
         let mut guard = self.inner.write();
-        f(&mut guard)
+        let before = Self::served_login(&self.grok_com_config, &guard).map(fingerprint);
+        let result = f(&mut guard);
+        let after = Self::served_login(&self.grok_com_config, &guard);
+        let snapshot = (after.map(fingerprint) != before).then(|| LoginSnapshot {
+            login: Login::of(after),
+            generation: self
+                .login_generation
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1,
+        });
+        drop(guard);
+        if let Some(snapshot) = snapshot {
+            Self::publish_login_if_newer(&self.login_changes, snapshot);
+        }
+        result
     }
     /// Closure-scoped read counterpart to [`Self::with_inner_write`].
     #[inline]
     pub(crate) fn with_inner_read<R>(&self, f: impl FnOnce(Option<&GrokAuth>) -> R) -> R {
         let guard = self.inner.read();
         f(guard.as_ref())
+    }
+    /// The stored token, if the active backend owns it and the login policy accepts it.
+    /// `owned_inner`, `vet_cached` and the watch treat any other stored token as no login.
+    fn served_login<'a>(
+        config: &GrokComConfig,
+        inner: &'a Option<GrokAuth>,
+    ) -> Option<&'a GrokAuth> {
+        inner.as_ref().filter(|auth| {
+            AuthBackend::owns(&ActiveAuthBackend::default(), auth)
+                && Self::login_policy_error(config, auth).is_none()
+        })
+    }
+    fn login_policy_error(config: &GrokComConfig, auth: &GrokAuth) -> Option<AuthError> {
+        if auth.auth_mode == AuthMode::ApiKey {
+            return config
+                .api_key_auth_disabled()
+                .then_some(AuthError::ApiKeyAuthDisabled);
+        }
+        if !ActiveAuthBackend::default().is_xai_authority() {
+            return None;
+        }
+        let policy = crate::oidc::login_principal_policy(config)?;
+        let actual = crate::oidc::peek_access_token_principal_id(&auth.key);
+        crate::oidc::enforce_login_principal(Some(&policy), actual.as_deref())
+            .err()
+            .map(|e| AuthError::PinnedTeamMismatch {
+                message: e.to_string(),
+            })
+    }
+    /// Publishes `snapshot` unless the watch already holds a newer generation.
+    /// An earlier write's publish can arrive after a later write's.
+    fn publish_login_if_newer(
+        changes: &tokio::sync::watch::Sender<LoginSnapshot>,
+        snapshot: LoginSnapshot,
+    ) {
+        changes.send_if_modified(|current| {
+            if snapshot.generation > current.generation {
+                *current = snapshot;
+                true
+            } else {
+                false
+            }
+        });
     }
     /// Returns true if credentials exist but have expired.
     pub fn is_expired(&self) -> bool {
@@ -886,6 +996,13 @@ impl AuthManager {
     /// It bypasses the FSEvents file watcher, which can silently die on macOS after resume.
     pub fn refresh_notifier(&self) -> Arc<tokio::sync::Notify> {
         self.refresh_notify.clone()
+    }
+    /// Subscribes to every change of the served login: login, logout, bearer rotation, privacy-mode change.
+    /// Snapshots arrive in write order.
+    /// The process API key never publishes.
+    /// A session kept in memory under `preferred_method = api_key` still reports as the login.
+    pub fn login_changes(&self) -> LoginChanges {
+        LoginChanges(self.login_changes.subscribe())
     }
     /// Wake the proactive-refresh loop out of its (monotonic) timer.
     /// Called by the power listener on every `DidWake` (see [`Self::set_system_sleep_imminent`]).
@@ -1156,6 +1273,9 @@ impl AuthManager {
         diagnostic_uploader: Option<super::refresh::DiagnosticUploader>,
     ) -> bool {
         use std::sync::atomic::Ordering;
+        if !Distribution::current().allows(Capability::AccountLogin) {
+            return false;
+        }
         if self
             .refresher_configured
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)

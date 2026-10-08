@@ -96,8 +96,9 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     assert_eq!(index.lines().filter(|l| l.contains("segment_")).count(), 3);
 }
 #[tokio::test]
-async fn update_current_model_persists_leaves_and_clears_reasoning_effort() {
+async fn update_current_model_persists_leaves_and_clears_effort_and_window() {
     use xai_grok_sampling_types::ReasoningEffort;
+    let window = std::num::NonZeroU64::new(500_000);
     let temp_dir = TempDir::new().unwrap();
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
     let info = create_test_info();
@@ -109,27 +110,31 @@ async fn update_current_model_persists_leaves_and_clears_reasoning_effort() {
             &model,
             None,
             Some(Some(ReasoningEffort::High)),
+            Some(window),
         )
         .await
         .unwrap();
-    assert_eq!(
-            adapter.read_summary_sync(&info).unwrap().reasoning_effort,
-            Some(ReasoningEffort::High),
-        );
+    let summary = adapter.read_summary_sync(&info).unwrap();
+    assert_eq!(summary.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(summary.context_window, window);
     adapter.update_current_model(&info, &model).await.unwrap();
+    let summary = adapter.read_summary_sync(&info).unwrap();
     assert_eq!(
-            adapter.read_summary_sync(&info).unwrap().reasoning_effort,
+            summary.reasoning_effort,
             Some(ReasoningEffort::High),
             "model-only update must not wipe the persisted effort",
         );
+    assert_eq!(
+            summary.context_window, window,
+            "model-only update must not wipe the persisted window selection",
+        );
     adapter
-        .update_current_model_and_agent(&info, &model, None, Some(None))
+        .update_current_model_and_agent(&info, &model, None, Some(None), Some(None))
         .await
         .unwrap();
-    assert_eq!(
-            adapter.read_summary_sync(&info).unwrap().reasoning_effort,
-            None,
-        );
+    let summary = adapter.read_summary_sync(&info).unwrap();
+    assert_eq!(summary.reasoning_effort, None);
+    assert_eq!(summary.context_window, None);
 }
 #[tokio::test]
 async fn test_jsonl_round_trip() {
@@ -1304,6 +1309,7 @@ fn write_test_summary(
         agent: Default::default(),
         sandbox_profile: None,
         reasoning_effort: None,
+        context_window: None,
         last_turn_summary: None,
         last_turn_summary_prompt_id: None,
         last_recap: None,

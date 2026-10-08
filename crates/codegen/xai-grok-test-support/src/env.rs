@@ -14,6 +14,10 @@ pub fn set_grok_binary_override(path: PathBuf) {
     let _ = GROK_BINARY_OVERRIDE.set(path);
 }
 
+pub fn resolved_grok_binary_override() -> Option<PathBuf> {
+    resolved_override()
+}
+
 /// Parse env var `key` into `T`, falling back to `default` when it is unset or present-but-unparseable (warning in the latter case).
 pub fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
     let Ok(raw) = std::env::var(key) else {
@@ -205,15 +209,11 @@ pub fn ensure_cargo_bin_with_features(
 
 /// Resolve grok binary: `GROK_BINARY` env (CI) or a locally built `grok-zh` binary.
 pub fn grok_binary() -> PathBuf {
-    if let Some(path) = GROK_BINARY_OVERRIDE.get() {
-        return path.clone();
+    if let Some(path) = resolved_override() {
+        return path;
     }
-    if let Ok(path) = std::env::var("GROK_BINARY") {
-        let p = PathBuf::from(path);
-        assert!(p.exists(), "GROK_BINARY does not exist: {}", p.display());
-        // Bazel's GROK_BINARY is runfiles-relative; the harness spawns the child with a different cwd
-        // Absolutize against the (runfiles-root) cwd now
-        return std::path::absolute(&p).unwrap_or(p);
+    if let Some(path) = env_binary("GROK_BINARY") {
+        return path;
     }
 
     for key in ["CARGO_BIN_EXE_grok-zh", "CARGO_BIN_EXE_xai-grok-pager"] {
@@ -228,6 +228,181 @@ pub fn grok_binary() -> PathBuf {
     ensure_cargo_bin("xai-grok-pager-bin", "grok-zh")
 }
 
+fn resolved_override() -> Option<PathBuf> {
+    GROK_BINARY_OVERRIDE.get().cloned()
+}
+
+pub fn env_binary(key: &str) -> Option<PathBuf> {
+    let path = std::env::var(key).ok().filter(|path| !path.is_empty())?;
+    let p = PathBuf::from(path);
+    assert!(p.exists(), "{key} does not exist: {}", p.display());
+    // Bazel leaves this path runfiles-relative, and the child cwd is not the runfiles root.
+    Some(std::path::absolute(&p).unwrap_or(p))
+}
+
+/// Off `target/debug`, so this build cannot overwrite [`grok_binary`].
+fn shipped_pager_target_dir() -> PathBuf {
+    target_dir().join("shipped-pager")
+}
+
+fn feature_stamp(features: &[&str]) -> String {
+    format!("no-default:{}", features.join(","))
+}
+
+fn stamp_matches(stamp: &Path, wanted: &str) -> bool {
+    std::fs::read_to_string(stamp)
+        .ok()
+        .is_some_and(|have| have == wanted)
+}
+
+fn reuse_shipped_binary(binary: &Path, stamp: &Path, wanted: &str) -> bool {
+    binary.exists() && stamp_matches(stamp, wanted)
+}
+
+/// The feature stamp rejects a mismatched binary; cargo still runs.
+pub fn ensure_default_target_with_features(package: &str, bin: &str, features: &[&str]) -> PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    build_shipped_pager(
+        package,
+        bin,
+        features,
+        &shipped_pager_target_dir(),
+        &workspace_root(),
+        &cargo,
+    )
+}
+
+fn build_shipped_pager(
+    package: &str,
+    bin: &str,
+    features: &[&str],
+    out_target: &Path,
+    workspace: &Path,
+    cargo: &str,
+) -> PathBuf {
+    let binary = out_target
+        .join("debug")
+        .join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+    let stamp = binary.with_extension("features");
+    let wanted = feature_stamp(features);
+    if binary.exists() && !reuse_shipped_binary(&binary, &stamp, &wanted) {
+        std::fs::remove_file(&binary).unwrap_or_else(|e| {
+            panic!(
+                "failed to reject {bin} with a mismatched feature stamp at {}: {e}",
+                binary.display()
+            )
+        });
+    }
+
+    let mut cmd = Command::new(cargo);
+    cmd.current_dir(workspace)
+        .args(["build", "-p", package, "--bin", bin])
+        .args(["--no-default-features", "--features"])
+        .arg(features.join(","))
+        .args(["--jobs", &build_jobs().to_string()])
+        .env("CARGO_TARGET_DIR", out_target)
+        .stdin(std::process::Stdio::null())
+        .envs(xai_tty_utils::pager_env());
+    xai_tty_utils::detach_std_command(&mut cmd);
+    let output = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {cargo} to build {bin}: {e}"));
+    assert!(
+        output.status.success(),
+        "failed to build {bin} with features {features:?} (exit {:?})\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        binary.exists(),
+        "{bin} build completed but binary missing at {}",
+        binary.display()
+    );
+    std::fs::write(&stamp, &wanted).unwrap_or_else(|e| {
+        panic!(
+            "failed to record features for {bin} at {}: {e}",
+            stamp.display()
+        )
+    });
+    binary
+}
+
 pub fn git_workdir() -> TestSandbox {
     TestSandbox::builder().git().build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_shipped_pager, feature_stamp, reuse_shipped_binary, shipped_pager_target_dir,
+        target_dir,
+    };
+
+    #[test]
+    fn shipped_pager_binary_is_not_the_grok_binary_path() {
+        let name = format!("xai-grok-pager{}", std::env::consts::EXE_SUFFIX);
+        let grok = target_dir().join("debug").join(&name);
+        let shipped = shipped_pager_target_dir().join("debug").join(&name);
+        assert_ne!(grok, shipped);
+    }
+
+    #[test]
+    fn feature_stamp_mismatch_rejects_the_shipped_binary() {
+        let dir = std::env::temp_dir().join("shipped-pager-stamp-mismatch");
+        let binary = dir.join(format!("xai-grok-pager{}", std::env::consts::EXE_SUFFIX));
+        let stamp = binary.with_extension("features");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&binary, b"shipped").unwrap();
+        let wanted = feature_stamp(&["jemalloc", "chat"]);
+        std::fs::write(&stamp, feature_stamp(&["jemalloc"])).unwrap();
+        assert!(
+            !reuse_shipped_binary(&binary, &stamp, &wanted),
+            "a mismatched feature stamp must not reuse the binary"
+        );
+        std::fs::write(&stamp, &wanted).unwrap();
+        assert!(
+            reuse_shipped_binary(&binary, &stamp, &wanted),
+            "a matching feature stamp may reuse the binary"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn matching_feature_stamp_still_asks_cargo() {
+        let dir = std::env::temp_dir().join(format!("shipped-pager-cargo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out_target = dir.join("out");
+        let debug = out_target.join("debug");
+        std::fs::create_dir_all(&debug).unwrap();
+        let binary = debug.join(format!("xai-grok-pager{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&binary, b"stale").unwrap();
+        let features = ["jemalloc", "chat"];
+        std::fs::write(binary.with_extension("features"), feature_stamp(&features)).unwrap();
+        let marker = dir.join("invoked");
+        let cargo = dir.join("cargo");
+        std::fs::write(
+            &cargo,
+            format!("#!/bin/sh\nprintf yes > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&cargo).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&cargo, perms).unwrap();
+        let got = build_shipped_pager(
+            "xai-grok-pager-bin",
+            "xai-grok-pager",
+            &features,
+            &out_target,
+            &dir,
+            cargo.to_str().unwrap(),
+        );
+        assert_eq!(got, binary);
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap_or_default(),
+            "yes",
+            "matching feature stamp must not return the cached binary without cargo"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

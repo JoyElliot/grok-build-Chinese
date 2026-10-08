@@ -239,12 +239,15 @@ impl TestSandboxBuilder {
 }
 
 impl TestSandbox {
-    fn init_git_workspace(&self) {
+    /// Leaves an existing `README.md` in place.
+    pub fn init_git_workspace(&self) {
         run_git(self, &["init"]);
         run_git(self, &["config", "user.email", "test@test.invalid"]);
         run_git(self, &["config", "user.name", "Grok Test"]);
-        std::fs::write(self.workspace.join("README.md"), "test file\n")
-            .expect("write sandbox git fixture");
+        let readme = self.workspace.join("README.md");
+        if !readme.exists() {
+            std::fs::write(&readme, "test file\n").expect("write sandbox git fixture");
+        }
         run_git(self, &["add", "-A"]);
         run_git(self, &["commit", "-m", "init", "--no-gpg-sign"]);
     }

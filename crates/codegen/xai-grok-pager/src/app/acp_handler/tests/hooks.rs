@@ -2,7 +2,7 @@
     //! Hook notifications: success leaves no trace, a failed run gets one bulleted `HookOutcome` line, a deny gets none here (the shell's annotation carries it).
     use super::*;
     use crate::acp::tracker::WaitingReason;
-    use xai_grok_shell::extensions::notification::{HookRunEntryDto, HookRunStatusDto};
+    use xai_grok_shell::extensions::notification::{HookAnnotationKind, HookRunEntryDto, HookRunStatusDto};
 
     fn xai_hook_run_started_notif(session_id: &str, event_name: &str, count: usize) -> acp::ExtNotification {
         xai_hook_run_started_notif_for(session_id, event_name, count, None, None)
@@ -317,6 +317,35 @@
             !matches!(test_agent(&app, AgentId(0)).session.tracker.activity(), Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))),
             "the gate's own outcome ends it"
         );
+    }
+
+    #[test]
+    fn plugins_off_hides_child_hook_notes() {
+        let mut app = make_app_with_agent("sess-hooks");
+        let child_sid = "child-hooks-1";
+        app.agents
+            .get_mut(&AgentId(0))
+            .unwrap()
+            .insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+        // `apply_child_hook_annotation` reads `disable_plugins` from the child's scrollback
+        let mut appearance = app.appearance.clone();
+        appearance.disable_plugins = true;
+        app.set_appearance(appearance);
+
+        let changed = handle(
+            make_ext_session_notification(
+                child_sid,
+                XaiSessionUpdate::HookAnnotation {
+                    message: "Saved 3 working notes to memory".into(),
+                    kind: HookAnnotationKind::Note,
+                },
+            ),
+            &mut app,
+        );
+
+        assert!(!changed);
+        let child_view = test_agent(&app, AgentId(0)).subagent_views.get(child_sid).unwrap();
+        assert_eq!(child_view.scrollback.len(), 0);
     }
 
     #[test]

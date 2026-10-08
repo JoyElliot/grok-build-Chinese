@@ -1,7 +1,8 @@
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
 use xai_grok_shell::sampling::types::{
-    ReasoningEffort, ReasoningEffortOption, parse_canonical_effort_token,
+    ModelNotice, ReasoningEffort, ReasoningEffortOption, parse_canonical_effort_token,
+    parse_context_window_meta, parse_context_windows_meta, parse_model_notice_meta,
     parse_reasoning_effort_meta, parse_reasoning_efforts_meta, supports_reasoning_effort_meta,
 };
 
@@ -89,6 +90,12 @@ pub struct ModelState {
     /// When set, `get_context_window()` returns this instead of reading from the current model's metadata.
     /// Used for subagent views where SubagentProgress reports the actual window size.
     context_window_override: Option<u64>,
+    pub(crate) context_window_selection: Option<u64>,
+    /// Set when a `ModelChanged` arrives while a local switch is in flight, so its completion keeps the broadcast selection.
+    pub(crate) model_changed_during_switch: bool,
+    /// The model the backend routed the current turn to, when it named one other than `current`.
+    /// Footer only; `current` stays the user's selection.
+    served_model_name: Option<String>,
 }
 
 impl ModelState {
@@ -124,19 +131,29 @@ impl ModelState {
         }
     }
 
+    /// The footer's model label: the served model for a routed turn, else the current model's name.
+    pub fn footer_model_name(&self) -> Option<String> {
+        self.served_model_name
+            .clone()
+            .or_else(|| self.current_model_name())
+    }
+
+    /// `footer_model_name` with the reasoning effort, which binds to the name rather than the flag row.
+    pub fn footer_label(&self) -> Option<String> {
+        let name = self.footer_model_name()?;
+        Some(match self.reasoning_effort {
+            Some(effort) => format!("{name} ({effort})"),
+            None => name,
+        })
+    }
+
+    pub fn set_served_model_name(&mut self, display_name: Option<String>) {
+        self.served_model_name = display_name;
+    }
+
     /// Machine-readable model ID string for the current model (e.g. "grok-4.5").
     pub fn current_model_id_str(&self) -> Option<&str> {
         Some(self.current.as_ref()?.0.as_ref())
-    }
-
-    /// Total context window tokens for the current model (if available).
-    fn current_context_window_tokens(&self) -> Option<u64> {
-        let meta = self.available.get(self.current.as_ref()?)?.meta.as_ref()?;
-        meta.get("totalContextTokens")
-            .and_then(|value| match value {
-                serde_json::Value::Number(number) => number.as_u64(),
-                _ => None,
-            })
     }
 
     /// Whether the current model accepts image input, read from the model's `meta` (the ACP extension point, same
@@ -162,10 +179,61 @@ impl ModelState {
         true
     }
 
-    /// The effective context window size (tokens): the override if set, else the current model's metadata.
+    /// The notice the current model carries in `meta.notice`, if any.
+    pub fn current_notice(&self) -> Option<ModelNotice> {
+        let info = self.available.get(self.current.as_ref()?)?;
+        parse_model_notice_meta(info.meta.as_ref())
+    }
+
+    /// Returns the override, else the selection if the current model supports it, else the model default.
     pub fn get_context_window(&self) -> Option<u64> {
-        self.context_window_override
-            .or_else(|| self.current_context_window_tokens())
+        if let Some(window) = self.context_window_override {
+            return Some(window);
+        }
+
+        let id = self.current.as_ref()?;
+        let default = self.model_default_window(id);
+        match self.context_window_selection {
+            Some(selection)
+                if default == Some(selection)
+                    || self.context_window_options_for(id).contains(&selection) =>
+            {
+                Some(selection)
+            }
+            _ => default,
+        }
+    }
+
+    /// The window a switch to `id` uses without a pick: the selection if `id` lists it, else its default.
+    pub(crate) fn window_after_switch_to(&self, id: &acp::ModelId) -> Option<u64> {
+        self.context_window_selection
+            .filter(|selection| self.context_window_options_for(id).contains(selection))
+            .or_else(|| self.model_default_window(id))
+    }
+
+    /// The model's catalog default (`totalContextTokens`).
+    pub(crate) fn model_default_window(&self, id: &acp::ModelId) -> Option<u64> {
+        self.available
+            .get(id)
+            .and_then(|info| info.meta.as_ref())
+            .and_then(|meta| meta.get("totalContextTokens"))
+            .and_then(|value| value.as_u64())
+    }
+
+    /// The selectable windows for the current model, empty when the catalog lists none.
+    pub fn context_window_options(&self) -> Vec<u64> {
+        match self.current.as_ref() {
+            Some(id) => self.context_window_options_for(id),
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) fn context_window_options_for(&self, id: &acp::ModelId) -> Vec<u64> {
+        self.available
+            .get(id)
+            .and_then(|info| parse_context_windows_meta(info.meta.as_ref()))
+            .map(|windows| windows.into_iter().map(|w| w.get()).collect())
+            .unwrap_or_default()
     }
 
     /// Used for subagent views where SubagentProgress reports an actual window that may differ from the inherited model's metadata.
@@ -186,6 +254,7 @@ impl ModelState {
         effort_override: Option<ReasoningEffort>,
     ) {
         self.current = Some(model_id.clone());
+        self.served_model_name = None;
         self.reasoning_effort = effort_override.or_else(|| {
             self.available
                 .get(&model_id)
@@ -363,11 +432,19 @@ impl From<Option<acp::SessionModelState>> for ModelState {
                     .as_ref()
                     .and_then(|id| models.get(id))
                     .and_then(|info| parse_reasoning_effort_meta(info.meta.as_ref()));
+                let context_window_selection = current_model
+                    .as_ref()
+                    .and_then(|id| models.get(id))
+                    .and_then(|info| parse_context_window_meta(info.meta.as_ref()))
+                    .map(std::num::NonZeroU64::get);
                 Self {
                     available: models,
                     current: current_model,
                     reasoning_effort,
                     context_window_override: None,
+                    context_window_selection,
+                    model_changed_during_switch: false,
+                    served_model_name: None,
                 }
             })
             .unwrap_or_default()
@@ -445,16 +522,39 @@ mod tests {
         assert!(state.next_model().is_none());
     }
 
-    fn state_with_meta(meta: Option<serde_json::Value>) -> ModelState {
-        let id = acp::ModelId::new(Arc::from("m"));
-        let mut state = ModelState::default();
-        state.available.insert(
-            id.clone(),
-            acp::ModelInfo::new(id.clone(), "M".to_string())
-                .meta(meta.and_then(|v| v.as_object().cloned())),
+    #[test]
+    fn footer_shows_the_served_model_until_the_selection_changes() {
+        let mut state = sample_models();
+        assert_eq!(Some("Model A".to_string()), state.footer_model_name());
+
+        state.set_served_model_name(Some("Model Z".to_string()));
+        assert_eq!(
+            Some("Model Z".to_string()),
+            state.footer_model_name(),
+            "the footer names the served model"
         );
-        state.current = Some(id);
-        state
+        assert_eq!(
+            Some("Model A".to_string()),
+            state.current_model_name(),
+            "the selection is unchanged"
+        );
+
+        state.set_current(acp::ModelId::new(Arc::from("model-b")), None);
+        assert_eq!(
+            Some("Model B".to_string()),
+            state.footer_model_name(),
+            "a model switch drops the served label"
+        );
+    }
+
+    #[test]
+    fn footer_label_attaches_the_effort_only_to_a_name() {
+        let mut state = sample_models();
+        state.reasoning_effort = Some(ReasoningEffort::High);
+        assert_eq!(Some("Model A (high)".to_owned()), state.footer_label());
+
+        state.current = None;
+        assert_eq!(None, state.footer_label(), "no name, no effort");
     }
 
     #[test]
@@ -700,6 +800,26 @@ mod tests {
     }
 
     #[test]
+    fn selected_context_window_applies_only_while_supported() {
+        let mut state = state_with_meta(Some(serde_json::json!({
+            "totalContextTokens": 256_000,
+            "contextWindows": [256_000, 500_000],
+        })));
+
+        assert_eq!(state.context_window_options(), vec![256_000, 500_000]);
+        assert_eq!(state.get_context_window(), Some(256_000));
+
+        state.context_window_selection = Some(500_000);
+        assert_eq!(state.get_context_window(), Some(500_000));
+
+        state.context_window_selection = Some(1_000_000);
+        assert_eq!(state.get_context_window(), Some(256_000));
+
+        state.override_context_window(64_000);
+        assert_eq!(state.get_context_window(), Some(64_000));
+    }
+
+    #[test]
     fn accepts_images_honors_explicit_meta() {
         assert!(
             !state_with_meta(Some(serde_json::json!({ "acceptsImages": false })))
@@ -720,5 +840,17 @@ mod tests {
             !state_with_meta(Some(serde_json::json!({ "inputModalities": ["text"] })))
                 .current_model_accepts_images()
         );
+    }
+
+    fn state_with_meta(meta: Option<serde_json::Value>) -> ModelState {
+        let id = acp::ModelId::new(Arc::from("m"));
+        let mut state = ModelState::default();
+        state.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), "M".to_string())
+                .meta(meta.and_then(|v| v.as_object().cloned())),
+        );
+        state.current = Some(id);
+        state
     }
 }

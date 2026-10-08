@@ -699,4 +699,31 @@ mod tests {
             started.elapsed()
         );
     }
+
+    #[test]
+    fn seed_refs_that_look_like_options_are_rejected() {
+        let dash = SeedOptions {
+            branch: Some("-rf".to_owned()),
+            ..SeedOptions::default()
+        };
+        let dots = SeedOptions {
+            base_ref: Some("a..b".to_owned()),
+            ..SeedOptions::default()
+        };
+        let ok = SeedOptions {
+            branch: Some("seeded".to_owned()),
+            ..SeedOptions::default()
+        };
+        assert!(
+            dash.validate()
+                .unwrap_err()
+                .contains("branch is not a valid ref name")
+        );
+        assert!(
+            dots.validate()
+                .unwrap_err()
+                .contains("baseRef is not a valid ref name")
+        );
+        assert!(ok.validate().is_ok());
+    }
 }

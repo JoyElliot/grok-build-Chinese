@@ -540,6 +540,14 @@ impl SessionEvent {
             SessionEvent::RequestFailed {
                 headline, detail, ..
             } => crate::app::error_display::banner_message(headline, detail),
+            SessionEvent::ReAuthRequired
+                if !xai_grok_config::Distribution::current()
+                    .allows(xai_grok_config::Capability::AccountLogin) =>
+            {
+                "Authentication failed: the model endpoint rejected this build's credential. \
+                 Check its key, then resend your message."
+                    .to_string()
+            }
             SessionEvent::ReAuthRequired => {
                 "Authentication required: your session has expired or your \
                  credentials were rejected. Run /login to re-authenticate, then resend \
@@ -845,7 +853,7 @@ impl SessionEvent {
                 "scrollback.session_event.plan_mode_entered",
                 "Agent entered plan mode · active permission mode: {permission} · file edits outside session plan.md blocked until plan mode exits",
             )
-            .replace("{permission}", permission.as_canonical()),
+            .replace("{permission}", permission.display_name()),
             SessionEvent::PlanReviewClosed {
                 outcome,
                 permission,
@@ -860,7 +868,7 @@ impl SessionEvent {
                         "Plan abandoned · plan mode off · active permission mode: {permission}",
                     ),
                 };
-                text(id, english).replace("{permission}", permission.as_canonical())
+                text(id, english).replace("{permission}", permission.display_name())
             }
         }
     }
@@ -1387,7 +1395,7 @@ mod tests {
                 entered.message_with_locale(&zh),
                 format!(
                     "代理已进入计划模式 · 当前权限模式：{} · 退出计划模式前，禁止编辑会话 plan.md 以外的文件",
-                    permission.as_canonical(),
+                    permission.display_name(),
                 )
             );
             for (outcome, verdict) in [
@@ -1403,7 +1411,7 @@ mod tests {
                     closed.message_with_locale(&zh),
                     format!(
                         "计划已{verdict} · 计划模式已关闭 · 当前权限模式：{}",
-                        permission.as_canonical(),
+                        permission.display_name(),
                     )
                 );
             }
@@ -2033,7 +2041,7 @@ mod tests {
                     outcome: PlanReviewOutcome::Approved,
                     permission: PermissionLabel::Auto,
                 },
-                "Plan approved · plan mode off · active permission mode: auto",
+                "Plan approved · plan mode off · active permission mode: auto-review",
             ),
             (
                 SessionEvent::PlanReviewClosed {

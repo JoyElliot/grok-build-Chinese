@@ -114,6 +114,8 @@ windows-sys = { version = "0.59", features = [
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+# `cfg(test)` does not enable features on dependencies; `EnvVarGuard` needs the feature on explicitly.
+xai-grok-env = { workspace = true, features = ["test-support"] }
 
 [features]
 # Exposes `#[cfg(test)]` test-only helpers (mock setters, test guards,

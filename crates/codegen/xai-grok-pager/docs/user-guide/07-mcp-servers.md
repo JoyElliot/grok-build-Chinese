@@ -343,6 +343,18 @@ enabled = true
 headers = { "Authorization" = "Bearer ${INTERNAL_MCP_TOKEN}" }
 ```
 
+When another process keeps a short-lived token in a file (a credential helper, a sidecar, or a cron job), point `bearer_token_file` at it. Grok reads the file on every request to the server and sends `Authorization: Bearer <contents>`, with surrounding whitespace trimmed, so a rotated token takes effect on the next request without restarting Grok or reconnecting the server:
+
+```toml
+[mcp_servers.internal-tools]
+url = "https://mcp.internal.example.com/mcp"
+bearer_token_file = "~/.config/internal-tools/token"
+```
+
+The path must be absolute or start with `~/`, and it may reference `${VAR}`; any other path fails the server with an error. `bearer_token_file` works for HTTP and SSE servers and replaces an `Authorization` header or `bearer_token_env_var`. Servers with a token file skip OAuth discovery. A request fails with an error naming the path when the file is missing, empty, larger than 16 KiB, not UTF-8, or holds characters that are not allowed in an HTTP header.
+
+Replace the token file atomically: write the new token to a temporary file in the same directory, then rename it over the old one. A writer that truncates and rewrites the file in place can race a request, which then fails or sends a partial token.
+
 ### Local stdio
 
 Use stdio for tools that must run locally (filesystem access, local databases, in-house servers).

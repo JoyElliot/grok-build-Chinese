@@ -46,11 +46,13 @@ pub use auth_provider::{
 pub use auth_provider::{test_backdate_provider_mint, test_counting_provider};
 pub use config::LEGACY_AUTH_SCOPE;
 pub use config::{
-    ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig, OidcAuthConfig, PreferredAuthMethod,
-    XAI_OAUTH2_ISSUER, is_xai_oauth2_issuer, xai_oauth2_issuer,
+    CLI_CHAT_PROXY_BASE_URL_DEFAULT, ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig,
+    OidcAuthConfig, PreferredAuthMethod, XAI_OAUTH2_ISSUER, expand_auth_alias,
+    is_xai_oauth2_issuer, xai_oauth2_issuer,
 };
 pub use config::{
-    force_login_team_from_env, force_login_team_from_requirements_value, resolve_force_login_team,
+    force_login_team_from_env, force_login_team_from_requirements,
+    force_login_team_from_requirements_value, resolve_force_login_team,
 };
 pub use external_auth::{ExternalRefreshError, parse_output, refresh_with_command};
 pub use flow::{
@@ -71,7 +73,9 @@ pub use xai_grok_config_types::AuthProviderConfig;
 pub mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::AuthManager;
-pub use manager::{AuthRemedy, CachedTokenState, SilentRefresh};
+pub use manager::{
+    AuthRemedy, CachedTokenState, Login, LoginChanges, LoginSnapshot, SilentRefresh,
+};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};

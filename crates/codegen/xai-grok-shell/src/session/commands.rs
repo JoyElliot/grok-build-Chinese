@@ -93,7 +93,39 @@ pub fn meta_category_str(
         CancellationCategory::MidTurnAbort => MID_TURN_ABORT_CATEGORY,
     }
 }
+/// The `cancelTrigger`, `cancellationCategory`, and `cancellationContext` `_meta` keys of a turn end, each only when set.
+/// The untyped rails build them here so they spell the keys the same way; `PromptResponseMeta` carries them as typed fields.
+pub fn cancellation_meta(
+    trigger: Option<&str>,
+    category: Option<&str>,
+    context: Option<serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut meta = serde_json::Map::new();
+    if let Some(trigger) = trigger {
+        meta.insert("cancelTrigger".to_owned(), serde_json::Value::from(trigger));
+    }
+    if let Some(category) = category {
+        meta.insert(
+            "cancellationCategory".to_owned(),
+            serde_json::Value::from(category),
+        );
+    }
+    if let Some(context) = context {
+        meta.insert("cancellationContext".to_owned(), context);
+    }
+    meta
+}
 impl PromptCompletionKind {
+    /// A running turn stopped by a cancel. `trigger` names the request, such as `"ctrl_c"`, `"send_now"`, or `"session_close"`.
+    pub fn mid_turn_abort(trigger: Option<&str>) -> Self {
+        Self::Cancelled {
+            category: Some(xai_grok_session_events::types::CancellationCategory::MidTurnAbort),
+            context: trigger.map(|trigger| CancellationContext {
+                trigger: Some(trigger.to_owned()),
+                ..CancellationContext::default()
+            }),
+        }
+    }
     /// The completion's `_meta.cancellationCategory`, shared by every terminal rail so the wires never disagree.
     /// The rails: `PromptResponse` `_meta`, the legacy `prompt_complete`, and the durable `TurnCompleted`.
     pub fn cancellation_category_meta(&self) -> Option<String> {
@@ -104,6 +136,17 @@ impl PromptCompletionKind {
             Self::MaxTurnsReached { .. } => Some(MAX_TURNS_REACHED_CATEGORY.to_string()),
             Self::StationarityEnded => Some(ACTION_STATIONARITY_CATEGORY.to_string()),
             Self::Completed | Self::Rewound | Self::RemovedFromQueue => None,
+        }
+    }
+    /// The completion's `_meta.cancelTrigger`.
+    pub fn cancel_trigger(&self) -> Option<&str> {
+        match self {
+            Self::Cancelled { context, .. } => context.as_ref()?.trigger.as_deref(),
+            Self::Completed
+            | Self::StationarityEnded
+            | Self::MaxTurnsReached { .. }
+            | Self::Rewound
+            | Self::RemovedFromQueue => None,
         }
     }
     /// The completion's `_meta.cancellationContext` (hook name, reason, trigger), stamped beside `cancellationCategory`.
@@ -325,6 +368,17 @@ pub struct SessionModelSwitch {
     /// The session actor stores this on `compaction.threshold_percent` (which is `Cell<u8>` so it can update without `&mut self`).
     pub auto_compact_threshold_percent: u8,
     pub system_prompt_label: String,
+    pub context_window_selection: SwitchContextWindow,
+    /// The new model's default window and menu, from the entry the handler resolved.
+    pub supported_context_windows: Vec<std::num::NonZeroU64>,
+}
+/// How a model switch resolves the session's context window selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchContextWindow {
+    /// Keep the session's selection, applied while the new model supports it (a plain user switch).
+    Preserve,
+    /// Use this selection, forgotten when the new model does not support it (a request or restore).
+    Set(Option<std::num::NonZeroU64>),
 }
 #[derive(Debug, Clone, Default)]
 pub struct CurrentModel {
@@ -456,7 +510,6 @@ pub enum SessionCommand {
         responds_to: oneshot::Sender<SessionInfoData>,
     },
     CompactSession {
-        user_context: Option<String>,
         respond_to: oneshot::Sender<acp::Result<()>>,
     },
     /// Reload plugin hooks and registry mid-session.

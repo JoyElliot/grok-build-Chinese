@@ -1,6 +1,7 @@
 use super::*;
 use crate::capability::CapabilityMode;
 use crate::handle::tests::make_handle;
+use crate::permission::SandboxPath;
 use crate::permission::hub_permission::PermissionHookTransport;
 use crate::permission::state::{load_state_from_disk, persist_state};
 use crate::permission::types::AccessKind;
@@ -8,6 +9,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
+use xai_grok_tools::types::tool::{ToolKind, ToolNamespace};
 use xai_tool_runtime::{ToolApprovalPolicy, ToolErrorKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
@@ -160,7 +162,8 @@ async fn daemon_session_at(
         )
         .expect("daemon toolset session")
 }
-/// [`settle`] for a session bound at the served root itself, where the grant store is the cwd's.
+/// [`settle`] for a session bound at the served root itself, where the grant store is the cwd's,
+/// with the pre-run prompt.
 async fn settle_at_cwd(
     session: &crate::session::WorkspaceSession,
     tool_name: &str,
@@ -168,7 +171,35 @@ async fn settle_at_cwd(
     args: &Value,
     transport: Option<&dyn PermissionHookTransport>,
 ) -> Result<(), ToolError> {
-    settle(session, session.cwd(), tool_name, call_id, args, transport).await
+    settle_at_cwd_with(
+        session,
+        tool_name,
+        call_id,
+        args,
+        transport,
+        PromptGate::PreRun,
+    )
+    .await
+}
+async fn settle_at_cwd_with(
+    session: &crate::session::WorkspaceSession,
+    tool_name: &str,
+    call_id: &str,
+    args: &Value,
+    transport: Option<&dyn PermissionHookTransport>,
+    gate: PromptGate,
+) -> Result<(), ToolError> {
+    settle(
+        session,
+        session.cwd(),
+        tool_name,
+        call_id,
+        args,
+        transport,
+        gate,
+        StateFileAccess::Plain,
+    )
+    .await
 }
 #[tokio::test]
 async fn every_daemon_tool_has_the_class_the_table_says() {
@@ -350,6 +381,256 @@ async fn a_persisted_grant_or_deny_settles_the_call_before_any_prompt() {
             .map(|payload| &payload["tool_approval_policy"]),
         "the card learns which answers will be honoured"
     );
+}
+/// A shell call the sandbox gates keeps the folder's grants and denies ahead of its run: a
+/// `permission.toml` deny refuses it before anything is spawned and a grant lets it run, neither
+/// asking the owner; a call the folder has no answer for runs without the pre-run prompt (the
+/// sandbox card is its prompt). `always_prompt` has no persisted answer the card could stand in
+/// for, so it is asked before the run — and with no transport it fails closed, as ever.
+#[tokio::test]
+async fn the_sandbox_card_gate_keeps_persisted_denies_and_always_prompt_ahead_of_the_run() {
+    let handle = make_handle();
+    let session = daemon_session(&handle).await;
+    let cwd = AbsPathBuf::new(session.cwd().to_path_buf()).expect("absolute session cwd");
+    let mut state = load_state_from_disk(&cwd, None).await;
+    state.allowed_bash_commands.insert("cargo build".to_owned());
+    state.disallowed_bash_commands.insert("curl".to_owned());
+    persist_state(&cwd, &state, None).await;
+    let unanswered = json!({"command": "rm -rf build", "description": "clean"});
+    let denied = json!({"command": "curl http://x", "description": "fetch"});
+    let granted = json!({"command": "cargo build --release", "description": "build"});
+    let pre_run = StubTransport::new(json!({"outcome": "reject"}));
+    settle_at_cwd(
+        &session,
+        "run_terminal_command",
+        "c0",
+        &unanswered,
+        Some(&pre_run),
+    )
+    .await
+    .expect_err("the folder has no answer for it; the owner rejected");
+    assert_eq!(1, pre_run.prompts());
+    let never = StubTransport::new(json!({"outcome": "reject"}));
+    settle_at_cwd_with(
+        &session,
+        "run_terminal_command",
+        "c1",
+        &unanswered,
+        Some(&never),
+        PromptGate::SandboxCard,
+    )
+    .await
+    .expect("a call the folder has no answer for is left to the sandbox card");
+    let err = settle_at_cwd_with(
+        &session,
+        "run_terminal_command",
+        "c2",
+        &denied,
+        Some(&never),
+        PromptGate::SandboxCard,
+    )
+    .await
+    .expect_err("a persisted deny refuses the call before its spawn");
+    assert_eq!(ToolErrorKind::PermissionDenied, err.kind);
+    assert!(err.detail.contains("previously rejected"), "{}", err.detail);
+    settle_at_cwd_with(
+        &session,
+        "run_terminal_command",
+        "c3",
+        &granted,
+        Some(&never),
+        PromptGate::SandboxCard,
+    )
+    .await
+    .expect("a persisted grant lets the call run");
+    assert_eq!(0, never.prompts(), "no pre-run prompt under the card gate");
+    session
+        .approval
+        .set_policy(ToolApprovalPolicy::AlwaysPrompt);
+    let approve = StubTransport::new(json!({"outcome": "approve"}));
+    settle_at_cwd_with(
+        &session,
+        "run_terminal_command",
+        "c4",
+        &granted,
+        Some(&approve),
+        PromptGate::SandboxCard,
+    )
+    .await
+    .expect("the owner approved before the run");
+    assert_eq!(1, approve.prompts(), "always_prompt is asked pre-run");
+    let err = settle_at_cwd_with(
+        &session,
+        "run_terminal_command",
+        "c5",
+        &granted,
+        Some(&never),
+        PromptGate::SandboxCard,
+    )
+    .await
+    .expect_err("the owner rejected before the run");
+    assert_eq!(ToolErrorKind::PermissionDenied, err.kind);
+    assert_eq!(1, never.prompts());
+    let err = settle_at_cwd_with(
+        &session,
+        "run_terminal_command",
+        "c6",
+        &granted,
+        None,
+        PromptGate::SandboxCard,
+    )
+    .await
+    .expect_err("always_prompt with no transport fails closed");
+    assert_eq!(ToolErrorKind::PermissionDenied, err.kind);
+    assert!(err.detail.contains("no hub transport"), "{}", err.detail);
+}
+const SHELL: &str = "run_terminal_command";
+fn shell_args(command: &str, request: Value) -> Value {
+    let mut args = json!({ "command": command, "description": "hub gate test" });
+    args.as_object_mut()
+        .unwrap()
+        .extend(request.as_object().unwrap().clone());
+    args
+}
+/// A run requested in the background reports a start, never output the decoder reads, so no card
+/// could stand in for its prompt: under the enforced gate the request leaves the gated path and the
+/// owner is asked once, before the run, however the tool spells the request.
+#[tokio::test]
+async fn a_run_requested_in_the_background_keeps_the_pre_run_prompt_under_the_enforced_gate() {
+    let handle = make_handle();
+    let session = daemon_session(&handle).await;
+    let gated = SandboxPath::for_tool(
+        Some((ToolKind::Execute, ToolNamespace::GrokBuild)),
+        Some(SandboxMode::Enforce),
+    );
+    assert_eq!(SandboxPath::Gated, gated);
+    for (n, request) in [
+        json!({ "is_background": true }),
+        json!({ "block_until_ms": 0 }),
+        json!({ "timeout": 0 }),
+        json!({ "is_background": true, "timeout": 0 }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let args = shell_args("python -m http.server", request.clone());
+        let path = gated
+            .for_call(ToolApprovalGate::Enforced, &session, SHELL, &args)
+            .await;
+        assert_eq!(SandboxPath::Shell, path, "{request}");
+        assert_eq!(PromptGate::PreRun, path.prompt_gate());
+        let approve = StubTransport::new(json!({"outcome": "approve"}));
+        settle_at_cwd_with(
+            &session,
+            SHELL,
+            &format!("bg-{n}"),
+            &args,
+            Some(&approve),
+            path.prompt_gate(),
+        )
+        .await
+        .expect("the owner approved before the run");
+        assert_eq!(
+            1,
+            approve.prompts(),
+            "asked once, before the run: {request}"
+        );
+        let reject = StubTransport::new(json!({"outcome": "reject"}));
+        let err = settle_at_cwd_with(
+            &session,
+            SHELL,
+            &format!("bg-{n}-rejected"),
+            &args,
+            Some(&reject),
+            path.prompt_gate(),
+        )
+        .await
+        .expect_err("the owner rejected before the run");
+        assert_eq!(ToolErrorKind::PermissionDenied, err.kind);
+        assert_eq!(1, reject.prompts(), "{request}");
+    }
+}
+/// A foreground run on the gated path is as before: nothing is asked ahead of the run, the sandbox
+/// card is its prompt. Only the gated path is re-read from the arguments — `Shell` and `None` are
+/// what they were, and arguments the toolset cannot parse stay gated (the gate returns its error).
+#[tokio::test]
+async fn a_foreground_gated_call_still_leaves_its_prompt_to_the_sandbox_card() {
+    let handle = make_handle();
+    let session = daemon_session(&handle).await;
+    let background = shell_args("python -m http.server", json!({ "is_background": true }));
+    for args in [
+        shell_args("cargo build", json!({})),
+        shell_args(
+            "cargo build",
+            json!({ "is_background": false, "block_until_ms": 30_000, "timeout": 120_000 }),
+        ),
+    ] {
+        let path = SandboxPath::Gated
+            .for_call(ToolApprovalGate::Enforced, &session, SHELL, &args)
+            .await;
+        assert_eq!(SandboxPath::Gated, path, "{args}");
+        let never = StubTransport::new(json!({"outcome": "reject"}));
+        settle_at_cwd_with(
+            &session,
+            SHELL,
+            "fg",
+            &args,
+            Some(&never),
+            path.prompt_gate(),
+        )
+        .await
+        .expect("a foreground call is left to the sandbox card");
+        assert_eq!(
+            0,
+            never.prompts(),
+            "no pre-run prompt under the card gate: {args}"
+        );
+    }
+    assert_eq!(
+        SandboxPath::Shell,
+        SandboxPath::Shell
+            .for_call(ToolApprovalGate::Enforced, &session, SHELL, &background)
+            .await
+    );
+    assert_eq!(
+        SandboxPath::None,
+        SandboxPath::None
+            .for_call(
+                ToolApprovalGate::Enforced,
+                &session,
+                "read_file",
+                &json!({ "target_file": "a" })
+            )
+            .await
+    );
+    assert_eq!(
+        SandboxPath::Gated,
+        SandboxPath::Gated
+            .for_call(
+                ToolApprovalGate::Enforced,
+                &session,
+                SHELL,
+                &json!({ "nope": 1 })
+            )
+            .await
+    );
+}
+/// Today's daemon: its gate is `Off` (the pre-release stopgap), nothing is asked before any run,
+/// and a run requested in the background keeps the path it had: gated, pinned, decoded as before.
+#[tokio::test]
+async fn with_the_gate_off_a_run_requested_in_the_background_keeps_its_path() {
+    let handle = make_handle();
+    let session = daemon_session(&handle).await;
+    assert_eq!(
+        ToolApprovalGate::Off,
+        approval_gate_for(WorkspaceHostKind::Daemon)
+    );
+    let background = shell_args("python -m http.server", json!({ "is_background": true }));
+    let path = SandboxPath::Gated
+        .for_call(ToolApprovalGate::Off, &session, SHELL, &background)
+        .await;
+    assert_eq!(SandboxPath::Gated, path);
+    assert_eq!(PromptGate::SandboxCard, path.prompt_gate());
 }
 /// "Allow all edits for this session" is a grant on file edits and nothing else: a scheduler
 /// creation is a `Tool`, which no grant scope covers, so it prompts again.
@@ -638,6 +919,8 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "c1",
         &use_tool,
         Some(&always),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
     )
     .await
     .expect("approved");
@@ -651,9 +934,18 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "the grant is keyed on the served root, not the conversation directory"
     );
     let never = StubTransport::new(json!({"outcome": "reject"}));
-    settle(&session_b, &root, "use_tool", "c2", &use_tool, Some(&never))
-        .await
-        .expect("the sibling conversation inherits the grant without asking");
+    settle(
+        &session_b,
+        &root,
+        "use_tool",
+        "c2",
+        &use_tool,
+        Some(&never),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
+    )
+    .await
+    .expect("the sibling conversation inherits the grant without asking");
     assert_eq!(0, never.prompts());
     let always_in_repo = always_tool();
     settle(
@@ -663,6 +955,8 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "c3",
         &use_tool,
         Some(&always_in_repo),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
     )
     .await
     .expect("approved");
@@ -686,6 +980,8 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "c4",
         &bash,
         Some(&always_bash),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
     )
     .await
     .expect("approved");

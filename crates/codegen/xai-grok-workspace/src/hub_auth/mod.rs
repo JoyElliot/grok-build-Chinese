@@ -428,37 +428,12 @@ pub(crate) fn write_refreshed_token(
     Ok(())
 }
 
-/// Atomically replace `path`: temp file (0600 on Unix), fsync, then rename.
-/// Avoids the window where a truncate-in-place rewrite would leave auth.json partially written.
+/// Atomically replace `auth.json` (owner-only, fsync'd) through a `GROK_HOME`-overlay link, so the
+/// refreshed token reaches the file the shell reads.
 fn write_json_atomic(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
-    use std::io::Write;
-
     let json = serde_json::to_string_pretty(value)?;
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-
-    let mut file = opts
-        .open(&tmp)
-        .map_err(|e| anyhow::anyhow!("failed to open {}: {e}", tmp.display()))?;
-    file.write_all(json.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-
-    #[cfg(windows)]
-    let _ = std::fs::remove_file(path);
-
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(anyhow::anyhow!("failed to replace {}: {e}", path.display()));
-    }
-    Ok(())
+    xai_grok_config::fs_atomic::write_user_file_atomically(path, &json, Some(0o600))
+        .map_err(|e| anyhow::anyhow!("failed to replace {}: {e}", path.display()))
 }
 
 /// Hub auth provider for `hub_url`. `auth_config` overrides `~/.grok/auth.json`.

@@ -158,6 +158,67 @@ pub struct MemoryV2DreamLifecycle {
 
 #[derive(Debug, Default, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum MemoryV2BatchDreamEndStatus {
+    #[default]
+    Drained,
+    Busy,
+    DefaultPlanPending,
+    Timeout,
+    Cancelled,
+    Model,
+    Storage,
+}
+
+#[derive(Debug, Default, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryV2CatalogTier {
+    #[default]
+    Full,
+    ShortDescriptions,
+    TitlesOnly,
+    Partial,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryV2BatchDreamLimit {
+    CallsPerBatch,
+    RequestBytes,
+    Truncations,
+}
+
+/// `applied_count + no_change_count` is the value signal: notes that left the inbox settled.
+#[derive(Debug, Default, Serialize)]
+pub struct MemoryV2BatchDreamEnded {
+    pub end_status: MemoryV2BatchDreamEndStatus,
+    pub batch_count: usize,
+    pub model_call_count: usize,
+    pub repair_count: usize,
+    /// Replies cut off at the output limit and answered with a shorter-plan request.
+    pub truncation_count: usize,
+    /// Model calls that were re-sent after a retryable sampling error.
+    pub sampling_retry_count: usize,
+    pub applied_count: usize,
+    pub no_change_count: usize,
+    pub deferred_count: usize,
+    /// Notes archived after repeated deferrals.
+    pub unplaceable_count: usize,
+    pub topic_change_count: usize,
+    pub catalog_topic_count: usize,
+    pub topic_bytes: u64,
+    pub largest_topic_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_tier: Option<MemoryV2CatalogTier>,
+    /// First per-batch limit hit during the run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<MemoryV2BatchDreamLimit>,
+    pub latency_ms: u64,
+    #[serde(flatten)]
+    pub usage: MemoryV2ModelUsage,
+}
+
+#[derive(Debug, Default, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryV2CarryoverOutcome {
     #[default]
     Imported,
@@ -323,6 +384,7 @@ pub struct MemoryInjection {
     pub global_entry_count: usize,
     pub workspace_entry_count: usize,
     pub was_reused: bool,
+    pub compact_index: bool,
 }
 
 #[derive(Default, Serialize)]
@@ -434,6 +496,12 @@ mod tests {
             .unwrap(),
             serde_json::to_value(MemoryV2FlushResult::default()).unwrap(),
             serde_json::to_value(MemoryV2DreamLifecycle::default()).unwrap(),
+            serde_json::to_value(MemoryV2BatchDreamEnded {
+                catalog_tier: Some(MemoryV2CatalogTier::Partial),
+                limit: Some(MemoryV2BatchDreamLimit::CallsPerBatch),
+                ..Default::default()
+            })
+            .unwrap(),
             serde_json::to_value(MemoryV2GcCompleted::default()).unwrap(),
             serde_json::to_value(MemoryV2Forgotten::default()).unwrap(),
             serde_json::to_value(MemoryV2FailClosed::default()).unwrap(),
@@ -455,6 +523,9 @@ mod tests {
             "component",
             "reason",
             "model_id",
+            "end_status",
+            "catalog_tier",
+            "limit",
         ];
         for event in events {
             for (key, value) in event.as_object().unwrap() {

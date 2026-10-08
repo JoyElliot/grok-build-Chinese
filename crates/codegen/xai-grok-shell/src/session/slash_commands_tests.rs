@@ -1,4 +1,5 @@
 use super::*;
+use xai_grok_test_support::acp_fixtures::text_block;
 use xai_grok_tools::implementations::skills::types::SkillScope;
 
 /// Shadows [`super::resolve_human_intent`] for the cases that route something other than `/loop`.
@@ -121,10 +122,6 @@ fn all_gated() -> CommandAvailability {
     CommandAvailability::all_enabled()
 }
 
-fn text_block(s: &str) -> acp::ContentBlock {
-    acp::ContentBlock::Text(acp::TextContent::new(s.to_string()))
-}
-
 fn make_skill(name: &str, user_invocable: bool) -> SkillInfo {
     SkillInfo {
         name: name.to_string(),
@@ -192,18 +189,6 @@ fn resolve_builtin(name: &str, args: &str) -> Option<BuiltinAction> {
 }
 
 #[test]
-fn compact_parses_optional_context() {
-    assert!(matches!(
-        resolve_builtin("compact", ""),
-        Some(BuiltinAction::Compact { user_context: None })
-    ));
-    assert!(matches!(
-        resolve_builtin("compact", "keep auth"),
-        Some(BuiltinAction::Compact { user_context: Some(ctx) }) if ctx == "keep auth"
-    ));
-}
-
-#[test]
 fn always_approve_parses_on_off() {
     for arg in ["", "on", "true", "1", "yes", "enable"] {
         assert!(
@@ -249,8 +234,7 @@ fn resolve_routes_builtin() {
     .unwrap_err();
     assert!(matches!(
         outcome,
-        SlashCommandOutcome::Builtin(BuiltinAction::Compact { user_context: Some(ctx) })
-        if ctx == "preserve auth"
+        SlashCommandOutcome::Builtin(BuiltinAction::Compact)
     ));
 }
 
@@ -868,8 +852,11 @@ fn available_commands_populates_acp_fields() {
     let skills = vec![make_skill("commit", true)];
     let commands = available_commands(&skills, all_gated(), &[]);
 
-    let builtin = commands.iter().find(|c| c.name == "compact").unwrap();
-    assert!(builtin.input.is_some());
+    let builtin = commands
+        .iter()
+        .find(|c| c.name == "always-approve")
+        .unwrap();
+    assert!(builtin.input.is_some()); // always-approve has argument_hint "on|off"
 
     let flush = commands.iter().find(|c| c.name == "flush").unwrap();
     assert!(flush.input.is_none()); // no argument_hint
@@ -1313,9 +1300,7 @@ fn resolve_mixed_case_builtin() {
     .unwrap_err();
     assert!(matches!(
         outcome,
-        SlashCommandOutcome::Builtin(BuiltinAction::Compact {
-            user_context: Some(ref ctx)
-        }) if ctx == "keep auth"
+        SlashCommandOutcome::Builtin(BuiltinAction::Compact)
     ));
 }
 

@@ -1,8 +1,5 @@
 use std::path::{Path, PathBuf};
 
-// Project-hook trust is no longer stored here: the shell's folder-trust store
-// (`~/.grok/trusted_folders.toml`) is the single authority for whether a repo's project hooks run (the same gate as repo-local MCP/LSP). The helpers below exist only to migrate prior grants out of the legacy file.
-
 /// Path to the legacy project-hook trust file (`<user_grok_home>/trusted-hook-projects`), or `None` when no user grok home resolves.
 /// It is retained only for the one-time migration into folder-trust.
 pub fn legacy_trust_file_path() -> Option<PathBuf> {
@@ -24,6 +21,30 @@ pub fn list_trusted_projects_with_file(trust_file: &Path) -> std::io::Result<Vec
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(PathBuf::from)
         .collect())
+}
+
+/// Whether the user trusts a workspace, which decides if its project hooks and plugins load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Trust {
+    Trusted,
+    Untrusted,
+}
+
+impl Trust {
+    #[must_use]
+    pub fn from_verdict(is_trusted: bool) -> Trust {
+        if is_trusted {
+            Trust::Trusted
+        } else {
+            Trust::Untrusted
+        }
+    }
+
+    #[must_use]
+    pub fn allows_project_sources(self) -> bool {
+        matches!(self, Trust::Trusted)
+    }
 }
 
 // ── Hook enable/disable ─────────────────────────────────────────────────
@@ -53,10 +74,10 @@ impl DisabledHooks {
         }
     }
 
-    /// Read the disabled-hooks file; `managed_only` is the resolved `allow_managed_hooks_only` pin, which the caller reads from managed settings.
-    pub fn load(managed_only: bool) -> Self {
-        let names = disabled_hooks_file_path()
-            .and_then(|file| std::fs::read_to_string(file).ok())
+    /// Read the disabled-hooks file under `grok_home`; `managed_only` is the resolved `allow_managed_hooks_only` pin, which the caller reads from managed settings.
+    pub fn load(grok_home: Option<&Path>, managed_only: bool) -> Self {
+        let names = grok_home
+            .and_then(|grok_home| std::fs::read_to_string(grok_home.join(DISABLED_HOOKS_FILE)).ok())
             .map(|content| {
                 content
                     .lines()
@@ -170,9 +191,11 @@ fn enable_hook_with_file(hook_name: &str, file: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+const DISABLED_HOOKS_FILE: &str = "disabled-hooks";
+
 /// Returns the path to `$GROK_HOME/disabled-hooks`, or `None` when no user grok home resolves.
 fn disabled_hooks_file_path() -> Option<PathBuf> {
-    Some(xai_grok_config::user_grok_home()?.join("disabled-hooks"))
+    Some(xai_grok_config::user_grok_home()?.join(DISABLED_HOOKS_FILE))
 }
 
 #[cfg(test)]

@@ -25,7 +25,10 @@ pub(crate) fn current_hook_infos(
     let Some(registry) = registry else {
         return Vec::new();
     };
-    let disabled = crate::util::hooks::disabled_hooks_snapshot();
+    let disabled = xai_grok_workspace::permission::resolution::disabled_hooks_snapshot(
+        xai_grok_workspace::permission::resolution::managed_settings(),
+        xai_grok_config::user_grok_home().as_deref(),
+    );
     let registered = crate::config::registered_hook_paths();
     hook_specs_to_infos(&registry.all_hooks(), &disabled, &registered)
 }

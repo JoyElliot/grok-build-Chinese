@@ -198,7 +198,7 @@ impl PluginManifest {
         }
     }
 
-    /// The runtime parses and starts inline MCP servers via `load_plugin_mcp_servers_from_value()`.
+    /// `xai-grok-config` parses and starts the inline MCP servers.
     pub fn inline_mcp_servers(&self) -> Option<&serde_json::Value> {
         match &self.mcp_servers {
             Some(PathOrInline::Inline(v)) => Some(v),

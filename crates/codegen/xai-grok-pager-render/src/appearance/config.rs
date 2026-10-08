@@ -7,10 +7,6 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, RawString};
 use xai_grok_shared::ui_config::UiConfig;
 
-// ============================================================================
-// Runtime Config (used by render code)
-// ============================================================================
-
 /// Background style for block content area.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum BlockBackground {
@@ -1202,10 +1198,6 @@ impl From<RawBlockBackground> for BlockBackground {
     }
 }
 
-// ============================================================================
-// Raw → Runtime Conversion
-// ============================================================================
-
 impl From<RawAppearanceConfig> for AppearanceConfig {
     fn from(raw: RawAppearanceConfig) -> Self {
         Self {
@@ -1446,10 +1438,6 @@ impl From<RawThinkingConfig> for ThinkingConfig {
     }
 }
 
-// ============================================================================
-// Color Parsing
-// ============================================================================
-
 /// An optional color that can be "none" or a color value.
 /// This allows TOML to represent None values explicitly.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1639,10 +1627,6 @@ fn lookup_named_color(name: &str) -> Result<Color, String> {
     Ok(color)
 }
 
-// ============================================================================
-// TOML Generation with Comments
-// ============================================================================
-
 impl RawAppearanceConfig {
     pub fn to_toml_with_comments() -> String {
         let mut config = Self::default();
@@ -1803,15 +1787,21 @@ pub fn persist_respect_manual_folds(enabled: bool) -> std::io::Result<()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let path = crate::util::pager_toml_path();
+    persist_respect_manual_folds_to(&crate::util::pager_toml_path(), enabled)
+}
+
+/// Path-taking body of [`persist_respect_manual_folds`]; the caller holds `PAGER_TOML_SAVE_LOCK`.
+fn persist_respect_manual_folds_to(path: &std::path::Path, enabled: bool) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
     // Bind read + publish to one follow destination (path + inode).
-    let dest = xai_grok_config::fs_atomic::bind_follow_destination(&path)?;
+    let dest = xai_grok_config::fs_atomic::bind_follow_destination(path)?;
     let content = match std::fs::read_to_string(dest.as_path()) {
         Ok(c) => c,
         Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let dest = xai_grok_config::fs_atomic::require_same_bound_destination(&path, &dest)?;
+    let dest = xai_grok_config::fs_atomic::require_same_bound_destination(path, &dest)?;
     let updated = upsert_respect_manual_folds(&content, enabled)
         .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
     if let Some(dir) = dest.as_path().parent() {
@@ -1865,13 +1855,38 @@ fn annotate_table<T: DocumentedFields>(table: &mut toml_edit::Table) {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `/settings` toggle on a dotfile-managed `~/.grok/pager.toml` must reach the dotfile, not replace the link.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn persist_respect_manual_folds_writes_through_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = xai_grok_env::EnvVarGuard::set("GROK_HOME", dir.path().to_str().unwrap());
+        let target = dir.path().join("dotfiles").join("pager.toml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "[scrollback.scroll]\nanchor_on_fold = false\n").unwrap();
+        let link = dir.path().join("pager.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        persist_respect_manual_folds_to(&link, true).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "pager.toml must stay a symlink"
+        );
+        let raw: RawAppearanceConfig =
+            toml::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        let cfg: AppearanceConfig = raw.into();
+        assert!(cfg.scrollback.scroll.respect_manual_folds);
+        assert!(!cfg.scrollback.scroll.anchor_on_fold, "siblings preserved");
+    }
 
     #[test]
     fn test_parse_hex_color() {
@@ -2249,8 +2264,6 @@ gutter_bg = true
             "inserted key must be active:\n{updated}"
         );
     }
-
-    // ── Terminal config (alt_screen) parsing ─────────────────────
 
     #[test]
     fn terminal_alt_screen_auto_default() {

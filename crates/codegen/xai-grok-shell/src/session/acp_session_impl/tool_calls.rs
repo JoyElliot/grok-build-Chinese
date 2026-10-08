@@ -3663,6 +3663,7 @@ mod plan_mode_edit_gate_tests {
                     timeout: None,
                     description: "write via bash".into(),
                     is_background: false,
+                    block_until_ms: None,
                 })
             ),
             PlanEditGate::Allow,

@@ -146,8 +146,9 @@ pub(crate) fn resume_worktree_params(
 
 /// Unwrap an `x.ai/*` extension envelope: an `error` member is a failure, `result` (or the
 /// bare object) is the payload.
-fn ext_result(raw: &str) -> Result<serde_json::Value, String> {
-    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+pub(crate) fn ext_result(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("invalid response: {e}"))?;
     if let Some(err) = value.get("error").filter(|v| !v.is_null()) {
         return Err(err
             .as_str()

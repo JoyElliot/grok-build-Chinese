@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use crate::computer::content_search::{ContentSearchJob, ContentSearchRequest};
 use crate::notification::types::ToolNotificationHandle;
 
 // ============================================================================
@@ -83,6 +84,15 @@ pub trait AsyncFileSystem: Send + Sync {
             "file_exists is not supported by this backend",
             std::io::ErrorKind::Unsupported,
         ))
+    }
+
+    /// Offer to answer a grep content search instead of `rg`. `None` declines and
+    /// must not do any I/O. The grep tool runs the returned job first and runs
+    /// `rg` when the job fails. A served result must be exactly what `rg` reports
+    /// for the same request (see [`crate::computer::content_search`]).
+    fn offer_content_search(&self, request: &ContentSearchRequest) -> Option<ContentSearchJob> {
+        let _ = request;
+        None
     }
 }
 

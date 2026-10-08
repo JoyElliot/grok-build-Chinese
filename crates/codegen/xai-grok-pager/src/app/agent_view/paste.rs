@@ -2111,7 +2111,7 @@ pub(super) mod paste_key_tests {
         );
     }
     /// A same-length in-place rewrite whose mtime does not move (coarse clock) must still retry a negative-cached failure.
-    /// The Unix stamp includes the inode and ctime, which a rewrite always advances.
+    /// The Unix stamp includes the inode and ctime, which a rewrite in a later clock tick advances.
     #[cfg(unix)]
     #[test]
     fn tool_media_same_length_same_mtime_rewrite_retries_failed_load() {
@@ -2136,8 +2136,18 @@ pub(super) mod paste_key_tests {
         let placement = tool_media_placement(path.clone());
         assert!(agent.build_inline_media_escapes(&placement).is_none());
         assert!(agent.inline_media_load_failed.contains_key(&path));
+        let ctime = |p: &std::path::Path| {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(p).unwrap();
+            (meta.ctime(), meta.ctime_nsec())
+        };
+        let failed_ctime = ctime(&path);
         std::fs::write(&path, &png).unwrap();
         pin_mtime(&path);
+        while ctime(&path) == failed_ctime {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            pin_mtime(&path);
+        }
         assert!(
             agent.build_inline_media_escapes(&placement).is_some(),
             "a same-length same-mtime rewrite must retry and recover"

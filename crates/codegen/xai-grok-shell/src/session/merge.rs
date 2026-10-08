@@ -501,6 +501,7 @@ mod tests {
             agent: Default::default(),
             sandbox_profile: None,
             reasoning_effort: None,
+            context_window: None,
             last_turn_summary: None,
             last_turn_summary_prompt_id: None,
             last_recap: None,

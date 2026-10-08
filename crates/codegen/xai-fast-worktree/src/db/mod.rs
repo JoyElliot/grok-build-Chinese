@@ -455,7 +455,7 @@ pub fn resolve_grok_home() -> Result<PathBuf> {
 /// don't clobber each other under `cargo test`, where tests share one process
 /// (nextest isolates per-process, but the suite must also pass under `cargo test`).
 #[cfg(test)]
-static GROK_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static GROK_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Test-only: hold [`GROK_HOME_ENV_LOCK`], point `GROK_HOME` at a private tmp
 /// dir, restore on drop. `Drop` restores the env before the lock releases so

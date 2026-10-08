@@ -85,6 +85,29 @@ fn acp_response_completed_emits_usage_line() {
 }
 
 #[test]
+fn acp_turn_usage_emits_usage_line_without_a_message_id() {
+    let mut r = AcpReducer;
+    let out = r.reduce(StreamEvent::TurnUsage {
+        usage: ResponseUsage {
+            input_tokens: 5_000,
+            output_tokens: 80,
+            cache_read_input_tokens: 400,
+            cache_creation_input_tokens: 25,
+            reasoning_tokens: 10,
+        },
+    });
+    let Some(usage) = out.first() else {
+        panic!("expected a usage line: {out:?}");
+    };
+    assert_eq!(msg_type(usage), Some("usage"));
+    assert_eq!(
+        Some(5_000),
+        usage.pointer("/usage/input_tokens").and_then(Value::as_u64)
+    );
+    assert!(usage.get("messageId").is_none(), "{usage}");
+}
+
+#[test]
 fn acp_finish_emits_end_line_with_usage_and_structured_output() {
     let mut r = AcpReducer;
     let aggregate = json!({

@@ -721,6 +721,11 @@ mod tests {
             mtls_cert_dir: Some("/run/model-identity".into()),
             name: Some("Model M".into()),
             description: Some("desc".into()),
+            notice: Some(xai_grok_sampling_types::ModelNotice {
+                severity: xai_grok_sampling_types::ModelNoticeSeverity::Warning,
+                text: "Deprecated".into(),
+                label: Some("deprecated".into()),
+            }),
             api_key: Some("key".into()),
             env_key: Some(crate::agent::config::EnvKeys::single("ENV_KEY")),
             auth_provider: Some("corp-gateway".into()),
@@ -740,6 +745,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             context_window: Some(200_000),
+            context_windows: None,
             max_request_bytes: None,
             auto_compact_threshold_percent: Some(80),
             system_prompt_label: Some("label".into()),

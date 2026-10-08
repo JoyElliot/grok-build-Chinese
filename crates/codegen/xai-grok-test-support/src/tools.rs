@@ -25,6 +25,9 @@ pub enum Tool {
     Grep,
     Glob,
     List,
+    /// Removes one file.
+    /// Only the daemon worker's toolset offers it.
+    Delete,
     MemorySearch,
     MemoryGet,
     Task,
@@ -34,10 +37,16 @@ pub enum Tool {
     ExitPlanMode,
     WebFetch,
     WebSearch,
+    ImageGen,
+    /// Makes a video from reference images or voices.
+    /// The daemon worker's toolset has no video tool.
+    ReferenceToVideo,
     Question,
     Todo,
     SearchTool,
     KillTask,
+    /// Blocks on a background command's output.
+    TaskOutput,
     Monitor,
     SchedulerCreate,
     SchedulerList,
@@ -68,6 +77,7 @@ impl fmt::Display for Tool {
             | Tool::Grep
             | Tool::Glob
             | Tool::List
+            | Tool::Delete
             | Tool::MemorySearch
             | Tool::MemoryGet
             | Tool::Task
@@ -77,10 +87,13 @@ impl fmt::Display for Tool {
             | Tool::ExitPlanMode
             | Tool::WebFetch
             | Tool::WebSearch
+            | Tool::ImageGen
+            | Tool::ReferenceToVideo
             | Tool::Question
             | Tool::Todo
             | Tool::SearchTool
             | Tool::KillTask
+            | Tool::TaskOutput
             | Tool::Monitor
             | Tool::SchedulerCreate
             | Tool::SchedulerList
@@ -110,8 +123,9 @@ struct FieldFill {
 /// A reshaping of a call's arguments a table of renames cannot express.
 type Shape = fn(Map<String, Value>) -> Map<String, Value>;
 struct GrokBuildRow {
-    /// `None` for the MCP resource kinds, and for an MCP call, whose name is built from
-    /// the server and tool.
+    /// `None` for the tools GrokBuild does not offer (Glob, delete, and the MCP resource kinds) and
+    /// for an MCP call. `glob` is an OpenCode tool; GrokBuild lists directories with `list_dir`.
+    /// `grok_build_name` builds an MCP call's name from its server and tool.
     name: Option<&'static str>,
     fills: &'static [FieldFill],
     shape: Option<Shape>,
@@ -140,6 +154,45 @@ impl GrokBuildRow {
         self
     }
 }
+/// Every tool with a fixed name, in declaration order.
+/// `Mcp` is the only variant left out.
+const NAMED_TOOLS: &[Tool] = &[
+    Tool::Shell,
+    Tool::Read,
+    Tool::Edit,
+    Tool::Write,
+    Tool::Grep,
+    Tool::Glob,
+    Tool::List,
+    Tool::Delete,
+    Tool::MemorySearch,
+    Tool::MemoryGet,
+    Tool::Task,
+    Tool::Skill,
+    Tool::SendMessage,
+    Tool::EnterPlanMode,
+    Tool::ExitPlanMode,
+    Tool::WebFetch,
+    Tool::WebSearch,
+    Tool::ImageGen,
+    Tool::ReferenceToVideo,
+    Tool::Question,
+    Tool::Todo,
+    Tool::SearchTool,
+    Tool::KillTask,
+    Tool::TaskOutput,
+    Tool::Monitor,
+    Tool::SchedulerCreate,
+    Tool::SchedulerList,
+    Tool::SchedulerDelete,
+    Tool::Workflow,
+    Tool::Lsp,
+    Tool::TaskCreate,
+    Tool::TaskUpdate,
+    Tool::CronCreate,
+    Tool::McpListResources,
+    Tool::McpReadResource,
+];
 impl Tool {
     pub fn mcp(server: impl Into<String>, tool: impl Into<String>) -> Self {
         Tool::Mcp {
@@ -157,7 +210,6 @@ impl Tool {
             Tool::Edit => GrokBuildRow::new("search_replace"),
             Tool::Write => GrokBuildRow::new("write"),
             Tool::Grep => GrokBuildRow::new("grep"),
-            Tool::Glob => GrokBuildRow::new("glob"),
             Tool::List => GrokBuildRow::new("list_dir"),
             Tool::MemorySearch => GrokBuildRow::new("memory_search"),
             Tool::MemoryGet => GrokBuildRow::new("memory_get"),
@@ -171,10 +223,13 @@ impl Tool {
             Tool::ExitPlanMode => GrokBuildRow::new("exit_plan_mode"),
             Tool::WebFetch => GrokBuildRow::new("web_fetch"),
             Tool::WebSearch => GrokBuildRow::new("web_search"),
+            Tool::ImageGen => GrokBuildRow::new("image_gen"),
+            Tool::ReferenceToVideo => GrokBuildRow::new("reference_to_video"),
             Tool::Question => GrokBuildRow::new("ask_user_question").with_shape(describe_options),
             Tool::Todo => GrokBuildRow::new("todo_write").with_shape(default_todos_to_pending),
             Tool::SearchTool => GrokBuildRow::new("search_tool"),
             Tool::KillTask => GrokBuildRow::new("kill_command_or_subagent"),
+            Tool::TaskOutput => GrokBuildRow::new("get_command_or_subagent_output"),
             Tool::Monitor => GrokBuildRow::new("monitor"),
             Tool::SchedulerCreate => GrokBuildRow::new("scheduler_create"),
             Tool::SchedulerList => GrokBuildRow::new("scheduler_list"),
@@ -188,17 +243,55 @@ impl Tool {
             Tool::CronCreate => {
                 GrokBuildRow::new("scheduler_create").with_shape(fill_cron_interval)
             }
-            Tool::McpListResources | Tool::McpReadResource | Tool::Mcp { .. } => {
-                GrokBuildRow::without_grok_build_name()
-            }
+            Tool::Glob
+            | Tool::Delete
+            | Tool::McpListResources
+            | Tool::McpReadResource
+            | Tool::Mcp { .. } => GrokBuildRow::without_grok_build_name(),
         }
     }
-    /// An MCP tool is `server__tool`; the MCP resource kinds have no GrokBuild name.
+    /// An MCP tool is named `server__tool`.
+    /// Glob, Delete, and the MCP resource kinds have no GrokBuild name.
     fn grok_build_name(&self) -> Option<String> {
         if let Tool::Mcp { server, tool } = self {
             return Some(format!("{server}{MCP_NAME_SEPARATOR}{tool}"));
         }
         self.row().name.map(str::to_owned)
+    }
+    /// The built-in tool GrokBuild offers under `name`, or `None` if there is none.
+    /// Tools that share a GrokBuild name, such as `Todo` and `TaskCreate`, also share a daemon
+    /// name.
+    #[must_use]
+    pub fn from_grok_build_name(name: &str) -> Option<Tool> {
+        if let Some(tool) = NAMED_TOOLS
+            .iter()
+            .find(|tool| tool.grok_build_name().as_deref() == Some(name))
+            .cloned()
+        {
+            return Some(tool);
+        }
+        let (server, tool) = name.split_once(MCP_NAME_SEPARATOR)?;
+        if server.is_empty() || tool.is_empty() {
+            return None;
+        }
+        Some(Tool::Mcp {
+            server: server.to_owned(),
+            tool: tool.to_owned(),
+        })
+    }
+    /// The name the daemon worker's toolset offers this tool under, or `None` when that toolset
+    /// does not offer it.
+    #[must_use]
+    pub fn daemon_offered_name(&self) -> Option<&'static str> {
+        None
+    }
+    /// Daemon route uses the worker toolset name when it differs; otherwise the GrokBuild name.
+    #[must_use]
+    pub fn wire_name(&self, daemon: bool) -> Option<String> {
+        if daemon && let Some(name) = self.daemon_offered_name() {
+            return Some(name.to_owned());
+        }
+        self.grok_build_name()
     }
     /// The case's arguments in GrokBuild's shape: the fields a case may leave out are filled, and
     /// the row's shape applies. Arguments that are not a table pass through unchanged.

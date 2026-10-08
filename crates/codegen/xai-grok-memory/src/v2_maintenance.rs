@@ -8,7 +8,6 @@ use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
-use xai_grok_tools::types::memory_v2::MemoryV2Access as _;
 use xai_sqlite_journal::JournalMode;
 
 use crate::storage::MemoryStorage;
@@ -21,10 +20,6 @@ const MAX_GC_ITEMS_PER_CLASS: i64 = 256;
 const SECONDS_PER_DAY: i64 = 86_400;
 
 pub type Result<T> = std::result::Result<T, V2MaintenanceError>;
-
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-struct AccessSnapshotError(String);
 
 /// What reconciling one tombstone did to its file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,8 +400,8 @@ impl V2MaintenanceStore {
             return Err(V2MaintenanceError::EvidenceMismatch);
         }
         self.access
-            .record_read(&absolute, &bytes)
-            .map_err(|source| V2MaintenanceError::Access(Box::new(AccessSnapshotError(source))))?;
+            .record_read_typed(&absolute, &bytes)
+            .map_err(|source| V2MaintenanceError::Access(Box::new(source)))?;
         let mut connection = self.open_state()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let has_active_lease = transaction
@@ -689,7 +684,7 @@ impl V2MaintenanceStore {
         // Rendering the manifest re-runs the exclusion scan over the whole state
         // database, so settled tombstones (the common case on every open) skip it.
         if removed_any {
-            regenerate_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::default())
+            regenerate_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::configured())
                 .map_err(V2MaintenanceError::Manifest)?;
         }
         Ok(())
@@ -718,8 +713,8 @@ impl V2MaintenanceStore {
             return Err(V2MaintenanceError::EvidenceMismatch);
         }
         self.access
-            .record_read(&absolute, &bytes)
-            .map_err(|source| V2MaintenanceError::Access(Box::new(AccessSnapshotError(source))))?;
+            .record_read_typed(&absolute, &bytes)
+            .map_err(|source| V2MaintenanceError::Access(Box::new(source)))?;
         if matches!(class, V2PathClass::Topic(_)) {
             self.access
                 .remove_topic_file_in_transaction(&absolute, transaction)

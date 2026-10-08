@@ -236,7 +236,7 @@ mod tests {
         xai_grok_memory::regenerate_scope_manifest(
             storage.workspace_dir(),
             V2MemoryScope::Workspace,
-            xai_grok_memory::V2ManifestBudget::default(),
+            xai_grok_memory::V2ManifestBudget::configured(),
         )
         .unwrap();
         let manifest = storage.workspace_memory_file();
@@ -364,5 +364,43 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn settled_tombstone_keeps_the_live_memory_file_and_it_is_still_recalled() {
+        let (_temporary, storage) = v2_storage();
+        let topics = storage.workspace_dir().join("topics");
+        let live = topics.join("kumquat.md");
+        std::fs::write(&live, "# KUMQUAT-91\n\nThe live note.\n").unwrap();
+        let forgotten = topics.join("friday.md");
+        std::fs::write(&forgotten, "# FRIDAY-61\n\nThe deploy freeze.\n").unwrap();
+        let hash = hash_of(&forgotten);
+        xai_grok_memory::regenerate_scope_manifest(
+            storage.workspace_dir(),
+            V2MemoryScope::Workspace,
+            xai_grok_memory::V2ManifestBudget::configured(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            forget_blocking(&storage, &forgotten, &hash),
+            MemoryForgetResponse::Forgotten {
+                was_already_forgotten: false
+            }
+        );
+
+        let live_text = std::fs::read_to_string(&live).unwrap_or_default();
+        assert!(live_text.contains("KUMQUAT-91"), "live memory file");
+        let recalled =
+            crate::session::helpers::memory_context::format_v2_memory_context(&storage, false)
+                .expect("recall");
+        assert!(
+            recalled.content.contains("KUMQUAT-91"),
+            "live memory file recalled"
+        );
+        assert!(
+            !recalled.content.contains("FRIDAY-61"),
+            "forgotten note recalled"
+        );
     }
 }

@@ -2553,6 +2553,30 @@ fn zh_localization_feedback_writing_label_keeps_ordinal_and_tool_identity() {
 }
 
 #[test]
+fn zh_localization_subagent_wait_preserves_new_and_dynamic_subjects() {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    for (display, expected) in [
+        (None, "正在等待子代理…"),
+        (Some(waiting_on_subagents_subject(1)), "正在等待子代理…"),
+        (
+            Some(waiting_on_subagents_subject(2)),
+            "Waiting for 2 subagents…",
+        ),
+        (Some("Audit workspace".to_owned()), "Audit workspace…"),
+    ] {
+        let reason = WaitingReason::Subagent { display };
+
+        let label = reason.label_with_locale(Some(&locale));
+
+        assert_eq!(label, expected);
+        assert_eq!(reason.as_telemetry_label(), "waiting_subagent");
+    }
+}
+
+#[test]
 fn zh_localization_dashboard_waiting_labels_preserve_hook_names_and_telemetry() {
     let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
         locale: crate::locale::UiLocale::ZhCn,
@@ -2838,12 +2862,12 @@ fn waiting_payload_and_writing_churn_are_not_phase_transitions() {
         }))
     };
     assert!(!is_phase_transition(
-        wait(Some("scan src/: Thinking")).as_ref(),
-        wait(Some("scan src/: Running: cargo test")).as_ref(),
+        wait(Some("Waiting for subagent")).as_ref(),
+        wait(Some("Waiting for 2 subagents")).as_ref(),
     ));
     assert!(!is_phase_transition(
         wait(None).as_ref(),
-        wait(Some("scan src/: Thinking")).as_ref(),
+        wait(Some("Waiting for subagent")).as_ref(),
     ));
     let task_wait = |task_ids: &[&str], subject: Option<&str>| {
         Some(TurnActivity::Waiting(WaitingReason::TaskOutput {
@@ -2866,7 +2890,7 @@ fn waiting_payload_and_writing_churn_are_not_phase_transitions() {
     ));
     assert!(is_phase_transition(None, wait(None).as_ref()));
     assert!(is_phase_transition(
-        wait(Some("scan src/: Thinking")).as_ref(),
+        wait(Some("Waiting for subagent")).as_ref(),
         Some(&TurnActivity::Responding),
     ));
     let tool = |title: &str| {
@@ -4151,6 +4175,75 @@ fn tool_update_in_progress_bg(id: &str, output_bytes: &[u8]) -> acp::SessionUpda
                 "description": "long running task"
             }))),
     ))
+}
+/// Helper: returns whether the tracker defers an Execute tool as background when its first InProgress update carries `input` as raw_input.
+fn bg_deferred_for_input(id: &str, input: serde_json::Value) -> bool {
+    let update = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+        acp::ToolCallId::new(Arc::from(id)),
+        acp::ToolCallUpdateFields::new()
+            .status(Some(acp::ToolCallStatus::InProgress))
+            .raw_input(Some(input)),
+    ));
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    tracker.handle_update(
+        tool_call(id, acp::ToolKind::Execute, "Execute `sleep 9999`"),
+        &meta(),
+        &mut sb,
+    );
+    tracker.handle_update(update, &meta(), &mut sb);
+    tracker.bg_deferred_tools.contains_key(id)
+}
+/// The tracker defers `block_until_ms: 0` the same way as `is_background: true`.
+/// A positive `block_until_ms` stays a foreground call.
+#[test]
+fn bg_tool_detected_from_block_until_ms_zero() {
+    assert!(
+        bg_deferred_for_input(
+            "tc-zero",
+            serde_json::json!({"command": "sleep 9999", "block_until_ms": 0})
+        ),
+        "block_until_ms: 0 must defer like is_background: true"
+    );
+    assert!(
+        !bg_deferred_for_input(
+            "tc-wait",
+            serde_json::json!({"command": "sleep 9999", "block_until_ms": 30_000})
+        ),
+        "a positive block is a foreground call"
+    );
+}
+/// The tracker reads the input the same way as `BashTool::resolve_block_until_ms`.
+#[test]
+fn bg_tool_follows_bash_block_precedence() {
+    assert!(
+        bg_deferred_for_input(
+            "tc-str",
+            serde_json::json!({"command": "sleep 9999", "block_until_ms": "0"})
+        ),
+        "a string-encoded zero block backgrounds"
+    );
+    assert!(
+        !bg_deferred_for_input(
+            "tc-mixed",
+            serde_json::json!({"command": "sleep 9999", "block_until_ms": 30_000, "is_background": true})
+        ),
+        "an explicit positive block wins over a leftover is_background flag"
+    );
+    assert!(
+        bg_deferred_for_input(
+            "tc-timeout",
+            serde_json::json!({"command": "sleep 9999", "timeout": 0})
+        ),
+        "a legacy timeout: 0 backgrounds under the single-knob contract"
+    );
+    assert!(
+        !bg_deferred_for_input(
+            "tc-timeout-pos",
+            serde_json::json!({"command": "sleep 9999", "timeout": 5000})
+        ),
+        "a positive legacy timeout is a foreground call"
+    );
 }
 /// Regression: is_bg_tool() detected on first InProgress defers the tool before any scrollback entry is created.
 #[test]

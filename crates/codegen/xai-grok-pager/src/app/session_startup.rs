@@ -789,20 +789,16 @@ pub fn worktree_session_cwd(
     source_git_root: Option<&str>,
     launch_cwd: &Path,
 ) -> PathBuf {
-    let Some(git_root) = source_git_root else {
+    let Some(relative) = source_git_root.and_then(|root| launch_cwd.strip_prefix(root).ok()) else {
         return worktree_root.to_path_buf();
     };
-    let cwd_str = launch_cwd.to_string_lossy();
-    match cwd_str.strip_prefix(git_root) {
-        Some(relative) => {
-            let relative = relative.trim_start_matches('/');
-            if relative.is_empty() {
-                worktree_root.to_path_buf()
-            } else {
-                worktree_root.join(relative)
-            }
-        }
-        None => worktree_root.to_path_buf(),
+    let stays_inside = relative
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if relative.as_os_str().is_empty() || !stays_inside {
+        worktree_root.to_path_buf()
+    } else {
+        worktree_root.join(relative)
     }
 }
 /// Cwd where a forked child session is written (the interactive and headless SSOT).
@@ -1191,14 +1187,14 @@ pub(crate) fn in_place_restore_code_allowed(
     requested_id == resolved_id
 }
 pub(crate) fn plan_remote_miss(ctx: MaterializeCtx, arg_is_uuid: bool) -> RemoteMissPlan {
-    if ctx.has_worktree {
-        return RemoteMissPlan::DeferToWorktree {
-            deferred_local_miss: !arg_is_uuid,
-        };
-    }
     if !ctx.allow_remote_restore {
         return RemoteMissPlan::NotFound {
             title_miss_hint: !arg_is_uuid,
+        };
+    }
+    if ctx.has_worktree {
+        return RemoteMissPlan::DeferToWorktree {
+            deferred_local_miss: !arg_is_uuid,
         };
     }
     if ctx.restore_code {
@@ -1796,6 +1792,34 @@ mod tests {
         assert_eq!(
             worktree_session_cwd(wt, None, Path::new("/repo/crates")),
             PathBuf::from("/wt/abc")
+        );
+    }
+    #[test]
+    fn worktree_session_cwd_never_leaves_the_worktree_root() {
+        let wt = Path::new("/wt/abc");
+        assert_eq!(
+            worktree_session_cwd(wt, Some("/repo"), Path::new("/repository/crates")),
+            PathBuf::from("/wt/abc")
+        );
+        assert_eq!(
+            worktree_session_cwd(wt, Some("/repo"), Path::new("/repo/../etc")),
+            PathBuf::from("/wt/abc")
+        );
+        assert_eq!(
+            worktree_session_cwd(wt, Some("/repo/"), Path::new("/repo/crates")),
+            PathBuf::from("/wt/abc/crates")
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn worktree_session_cwd_keeps_subdirectory_offset_on_windows() {
+        assert_eq!(
+            worktree_session_cwd(
+                Path::new(r"C:\wt\abc"),
+                Some(r"C:\repo"),
+                Path::new(r"C:\repo\crates\pager")
+            ),
+            PathBuf::from(r"C:\wt\abc\crates\pager")
         );
     }
     #[test]
@@ -2597,6 +2621,7 @@ mod tests {
             fx.write_summary(&cwd_str, "release-notes", serde_json::json!({}));
             let worktree_ctx = MaterializeCtx {
                 has_worktree: true,
+                allow_remote_restore: true,
                 ..local_ctx()
             };
             let resume_intent = |arg: &str| SessionStartupIntent::Resume {

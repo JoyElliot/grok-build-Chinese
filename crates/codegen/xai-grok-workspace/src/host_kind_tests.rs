@@ -26,6 +26,7 @@ const API_BACKED_TOOLS: &[&str] = &[
     "reference_to_video",
 ];
 const API_BASE_URL: &str = "https://api.invalid/v1";
+static TRUNCATION_INSTALL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Tool ids without their namespace, in catalog order.
 fn unqualified_ids(config: &ToolServerConfig) -> Vec<&str> {
     config
@@ -77,6 +78,7 @@ fn daemon_catalog_is_the_sandbox_catalog_minus_the_api_backed_tools() {
 }
 /// Build a session the way `connect_local_workspace` does for `host`, with a bearer credential on hand.
 async fn session_for(host: WorkspaceHostKind) -> Arc<FinalizedToolset> {
+    let _install = TRUNCATION_INSTALL_TEST_LOCK.lock().await;
     let factory = host.session_context_factory(bearer(), API_BASE_URL.to_owned());
     let (_effective, toolset, _backend) = resolve_session_toolset(
         host.default_toolset(),
@@ -152,6 +154,11 @@ fn with_workspace<F: Future<Output = ()>>(
     tokio::runtime::Runtime::new()
         .expect("runtime")
         .block_on(async {
+            let _install = if host == WorkspaceHostKind::Sandbox {
+                Some(TRUNCATION_INSTALL_TEST_LOCK.lock().await)
+            } else {
+                None
+            };
             let handle = build_local_workspace(
                 root.path().to_path_buf(),
                 url::Url::parse("ws://127.0.0.1:1/").expect("hub url"),

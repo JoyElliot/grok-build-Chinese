@@ -364,7 +364,7 @@ pub struct PagerLocalSnapshot {
     /// Mirrors `AppView::appearance.scrollback.scroll.respect_manual_folds` at snapshot time.
     pub respect_manual_folds: bool,
     /// Mirrors `AppView::auto_mode_gate` at snapshot time.
-    /// When false the permission-mode picker hides the "Auto" choice (matches the Shift+Tab cycle, which skips Auto when the feature gate is off).
+    /// When false the permission-mode picker hides the "Auto-review" choice (matches the Shift+Tab cycle, which skips it when the feature gate is off).
     pub auto_mode_gate: bool,
     /// `[toolset.ask_user_question].timeout_enabled` mirror (effective TOML merge, like `show_tips`).
     /// `None` means unset in TOML, so the default `true` applies.

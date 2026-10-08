@@ -2,6 +2,7 @@
 //! Round trips are recorded once answered, so a held request appears when the client releases it.
 
 use agent_client_protocol as acp;
+use anyhow::Context as _;
 use serde_json::Value;
 use tokio::sync::watch;
 
@@ -50,6 +51,19 @@ impl Transcript {
             .wait_for(|entries| is_done(entries))
             .await
             .expect("the transcript owns the sender for the whole wait");
+    }
+
+    /// Same event wait as [`Self::wait_until`], bounded by `deadline`. Elapsing returns `missing` and keeps
+    /// the elapsed budget as the error source.
+    pub(crate) async fn wait_until_deadline(
+        &self,
+        deadline: tokio::time::Instant,
+        missing: &str,
+        is_done: impl Fn(&[TranscriptEntry]) -> bool,
+    ) -> anyhow::Result<()> {
+        tokio::time::timeout_at(deadline, self.wait_until(is_done))
+            .await
+            .context(missing.to_owned())
     }
 
     /// The agent's message so far: every `agent_message_chunk` text block, joined.

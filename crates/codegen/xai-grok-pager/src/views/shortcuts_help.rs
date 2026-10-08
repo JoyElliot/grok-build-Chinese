@@ -2,7 +2,7 @@
 //!
 //! Registry-driven: `build_entries(registry)` pulls every `ActionDef` from `ActionRegistry` and groups them by `Category`.
 //! The order is onboarding-friendly (Essentials, Panes, Scrollback Navigation, View, Prompt, Agent), with alt-key bindings inline.
-//! Search filters against key display, description, and label.
+//! Search matches every query word against key display, description, label, and long help.
 //!
 //! Two ways to read a binding's help: pattern A expands an inline help line under the selected hint (e/Space/l/h/arrows).
 //! Pattern B opens an in-modal man-style detail page on Enter; Esc (or h/Left/Backspace) returns to the browse list.
@@ -434,6 +434,7 @@ pub fn filter_entries_with_locale(
         return (0..entries.len()).collect();
     }
     let q = query.to_lowercase();
+    let tokens: Vec<&str> = q.split_whitespace().collect();
     let mut result: Vec<usize> = Vec::new();
     let mut pending_header: Option<usize> = None;
     let mut section_has_match = false;
@@ -462,8 +463,6 @@ pub fn filter_entries_with_locale(
                 if hide_dimmed && *dimmed {
                     continue;
                 }
-                let key_text = hint_key_display(h);
-                let key_pretty = hint_key_pretty(h);
                 let identity =
                     (*action_id)
                         .map(ExpandKey::Action)
@@ -475,14 +474,10 @@ pub fn filter_entries_with_locale(
                 let desc =
                     localized_entry_text(locale, identity, "description", english_desc.as_str());
                 let label = localized_entry_text(locale, identity, "label", h.label.as_ref());
-                let q_matches = q.is_empty()
-                    || label.to_lowercase().contains(&q)
-                    || h.label.to_lowercase().contains(&q)
-                    || key_text.to_lowercase().contains(&q)
-                    || key_pretty.to_lowercase().contains(&q)
-                    || desc.to_lowercase().contains(&q)
-                    || english_desc.to_lowercase().contains(&q);
-                if q_matches {
+                let localized = format!("{label} {desc}").to_lowercase();
+                if tokens.iter().all(|token| {
+                    hint_matches_query(h, *long_help, &[*token]) || localized.contains(token)
+                }) {
                     if let Some(idx) = pending_header.take() {
                         result.push(idx);
                     }
@@ -498,6 +493,22 @@ pub fn filter_entries_with_locale(
         result.push(h);
     }
     result
+}
+
+/// Every query token must appear in the hint's label, key display, description, or long help.
+fn hint_matches_query(h: &HintItem, long_help: Option<&str>, tokens: &[&str]) -> bool {
+    tokens.is_empty() || {
+        let haystack = format!(
+            "{} {} {} {} {}",
+            h.label,
+            hint_key_display(h),
+            hint_key_pretty(h),
+            hint_description(h),
+            long_help.unwrap_or_default(),
+        )
+        .to_lowercase();
+        tokens.iter().all(|t| haystack.contains(t))
+    }
 }
 
 fn hint_key_display(h: &HintItem) -> String {

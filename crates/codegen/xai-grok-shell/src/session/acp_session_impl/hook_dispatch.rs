@@ -114,10 +114,14 @@ impl SessionActor {
         }
     }
 
-    /// Re-read the disabled-hooks file after this session changed it or reloaded its hooks.
+    /// Re-read the disabled-hooks file after this session changed it.
     pub(super) fn refresh_hook_disabled(&self) {
-        *self.hook_disabled.borrow_mut() =
-            std::sync::Arc::new(crate::util::hooks::disabled_hooks_snapshot());
+        *self.hook_disabled.borrow_mut() = std::sync::Arc::new(
+            xai_grok_workspace::permission::resolution::disabled_hooks_snapshot(
+                xai_grok_workspace::permission::resolution::managed_settings(),
+                xai_grok_config::user_grok_home().as_deref(),
+            ),
+        );
     }
 
     /// The annotation renders inline with the preceding tool call block rather than as a separate agent message.

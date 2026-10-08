@@ -157,6 +157,7 @@ pub(crate) fn materialize_runtime_socket_deny_paths_from(
 }
 
 /// Encode the outer process's materialized automatic socket paths for bwrap re-exec.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn encode_bwrap_runtime_socket_denies(paths: &[PathBuf]) -> io::Result<String> {
     serde_json::to_string(paths).map_err(io::Error::other)
 }

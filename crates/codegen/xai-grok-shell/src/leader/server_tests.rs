@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::leader::protocol::read_message;
 use tempfile::TempDir;
 
 /// Parse a raw payload for the parse-once helper APIs.

@@ -1003,6 +1003,12 @@ impl SchedulerActor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_chars_does_not_split_a_four_byte_scalar_at_the_cut() {
+        assert_eq!("xx\u{1F600}\u{2026}", truncate_chars("xx\u{1F600}yy", 3));
+    }
+
     use crate::implementations::grok_build::scheduler::types::{
         ScheduledTask, SchedulerHandle, scheduler_tool_error,
     };
@@ -2291,6 +2297,58 @@ mod tests {
         assert_eq!(fired.revision, 1);
         assert_eq!(second.resume_from.as_deref(), Some(first_id.as_str()));
         assert_ne!(second.id, first_id);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paused_clock_advances_past_a_second_fire_while_the_first_is_running() {
+        let (handle, cancel, _notif_rx, mut subagent_rx, resources) =
+            make_test_actor_with_subagents_at(0);
+        create_due_task(&handle, "watch ci").await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+
+        let first = next_subagent_spawn(&mut subagent_rx).await;
+        let first_id = first.id.clone();
+        {
+            let mut res = resources.lock().await;
+            let Some(task) = res
+                .get_or_default::<State<SchedulerState>>()
+                .tasks
+                .first_mut()
+            else {
+                panic!("expected a scheduler task");
+            };
+            task.last_fired_at = Some(Utc::now() - chrono::Duration::seconds(2));
+        }
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        answer_subagent_query(
+            &mut subagent_rx,
+            &first_id,
+            SubagentSnapshotStatus::Running {
+                turn_count: 1,
+                tool_call_count: 1,
+                tokens_used: 0,
+                context_window_tokens: 0,
+                context_usage_pct: 0,
+                tools_used: vec![],
+                error_count: 0,
+            },
+        )
+        .await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        while let Ok(mut event) = subagent_rx.try_recv() {
+            ack_spawn_registration(&mut event);
+            assert!(
+                !matches!(
+                    event,
+                    SubagentEvent::Spawn(_) | SubagentEvent::LoopUnitActive(_)
+                ),
+                "second fire overlapped the running iteration"
+            );
+        }
 
         cancel.cancel();
     }

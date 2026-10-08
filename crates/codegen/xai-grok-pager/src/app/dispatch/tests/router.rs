@@ -1,11 +1,5 @@
 //! Tests for the action router, model switching, slash commands, and other cross-cutting dispatch behavior.
 use super::*;
-fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
-    let Some(agent) = app.agents.get(&id) else {
-        panic!("expected agent {id:?}");
-    };
-    agent
-}
 #[test]
 fn auth_copy_dispatch_preserves_all_delivery_states() {
     for delivery in [
@@ -181,7 +175,7 @@ fn external_prompt_editor_refuses_elements_with_visible_message() {
 #[test]
 fn external_prompt_editor_refuses_voice_and_pending_paste_with_visible_messages() {
     use crate::app::agent_view::AgentDeferredSend;
-    use crate::app::app_view::{VoiceState, VoiceTarget};
+    use crate::app::app_view::{Partial, VoiceState, VoiceTarget};
     for voice_state in [
         VoiceState::ColdStart {
             hold: false,
@@ -190,11 +184,13 @@ fn external_prompt_editor_refuses_voice_and_pending_paste_with_visible_messages(
         VoiceState::Recording {
             hold: false,
             target: VoiceTarget::Agent(AgentId(0)),
-            interim: Some("partial".to_owned()),
+            partial: Partial::Shown("partial".to_owned()),
+            route: Some(xai_grok_voice::VoiceRoute::Streaming),
         },
         VoiceState::Stopping {
             target: VoiceTarget::Agent(AgentId(0)),
-            interim: Some("partial".to_owned()),
+            partial: Partial::Shown("partial".to_owned()),
+            route: Some(xai_grok_voice::VoiceRoute::Streaming),
         },
     ] {
         let mut app = test_app_with_agent();
@@ -970,18 +966,111 @@ fn switch_model_dispatch_produces_effect_and_sets_pending() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
     assert!(!agent_ref(&app, id).session.model_switch_pending);
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(effects.first(), Some(Effect::SwitchModel { model_id: mid, .. }) if mid == &model_id)
+        matches!(effects.first(), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id)
     );
     assert!(agent_ref(&app, id).session.model_switch_pending);
     assert!(agent_ref(&app, id).session.state.is_idle());
+}
+#[test]
+fn context_window_selection_is_refused_while_a_model_switch_is_pending() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let old_model = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
+    let new_model = acp::ModelId::new(std::sync::Arc::from("grok-4.7"));
+    test_agent_mut(&mut app, id).session.models.current = Some(old_model.clone());
+    dispatch(Action::SwitchModel(ModelChoice::new(new_model)), &mut app);
+    let scrollback_before = agent_ref(&app, id).scrollback.len();
+    let effects = dispatch(
+        Action::SwitchModel(ModelChoice {
+            context_window_selection: std::num::NonZeroU64::new(500_000),
+            ..ModelChoice::new(old_model)
+        }),
+        &mut app,
+    );
+    assert!(
+        effects.is_empty(),
+        "re-selecting the old model must not revert the pending switch: {effects:?}"
+    );
+    assert_eq!(agent_ref(&app, id).scrollback.len(), scrollback_before + 1);
+}
+#[test]
+fn a_window_pick_sends_only_a_change_to_the_session_selection() {
+    let cases = [
+        (Some(500_000), "grok-4.8", 500_000, None),
+        (Some(500_000), "grok-4.5", 256_000, None),
+        (None, "grok-4.8", 256_000, None),
+        (None, "grok-4.7", 256_000, Some(256_000)),
+        (Some(500_000), "grok-4.8", 256_000, Some(256_000)),
+    ];
+    for (selection, target, picked, expected) in cases {
+        let mut app = test_app_with_catalog(selection);
+        let effects = dispatch(
+            Action::SwitchModel(ModelChoice {
+                model_id: acp::ModelId::new(std::sync::Arc::from(target)),
+                effort: None,
+                context_window_selection: std::num::NonZeroU64::new(picked),
+            }),
+            &mut app,
+        );
+        let sent = match effects.as_slice() {
+            [Effect::SwitchModel { choice, .. }] => choice
+                .context_window_selection
+                .map(std::num::NonZeroU64::get),
+            other => panic!("expected one SwitchModel effect, got {other:?}"),
+        };
+        assert_eq!(sent, expected, "selection {selection:?}, {target} {picked}");
+    }
+}
+#[test]
+fn a_redundant_window_pick_is_refused_while_a_model_switch_is_pending() {
+    let mut app = test_app_with_catalog(Some(500_000));
+    dispatch(
+        Action::SwitchModel(ModelChoice::new(acp::ModelId::new(std::sync::Arc::from(
+            "grok-4.5",
+        )))),
+        &mut app,
+    );
+    let scrollback_before = agent_ref(&app, AgentId(0)).scrollback.len();
+    let effects = dispatch(
+        Action::SwitchModel(ModelChoice {
+            model_id: acp::ModelId::new(std::sync::Arc::from("grok-4.8")),
+            effort: None,
+            context_window_selection: std::num::NonZeroU64::new(500_000),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert_eq!(
+        agent_ref(&app, AgentId(0)).scrollback.len(),
+        scrollback_before + 1
+    );
+}
+/// Grok 4.7 (current) and 4.8 list 256k and 500k, and Grok 4.5 lists 128k and 256k. All default to 256k.
+fn test_app_with_catalog(selection: Option<u64>) -> AppView {
+    let mut app = test_app_with_agent();
+    let models = &mut test_agent_mut(&mut app, AgentId(0)).session.models;
+    for (id, windows) in [
+        ("grok-4.7", [256_000, 500_000]),
+        ("grok-4.8", [256_000, 500_000]),
+        ("grok-4.5", [128_000, 256_000]),
+    ] {
+        let info = xai_grok_test_support::acp_fixtures::model_info_with_meta(
+            id,
+            id,
+            serde_json::json!({ "totalContextTokens": 256_000, "contextWindows": windows }),
+        );
+        models
+            .available
+            .insert(acp::ModelId::new(std::sync::Arc::from(id)), info);
+    }
+    models.current = Some(acp::ModelId::new(std::sync::Arc::from("grok-4.7")));
+    models.context_window_selection = selection;
+    app
 }
 #[test]
 fn switch_model_allowed_when_agent_chat_kind() {
@@ -990,15 +1079,12 @@ fn switch_model_allowed_when_agent_chat_kind() {
     app.agents.get_mut(&id).unwrap().chat_kind = true;
     let model_id = acp::ModelId::new(std::sync::Arc::from("auto"));
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(effects.first(), Some(Effect::SwitchModel { model_id: mid, .. }) if mid == &model_id)
+        matches!(effects.first(), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id)
     );
     assert!(agent_ref(&app, id).session.model_switch_pending);
 }
@@ -1009,15 +1095,12 @@ fn switch_model_allowed_when_app_chat_mode() {
     app.chat_mode = true;
     let model_id = acp::ModelId::new(std::sync::Arc::from("auto"));
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(effects.first(), Some(Effect::SwitchModel { model_id: mid, .. }) if mid == &model_id)
+        matches!(effects.first(), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id)
     );
     assert!(agent_ref(&app, id).session.model_switch_pending);
 }
@@ -1506,17 +1589,11 @@ fn deferred_switch_overwritten_by_second_switch() {
     let model_b = acp::ModelId::new(std::sync::Arc::from("model-b"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     dispatch(
-        Action::SwitchModel {
-            model_id: model_a.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_a.clone())),
         &mut app,
     );
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     assert_eq!(
@@ -1544,10 +1621,7 @@ fn pick_over_cli_seed_keeps_display_as_rollback_target() {
         prev_model_id: None,
     });
     dispatch(
-        Action::SwitchModel {
-            model_id: picked.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(picked.clone())),
         &mut app,
     );
     assert_eq!(
@@ -1566,10 +1640,7 @@ fn deferred_switch_updates_display_and_persists() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("model-b"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     let agent = agent_ref(&app, id);
@@ -1599,10 +1670,7 @@ fn deferred_switch_updates_display_and_persists() {
         "expected a single PersistPreferredModel effect, got {effects:?}"
     );
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(
@@ -2936,4 +3004,10 @@ fn refresh_mcp_list_clears_managed_connectors_wait() {
         effects.as_slice(),
         [Effect::FetchMcpsList { cache: false, .. }]
     ));
+}
+fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
 }

@@ -1709,7 +1709,7 @@ fn download_client() -> reqwest::Result<reqwest::Client> {
 /// Unique temp path for an in-flight download of `dest`. Two updaters may race in the same instant; that residual race is
 /// accepted instead of taking a lock. The unique name means neither racer can rename the other's half-written temp file
 /// into place. Leftovers older than [`STALE_TMP_AGE`] are swept by `cleanup_old_downloads`.
-fn tmp_download_path(dest: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn tmp_download_path(dest: &std::path::Path) -> std::path::PathBuf {
     unique_temp_sibling(dest, "tmp")
 }
 
@@ -1732,7 +1732,10 @@ fn unique_temp_sibling(base: &std::path::Path, ext: &str) -> std::path::PathBuf 
 }
 
 /// Set `+x` on the temp file before renaming onto `dest`, so a concurrent same-version installer never execs `dest` while it is still 0644.
-async fn publish_downloaded_artifact(tmp: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+pub(crate) async fn publish_downloaded_artifact(
+    tmp: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2152,10 +2155,10 @@ pub async fn install_internal_from_bases(
 
 /// First-launch of a freshly downloaded macOS binary can exceed 10s (Rosetta AOT and Gatekeeper on ~140MB).
 /// A short cap would fail a good artifact.
-const SMOKE_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const SMOKE_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Retry budget for exec attempts refused with ETXTBSY. The failure window is normally the microseconds another spawn in
-/// this process sits between fork and exec (see [`smoke_test_binary`]). On a heavily loaded machine that window can
+/// this process sits between fork and exec (see [`probe_version`]). On a heavily loaded machine that window can
 /// stretch, so the budget errs generous. A false "failed to run" both aborts this install and deletes the binary.
 const SMOKE_TEST_ETXTBSY_ATTEMPTS: u32 = 8;
 const SMOKE_TEST_ETXTBSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
@@ -2202,14 +2205,20 @@ fn nonzero_message(status: &str, stderr: &str) -> String {
     )
 }
 
-async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<String, SmokeTestFailure> {
-    // ETXTBSY race: while a concurrent updater in this process is between
-    // fork and exec (pre_exec in detach_command forces the fork/exec path),
-    // its child briefly holds every open fd — including the write-side fd of
-    // a download that has just been renamed onto `binary_path`. Exec'ing a
-    // binary whose inode is still open for write fails with ETXTBSY even
-    // though the file is complete and healthy, so retry instead of failing
-    // the install (and deleting a racer's freshly installed binary).
+/// How `<binary> --version` failed to produce an exit status.
+pub(crate) enum VersionProbeError {
+    Timeout,
+    Spawn(String),
+}
+
+/// Runs a fresh download's `--version`, detached, within [`SMOKE_TEST_TIMEOUT`]. Shared by the stock
+/// updater and the private distributions, which judge the output differently.
+pub(crate) async fn probe_version(
+    binary_path: &std::path::Path,
+) -> Result<std::process::Output, VersionProbeError> {
+    // ETXTBSY race: a concurrent updater's child in this process briefly holds every open fd between fork and exec pre_exec
+    // in detach_command forces the fork/exec path. The held fds include the write side of a download just renamed onto
+    // `binary_path`. So retry instead of failing the install (and deleting a racer's freshly installed binary)
     let mut last_spawn = String::new();
     for attempt in 1..=SMOKE_TEST_ETXTBSY_ATTEMPTS {
         let mut cmd = tokio::process::Command::new(binary_path);
@@ -2220,30 +2229,38 @@ async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<String, Smok
             .kill_on_drop(true);
         xai_grok_tools::util::detach_command(&mut cmd);
         match tokio::time::timeout(SMOKE_TEST_TIMEOUT, cmd.output()).await {
-            Err(_) => return Err(SmokeTestFailure::Timeout),
-            Ok(Ok(output)) if output.status.success() => {
-                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
-            }
-            Ok(Ok(output)) => {
-                let status = output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| output.status.to_string());
-                let stderr = truncate_err(&String::from_utf8_lossy(&output.stderr), 400);
-                return Err(SmokeTestFailure::NonZero { status, stderr });
-            }
+            Err(_) => return Err(VersionProbeError::Timeout),
+            Ok(Ok(output)) => return Ok(output),
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 last_spawn = e.to_string();
                 if attempt < SMOKE_TEST_ETXTBSY_ATTEMPTS {
                     tokio::time::sleep(SMOKE_TEST_ETXTBSY_BACKOFF * attempt).await;
                 }
             }
-            Ok(Err(e)) => return Err(SmokeTestFailure::Spawn(e.to_string())),
+            Ok(Err(e)) => return Err(VersionProbeError::Spawn(e.to_string())),
         }
     }
     // Reached only when every attempt hit ETXTBSY; `last_spawn` holds the final spawn error
-    Err(SmokeTestFailure::Spawn(last_spawn))
+    Err(VersionProbeError::Spawn(last_spawn))
+}
+
+async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<String, SmokeTestFailure> {
+    let output = probe_version(binary_path)
+        .await
+        .map_err(|error| match error {
+            VersionProbeError::Timeout => SmokeTestFailure::Timeout,
+            VersionProbeError::Spawn(message) => SmokeTestFailure::Spawn(message),
+        })?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let status = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| output.status.to_string());
+    let stderr = truncate_err(&String::from_utf8_lossy(&output.stderr), 400);
+    Err(SmokeTestFailure::NonZero { status, stderr })
 }
 
 #[cfg(feature = "community-build")]
@@ -2428,7 +2445,10 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
 /// returns a relative path like `../downloads/grok-0.1.203-linux-x86_64`. Relative symlinks survive Docker bind-mounts
 /// where `~/.grok/` is mapped into a container with a different `$HOME` (and thus a different absolute prefix).
 #[cfg(unix)]
-fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn relative_symlink_target(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::path::PathBuf {
     let (Some(target_parent), Some(link_parent)) = (target.parent(), link.parent()) else {
         return target.to_path_buf();
     };
@@ -2810,7 +2830,10 @@ impl LinkRollback {
 /// remove-then-create race where the path briefly doesn't exist, and never deletes the old target file. On macOS
 /// (especially Apple Silicon), deleting a binary that a running process has mmap'd causes SIGKILL.
 #[cfg(unix)]
-async fn atomic_symlink_swap(target: &std::path::Path, link_path: &std::path::Path) -> Result<()> {
+pub(crate) async fn atomic_symlink_swap(
+    target: &std::path::Path,
+    link_path: &std::path::Path,
+) -> Result<()> {
     // Per-racer temp name: a shared one makes remove_file then symlink racy (EEXIST, or ENOENT when another racer renames the link away)
     sweep_stale_tmp_links(link_path, STALE_TMP_AGE).await;
     let tmp_link = unique_temp_sibling(link_path, "tmp-link");
@@ -3883,20 +3906,20 @@ fn is_community_installed_target(name: &str) -> bool {
 
 /// Refresh managed config post-update (best-effort, staleness-gated), for deployment-key and team principals alike.
 async fn refresh_deployment_config() {
-    if !xai_grok_shell::managed_config::has_principal() {
+    if !xai_grok_cloud_config::managed_config::has_principal() {
         return;
     }
-    if !xai_grok_shell::managed_config::is_fetch_enabled() {
+    if !xai_grok_cloud_config::managed_config::is_fetch_enabled() {
         return;
     }
     // Clear a logged-out team's files before deciding to fetch (mirrors the loop).
-    xai_grok_shell::managed_config::clear_orphan();
+    xai_grok_cloud_config::managed_config::clear_orphan();
     if !xai_grok_shell::config::is_managed_config_stale_for(
-        &xai_grok_shell::managed_config::current_serving_identity(),
+        &xai_grok_cloud_config::managed_config::current_serving_identity(),
     ) {
         return;
     }
-    match xai_grok_shell::managed_config::sync().await {
+    match xai_grok_cloud_config::managed_config::sync().await {
         Ok(true) => {
             if cfg!(feature = "community-build") {
                 eprintln!("  已应用托管配置。");

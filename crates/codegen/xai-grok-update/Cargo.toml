@@ -4,9 +4,6 @@ name = "xai-grok-update"
 version = "0.1.220-alpha.4"
 edition.workspace = true
 
-[features]
-community-build = ["dep:tar"]
-
 [dependencies]
 dunce = { workspace = true }
 anyhow = { workspace = true }
@@ -25,8 +22,9 @@ tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "t
 tracing = { workspace = true }
 url = { workspace = true }
 xai-dirs = { workspace = true }
+xai-grok-cloud-config = { workspace = true }
 xai-grok-login = { workspace = true }
-xai-grok-shell = { workspace = true }
+xai-grok-shell = { path = "../xai-grok-shell", default-features = false }
 xai-grok-telemetry = { workspace = true }
 xai-grok-tools = { workspace = true }
 xai-grok-version = { workspace = true }
@@ -41,6 +39,11 @@ zip = { version = "3", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 libc = { workspace = true }
+
+[features]
+community-build = ["dep:tar"]
+default = ["xai-grok-shell/default"]
+default-bazel = []
 
 [dev-dependencies]
 semver = { workspace = true }

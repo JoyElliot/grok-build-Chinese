@@ -86,7 +86,7 @@ const PERMISSION_MODE_CHOICES: &[EnumChoice] = &[
     },
     EnumChoice {
         canonical: "auto",
-        display: "Auto",
+        display: "Auto-review",
         description: "LLM classifier approves safe tools; dangerous actions may still prompt or deny.",
     },
     EnumChoice {
@@ -775,7 +775,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Permission mode",
             description: "Default uses the agent's built-in behavior; \
                           Ask prompts for each tool action; \
-                          Auto uses an LLM classifier for risky tools; \
+                          Auto-review uses an LLM classifier for risky tools; \
                           Always approve grants all permissions automatically.",
             keywords: &[
                 "permission",
@@ -785,6 +785,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "always",
                 "ask",
                 "auto",
+                "review",
                 "classifier",
                 "tool",
                 "danger",
@@ -806,7 +807,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Remember tool approvals",
             description: "Show \"Always allow\" options in permission prompts so you can stop \
                           being re-asked about a specific command or tool. Applies in ask and \
-                          auto; Always-approve still skips all prompts. Restart required.",
+                          Auto-review; Always-approve still skips all prompts. Restart required.",
             keywords: &[
                 "permission",
                 "approve",

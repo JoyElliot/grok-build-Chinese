@@ -39,6 +39,7 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
                 .session
                 .models
                 .update_catalog(new_models.available.clone());
+            agent.refresh_context_total();
         }
         true
     } else {
@@ -68,8 +69,8 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         xai_grok_shell::util::config::set_remote_campaigns_from_settings(Some(&rs));
         // The settings row read its campaign layer at startup; the same re-read the shell does on `/new` keeps its value and lock current
         match xai_grok_shell::config::load_effective_config_with_layers() {
-            Ok((layers, _)) => {
-                app.subagent_model_inheritance.reseed_config_layers(&layers);
+            Ok(loaded) => {
+                app.subagent_model_inheritance.reseed_config_layers(&loaded);
                 crate::app::dispatch::refresh_open_settings_modals(app);
             }
             Err(e) => {

@@ -9,9 +9,11 @@ mod flags;
 mod mcp;
 mod prompt_suggest;
 mod request_compression;
+mod session_recap;
 mod system_prompt;
 mod tool_approvals;
 mod toolset;
+mod turn_summary;
 mod ui;
 mod version;
 
@@ -24,9 +26,11 @@ pub use flags::*;
 pub use mcp::*;
 pub use prompt_suggest::*;
 pub(crate) use request_compression::*;
+pub use session_recap::*;
 pub use system_prompt::*;
 pub use tool_approvals::*;
 pub use toolset::*;
+pub use turn_summary::*;
 pub use ui::*;
 pub use version::*;
 

@@ -221,6 +221,7 @@ fn wedged_child_handle() -> (
     );
     let (signals_handle, signals_actor) = crate::session::signals::SessionSignalsActor::new();
     let handle = SessionHandle {
+        context_window_selection: Default::default(),
         cmd_tx,
         persistence_tx,
         registry_write_order: Default::default(),
@@ -2039,6 +2040,51 @@ fn validate_subagent_type_unknown_omits_disabled_types_from_available_list() {
             assert!(
                     available.iter().any(|n| n == "general-purpose"),
                     "non-disabled built-ins must still appear: {available:?}",
+                );
+        }
+        other => panic!("expected Unknown, got {other:?}"),
+    }
+}
+#[test]
+fn validate_subagent_type_accepts_plugin_types_and_lists_them_when_unknown() {
+    use xai_grok_agent::plugins::SharedPluginRegistryHandle;
+    use xai_grok_agent::plugins::discovery::DiscoveryConfig;
+    let workdir = tempfile::tempdir().expect("workdir");
+    let plugin_dir = workdir.path().join("demo-plugin");
+    std::fs::create_dir_all(plugin_dir.join("agents")).expect("plugin agents dir");
+    std::fs::write(plugin_dir.join("plugin.json"), r#"{"name":"demo-plugin"}"#)
+        .expect("plugin manifest");
+    std::fs::write(
+            plugin_dir.join("agents").join("reviewer.md"),
+            "---\nname: reviewer\ndescription: Reviews diffs.\n---\n\nReview the diff.\n",
+        )
+        .expect("plugin agent");
+    let registry = SharedPluginRegistryHandle::new(None, Vec::new())
+        .build_for_cwd(
+            workdir.path(),
+            &DiscoveryConfig {
+                cli_plugin_dirs: Vec::new(),
+                config_paths: Vec::new(),
+                disabled: Vec::new(),
+                enabled: Vec::new(),
+            },
+            &[plugin_dir],
+            false,
+        );
+    let ctx = SubagentValidationContext {
+        parent_cwd: workdir.path().to_path_buf(),
+        plugin_registry: registry,
+        ..Default::default()
+    };
+    assert!(matches!(
+            validate_subagent_type("demo-plugin:reviewer", &ctx),
+            SubagentValidateTypeOutcome::Ok,
+        ));
+    match validate_subagent_type("demo-plugin:invented", &ctx) {
+        SubagentValidateTypeOutcome::Unknown { available } => {
+            assert!(
+                    available.iter().any(|n| n == "demo-plugin:reviewer"),
+                    "plugin type missing from available list: {available:?}",
                 );
         }
         other => panic!("expected Unknown, got {other:?}"),

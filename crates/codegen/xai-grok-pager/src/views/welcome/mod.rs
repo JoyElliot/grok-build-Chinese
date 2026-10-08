@@ -834,6 +834,8 @@ pub struct WelcomeRenderParams<'a> {
     pub announcement: Option<&'a xai_grok_announcements::RemoteAnnouncement>,
     pub tip: Option<&'a str>,
     pub model_name: &'a str,
+    /// The current model's notice, painted directly above the prompt.
+    pub model_notice: Option<&'a xai_grok_shell::sampling::types::ModelNotice>,
     pub flags: &'a [PromptFlag<'a>],
     pub selected: Option<usize>,
     pub team_name: Option<&'a str>,
@@ -2184,16 +2186,33 @@ fn render_welcome_done(
         logo_hidden: None,
         prompt_height: None,
     };
+    let notice_inset = prompt::prompt_inset(p.compact);
+    let notice_rows = p
+        .model_notice
+        .filter(|_| !show_picker && p.has_access)
+        .map_or(0, |notice| {
+            let width = content_area.width.saturating_sub(notice_inset * 2);
+            crate::views::model_notice_banner::height(notice, width)
+        });
     // The picker and the access gate paint no composer
+    // The model notice paints in the top rows of the prompt slot
     if !show_picker && p.has_access {
-        layout_input.prompt_height = Some(prompt::desired_prompt_height(
-            prompt,
-            content_area.width,
-            p.compact,
-            prompt_max_height(&layout_input),
-        ));
+        layout_input.prompt_height = Some(
+            prompt::desired_prompt_height(
+                prompt,
+                content_area.width,
+                p.compact,
+                prompt_max_height(&layout_input),
+            ) + notice_rows,
+        );
     }
-    let layout = WelcomeLayout::compute(layout_input);
+    let mut layout = WelcomeLayout::compute(layout_input);
+    let notice_area = Rect {
+        height: notice_rows.min(layout.prompt.height),
+        ..layout.prompt
+    };
+    layout.prompt.y += notice_area.height;
+    layout.prompt.height -= notice_area.height;
 
     // Render startup warning in the error area (same slot as auth errors).
     let import_banner_rect =
@@ -2637,6 +2656,13 @@ fn render_welcome_done(
             usage_warning_critical,
         };
 
+        if let Some(notice) = p.model_notice {
+            crate::views::model_notice_banner::render(
+                inset_horizontal(notice_area, notice_inset),
+                buf,
+                notice,
+            );
+        }
         render_prompt_and_version(
             &layout,
             content_area.width,
@@ -3472,6 +3498,7 @@ mod tests {
             announcement: None,
             tip: None,
             model_name: "test",
+            model_notice: None,
             flags: &[],
             selected: None,
             team_name: None,

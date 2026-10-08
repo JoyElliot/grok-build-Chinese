@@ -1108,9 +1108,17 @@ pub(super) fn handle_session_notification_with_origin(
             ));
             true
         }
+        XaiSessionUpdate::ServedModel { display_name } => {
+            agent
+                .session
+                .models
+                .set_served_model_name(Some(display_name));
+            true
+        }
         XaiSessionUpdate::ModelChanged {
             model_id,
             reasoning_effort,
+            context_window_selection,
         } => {
             if agent.session.model_switch_pending {
                 tracing::debug!(
@@ -1118,7 +1126,14 @@ pub(super) fn handle_session_notification_with_origin(
                     model_id = %model_id,
                     "ignoring ModelChanged broadcast — local switch is in flight"
                 );
-                return false;
+                let models = &mut agent.session.models;
+                models.model_changed_during_switch = true;
+                let selection_changed = models.context_window_selection != context_window_selection;
+                models.context_window_selection = context_window_selection;
+                if selection_changed {
+                    agent.refresh_context_total();
+                }
+                return selection_changed;
             }
             use xai_grok_shell::sampling::types::ReasoningEffort;
             let new_model_id = acp::ModelId::new(model_id.clone());
@@ -1142,15 +1157,19 @@ pub(super) fn handle_session_notification_with_origin(
                 .and_then(|s| s.parse::<ReasoningEffort>().ok());
             let prev_model = agent.session.models.current.clone();
             let prev_effort = agent.session.models.reasoning_effort;
+            let prev_selection = agent.session.models.context_window_selection;
             agent
                 .session
                 .models
                 .set_current(new_model_id.clone(), effort);
+            agent.session.models.context_window_selection = context_window_selection;
             agent.session.user_model_preference = Some(new_model_id.clone());
             let resolved_effort = agent.session.models.reasoning_effort;
-            let actually_changed =
-                prev_model.as_ref() != Some(&new_model_id) || prev_effort != resolved_effort;
+            let actually_changed = prev_model.as_ref() != Some(&new_model_id)
+                || prev_effort != resolved_effort
+                || prev_selection != context_window_selection;
             if actually_changed {
+                agent.refresh_context_total();
                 tracing::info!(
                     session_id = session_notif.session_id.0.as_ref(),
                     model_id = %model_id,
@@ -1351,18 +1370,22 @@ pub(super) fn handle_session_notification_with_origin(
         changed |= app.status_line.take_changed();
     }
     if plugins_changed_needs_skills_refetch {
-        if let Some(agent) = app.agents.get(&parent_id)
-            && let Some(session_id) = agent.session.session_id.clone()
-        {
-            app.pending_effects.push(Effect::FetchSkillsList {
-                agent_id: parent_id,
-                session_id,
-            });
-        } else if let Some(agent) = app.agents.get_mut(&parent_id)
+        if let Some(agent) = app.agents.get_mut(&parent_id)
             && let Some(ref mut modal) = agent.extensions_modal
         {
-            modal.skills_data =
-                crate::views::extensions_modal::TabDataState::Error("No active session".into());
+            match agent.session.session_id.clone() {
+                Some(session_id) => app.pending_effects.push(Effect::FetchSkillsList {
+                    agent_id: parent_id,
+                    session_id,
+                    refresh: false,
+                    fetch: modal.next_skills_fetch(),
+                }),
+                None => {
+                    modal.skills_data = crate::views::extensions_modal::TabDataState::Error(
+                        "No active session".into(),
+                    );
+                }
+            }
         } else {
             tracing::warn!("PluginsChanged: agent or modal disappeared before skills re-fetch");
         }
@@ -1469,7 +1492,8 @@ pub(super) fn handle_child_session_notification(
         | XaiSessionUpdate::RetryState(_)
         | XaiSessionUpdate::MemoryFlushCompleted { .. }
         | XaiSessionUpdate::MemoryDreamCompleted { .. }
-        | XaiSessionUpdate::MemorySessionSaved { .. } => {
+        | XaiSessionUpdate::MemorySessionSaved { .. }
+        | XaiSessionUpdate::HookAnnotation { .. } => {
             let mut changed = false;
             if let Some(child_view) = agent.child_view_for_live_update_mut(child_sid) {
                 changed = apply_child_view_session_event(child_view, &update, is_api_key_auth);
@@ -1571,7 +1595,38 @@ pub(crate) fn apply_child_view_session_event(
     update: &XaiSessionUpdate,
     is_api_key_auth: bool,
 ) -> bool {
+    if let XaiSessionUpdate::HookAnnotation { message, kind } = update {
+        return apply_child_hook_annotation(child_view, message, kind);
+    }
     apply_compaction_or_retry_update(child_view, update, is_api_key_auth)
+}
+/// Renders a hook's message, such as a PreCompact hook's note, in the child's scrollback.
+fn apply_child_hook_annotation(
+    child_view: &mut AgentView,
+    message: &str,
+    kind: &HookAnnotationKind,
+) -> bool {
+    if child_view.scrollback.appearance().disable_plugins {
+        return false;
+    }
+    let event = match kind {
+        HookAnnotationKind::Unknown
+        | HookAnnotationKind::Note
+        | HookAnnotationKind::PromptBlockRequestedNotEnforced
+        | HookAnnotationKind::PromptBlocked
+        | HookAnnotationKind::QueuedPromptsHeld
+        | HookAnnotationKind::InterjectionsJoined => SessionEvent::HookAnnotation {
+            message: message.to_owned(),
+            kind: Some(*kind),
+        },
+        HookAnnotationKind::ToolOutcome => SessionEvent::HookOutcome {
+            message: message.to_owned(),
+        },
+    };
+    child_view
+        .scrollback
+        .push_block(RenderBlock::session_event(event));
+    true
 }
 fn apply_compaction_or_retry_update(
     agent: &mut AgentView,
@@ -1619,8 +1674,17 @@ fn apply_compaction_or_retry_update(
     changed
 }
 /// Apply a compaction or retry event to a session's activity state and scrollback.
-/// Test-only shim so dispatch tests can replay notification sequences (e.g. `RetryState::Retrying` then `Exhausted`) through the production handler.
-/// The Retrying arm clears the `in_flight_prompt` rewind stash, which a fixture setting fields directly would miss.
+/// A backend may report a manual `/compact`'s turn through the same notifications as an
+/// auto-compaction; `handle_compact_complete` paints that outcome, so these arms stay quiet
+fn manual_compact_in_flight(session: &AgentSession) -> bool {
+    session
+        .state
+        .command_in_flight()
+        .is_some_and(|command| command.is_compact())
+        && !session.state.is_switch_model_compact()
+}
+/// Lets dispatch tests replay notification sequences (`RetryState::Retrying` then `Exhausted`) through `apply_session_event`.
+/// A fixture that sets fields directly would skip the Retrying arm's clearing of `in_flight_prompt`.
 #[cfg(test)]
 pub(crate) fn apply_session_event_for_test(
     update: &XaiSessionUpdate,
@@ -1685,7 +1749,7 @@ pub(super) fn apply_session_event(
                         elapsed_ms: *elapsed_ms,
                     },
                 ));
-            } else {
+            } else if !manual_compact_in_flight(session) {
                 session.defer_compaction(*tokens_before, *tokens_after, *elapsed_ms);
             }
             true
@@ -1693,18 +1757,22 @@ pub(super) fn apply_session_event(
         XaiSessionUpdate::AutoCompactFailed { error } => {
             tracing::error!(error = %error, "Auto-compaction failed");
             session.set_compaction_activity(None);
-            scrollback.push_block(RenderBlock::session_event(SessionEvent::CompactionFailed {
-                error: error.clone(),
-            }));
+            if !manual_compact_in_flight(session) {
+                scrollback.push_block(RenderBlock::session_event(SessionEvent::CompactionFailed {
+                    error: error.clone(),
+                }));
+            }
             true
         }
         XaiSessionUpdate::AutoCompactCancelled { .. } => {
             tracing::info!("Auto-compact cancelled");
             session.set_compaction_activity(None);
             session.compact_held_prompt = None;
-            scrollback.push_block(RenderBlock::session_event(
-                SessionEvent::CompactionCancelled,
-            ));
+            if !manual_compact_in_flight(session) {
+                scrollback.push_block(RenderBlock::session_event(
+                    SessionEvent::CompactionCancelled,
+                ));
+            }
             true
         }
         XaiSessionUpdate::RetryState(retry) => {

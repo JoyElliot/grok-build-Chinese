@@ -31,6 +31,10 @@ pub const BOT_RELAY_CAPABILITIES: &[&str] = &[
 /// `bot.event` envelope version carried in [`BotEventEnvelope::v`].
 pub const BOT_EVENT_ENVELOPE_V: u32 = 1;
 
+/// Prefix of the `clientNonce` the hub mints for a prompt Grok chat sends to
+/// a bot: `grok-chat.<conversationId>.<uuid>`. Clients may not send it.
+pub const GROK_CHAT_CLIENT_NONCE_PREFIX: &str = "grok-chat.";
+
 /// `reason` on `command_rejected` when the command is compiled in but not allowlisted.
 pub const COMMAND_REJECTED_NOT_YET_ENABLED: &str = "not_yet_enabled";
 

@@ -101,6 +101,10 @@ impl crate::types::tool_metadata::ToolMetadata for GrepTool {
         ToolNamespace::OpenCode
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }

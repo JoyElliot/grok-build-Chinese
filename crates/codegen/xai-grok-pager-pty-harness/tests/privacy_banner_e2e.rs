@@ -19,8 +19,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use xai_grok_pager_pty_harness::{
-    ContentController, EnvOp, MockCanAdministerTeam, PtyExitPoll, PtyHarness, keys, pager_binary,
-    seed_fake_oauth_coding_data_opted_out, seed_fake_oauth_team_member_can_administer,
+    ContentController, EnvOp, MockCanAdministerTeam, PtyExitPoll, PtyHarness, keys,
+    oauth_credential_ops, pager_binary, seed_fake_oauth_coding_data_opted_out,
+    seed_fake_oauth_team_member_can_administer,
 };
 
 const ROWS: u16 = 50;
@@ -42,15 +43,15 @@ async fn privacy_banner_persists_into_agent_view_and_opt_in_shares() {
     run_opt_in().await.expect("privacy banner opt-in e2e");
 }
 
-/// The banner's env preconditions: force the rollout flag on (the env override beats remote settings) and remove the sandbox's fake `XAI_API_KEY`.
-/// Removing the key makes the seeded opted-out OAuth entry the active auth.
+/// The `GROK_PRIVACY_NOTICE_ROLLOUT` env override beats remote settings.
 /// The `[Opt in]` team principal would otherwise start a managed-config fetch the mock does not serve.
-fn banner_env_ops() -> [EnvOp<'static>; 3] {
-    [
+fn banner_env_ops() -> Vec<EnvOp<'static>> {
+    let mut ops = vec![
         EnvOp::set("GROK_PRIVACY_NOTICE_ROLLOUT", "1"),
         EnvOp::set("GROK_MANAGED_CONFIG", "0"),
-        EnvOp::remove("XAI_API_KEY"),
-    ]
+    ];
+    ops.extend(oauth_credential_ops());
+    ops
 }
 
 /// Disk and mock agree so a `/user` refresh cannot flip the capability.

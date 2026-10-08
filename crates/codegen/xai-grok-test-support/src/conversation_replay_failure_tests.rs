@@ -281,6 +281,30 @@ fn failures_answer_in_the_order_the_case_declared_them() {
 }
 
 #[test]
+fn empty_and_truncated_replies_answer_their_count_then_the_script_answers() {
+    let replay = replay_for(
+        Conversation::nth(1)
+            .empty_reply(1)
+            .truncated_reply(1)
+            .reply("PONG"),
+    );
+
+    let served: Vec<ServedReply> = (0..3).map(|_| respond(&replay, vec![])).collect();
+
+    assert_eq!(
+        vec![
+            (Some(ObservedFailure::Empty), ModelReply::Empty),
+            (Some(ObservedFailure::Truncated), ModelReply::Truncated),
+            (None, reply("PONG")),
+        ],
+        served
+            .into_iter()
+            .map(|served| (served.observed, served.reply))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn drop_closes_its_count_of_connections_then_the_script_answers() {
     let replay = replay_for(Conversation::nth(1).drop_connection(1).reply("PONG"));
 

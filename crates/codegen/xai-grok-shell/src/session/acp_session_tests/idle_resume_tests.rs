@@ -186,20 +186,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 rewind_pending_prompt: std::sync::Mutex::new(None),
                 startup_hints: StartupHints::default(),
                 forked_tool_override: None,
-                compaction: crate::session::compaction_config::CompactionConfig {
-                    threshold_percent: std::cell::Cell::new(85),
-                    force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                    context_window_override: None,
-                    count: std::sync::atomic::AtomicU64::new(0),
-                    auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-                    previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
-                    verbatim_input: true,
-                    tool_choice: crate::util::config::CompactionToolChoice::Auto,
-                    prefire: crate::session::compaction_config::PrefireState::default(),
-                    prefix_released: std::sync::atomic::AtomicBool::new(false),
-                    cancel: Default::default(),
-                },
+                compaction: test_compaction_config(85),
                 long_reasoning_reminder:
                     crate::session::long_reasoning_reminder::LongReasoningReminder {
                         enabled: false,
