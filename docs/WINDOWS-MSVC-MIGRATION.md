@@ -76,7 +76,9 @@ Cargo 全局保留 ARM64 的 VS 库环境，x64 的 C/C++ 编译器、归档器�
 
 修复将三个目标包装器改成宿主原生 PE：`cl.exe`、`link.exe`、`lib.exe`。目标 CC 使用裸名称 `cl.exe`，PATH 最前放仅含 `cl.exe` 的目录，目标 link/lib 仍用绝对路径；宿主 CC/CXX/AR/link 全部显式指定真实 ARM64 工具的绝对路径。包装器只加载预先捕获的 x64 编译环境，通过 `CreateProcessW` 原样转发参数尾部、标准流和退出码；不经过命令解释器，不修改优化配置或禁用汇编实现。Cargo 主进程仍使用 ARM64 库环境，包装器源码和生成脚本纳入编译缓存键。
 
-新增预检用真实 MSVC 工具覆盖空格/中文路径、错误宿主 INCLUDE/LIB 的隔离、超过 8191 字符的归档命令、链接 response file、x64 PE 架构及工具失败退出码。在完整锁定依赖下载后，另用产品相同版本 `cc 1.2.43`、`find-msvc-tools 0.1.4` 与 `blake3 1.8.2` 编译小型 Cargo 图，强制断言 MSVC family，验证实际优化汇编的选择。本地 x64 主机的上述检查通过；另将 BLAKE3 已编译 build script 的 HOST/TARGET 设为 ARM64/x64，实际执行其交叉条件分支，生成了 SSE2/SSE4.1/AVX2/AVX512 的 MSVC 汇编对象及库。这项本地检查仍运行 x64 工具，不是 ARM64 宿主验证；仍须 ARM64 runner 完整构建和独立 x64 迁移作业证明交叉路径可用。
+新增预检用真实 MSVC 工具覆盖空格/中文路径、错误宿主 INCLUDE/LIB 的隔离、超过 8191 字符的归档命令、链接 response file、x64 PE 架构及工具失败退出码。在完整锁定依赖下载后，另用产品相同版本的 `cc`、`find-msvc-tools` 与 `blake3`（当时为 1.2.43、0.1.4、1.8.2）编译小型 Cargo 图，强制断言 MSVC family，验证实际优化汇编的选择。本地 x64 主机的上述检查通过；另将 BLAKE3 已编译 build script 的 HOST/TARGET 设为 ARM64/x64，实际执行其交叉条件分支，生成了 SSE2/SSE4.1/AVX2/AVX512 的 MSVC 汇编对象及库。这项本地检查仍运行 x64 工具，不是 ARM64 宿主验证；仍须 ARM64 runner 完整构建和独立 x64 迁移作业证明交叉路径可用。
+
+探针版本不再写死：2026-10-09 起由 `Test-MsvcToolWrappers.ps1 -CargoProbe` 从正在构建的仓库 `Cargo.lock` 读取这三个 crate 的 crates.io 锁定版本（PR 轮使用合并 zh-dev 后的 lockfile，例如 cc 1.2.48、find-msvc-tools 0.1.14）。lockfile 缺失、缺少某个 crate 或同名存在多个版本时探针直接失败，不会静默跳过；`.github/scripts/tests/test_msvc_build_input.py` 覆盖上述行为。
 
 ### 交叉路径首次完整通过：仍需减少串行开销
 
