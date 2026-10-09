@@ -192,8 +192,9 @@ Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM
 ## 缓存整顿（2026-10-09）
 
 - **宿主与目标合一**：Linux x64/ARM64 与 macOS ARM64/Intel 交叉构建原先把 host `release-dist`（build script、proc-macro）和 target `release-dist` 分成两份缓存，两份可能来自不同轮次，build script 指纹不一致时即使“精确命中”仍会重编（Linux ARM64 曾命中后仍重编 621 个 crate）。现合并为一份 `grok-zh-build-…` 缓存，同时包含两个目录；Windows ARM64、MSVC 交叉与 GNU 交叉原本就是合一缓存，保持不变。
-- **键与退级**：`grok-zh-build-<schema>-<OS>-<arch>-<工具链>-<target>-<profile 配置>-<manifest/build.rs/config/toolchain/protoc 哈希>-<Cargo.lock 哈希>`；restore-keys 依次去掉 Cargo.lock 哈希、再去掉 manifest 哈希。Linux 的 profile 段为 `release-dist`。
+- **键与退级**：`grok-zh-build-<schema>-<OS>-<arch>-<工具链>-<target>-<profile 配置>-<manifest/build.rs/config/toolchain/protoc 哈希>-<Cargo.lock 哈希>`；restore-keys 依次去掉 Cargo.lock 哈希、再去掉 manifest 哈希。Linux 预览的 profile 段为 `release-dist-debug0`，正式 Release 为 `release-dist-debugdefault`，两者不互相恢复。
 - **PR 只读**：PR 只用 `actions/cache/restore`；保存（`save-cargo-cache`，内部为 `actions/cache/save`）只在 `GROK_ZH_CACHE_WRITE == 'true'` 且构建成功、主键未精确命中时执行，沿用保存前复查精确键的策略，不保存失败或部分构建。
 - **定时预热**：`cron: '17 19 */5 * *'`（UTC 19:17，即 JST 04:17；每月 1/6/11/16/21/26/31 日），在默认分支 zh-dev 上运行整套预览，用于在 zh-dev 长时间无提交时防止缓存 7 天未访问被清除。精确命中时只恢复、不重复保存。
 - **Windows GNU 测试兜底**：core/ui 的 `target/debug` 缓存新增一层不含 manifest 哈希的 zh-dev restore-key，依赖或 manifest 变化后 PR 仍可从 zh-dev 最近一份测试缓存增量编译。
 - **容量估算**：按 2026-09-26/27 日志的压缩大小，zh-dev 单轮全部缓存约 17 GB（Linux x64 ≈2.6、Linux ARM64 ≈2.6、Windows GNU 测试 core+ui ≈3.7、GNU 交叉 ≈1.9、Windows ARM64 ≈1.6、MSVC 交叉 ≈1.5、macOS ARM64 ≈1.5、macOS Intel ≈1.5、Windows GNU home ≈0.3），合并只消除指纹错配、不减少体积，仍高于 10 GB 免费额度。PR 不再写入后，churn 只来自 zh-dev 自身；精确命中不重复保存，但总量超额时仍会按最后访问时间轮换淘汰。是否进一步停存体积大且不在关键路径上的缓存（如 Windows GNU 测试或 GNU 交叉），需以本轮暖缓存实测结果决定。
+- **Linux 预览**：x64 与 ARM64 预览追加 `--config profile.release-dist.debug=0`（与 Windows GNU 交叉一致），并发由 J3 提高到 J4（标准 ubuntu-24.04/ubuntu-24.04-arm 为 4 vCPU）；正式 Release 不传该参数，保持 release-dist 原配置。

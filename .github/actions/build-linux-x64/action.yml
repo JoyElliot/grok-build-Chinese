@@ -138,10 +138,10 @@ runs:
           path: |
             ${{ runner.temp }}/grok-zh-target/release-dist
             ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          key: grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-
 
       - name: 安装并验证 DotSlash 与 protoc
         shell: bash
@@ -187,13 +187,20 @@ runs:
       - name: 构建 Linux GNU
         if: inputs.phase != 'test'
         shell: bash
+        env:
+          IS_RELEASE_BUILD: ${{ inputs.release_build }}
         run: |
           set -euo pipefail
+          # 预览构建不生成调试信息（与 Windows GNU 交叉一致）；正式 Release 保持 release-dist 原配置。
+          extra=()
+          if [[ "$IS_RELEASE_BUILD" != true ]]; then
+            extra=(--config profile.release-dist.debug=0)
+          fi
           cargo build --frozen -j "$CARGO_BUILD_JOBS" \
             --target "$TARGET" \
             -p xai-grok-pager-bin \
             --profile release-dist \
-            --features release-dist --timings
+            --features release-dist --timings "${extra[@]}"
 
       - name: 上传 Linux Cargo timings
         if: ${{ !cancelled() && inputs.phase != 'test' }}
@@ -266,7 +273,8 @@ runs:
             echo "Upstream source revision: $source_rev"
             echo "Repository: $GITHUB_REPOSITORY"
             echo "Target: $TARGET"
-            echo "Profile: release-dist (Thin LTO, codegen-units=1, packaged binary strip --strip-unneeded; runtime image verified)"
+            if [[ "${{ inputs.release_build }}" == "true" ]]; then profile_debug=""; else profile_debug=", debug=0"; fi
+            echo "Profile: release-dist (Thin LTO, codegen-units=1${profile_debug}, packaged binary strip --strip-unneeded; runtime image verified)"
             echo "Rust: $rustc_info"
             echo "Cargo: $cargo_info"
             echo "DotSlash: $dotslash_info"

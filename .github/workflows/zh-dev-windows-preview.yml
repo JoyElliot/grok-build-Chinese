@@ -756,7 +756,8 @@ jobs:
       archive_name: ${{ steps.build.outputs.archive_name }}
       artifact_name: ${{ steps.build.outputs.artifact_name }}
     env:
-      CARGO_BUILD_JOBS: "3"
+      # 标准 ubuntu-24.04 / ubuntu-24.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
+      CARGO_BUILD_JOBS: "4"
       CARGO_CACHE_SCHEMA: linux-x64-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
@@ -789,7 +790,8 @@ jobs:
       archive_name: ${{ steps.build.outputs.archive_name }}
       artifact_name: ${{ steps.build.outputs.artifact_name }}
     env:
-      CARGO_BUILD_JOBS: "3"
+      # 标准 ubuntu-24.04 / ubuntu-24.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
+      CARGO_BUILD_JOBS: "4"
       CARGO_CACHE_SCHEMA: linux-arm64-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
