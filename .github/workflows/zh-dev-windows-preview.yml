@@ -758,6 +758,7 @@ jobs:
     env:
       # 标准 ubuntu-24.04 / ubuntu-24.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
       CARGO_BUILD_JOBS: "4"
+      # 不保存也不恢复 Cargo 缓存（10GB 缓存池放不下，且本 job 不在关键路径上），见 build-linux-x64。
       CARGO_CACHE_SCHEMA: linux-x64-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
@@ -792,6 +793,7 @@ jobs:
     env:
       # 标准 ubuntu-24.04 / ubuntu-24.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
       CARGO_BUILD_JOBS: "4"
+      # 不保存也不恢复 Cargo 缓存（10GB 缓存池放不下，且本 job 不在关键路径上），见 build-linux-x64。
       CARGO_CACHE_SCHEMA: linux-arm64-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"

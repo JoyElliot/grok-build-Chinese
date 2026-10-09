@@ -204,6 +204,14 @@ Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM
 - **原因**：2026-10-09 两轮手动触发（37882323840 冷、37888274643 暖）实测全部缓存约 16.4 GB（7 个平台 build+home ≈12.7 GB，Windows GNU 测试 core+ui ≈3.7 GB），超过 10 GB 上限；dispatch1 刚保存完，Linux ARM64 与 GNU 交叉就被淘汰，暖态轮又冷编了这两个平台。暖态轮第三方依赖 0 重编，而本仓 98 个 crate 每轮都重编（checkout 刷新源码 mtime，版本号和 commit 编译时注入），缓存它们的产物只占配额、没有命中收益。
 - **做法**：`.github/actions/save-cargo-cache` 新增可选输入 `prune-profile-dirs`。仅在主键尚不存在、确实要保存时，先运行 `.github/scripts/prune-cargo-workspace-artifacts.py`，从列出的 profile 目录删除本仓 crate 的 `.fingerprint/<包名>-<hash>`、`build/<包名>-<hash>`、`deps`/`examples` 中的 `[lib]<crate>-<hash>.*`（rlib、rmeta、d、exe、pdb、dSYM 等）、`incremental/<crate>-*`，以及 profile 根目录下的最终二进制和 uplift 副本。第三方单元的指纹不引用本仓单元，命中不受影响。
 - **名单来源**：本仓包名与 target 名由 `cargo metadata --format-version 1 --no-deps --offline` 生成，不写死；build script（`custom-build`）只按包名清理 `build/`，避免误伤第三方 `build_script_build`。按 `名称-16 位哈希` 精确匹配，`lib` 前缀只对 rlib/rmeta/so/dylib/a 剥离，例如本仓若有 `c` 也不会误删第三方 `libc`。cargo metadata 失败或名单为空时步骤直接失败，拒绝静默保存未清理的大缓存。
-- **覆盖范围**：Linux x64/ARM64、macOS ARM64/Intel（bash + python3）、Windows ARM64/x64 MSVC 与 ARM64 宿主 MSVC 交叉（pwsh + python）、Linux 宿主 GNU 交叉（bash）、Windows GNU core/ui 测试 `target/debug`（pwsh）。Cargo home（registry/git/工具）缓存不含本仓产物，不清理。清理结果（原大小、删除量、占比、保留量）写入日志与步骤摘要，用于核对实际节省。
+- **覆盖范围**：Linux x64/ARM64（之后已停存，见下节“停存 Linux 预览缓存”）、macOS ARM64/Intel（bash + python3）、Windows ARM64/x64 MSVC 与 ARM64 宿主 MSVC 交叉（pwsh + python）、Linux 宿主 GNU 交叉（bash）、Windows GNU core/ui 测试 `target/debug`（pwsh）。Cargo home（registry/git/工具）缓存不含本仓产物，不清理。清理结果（原大小、删除量、占比、保留量）写入日志与步骤摘要，用于核对实际节省。
 - **本地参考**：本机 4 个 debug target 目录 dry-run，本仓产物占 62–78%，但其中大部分是 incremental（CI 关闭 incremental）；去掉 incremental 后本仓约占 19–31%。release-dist（thin LTO、cgu1）的真实比例以下一轮 CI 步骤摘要为准。
 - **仍超额时的评估**：若清理后仍超过 10 GB，优先顺序为：① 保留 Windows GNU 测试缓存但同样清理本仓产物（已做），不直接停存；② 再考虑停存 Cargo home（7 份合计约 2.1 GB），代价是每个 job 多 1–1.5 分钟下载依赖、且关键路径（MSVC 交叉）同样变慢，因此只在实测仍超额时启用。旧缓存在新方案落地后需删除一次，否则精确命中旧的未清理缓存时不会重新保存。
+
+## 停存 Linux 预览缓存（2026-10-09）
+
+- **原因**：仓库缓存池上限 10 GB（实测保留上限约 10.1 GB）。清理本仓产物后，新格式一整套仍约 11.4 GB（编译 7.19 + 依赖 2.12 + Windows GNU 测试 2.07 GB），刚保存的条目会被 LRU 立即淘汰。Linux x64 与 Linux ARM64 预览 job 不在关键路径上：暖态关键路径约 33 分钟（MSVC 交叉、Windows GNU 测试 core、macOS Intel 原生测试），Linux 冷编只要 26–27 分钟。
+- **改动**：两个 Linux 预览 job 不再保存编译缓存（`grok-zh-build-linux-*`），也不再保存依赖与工具缓存（`grok-zh-cargo-home-linux-*`）。按 2026-10-09 实测压缩大小，这 4 条共约 2.96 GB（编译 1.21 + 1.19，依赖 0.28 + 0.28），停存后新格式一整套约 8.4 GB，留出约 1.6 GB 余量。
+- **代价**：每个 Linux 预览 job 每轮冷编，约多 3–4 分钟，整轮时长基本不变。Linux 原生测试 job 原本借用预览 job 写入的依赖缓存，现在改为每轮重新下载 crate，Linux 上约 10 秒。
+- **恢复步骤**：没有写入方就不会再有新格式 Linux 缓存。合并后读到的只可能是 zh-dev 旧工作流遗留的同名条目，7 天内会自然消失，而且最多省下约 10 秒下载。保留恢复只会让每轮多一次必然落空的查询，日志里的 miss 还会让人误以为缓存出了问题，因此预览和原生测试都去掉恢复。正式 Release 路径保持原有恢复步骤（Release 本来只读不写），版本、编译参数和产物都不变。
+- **不变**：LTO、codegen-units、opt-level、`debug=0`、`-j4` 和产物内容都不变。其他平台的编译与依赖缓存照旧保存。

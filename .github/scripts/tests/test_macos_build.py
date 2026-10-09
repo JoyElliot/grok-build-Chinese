@@ -108,7 +108,9 @@ class MacosBuildTests(unittest.TestCase):
                 self.assertNotIn("github.event_name == 'pull_request'", action)
                 self.assertNotIn("cargo_host_cache", action)
                 # Build caches drop this workspace's own outputs before saving.
-                self.assertEqual(action.count("prune-profile-dirs: |"), 1)
+                # Linux 预览不保存任何缓存（10GB 缓存池上限，且不在关键路径上）。
+                expected = 0 if name == "build-linux-x64" else 1
+                self.assertEqual(action.count("prune-profile-dirs: |"), expected)
 
     def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -143,7 +143,8 @@ class PruneTests(unittest.TestCase):
 
 
 class WorkflowContractTests(unittest.TestCase):
-    ACTIONS = ("build-linux-x64", "build-macos-arm", "build-windows-arm", "build-windows-msvc-x64",
+    # build-linux-x64 不保存任何缓存（见 test_linux_preview_saves_no_cache）。
+    ACTIONS = ("build-macos-arm", "build-windows-arm", "build-windows-msvc-x64",
                "build-windows-msvc-cross", "build-windows-gnu-cross", "validate-windows-gnu")
 
     def save_blocks(self, text):
@@ -169,6 +170,20 @@ class WorkflowContractTests(unittest.TestCase):
                     else:
                         self.assertNotIn("prune-profile-dirs", block)
             self.assertEqual(pruned, 1, name)
+
+    def test_linux_preview_saves_no_cache(self):
+        # 10GB 缓存池放不下全部平台；Linux 两个预览 job 不在关键路径上，编译与依赖缓存都不保存。
+        text = (ROOT / ".github/actions/build-linux-x64/action.yml").read_text(encoding="utf-8")
+        self.assertEqual(self.save_blocks(text), [])
+        self.assertNotIn("actions/cache/save@", text)
+        self.assertNotIn("prune-profile-dirs", text)
+        # 没有写入方就不会有新缓存可读：恢复只保留在正式 Release 路径（原本只读，行为不变）。
+        steps = re.split(r"^\s+- name: ", text, flags=re.M)[1:]
+        restores = [s for s in steps if "actions/cache/restore@" in s]
+        self.assertEqual(len(restores), 2)
+        for step in restores:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertRegex(step, r"if: .*inputs\.release_build == 'true'")
 
     def test_prune_runs_on_every_os_only_before_a_real_save(self):
         action = (ROOT / ".github/actions/save-cargo-cache/action.yml").read_text(encoding="utf-8")

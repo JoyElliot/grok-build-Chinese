@@ -115,7 +115,12 @@ runs:
           rustc --version --verbose
           cargo --version --verbose
 
+      # Linux 预览与原生测试不保存、也不恢复 Cargo 缓存：10GB 缓存池放不下全部平台，
+      # Linux 两个预览 job 不在关键路径上（冷编每个约多 3–4 分钟）。合并后不再有任何
+      # 新格式 Linux 缓存写入，保留恢复只会每轮做一次必然落空的查询，故只在正式 Release
+      # 路径保留原有恢复步骤（Release 本来就只读不写，行为不变）。
       - name: 恢复 Cargo 依赖与工具缓存
+        if: inputs.release_build == 'true'
         id: cargo_home_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -130,7 +135,7 @@ runs:
             grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
 
       - name: 恢复 Cargo Linux release-dist 编译缓存（宿主与目标合一）
-        if: inputs.phase != 'test'
+        if: inputs.phase != 'test' && inputs.release_build == 'true'
         id: cargo_build_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -519,26 +524,3 @@ runs:
               echo "- Actions 预览制品本身不是自动更新目标；正式不可变 Release 才会被更新器接受。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 保存 Cargo Linux release-dist 编译缓存（宿主与目标合一）
-        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_build_cache.outputs.cache-hit != 'true' }}
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: |
-            ${{ runner.temp }}/grok-zh-target/release-dist
-            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: ${{ steps.cargo_build_cache.outputs.cache-primary-key }}
-          prune-profile-dirs: |
-            ${{ runner.temp }}/grok-zh-target/release-dist
-            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-
-      - name: 保存 Cargo 依赖与工具缓存
-        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: |
-            ${{ runner.temp }}/grok-zh-cargo/registry
-            ${{ runner.temp }}/grok-zh-cargo/git
-            ${{ runner.temp }}/grok-zh-dotslash
-            ${{ runner.temp }}/grok-zh-tools
-          key: ${{ steps.cargo_home_cache.outputs.cache-primary-key }}
