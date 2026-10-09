@@ -65,7 +65,11 @@ done
 umask 077
 
 [ "$(uname -s)" = Darwin ] || die "此安装器只支持 macOS。"
-[ "$(uname -m)" = arm64 ] || die "此安装器只支持 Apple Silicon（arm64）。"
+case "$(uname -m)" in
+  arm64) PACKAGE_ARCH=aarch64; BINARY_ARCH=arm64 ;;
+  x86_64) PACKAGE_ARCH=x86_64; BINARY_ARCH=x86_64 ;;
+  *) die "此安装器只支持 macOS arm64 或 x86_64。" ;;
+esac
 [ ! -L "$0" ] || die "请直接运行软件包中的安装器，不要通过符号链接启动。"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P) || die "无法定位软件包目录。"
@@ -128,9 +132,9 @@ regular_file_count=$(find "$SCRIPT_DIR" -mindepth 1 -maxdepth 1 -type f ! -type 
 
 (cd "$SCRIPT_DIR" && shasum -a 256 -c SHA256SUMS.txt) || die "软件包 SHA-256 校验失败。"
 file_output=$(file -b "$SCRIPT_DIR/grok-zh") || die "无法检查 grok-zh 文件类型。"
-printf '%s\n' "$file_output" | grep -Eq 'Mach-O .*executable arm64' || die "grok-zh 不是 ARM64 Mach-O 可执行文件。"
+printf '%s\n' "$file_output" | grep -Eq "Mach-O .*executable ${BINARY_ARCH}" || die "grok-zh 不是 ${BINARY_ARCH} Mach-O 可执行文件。"
 binary_archs=$(lipo -archs "$SCRIPT_DIR/grok-zh") || die "无法检查 grok-zh 架构。"
-[ "$binary_archs" = arm64 ] || die "grok-zh 必须是纯 ARM64 Mach-O，实际架构：$binary_archs"
+[ "$binary_archs" = "$BINARY_ARCH" ] || die "grok-zh 必须是纯 ${BINARY_ARCH} Mach-O，实际架构：$binary_archs"
 
 version_output=$("$SCRIPT_DIR/grok-zh" --version 2>/dev/null) || die "软件包中的 grok-zh 无法运行。"
 version_line=$(printf '%s\n' "$version_output" | sed -n '1p')
@@ -203,7 +207,7 @@ is_managed_canonical_target() {
   case "$canonical_name" in
     ''|.|..|*/*|*\\*|*:*) return 1 ;;
   esac
-  printf '%s\n' "$canonical_name" | grep -Eq "^grok-zh-${semver_body}-macos-aarch64\\.[0-9A-Za-z-]+\\.installed$"
+  printf '%s\n' "$canonical_name" | grep -Eq "^grok-zh-${semver_body}-macos-${PACKAGE_ARCH}\\.[0-9A-Za-z-]+\\.installed$"
 }
 
 validate_managed_link() {
@@ -286,7 +290,7 @@ stage_version_output=$("$STAGE_FILE" --version 2>/dev/null) || die "暂存的 gr
 stage_version_line=$(printf '%s\n' "$stage_version_output" | sed -n '1p')
 [ "$stage_version_line" = "$version_line" ] || die "暂存的 grok-zh 版本不一致。"
 
-FINAL_RESERVATION=$(mktemp "$DOWNLOAD_DIR/grok-zh-$version-macos-aarch64.XXXXXX") || die "无法预留版本目标。"
+FINAL_RESERVATION=$(mktemp "$DOWNLOAD_DIR/grok-zh-$version-macos-${PACKAGE_ARCH}.XXXXXX") || die "无法预留版本目标。"
 FINAL_FILE="${FINAL_RESERVATION}.installed"
 if ! mv "$FINAL_RESERVATION" "$FINAL_FILE"; then
   rm -f -- "$FINAL_RESERVATION" 2>/dev/null || true

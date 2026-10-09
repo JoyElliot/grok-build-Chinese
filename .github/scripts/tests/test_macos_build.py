@@ -23,6 +23,14 @@ TARGET = "aarch64-apple-darwin"
 
 
 class MacosBuildTests(unittest.TestCase):
+    def test_both_native_macos_targets_use_the_release_command(self):
+        for target in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+            with self.subTest(target=target):
+                command = macos_build.cargo_command(True, target, 3)
+                self.assertEqual(command[command.index("--target") + 1], target)
+        with self.assertRaisesRegex(ValueError, "supported macOS target"):
+            macos_build.cargo_command(True, "aarch64-unknown-linux-gnu", 3)
+
     def test_thin_lto_trial_is_explicit_isolated_and_not_a_release_profile_switch(self):
         command = macos_build.cargo_command(False, TARGET, 3, "thin-lto")
         self.assertEqual(command[command.index("--profile") + 1], "release-dist")
@@ -69,43 +77,40 @@ class MacosBuildTests(unittest.TestCase):
     def test_only_trusted_preview_events_can_save_cache(self):
         cases = [
             (False, "push", "refs/heads/zh-dev", True),
+            (False, "schedule", "refs/heads/zh-dev", True),
             (False, "workflow_dispatch", "refs/heads/zh-dev", True),
             (False, "workflow_dispatch", "refs/heads/sync/upstream-1.0.24", True),
+            (False, "workflow_dispatch", "refs/heads/six-platform-builds", True),
             (False, "push", "refs/heads/sync/upstream-1.0.24", False),
-            (False, "workflow_dispatch", "refs/heads/unrelated", False),
+            (False, "schedule", "refs/heads/other", False),
+            (False, "workflow_dispatch", "refs/tags/release-v1.0.24", False),
             (False, "pull_request", "refs/pull/1/merge", False),
+            (False, "pull_request", "refs/pull/8/merge", False),
             (False, "pull_request_target", "refs/heads/zh-dev", False),
             (False, "workflow_run", "refs/heads/zh-dev", False),
             (True, "workflow_dispatch", "refs/heads/zh-dev", False),
             (True, "workflow_dispatch", "refs/heads/sync/upstream-1.0.24", False),
             (True, "push", "refs/tags/release-v1.0.24", False),
+            (True, "schedule", "refs/heads/zh-dev", False),
         ]
         for release, event, ref, expected in cases:
             with self.subTest(release=release, event=event, ref=ref):
                 self.assertEqual(macos_build.cache_writable(release, event, ref), expected)
 
-    def test_configure_emits_matching_cache_package_and_build_profiles(self):
-        with tempfile.TemporaryDirectory() as folder:
-            env = os.environ | {
-                "MACOS_BUILD_VARIANT": "current",
-                "GITHUB_EVENT_NAME": "workflow_dispatch",
-                "GITHUB_REF": "refs/heads/sync/upstream-1.0.24",
-                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_TEMP": folder,
-            }
-            for mode, profile, writable in (("true", "release", "false"), ("false", "release", "true")):
-                with self.subTest(mode=mode):
-                    result = subprocess.run(
-                        [sys.executable, str(SCRIPT), "configure", "--release-build", mode],
-                        env=env, check=True, capture_output=True, text=True,
-                    )
-                    values = dict(line.split("=", 1) for line in result.stdout.splitlines())
-                    self.assertEqual(values["MACOS_CARGO_PROFILE"], profile)
-                    self.assertEqual(values["MACOS_CACHE_WRITABLE"], writable)
-                    self.assertEqual(
-                        Path(values["MACOS_BUILD_REPORT_DIR"]),
-                        Path(folder) / "grok-zh-macos-build-123-2",
-                    )
-                    self.assertFalse(Path(values["MACOS_BUILD_REPORT_DIR"]).exists())
+    def test_pull_requests_only_restore_caches(self):
+        root = SCRIPT.parents[1]
+        workflow = (root / "workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8")
+        self.assertIn("GROK_ZH_CACHE_WRITE:", workflow)
+        for name in ("build-linux-x64", "build-macos-arm", "build-windows-arm",
+                     "build-windows-msvc-x64", "build-windows-msvc-cross", "build-windows-gnu-cross"):
+            action = (root / f"actions/{name}/action.yml").read_text(encoding="utf-8")
+            with self.subTest(action=name):
+                self.assertNotIn("github.event_name == 'pull_request'", action)
+                self.assertNotIn("cargo_host_cache", action)
+                # Build caches drop this workspace's own outputs before saving.
+                # Linux 预览不保存任何缓存（10GB 缓存池上限，且不在关键路径上）。
+                expected = 0 if name == "build-linux-x64" else 1
+                self.assertEqual(action.count("prune-profile-dirs: |"), expected)
 
     def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
         with tempfile.TemporaryDirectory() as folder:

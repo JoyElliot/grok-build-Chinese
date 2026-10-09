@@ -27,10 +27,11 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ${{ runner.temp }}/grok-zh-target/debug
-        key: grok-zh-test-v1-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-${{ hashFiles('Cargo.lock') }}
+        key: grok-zh-test-v2-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-${{ hashFiles('Cargo.lock') }}
         restore-keys: |
-          grok-zh-test-v1-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
-          grok-zh-test-v1-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
+          grok-zh-test-v2-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
+          grok-zh-test-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
+          grok-zh-test-v2-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-
 
     - name: 验证并记录逐命令耗时与资源
       shell: pwsh
@@ -60,3 +61,5 @@ runs:
       with:
         path: ${{ runner.temp }}/grok-zh-target/debug
         key: ${{ steps.cache.outputs.cache-primary-key }}
+        prune-profile-dirs: |
+          ${{ runner.temp }}/grok-zh-target/debug

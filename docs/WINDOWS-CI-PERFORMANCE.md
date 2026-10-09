@@ -1,35 +1,38 @@
 # Windows CI 并行验证与编译
 
-Windows 预览 CI 和正式 Release 使用三条独立路径：核心验证、界面 Rust 测试、产物编译。各有自己的 `windows-2022` runner、CPU、内存和临时目录，Rust 编译各自使用 `-j4`。安装器与静态检查合并到 core 分片，在准备 Rust 环境前运行一次，保留 15 分钟步骤超时；失败会使 core 和验证聚合门禁失败。
+Windows 预览 CI 使用 Linux 宿主交叉编译 GNU 产物，再交给 `windows-2022` 原生打包验收；core/ui Rust 测试仍在各自独立的 Windows runner 上以 `-j4` 执行。正式 Release 保留 Windows 原生编译。安装器与静态检查合并到 core 分片，在准备 Rust 环境前运行一次，保留 15 分钟步骤超时；失败会使 core 和验证聚合门禁失败。
 
 ```mermaid
 flowchart LR
     C[core: 安装器与静态检查 → 核心测试 J4] --> V[Windows GNU 验证]
     U[界面测试 J4] --> V
     V --> G[Windows x64 GNU 预览版]
-    B[Windows 编译打包 J4] --> G
-    G --> S[三端构建汇总]
-    L[Linux 构建] --> S
-    M[macOS 构建] --> S
+    X[Linux 宿主编译 Windows GNU J4] --> B[Windows 原生打包验收]
+    B --> G
+    G --> S[六平台构建汇总]
+    L[Linux 两架构构建] --> S
+    M[macOS 两架构构建与 Intel 原生验收] --> S
 ```
 
 - 核心分片保留 locale、community-build 更新器与 Shell 筛选；正式发布另含 product、version、config 检查。
 - 界面分片保留完整 pager、minimal 和免费账户选项等筛选。相同 package 的后续过滤命令可复用已编译的测试程序。
 - core 内的静态检查保留 PowerShell 5.1 / 7 安装器、包协议、PE 精简保护、发布策略、发布说明和预览元数据检查；格式检查也在核心分片运行。ui 分片不重复执行静态检查。
 - `windows-gnu-validation` 和 `windows-gnu-preview` 保留原 ID 与检查名称作为聚合门禁。任一必需分片失败、取消或跳过都不会通过；矩阵关闭 fail-fast，让另一分片保留完整诊断。
-- 编译制品可能早于测试完成上传；完整验收仍以 Windows 聚合检查和三端汇总为准。
+- 编译制品可能早于测试完成上传；完整验收仍以 Windows 聚合检查和六平台汇总为准。
 
 正式 Release 的验证矩阵与产物编译都只依赖 `release-plan`，检出同一个 `source_commit`，Rust 与构建显式使用相同发布版本。core 的静态检查使用该次检出的代码。`windows-x64-gnu-validation` 汇总 release-plan 和全部验证分片；原有 `release-attestations` 与 `release-publisher` 继续要求验证、编译成功，不能绕过失败、取消或跳过的验证。
 
 ## 共用准备与隔离边界
 
-Rust 分片和编译作业调用 `.github/actions/setup-windows-gnu`，统一版本及固定 Rust / MinGW / protoc，恢复 Cargo registry/git，并各自在自己的 runner 获取依赖。core 先完成静态检查，再调用该准备步骤。
+六平台预览中，Windows ARM64 MSVC 的更新器测试也使用独立原生 ARM64 runner，与产物构建并行；两个阶段均使用 J4，`multiplatform-result` 同时要求原生测试矩阵与 ARM64 制品成功。正式 Release 继续在完整 action 中顺序验证。ARM64 只缓存 registry/git 与 host/target `release-dist`，不保存测试 debug 目录；同仓非 Dependabot PR 和 zh-dev 预览可写，正式 Release 只读。Cargo timings 作为独立诊断制品上传。六平台提速基线与验收口径见 [macOS 构建说明](MACOS-CI-PERFORMANCE.md#六平台预览提速2026-09-26)。
+
+Windows Rust 分片、原生产物验收和正式编译作业调用 `.github/actions/setup-windows-gnu`，统一版本及固定 Rust / MinGW / protoc，恢复 Cargo registry/git，并各自在自己的 runner 获取依赖。core 先完成静态检查，再调用该准备步骤。预览交叉编译使用独立的 Linux host 工具链与缓存，配置见本页第三轮记录。
 
 `.github/scripts/windows-validation-tests.json` 保存原有预览 12 条、发布 15 条 Cargo 命令的 package、feature 和过滤条件。各分片内部保留相对顺序；跨分片并行运行。不将多个 package 合成一条 Cargo 命令，避免 feature union 改变覆盖。
 
-`.github/actions/validate-windows-gnu` 为 core/ui 分别缓存 `target/debug`。键包含 ref、OS/架构、Rust 工具链、target、GNU 编译器和链接器文件指纹、debug/incremental 配置、测试清单、Cargo manifests/build.rs/config/toolchain 与 lockfile。不同分片不互相恢复；允许从可访问的 zh-dev 缓存回退。编译作业仍分别使用 target/host `release-dist` 缓存，不恢复旧低优化 release 缓存。
+`.github/actions/validate-windows-gnu` 为 core/ui 分别缓存 `target/debug`，键前缀为 `grok-zh-test-v2`（版本号变更原因见文末“测试缓存键升级到 v2”）。键包含 ref、OS/架构、Rust 工具链、target、GNU 编译器和链接器文件指纹、debug/incremental 配置、测试清单、Cargo manifests/build.rs/config/toolchain 与 lockfile。不同分片不互相恢复；允许从可访问的 zh-dev 缓存回退。编译作业仍分别使用 target/host `release-dist` 缓存，不恢复旧低优化 release 缓存。
 
-zh-dev 和同仓库、非 Dependabot PR 的预览可以保存缓存；fork PR 和正式 Release 只读。同仓 PR 缓存实际属于 `refs/pull/<n>/merge`，供同一 PR 后续运行复用，不能供其他 PR 或主分支读取。Cargo registry/git 仍只由产物编译作业保存，避免同轮竞争。
+预览缓存只由 zh-dev push、每 5 天一次的定时预热（schedule，只在默认分支 zh-dev 运行）和维护者手动触发保存；所有 PR（含同仓库分支 PR）、fork PR 和正式 Release 只恢复不保存。PR 可读取其 base 分支 zh-dev 的缓存，因此不再为每个 PR 生成一份只属于 `refs/pull/<n>/merge` 的大缓存。Cargo registry/git 仍只由产物编译作业保存，避免同轮竞争。写入条件统一由工作流级 `GROK_ZH_CACHE_WRITE` 表达，正式 Release 工作流不设置该变量。详见文末“缓存整顿（2026-10-09）”。
 
 缓存使用稳定配置键，不在每次提交后新增整份大缓存；已有键不可覆盖，后续源码变化仍会由 Cargo 检查并重编译。命中缓存不会跳过 Cargo build/test、版本检查或产物校验。配置变化或缓存淘汰后重新保存。仓库默认缓存容量有限，实际占用以 GitHub 压缩后大小衡量，不能把未压缩 debug 目录体积直接视为配额用量；需通过冷、暖两次运行检查收益及其他平台缓存是否被挤出。
 
@@ -39,7 +42,16 @@ zh-dev 和同仓库、非 Dependabot PR 的预览可以保存缓存；fork PR �
 
 Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target 和 host 缓存。额外的 256 MiB sccache 试验在同版本复测及后续新版本构建中均为 97 次 miss、0 次 hit，未显示可保留的收益，因此已撤回启动器、工具下载、归档恢复和诊断步骤。原有 Cargo 缓存、测试及包保护不受影响，共享缓存未删除。最新观测的归档只保留 19 个对象；这不能单独证明未命中的原因，也不把不同托管 runner 的编译时间差归因于缓存读写。
 
-推送、PR 更新和手动触发的 CI 默认并行运行：每轮以 `github.run_id` 使用独立并发组，并设置 `cancel-in-progress: false`。新一轮不会自动取消同分支旧轮，也无需 `parallel_run` 开关。GitHub runner 配额不足时仍可能排队；验收需核对制品运行 ID 与源码提交。
+免费账号的并发 job 上限（20 个，其中 macOS 5 个）由整个账号的所有仓库、分支和事件共享，叠轮会让 macOS 关键路径排队，因此 CI 按以下规则取消旧轮：
+
+- 同一 PR 有新提交时，取消该 PR 自己的旧轮：并发组为 `zh-dev-multiplatform-pr-<PR 号>`，`cancel-in-progress: true`。不同 PR 使用不同的组，互不取消。
+- 同一分支（zh-dev 等）有新推送时，取消该分支更旧的推送轮：并发组为 `zh-dev-multiplatform-push-<ref>`，`cancel-in-progress: true`。PR 与 push 分属不同的组，任何 PR 运行都不会取消 zh-dev 运行。
+- 手动触发等其他事件按 `github.run_id` 独立，不取消。正式 Release 仍使用 `zh-release-publisher` 组且 `cancel-in-progress: false`，不会被取消。
+- 同步资料完整性和动态翻译这两个轻量检查只对同一 PR 取消旧轮，push 和手动运行按 `run_id` 独立，不设让行门禁。
+
+PR 构建排在 zh-dev 之后：GitHub 没有原生优先级，因此 PR 运行先执行轻量门禁 `zh-dev-priority-gate`（ubuntu，`actions: read`），再执行格式预检和全部重型作业。门禁查询本仓库所有工作流中 `head_branch=zh-dev`、`event=push`、状态为 queued、in_progress、waiting、requested 或 pending 的运行；zh-dev 空闲时第一次查询即放行（通常几秒），有运行时每 45 秒重查，并在日志和作业摘要中记录等待了哪些运行、共等待多久。最多等待 120 分钟，超时或连续 5 次查询失败只记 warning 并放行，不让门禁导致失败。push 和手动运行直接通过。六目标汇总同时检查门禁结果，门禁被取消或失败时格式预检被跳过，汇总会失败，不会让必需检查缺失。
+
+局限：门禁只保证 PR 开始重型构建时 zh-dev 已空闲，不会抢占已经开始的 PR 运行；PR 已在构建时再推 zh-dev，两者仍会争用 runner。门禁本身占用一个 ubuntu job，PR 等待期间不计入 macOS 并发。被取消的旧轮不会产生制品，验收需核对制品运行 ID 与源码提交。
 
 ## Windows 产物体积与运行性能
 
@@ -98,3 +110,123 @@ Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target �
 | 整个 Windows 作业 | 81 分 44 秒 |
 
 并行收益须以新 CI 中各个 Windows 作业的开始/结束时间、同阶段日志和最终汇总时间验证；两个作业各自进行准备和依赖恢复，不能直接把基线的两个阶段相减当作实际收益。
+
+## 六平台第三轮：Windows GNU 交叉编译试验
+
+第二轮 [CI 36172021045](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36172021045) 全部成功，但从 `2026-09-25T18:13:13Z` 创建到 `19:12:22Z` 完成为 **59 分 09 秒**；Windows x64 GNU 作业为 **58 分 49 秒**。Intel 交叉编译和原生产物验收已在工作流创建后 43 分 34 秒内完成，Windows GNU 成为本轮最长路径。
+
+第二轮 Windows GNU Cargo 为 **55 分 49.1 秒**，324 Fresh / 1040 Dirty；target 缓存精确命中，但 home/host 缓存未命中，不能将其视为完全暖构建。最慢单元是最终 binary（973.3 秒）与 shell（940.4 秒）。宿主为 AMD EPYC 7763，暴露 2 核/4 逻辑处理器；系统 CPU 平均 75.50%，内存使用峰值 69.67%。外部 `ld` 仅在两个相隔约 14 分钟的样本中出现，没有长时间驻留证据。该轮的缓存和宿主均与前一轮不同，不能把全部差异归因于 CPU 型号。
+
+上一轮 `36164317702` 的 Windows GNU Cargo 为 35 分 56.8 秒，1254 Fresh / 110 Dirty；主要耗时单元为 shell（932.7 秒，其中 codegen 775.7 秒）和最终 binary（895.5 秒），并行单元时间不可相加。外部 `ld` 只出现在两个连续采样点，缺少长时间外部链接的证据。因此第三轮优先实测 Linux 编译宿主，保留 Rust 1.94.0、`x86_64-pc-windows-gnu`、`release-dist`/Thin LTO/opt-level=3/codegen-units=1/debug=0 和全部 features。
+
+新 `.github/actions/build-windows-gnu-cross` 使用 Ubuntu 24.04 的 MinGW POSIX 工具链，只设置 target 专属 CC/CXX/AR/linker；Linux build scripts/proc macros 保留宿主编译器，protoc 仍为经过哈希验证的 29.3 宿主版本。Rust 1.94.0 的[官方 GNU 目标文档](https://github.com/rust-lang/rust/blob/1.94.0/src/doc/rustc/src/platform-support/windows-gnu.md)支持交叉编译；本项目原生 C 依赖的实际兼容性及耗时仍需本轮 CI 验证。
+
+跨 job 只传递未裁剪 EXE 和构建身份清单，原生 Windows job 核对提交、版本、目标、profile、features 和 SHA-256 后，执行原有 PE 运行节保护、符号分离、CLI 冒烟、打包、文件哈希和更新协议生成。CLI 验证的 PATH 限于 Windows 系统目录，防止 MinGW 工具目录中的运行库掩盖安装包缺少 DLL。完整 core/ui 测试继续在 Windows 原生执行；最终门禁必须同时通过交叉编译、原生产物验收及两组测试。
+
+交叉构建缓存与原生 Windows 缓存隔离，包含实际 MinGW 包版本和编译器文件指纹，只缓存依赖源和 host/target `release-dist`，不新增 debug 缓存。诊断制品保留 Cargo timings、工具链/CPU 信息及 `/usr/bin/time -v`；其 maximum RSS 是工具报告的进程内存指标，与旧 Windows 进程树采样值不可直接等同。首次试验是独立冷缓存，后续仍须用新 CI 版本复验整轮时长。
+
+第三轮初次 `36180568215` 在依赖预取只限定 Windows target 后，冻结构建缺少 `aligned-vec 0.6.4`；修复为完整 `cargo fetch --locked`，保留后续 `--frozen`。修复提交 `dba0c88d` 的 [CI 36180846184](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36180846184) 中，Linux 上的 Windows GNU 编译作业于 `19:37:51Z–19:59:52Z` 成功，耗时 **22 分 01 秒**。但原生打包在 PE 比较时失败，尚不能认定 Windows 产物通过。
+
+对这轮原始 EXE 的本地复现发现，普通 GNU `strip --strip-all` 清除了 `.idata` 和 `.CRT` 的 `IMAGE_SCN_MEM_WRITE`，其他已比较的运行数据保持一致；现有门禁正确拒绝了这一变化。修复必须保留原节权限，并继续使用完整运行映像比较与 Windows 隔离 CLI 验收，不能忽略权限差异。
+
+该轮 Cargo timings 为 **20 分 24 秒**、1363 Dirty / 0 Fresh，两类起始缓存均 miss。宿主为 AMD EPYC 9V45、4 CPU，MinGW GCC 13-posix / GNU ld 2.41.90.20240122；`time -v` 报告 CPU 295%、最大 RSS 7,833,268 kB。依赖和编译缓存首次保存分别约 15.0 秒、19.5 秒。该结果证明这一轮冷编译已低于 50 分钟，但整轮验收因打包失败仍未达标。
+
+预览 GNU 打包显式启用 `--preserve-mingw-write-permissions`：仅允许从原本 `0xC0000040` 的 `.idata` / `.CRT` 恢复被工具清除的写位；写入前必须证明除此之外完整运行映像、符号与体积约束均满足，且暂存文件 SHA 未变。写入后重算 PE checksum，再次执行原有完整映像比较及四个 CLI 冒烟。其他 section、权限位、代码、加载参数等变化仍失败。正式 Release 不启用此选项。
+
+使用这轮实际 EXE、本机 GNU Binutils 2.47.20260726 的完整脚本验证通过：输入 190,342,249 字节、发布副本 153,997,824 字节，原始 EXE 哈希与制品清单相符，运行映像完全一致，隔离 PATH 下 `--version`、`--help`、`agent --help`、`update --help` 均成功；重算 checksum 与 Windows `CheckSumMappedFile` 一致。修复后的 CI runner 打包结果仍需新一轮验证。
+
+## 首次六平台整轮低于 50 分钟
+
+提交 `1c7a1931` 的 [CI 36186573449](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36186573449)，版本 `1.0.35-zh.ci.136`，从 `2026-09-25T20:34:22Z` 创建至 `21:20:41Z` 工作流完成，共 **46 分 19 秒**。六平台产物、五平台独立原生测试、Windows core/ui、Windows 汇总及六目标最终汇总全部成功；同步资料完整性成功，真实账号 macOS 冒烟按条件跳过。该时长包含排队、准备、缓存保存、上传和最终汇总。
+
+| 产物路径 | 作业耗时 | 原生产物验收 |
+| --- | --- | --- |
+| Windows x64 GNU Linux 交叉编译 | 15 分 44 秒 | Windows 打包 1 分 36 秒；工作流创建后 17 分 27 秒完成 |
+| Windows ARM64 MSVC | 46 分 09 秒 | 同一原生作业完成 |
+| Linux x64 GNU | 26 分 41 秒 | 同一原生作业完成 |
+| Linux ARM64 GNU | 35 分 02 秒 | 同一原生作业完成 |
+| macOS ARM64 | 21 分 02 秒 | 同一原生作业完成 |
+| macOS Intel 交叉编译 | 40 分 17 秒 | Intel 原生验证 32 秒；工作流创建后 41 分 01 秒完成 |
+
+Windows 原生打包日志确认 `.idata` / `.CRT` 原权限已恢复，`runtime_image_unchanged` 和 `cli_smoke_passed` 均为 true。Windows core/ui 分片分别为 32 分 22 秒、24 分 58 秒，Windows 最终验收于 `21:07:00Z` 成功。该轮首次达标，仍需用另一实际新 CI 版本复验，不能仅凭一次成功认定稳定达标。
+
+最长的 Windows ARM64 路径是冷编译：Cargo **42 分 38.5 秒**、1360 Dirty / 0 Fresh。Cargo home 命中并耗时 69.784 秒恢复，但编译产物缓存未命中；本轮结束后保存约 1.357 GB 的编译缓存，耗时 57.697 秒。最慢单元为 shell（864.9 秒，codegen 723.1 秒）和最终 binary（668.1 秒）。这些测量支持进一步验证缓存保留效果，尚不支持量化调整并发度或编译 profile 的收益。
+
+其余平台的 Cargo 缓存条件如下；命中缓存并不意味着跳过工作区编译，内嵌 CI 版本每轮更新。
+
+| 平台 | home / target / host | Fresh / Dirty | Cargo 耗时 |
+| --- | --- | ---: | --- |
+| Windows x64 GNU | home、合并编译缓存命中 | 1253 / 110 | 14 分 11.2 秒 |
+| macOS Intel | 三类均未命中 | 0 / 1411 | 35 分 18.1 秒 |
+| macOS ARM64 | 三类均命中 | 1300 / 110 | 19 分 03.3 秒 |
+| Linux x64 GNU | 三类均命中 | 1342 / 110 | 25 分 10.6 秒 |
+| Linux ARM64 GNU | home、target 命中，host 未命中 | 301 / 1150 | 33 分 24.2 秒 |
+
+### 下一轮：减少 PR 测试缓存占用并复验
+
+完成首轮后，仓库 cache usage API 报告约 10.92 GB；随后列表中 PR #8 的 core/ui debug 缓存分别为 1,710,612,385 和 1,965,748,249 字节，合计约 **3.676 GB**。同时 Intel 三类缓存与 Windows ARM64 编译缓存本轮未命中，并在结束时重新保存。GitHub [缓存规则](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)说明达到仓库配置的存储上限后会按最后访问时间淘汰；本次没有读到该仓库的实际额度，故目前只能把容量竞争视为待验证原因。
+
+下一轮只停止 PR 的 Windows core/ui debug 缓存写入，恢复逻辑、完整测试选择及全部门禁保持不变。`zh-dev` 仍保存这两份缓存，保留其作为后续预览与正式 Release 的恢复来源；正式 Release 原本就不保存测试缓存。仅清理 PR #8 已确认的这两份派生 debug 缓存，让复验能直接观察减少占用后的结果，不清理其他 ref、生产缓存或历史制品。需要核对下一实际 CI 版本的测试冷编译耗时、生产缓存命中/Dirty 数和整轮完成时间；不预设这项调整一定提速。
+
+### 复验与功能变更后的排队延迟
+
+提交 `0e4548ef` 的 [CI 36192688379](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36192688379)，版本 `1.0.35-zh.ci.137`，从 `2026-09-25T21:39:04Z` 创建至 `22:19:00Z` 完成，整轮 **39 分 56 秒**，全部必需检查成功。这是不同于首轮 `.136` 的新内嵌版本；两轮结果共同验证先前的六平台提速方案。
+
+后续提交 `2838b7cd` 验证了只公开原三平台 sidecar 和新增三平台更新器启用门。其 [CI 36211843045](https://github.com/JoyElliot/grok-build-Chinese/actions/runs/36211843045)，版本 `1.0.35-zh.ci.139`，从 `2026-09-26T02:29:17Z` 创建至 `03:43:45Z` 完成，整轮 **74 分 28 秒**。六平台产物、五平台原生测试、Windows core/ui、Intel 原生产物验证和最终汇总均成功，同步资料完整性成功，真账号冒烟预期跳过；功能验收通过，但这一轮不满足 50 分钟目标。
+
+| 本轮路径 | 作业创建后等待启动 | 作业实际运行 | Cargo 编译 |
+| --- | --- | --- | --- |
+| macOS Intel 交叉构建 | 41 分 38 秒 | 31 分 56 秒 | 25 分 55.2 秒 |
+| macOS ARM64 构建 | 30 分 15 秒 | 32 分 55 秒 | 31 分 35.2 秒 |
+| macOS Intel 原生测试 | 33 分 43 秒 | 30 分 27 秒 | updater 测试编译 27 分 29 秒 |
+| Windows ARM64 构建 | 3 秒 | 33 分 36 秒 | 28 分 38 秒 |
+
+Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM64 macOS 为 home/host hit、target miss，983 Dirty / 427 Fresh。Windows GNU 交叉构建的编译缓存也未命中，Cargo 用时 29 分 27 秒；Windows core/ui 的 debug 缓存均未命中，完整测试通过。本轮不能描述为全暖缓存构建。
+
+全部单个作业的运行时间均低于 34 分钟，但关键路径包含 Intel 构建启动前的 41 分 38 秒等待，以及后续原生制品验证和汇总。此时上一轮 `36211634663` 仍在执行，直至 `03:27:07Z` 才结束；现有证据确认两轮重叠，不把未经核实的账号并发额度写成原因。排队必须计入总耗时，不能从 74 分 28 秒中扣除后宣称达标。
+
+同期还有 `zh-dev` 的 `36212029476`、`36213369927` 两轮 CI。所查仓库作业的运行并发峰值为 17，macOS 家族为 5；这些是观察值，不是账号配额。旧 PR 作业与同标签作业的等待区间部分重叠，但不足以解释全部等待或证明唯一原因。保留其他任务的正常作业，后续继续分别记录排队与实际执行时间。
+
+下一轮在同一预览工作流增加 Linux 全仓格式预检，使用固定 Rust 1.94.0 与 rustfmt，不编译依赖。八个重型根 job 必须等待预检成功，再并行启动原生测试和产物构建；原有各平台格式检查继续保留，最终汇总也显式要求预检成功。这样格式失败不会先启动整轮重型构建，避免本次格式修复前后两轮同时占用 runner 的情况。预检本身的准备与排队仍计入下一轮总耗时；这项改动不保证消除 GitHub 执行器供应或其他工作流造成的等待，不取消既有作业、不改变运行时优化或缓存策略。
+
+## 缓存整顿（2026-10-09）
+
+- **宿主与目标合一**：Linux x64/ARM64 与 macOS ARM64/Intel 交叉构建原先把 host `release-dist`（build script、proc-macro）和 target `release-dist` 分成两份缓存，两份可能来自不同轮次，build script 指纹不一致时即使“精确命中”仍会重编（Linux ARM64 曾命中后仍重编 621 个 crate）。现合并为一份 `grok-zh-build-…` 缓存，同时包含两个目录；Windows ARM64、MSVC 交叉与 GNU 交叉原本就是合一缓存，保持不变。
+- **键与退级**：`grok-zh-build-<schema>-<OS>-<arch>-<工具链>-<target>-<profile 配置>-<manifest/build.rs/config/toolchain/protoc 哈希>-<Cargo.lock 哈希>`；restore-keys 依次去掉 Cargo.lock 哈希、再去掉 manifest 哈希。Linux 预览的 profile 段为 `release-dist-debug0`，正式 Release 为 `release-dist-debugdefault`，两者不互相恢复。
+- **PR 只读**：PR 只用 `actions/cache/restore`；保存（`save-cargo-cache`，内部为 `actions/cache/save`）只在 `GROK_ZH_CACHE_WRITE == 'true'` 且构建成功、主键未精确命中时执行，沿用保存前复查精确键的策略，不保存失败或部分构建。
+- **定时预热**：`cron: '17 19 */5 * *'`（UTC 19:17，即 JST 04:17；每月 1/6/11/16/21/26/31 日），在默认分支 zh-dev 上运行整套预览，用于在 zh-dev 长时间无提交时防止缓存 7 天未访问被清除。精确命中时只恢复、不重复保存。
+- **Windows GNU 测试兜底**：core/ui 的 `target/debug` 缓存新增一层不含 manifest 哈希的 zh-dev restore-key，依赖或 manifest 变化后 PR 仍可从 zh-dev 最近一份测试缓存增量编译。
+- **容量估算**：按 2026-09-26/27 日志的压缩大小，zh-dev 单轮全部缓存约 17 GB（Linux x64 ≈2.6、Linux ARM64 ≈2.6、Windows GNU 测试 core+ui ≈3.7、GNU 交叉 ≈1.9、Windows ARM64 ≈1.6、MSVC 交叉 ≈1.5、macOS ARM64 ≈1.5、macOS Intel ≈1.5、Windows GNU home ≈0.3），合并只消除指纹错配、不减少体积，仍高于 10 GB 免费额度。PR 不再写入后，churn 只来自 zh-dev 自身；精确命中不重复保存，但总量超额时仍会按最后访问时间轮换淘汰。是否进一步停存体积大且不在关键路径上的缓存（如 Windows GNU 测试或 GNU 交叉），需以本轮暖缓存实测结果决定。
+- **Linux 预览**：x64 与 ARM64 预览追加 `--config profile.release-dist.debug=0`（与 Windows GNU 交叉一致），并发由 J3 提高到 J4（标准 ubuntu-22.04/ubuntu-22.04-arm 为 4 vCPU）；正式 Release 不传该参数，保持 release-dist 原配置。
+
+## Linux glibc 基线：改在 Ubuntu 22.04 上编译（2026-10-09）
+
+- **原因**：此前 Linux x64/ARM64 在 ubuntu-24.04 / ubuntu-24.04-arm 上编译，产物引用 `GLIBC_2.38`（很可能 `GLIBC_2.39`），Ubuntu 22.04、Debian 12、WSL 旧版 Ubuntu 都无法启动。
+- **做法**：预览（`linux-x64-gnu-preview`、`linux-arm64-gnu-preview`、Linux 原生测试矩阵）与正式发布（`linux-x64-gnu-release`、`linux-arm64-gnu-release`）统一改用 `ubuntu-22.04` / `ubuntu-22.04-arm`。Rust 1.94.0、release-dist 配置、`target-cpu` 与包内容不变；只换 runner，系统 C 编译器从 GCC 13 变为 GCC 11，仅影响少量第三方 C 依赖。
+- **防回归**：`build-linux-x64` 打包时运行 `.github/scripts/check-elf-glibc.py`，用 `readelf --version-info` 读取 `.gnu.version_r` 中最高的 `GLIBC_` 版本，超过 `GROK_ZH_LINUX_MAX_GLIBC=2.35` 即失败，并把实际值写进步骤摘要（日志行 `GROK_ZH_MAX_GLIBC=…`）。
+- **缓存隔离**：Linux 的 Cargo home 与 release-dist 缓存键在 `<OS>-<arch>` 后追加 `glibc<宿主版本>`（如 `glibc2.35`），正式 Release 恢复缓存时不会读到 24.04（glibc 2.39）镜像编出的第三方 C 产物。
+- **对用户的影响**：最低要求降到 glibc 2.35（Ubuntu 22.04+、Debian 12+、Fedora 36+），附件名和更新协议不变，见 [Linux 使用说明](../packaging/linux/INSTALL-LINUX.md#系统要求)。
+
+## 缓存瘦身：保存前清理本仓 crate 产物（2026-10-09）
+
+- **原因**：2026-10-09 两轮手动触发（37882323840 冷、37888274643 暖）实测全部缓存约 16.4 GB（7 个平台 build+home ≈12.7 GB，Windows GNU 测试 core+ui ≈3.7 GB），超过 10 GB 上限；dispatch1 刚保存完，Linux ARM64 与 GNU 交叉就被淘汰，暖态轮又冷编了这两个平台。暖态轮第三方依赖 0 重编，而本仓 98 个 crate 每轮都重编（checkout 刷新源码 mtime，版本号和 commit 编译时注入），缓存它们的产物只占配额、没有命中收益。
+- **做法**：`.github/actions/save-cargo-cache` 新增可选输入 `prune-profile-dirs`。仅在主键尚不存在、确实要保存时，先运行 `.github/scripts/prune-cargo-workspace-artifacts.py`，从列出的 profile 目录删除本仓 crate 的 `.fingerprint/<包名>-<hash>`、`build/<包名>-<hash>`、`deps`/`examples` 中的 `[lib]<crate>-<hash>.*`（rlib、rmeta、d、exe、pdb、dSYM 等）、`incremental/<crate>-*`，以及 profile 根目录下的最终二进制和 uplift 副本。第三方单元的指纹不引用本仓单元，命中不受影响。
+- **名单来源**：本仓包名与 target 名由 `cargo metadata --format-version 1 --no-deps --offline` 生成，不写死；build script（`custom-build`）只按包名清理 `build/`，避免误伤第三方 `build_script_build`。按 `名称-16 位哈希` 精确匹配，`lib` 前缀只对 rlib/rmeta/so/dylib/a 剥离，例如本仓若有 `c` 也不会误删第三方 `libc`。cargo metadata 失败或名单为空时步骤直接失败，拒绝静默保存未清理的大缓存。
+- **覆盖范围**：Linux x64/ARM64（之后已停存，见下节“停存 Linux 预览缓存”）、macOS ARM64/Intel（bash + python3）、Windows ARM64/x64 MSVC 与 ARM64 宿主 MSVC 交叉（pwsh + python）、Linux 宿主 GNU 交叉（bash）、Windows GNU core/ui 测试 `target/debug`（pwsh）。Cargo home（registry/git/工具）缓存不含本仓产物，不清理。清理结果（原大小、删除量、占比、保留量）写入日志与步骤摘要，用于核对实际节省。
+- **本地参考**：本机 4 个 debug target 目录 dry-run，本仓产物占 62–78%，但其中大部分是 incremental（CI 关闭 incremental）；去掉 incremental 后本仓约占 19–31%。release-dist（thin LTO、cgu1）的真实比例以下一轮 CI 步骤摘要为准。
+- **仍超额时的评估**：若清理后仍超过 10 GB，优先顺序为：① 保留 Windows GNU 测试缓存但同样清理本仓产物（已做），不直接停存；② 再考虑停存 Cargo home（7 份合计约 2.1 GB），代价是每个 job 多 1–1.5 分钟下载依赖、且关键路径（MSVC 交叉）同样变慢，因此只在实测仍超额时启用。旧缓存在新方案落地后需删除一次，否则精确命中旧的未清理缓存时不会重新保存。
+
+## 停存 Linux 预览缓存（2026-10-09）
+
+- **原因**：仓库缓存池上限 10 GB（实测保留上限约 10.1 GB）。清理本仓产物后，新格式一整套仍约 11.4 GB（编译 7.19 + 依赖 2.12 + Windows GNU 测试 2.07 GB），刚保存的条目会被 LRU 立即淘汰。Linux x64 与 Linux ARM64 预览 job 不在关键路径上：暖态关键路径约 33 分钟（MSVC 交叉、Windows GNU 测试 core、macOS Intel 原生测试），Linux 冷编只要 26–27 分钟。
+- **改动**：两个 Linux 预览 job 不再保存编译缓存（`grok-zh-build-linux-*`），也不再保存依赖与工具缓存（`grok-zh-cargo-home-linux-*`）。按 2026-10-09 实测压缩大小，这 4 条共约 2.96 GB（编译 1.21 + 1.19，依赖 0.28 + 0.28），停存后新格式一整套约 8.4 GB，留出约 1.6 GB 余量。
+- **代价**：每个 Linux 预览 job 每轮冷编，约多 3–4 分钟，整轮时长基本不变。Linux 原生测试 job 原本借用预览 job 写入的依赖缓存，现在改为每轮重新下载 crate，Linux 上约 10 秒。
+- **恢复步骤**：没有写入方就不会再有新格式 Linux 缓存。合并后读到的只可能是 zh-dev 旧工作流遗留的同名条目，7 天内会自然消失，而且最多省下约 10 秒下载。保留恢复只会让每轮多一次必然落空的查询，日志里的 miss 还会让人误以为缓存出了问题，因此预览和原生测试都去掉恢复。正式 Release 路径保持原有恢复步骤（Release 本来只读不写），版本、编译参数和产物都不变。
+- **不变**：LTO、codegen-units、opt-level、`debug=0`、`-j4` 和产物内容都不变。其他平台的编译与依赖缓存照旧保存。
+
+## 测试缓存键升级到 v2（2026-10-09）
+
+- **原因**：Windows GNU core/ui 测试缓存最宽的兜底 restore-key 是 `grok-zh-test-v1-zh-dev-<OS>-<arch>-<工具链>-<target>-<编译器指纹>-debug0-incremental0-<suite>-`，不含 manifest 和 Cargo.lock 哈希，只按前缀匹配。zh-dev 旧工作流保存的测试缓存同样以这个前缀开头，但没有经过“保存前清理本仓 crate 产物”，单条约 2.2 GB（清理后约 1 GB）。只要旧条目还在缓存池里，PR 和 zh-dev 就可能恢复到它；主键未精确命中时还会把这份未清理的大目录在清理后另存一份，同时旧条目被访问后不会按 7 天自然过期，持续挤占 10 GB 缓存池。
+- **改动**：`.github/actions/validate-windows-gnu/action.yml` 的主键和全部 3 条 restore-keys 前缀统一从 `grok-zh-test-v1` 改为 `grok-zh-test-v2`，其余键段不变。v2 的任何 restore-key 都不是 v1 键的前缀，因此不会再命中旧条目；旧 v1 条目不再被访问，7 天后由 GitHub 自动清除，无需手动删除缓存。`.github/scripts/tests/test_windows_validation.py` 断言主键与 3 条 restore-keys 都使用 v2，且文件中不再出现 v1。
+- **代价**：合并后 zh-dev 第一轮 Windows GNU 测试 core/ui 冷编一次并保存 v2 缓存，之后恢复正常命中。
+- **不变**：其他缓存（编译 `grok-zh-build-*`、依赖 `grok-zh-cargo-home-*`）的键与保存策略、编译配置都不变。正式 Release 的测试分片仍以 `save-cache: 'false'` 只读调用同一 action，只是读取的前缀变为 v2；在 zh-dev 保存 v2 之前，Release 测试分片会冷编，不影响产物与版本。

@@ -316,6 +316,24 @@ class Program {
     $ignoredSidecar.assets[1].digest = $null
     Assert-True ((Get-OnlineReleaseContract $ignoredSidecar).Archive.Sha256 -ceq $contract.Archive.Sha256) '旧 sidecar 元数据不参与新版校验'
 
+    $armRelease = New-TestRelease -Version '1.0.36' -ZipBytes $zipBytes
+    $armName = 'grok-zh-1.0.36-windows-aarch64-msvc.zip'
+    $armRelease.assets[0].name = $armName
+    $armRelease.assets[0].browser_download_url = "https://github.com/JoyElliot/grok-build-Chinese/releases/download/release-v1.0.36/$armName"
+    try {
+        $script:OnlinePlatformSuffix = 'windows-aarch64-msvc'
+        $script:OnlineTargetTriple = 'aarch64-pc-windows-msvc'
+        Assert-True ((Get-OnlineReleaseContract $armRelease).Archive.Name -ceq $armName) 'Windows ARM64 选择原生完整包'
+        Assert-Throws { Get-OnlineReleaseContract $release } 'Windows ARM64 不选择历史 x64 包'
+        $armProtocol = "Version: 1.0.36`nGROK-UPDATE-PROTOCOL-BEGIN`n" +
+            '{"schema":1,"version":"1.0.36","platform":"aarch64-pc-windows-msvc","mode":"executable-only","manifest":"SHA256SUMS.txt","executable":"grok-zh.exe","installer":"Install-GrokZh.ps1"}' +
+            "`nGROK-UPDATE-PROTOCOL-END`n"
+        Assert-True ((Read-OnlinePackageProtocol $armProtocol '1.0.36').platform -ceq 'aarch64-pc-windows-msvc') 'Windows ARM64 协议平台一致'
+    } finally {
+        $script:OnlinePlatformSuffix = 'windows-x86_64-gnu'
+        $script:OnlineTargetTriple = 'x86_64-pc-windows-gnu'
+    }
+
     $protocolFields = [ordered]@{ schema = 1; version = '1.0.13'; platform = 'x86_64-pc-windows-gnu'
         mode = 'executable-only'; manifest = 'SHA256SUMS.txt'; executable = 'grok-zh.exe'; installer = 'Install-GrokZh.ps1' }
     foreach ($case in @('valid', 'extension', 'no-header', 'nested', 'collision', 'unknown', 'platform', 'version', 'incomplete', 'duplicate', 'unsafe', 'installer-metadata', 'same-entry')) {

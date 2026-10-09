@@ -7,6 +7,13 @@ inputs:
   key:
     description: The primary key returned by the original restore step.
     required: true
+  prune-profile-dirs:
+    description: >-
+      Optional newline-separated Cargo profile directories (e.g. target/release-dist and
+      target/<triple>/release-dist). This workspace's own crates are removed from them before
+      saving; they are rebuilt every run, so only third-party outputs are worth caching.
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -17,6 +24,26 @@ runs:
         path: ${{ inputs.path }}
         key: ${{ inputs.key }}
         lookup-only: true
+
+    # Workspace crates are rebuilt on every run; drop them so the cache only carries
+    # third-party outputs. The crate list comes from `cargo metadata`, never a fixed list.
+    - name: 清理本仓 crate 产物（Linux/macOS）
+      if: ${{ steps.existing.outputs.cache-hit != 'true' && inputs.prune-profile-dirs != '' && runner.os != 'Windows' }}
+      shell: bash
+      env:
+        PRUNE_PROFILE_DIRS: ${{ inputs.prune-profile-dirs }}
+        PYTHONUTF8: '1'
+      run: python3 -B .github/scripts/prune-cargo-workspace-artifacts.py --profile-dir-list "$PRUNE_PROFILE_DIRS"
+
+    - name: 清理本仓 crate 产物（Windows）
+      if: ${{ steps.existing.outputs.cache-hit != 'true' && inputs.prune-profile-dirs != '' && runner.os == 'Windows' }}
+      shell: pwsh
+      env:
+        PRUNE_PROFILE_DIRS: ${{ inputs.prune-profile-dirs }}
+        PYTHONUTF8: '1'
+      run: |
+        python -B .github/scripts/prune-cargo-workspace-artifacts.py --profile-dir-list $env:PRUNE_PROFILE_DIRS
+        if ($LASTEXITCODE -ne 0) { throw '本仓 crate 产物清理失败，拒绝保存未清理的缓存。' }
 
     # A second writer can still win after this lookup. The cache service owns
     # that final reservation; an existing exact key needs no compression here.

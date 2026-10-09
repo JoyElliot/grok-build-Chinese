@@ -45,16 +45,17 @@ def build_config(release_build, variant="current"):
 
 
 def cache_writable(release_build, event, ref):
+    # 与工作流级 GROK_ZH_CACHE_WRITE 一致：PR 只读；zh-dev push/定时预热与手动触发才写入。
     if release_build:
         return False
-    if ref == "refs/heads/zh-dev" and event in ("push", "workflow_dispatch"):
-        return True
-    return event == "workflow_dispatch" and ref.startswith("refs/heads/sync/upstream-")
+    if event in ("push", "schedule"):
+        return ref == "refs/heads/zh-dev"
+    return event == "workflow_dispatch" and ref.startswith("refs/heads/")
 
 
 def cargo_command(release_build, target, jobs, variant="current"):
-    if target != "aarch64-apple-darwin" or jobs < 1:
-        raise ValueError("expected the macOS ARM64 target and a positive job count")
+    if target not in ("aarch64-apple-darwin", "x86_64-apple-darwin") or jobs < 1:
+        raise ValueError("expected a supported macOS target and a positive job count")
     config = build_config(release_build, variant)
     command = [
         "cargo", "build", "--frozen", "-j", str(jobs), "--target", target,

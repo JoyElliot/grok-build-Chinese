@@ -22,6 +22,10 @@ on:
       - '.github/workflows/upstream-localization.yml'
 permissions:
   contents: read
+concurrency:
+  # 轻量检查：同一 PR 的新提交取消该 PR 旧轮；push 与手动运行按 run_id 独立，PR 不会取消 zh-dev。
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   localization:
     runs-on: ubuntu-24.04
@@ -37,4 +41,5 @@ jobs:
           python3 .github/scripts/tests/test_announcement_translations.py
           python3 .github/scripts/tests/test_package_protocol.py
           python3 .github/scripts/tests/test_macos_build.py
+          python3 .github/scripts/tests/test_cargo_cache_prune.py
           python3 packaging/macos/tests/test_install_lock.py

@@ -1,5 +1,5 @@
-name: Build Linux x64 GNU
-description: 在 GitHub 托管的 Ubuntu runner 上构建并验证 Linux x86_64 GNU 制品
+name: Build Linux GNU
+description: 在 GitHub 托管的原生 Ubuntu 22.04 runner（glibc 2.35 基线）上构建并验证 Linux GNU 制品
 inputs:
   version:
     description: 正式构建使用的严格 SemVer；预览构建留空即可
@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 标记是否由正式发布流程调用
     required: true
+  phase:
+    description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
+    required: false
+    default: all
 outputs:
   package_name:
     value: ${{ steps.package_meta.outputs.package_name }}
@@ -24,9 +28,15 @@ runs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
+          BUILD_PHASE: ${{ inputs.phase }}
         shell: bash
         run: |
           set -euo pipefail
+          case "$BUILD_PHASE" in all|test|build) ;; *) echo '::error::无效的构建阶段。'; exit 1 ;; esac
+          if [[ "$IS_RELEASE_BUILD" == true && "$BUILD_PHASE" != all ]]; then
+            echo '::error::正式 Release 必须执行完整测试与构建。'
+            exit 1
+          fi
           requested="$REQUESTED_VERSION"
           if [[ "$IS_RELEASE_BUILD" == "true" \
             && -z "$(printf '%s' "$requested" | tr -d '[:space:]')" ]]; then
@@ -49,12 +59,25 @@ runs:
             echo "::error::版本无效：$version"
             exit 1
           fi
-          package_name="grok-zh-$version-linux-x86_64-gnu"
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu) linux_arch=x86_64; machine='Advanced Micro Devices X86-64' ;;
+            aarch64-unknown-linux-gnu) linux_arch=aarch64; machine='AArch64' ;;
+            *) echo "::error::不支持的 Linux target：$TARGET"; exit 1 ;;
+          esac
+          [[ "$(uname -m)" == "$linux_arch" ]] || {
+            echo "::error::Linux runner 架构与 target 不一致：$(uname -m) / $TARGET"
+            exit 1
+          }
+          package_name="grok-zh-$version-linux-$linux_arch-gnu"
           archive_name="$package_name.tar.gz"
           {
             echo "GROK_VERSION=$version"
             echo "PACKAGE_NAME=$package_name"
             echo "ARCHIVE_NAME=$archive_name"
+            echo "LINUX_ARCH=$linux_arch"
+            echo "LINUX_MACHINE=$machine"
+            # Linux 发布包承诺的最低 glibc（见 packaging/linux/INSTALL-LINUX.md）。
+            echo "GROK_ZH_LINUX_MAX_GLIBC=2.35"
           } >> "$GITHUB_ENV"
           {
             echo "package_name=$package_name"
@@ -94,7 +117,28 @@ runs:
           rustc --version --verbose
           cargo --version --verbose
 
+      # 发布基线：Linux 包在 ubuntu-22.04 / ubuntu-22.04-arm（glibc 2.35）上编译。宿主 glibc 版本写进
+      # 缓存 key，保证正式 Release 恢复缓存时不会读到其他镜像（如 ubuntu-24.04 / glibc 2.39）编出的
+      # 第三方 C 产物；打包步骤再用 readelf 复核产物引用的最高 GLIBC_ 符号版本。
+      - name: 记录宿主 glibc 版本
+        id: host_glibc
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_glibc="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
+          if [[ ! "$host_glibc" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::无法识别宿主 glibc 版本：$host_glibc"
+            exit 1
+          fi
+          echo "宿主 glibc：$host_glibc（发布基线上限：$GROK_ZH_LINUX_MAX_GLIBC）"
+          echo "version=$host_glibc" >> "$GITHUB_OUTPUT"
+
+      # Linux 预览与原生测试不保存、也不恢复 Cargo 缓存：10GB 缓存池放不下全部平台，
+      # Linux 两个预览 job 不在关键路径上（冷编每个约多 3–4 分钟）。合并后不再有任何
+      # 新格式 Linux 缓存写入，保留恢复只会每轮做一次必然落空的查询，故只在正式 Release
+      # 路径保留原有恢复步骤（Release 本来就只读不写，行为不变）。
       - name: 恢复 Cargo 依赖与工具缓存
+        if: inputs.release_build == 'true'
         id: cargo_home_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -103,41 +147,44 @@ runs:
             ${{ runner.temp }}/grok-zh-cargo/git
             ${{ runner.temp }}/grok-zh-dotslash
             ${{ runner.temp }}/grok-zh-tools
-          key: grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          key: grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
+            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
 
-      - name: 恢复 Cargo Linux release-dist 缓存
-        id: cargo_target_cache
+      - name: 恢复 Cargo Linux release-dist 编译缓存（宿主与目标合一）
+        if: inputs.phase != 'test' && inputs.release_build == 'true'
+        id: cargo_build_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          # 宿主 build script/proc-macro 与目标产物必须来自同一轮，否则指纹不一致会整体重编。
+          path: |
+            ${{ runner.temp }}/grok-zh-target/release-dist
+            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
+          key: grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
-
-      - name: 恢复 Cargo Linux 宿主构建缓存
-        id: cargo_host_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release-dist
-          key: grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-
 
       - name: 安装并验证 DotSlash 与 protoc
         shell: bash
         run: |
           set -euo pipefail
           if [[ ! -x "$TOOLS_DIR/bin/dotslash" ]]; then
-            dotslash_archive="$RUNNER_TEMP/dotslash-ubuntu-22.04.x86_64.tar.gz"
-            dotslash_uri="https://github.com/facebook/dotslash/releases/download/v$DOTSLASH_VERSION/dotslash-ubuntu-22.04.x86_64.tar.gz"
+            if [[ "$LINUX_ARCH" == 'aarch64' ]]; then
+              dotslash_platform='ubuntu-22.04.arm64'
+              dotslash_file="dotslash-${dotslash_platform}.v${DOTSLASH_VERSION}.tar.gz"
+              dotslash_sha256='6e358adfd2125ab3f49967107a60a2683231d4f07f0e136735328fa1f21809b2'
+            else
+              dotslash_platform='ubuntu-22.04.x86_64'
+              dotslash_file="dotslash-${dotslash_platform}.tar.gz"
+              dotslash_sha256="$DOTSLASH_SHA256"
+            fi
+            dotslash_archive="$RUNNER_TEMP/$dotslash_file"
+            dotslash_uri="https://github.com/facebook/dotslash/releases/download/v$DOTSLASH_VERSION/$dotslash_file"
             curl --fail --location --retry 5 --retry-all-errors \
               --output "$dotslash_archive" "$dotslash_uri"
-            printf '%s  %s\n' "$DOTSLASH_SHA256" "$dotslash_archive" |
+            printf '%s  %s\n' "$dotslash_sha256" "$dotslash_archive" |
               sha256sum -c -
             tar -xzf "$dotslash_archive" -C "$TOOLS_DIR/bin" dotslash
           fi
@@ -145,28 +192,50 @@ runs:
           "$TOOLS_DIR/bin/dotslash" --version
           "$PROTOC" --version
 
+      - name: 获取锁定版本的 Cargo 依赖
+        shell: bash
+        run: cargo fetch --locked --target "$TARGET"
+
       - name: 验证格式与基础本地化
+        if: inputs.phase != 'build'
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/tests/test_unix_binary.py
           cargo fmt --all -- --check
-          cargo fetch --locked --target "$TARGET"
           cargo test --frozen -j "$CARGO_BUILD_JOBS" -p xai-grok-locale
           cargo test --frozen -j "$CARGO_BUILD_JOBS" \
             -p xai-grok-update --features community-build --lib
 
-      - name: 构建 Linux x86_64 GNU
+      - name: 构建 Linux GNU
+        if: inputs.phase != 'test'
         shell: bash
+        env:
+          IS_RELEASE_BUILD: ${{ inputs.release_build }}
         run: |
           set -euo pipefail
+          # 预览构建不生成调试信息（与 Windows GNU 交叉一致）；正式 Release 保持 release-dist 原配置。
+          extra=()
+          if [[ "$IS_RELEASE_BUILD" != true ]]; then
+            extra=(--config profile.release-dist.debug=0)
+          fi
           cargo build --frozen -j "$CARGO_BUILD_JOBS" \
             --target "$TARGET" \
             -p xai-grok-pager-bin \
             --profile release-dist \
-            --features release-dist
+            --features release-dist --timings "${extra[@]}"
+
+      - name: 上传 Linux Cargo timings
+        if: ${{ !cancelled() && inputs.phase != 'test' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: grok-zh-linux-${{ env.LINUX_ARCH }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 打包并验证 Linux 构建
+        if: inputs.phase != 'test'
         env:
           IS_RELEASE_BUILD: ${{ inputs.release_build }}
         shell: bash
@@ -184,6 +253,9 @@ runs:
           python3 .github/scripts/strip-unix-binary.py --platform linux \
             --input "$built_bin" --output "$package/grok-zh" \
             --diagnostics "$dist/diagnostics/linux" --version "$GROK_VERSION"
+          # 防回归：产物引用的最高 GLIBC_ 符号版本不得超过发布基线（实际值写入步骤摘要）。
+          python3 .github/scripts/check-elf-glibc.py --binary "$package/grok-zh" \
+            --max "$GROK_ZH_LINUX_MAX_GLIBC" --label "Linux $LINUX_ARCH GNU"
           cp LICENSE "$package/LICENSE-grok-build.txt"
           cp SOURCE_REV "$package/SOURCE_REV"
           cp THIRD-PARTY-NOTICES "$package/THIRD-PARTY-NOTICES.txt"
@@ -196,8 +268,8 @@ runs:
 
           binary_info="$(file "$package/grok-zh")"
           machine_info="$(readelf -h "$package/grok-zh" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
-          if [[ "$binary_info" != *"ELF 64-bit"* ]] || [[ "$machine_info" != "Advanced Micro Devices X86-64" ]]; then
-            echo "::error::产物不是 x86_64 ELF：$binary_info；Machine=$machine_info"
+          if [[ "$binary_info" != *"ELF 64-bit"* ]] || [[ "$machine_info" != "$LINUX_MACHINE" ]]; then
+            echo "::error::产物不是 $LINUX_ARCH ELF：$binary_info；Machine=$machine_info"
             exit 1
           fi
           version_output="$("$package/grok-zh" --version | head -n 1)"
@@ -219,7 +291,7 @@ runs:
             update_support="false (Actions preview artifact only)"
           fi
           {
-            echo "Grok Build 简体中文 Linux x86_64 GNU $build_label"
+            echo "Grok Build 简体中文 Linux $LINUX_ARCH GNU $build_label"
             echo "Product: grok-build-zh"
             echo "License: Apache-2.0"
             echo "Version: $GROK_VERSION"
@@ -227,7 +299,8 @@ runs:
             echo "Upstream source revision: $source_rev"
             echo "Repository: $GITHUB_REPOSITORY"
             echo "Target: $TARGET"
-            echo "Profile: release-dist (Thin LTO, codegen-units=1, packaged binary strip --strip-unneeded; runtime image verified)"
+            if [[ "${{ inputs.release_build }}" == "true" ]]; then profile_debug=""; else profile_debug=", debug=0"; fi
+            echo "Profile: release-dist (Thin LTO, codegen-units=1${profile_debug}, packaged binary strip --strip-unneeded; runtime image verified)"
             echo "Rust: $rustc_info"
             echo "Cargo: $cargo_info"
             echo "DotSlash: $dotslash_info"
@@ -433,7 +506,8 @@ runs:
             "$coexist_home/.grok/bin/.grok-zh-install.json"
           ls -lh "$archive" "$archive.sha256"
 
-      - name: 上传 Linux x86_64 GNU 构建
+      - name: 上传 Linux GNU 构建
+        if: inputs.phase != 'test'
         id: preview_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -447,13 +521,14 @@ runs:
           retention-days: 14
 
       - name: 在摘要中发布制品详情
+        if: inputs.phase != 'test'
         shell: bash
         run: |
           {
             if [[ "${{ inputs.release_build }}" == "true" ]]; then
-              echo "## Linux x86_64 GNU Release 候选"
+              echo "## Linux $LINUX_ARCH GNU Release 候选"
             else
-              echo "## Linux x86_64 GNU 预览版"
+              echo "## Linux $LINUX_ARCH GNU 预览版"
             fi
             echo
             echo "- 版本：$GROK_VERSION"
@@ -463,6 +538,7 @@ runs:
             echo "- 目标：$TARGET"
             echo "- 软件包外层校验：$ARCHIVE_NAME.sha256"
             echo "- 软件包内层校验：SHA256SUMS.txt"
+            echo "- 最低 glibc 基线：$GROK_ZH_LINUX_MAX_GLIBC（产物实际引用的最高 GLIBC_ 版本见上方 glibc 基线一节）"
             echo "- 已验证 ELF 架构、精确包结构、包内外校验和、共享安装锁、安装器幂等性、四个兼容入口及与官方入口共存。"
             if [[ "${{ inputs.release_build }}" == "true" ]]; then
               echo "- 此制品交给 Release 工作流完成 attestation、精确资产核验与发布。"
@@ -470,28 +546,3 @@ runs:
               echo "- Actions 预览制品本身不是自动更新目标；正式不可变 Release 才会被更新器接受。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 保存 Cargo Linux release-dist 缓存
-        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
-
-      - name: 保存 Cargo Linux 宿主构建缓存
-        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release-dist
-          key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
-
-      - name: 保存 Cargo 依赖与工具缓存
-        if: ${{ success() && inputs.release_build != 'true' && github.ref == 'refs/heads/zh-dev' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ runner.temp }}/grok-zh-cargo/registry
-            ${{ runner.temp }}/grok-zh-cargo/git
-            ${{ runner.temp }}/grok-zh-dotslash
-            ${{ runner.temp }}/grok-zh-tools
-          key: ${{ steps.cargo_home_cache.outputs.cache-primary-key }}

@@ -13,8 +13,12 @@ BEGIN = "GROK-UPDATE-PROTOCOL-BEGIN"
 END = "GROK-UPDATE-PROTOCOL-END"
 PLATFORMS = {
     "x86_64-pc-windows-gnu": ("grok-zh.exe", "Install-GrokZh.ps1"),
+    "x86_64-pc-windows-msvc": ("grok-zh.exe", "Install-GrokZh.ps1"),
+    "aarch64-pc-windows-msvc": ("grok-zh.exe", "Install-GrokZh.ps1"),
+    "x86_64-apple-darwin": ("grok-zh", "Install-GrokZh.sh"),
     "aarch64-apple-darwin": ("grok-zh", "Install-GrokZh.sh"),
     "x86_64-unknown-linux-gnu": ("grok-zh", "Install-GrokZh.sh"),
+    "aarch64-unknown-linux-gnu": ("grok-zh", "Install-GrokZh.sh"),
 }
 
 
