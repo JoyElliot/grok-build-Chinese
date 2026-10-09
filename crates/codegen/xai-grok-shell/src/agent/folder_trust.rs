@@ -313,16 +313,7 @@ fn prompt_for_trust(key: &Path) -> bool {
 
     let mut err = std::io::stderr();
     let _ = writeln!(err);
-    let _ = writeln!(
-        err,
-        "This folder contains repo-local config (MCP/LSP servers, hooks, permission rules) \
-         or project instructions/skills that Grok would otherwise apply automatically."
-    );
-    let _ = writeln!(err, "  Folder: {}", key.display());
-    let _ = write!(
-        err,
-        "Trust the authors of this folder and apply them? [y/N] "
-    );
+    let _ = write!(err, "{}", trust_prompt_text(&trust_prompt_locale(), key));
     let _ = err.flush();
 
     let mut line = String::new();
@@ -330,6 +321,80 @@ fn prompt_for_trust(key: &Path) -> bool {
         Ok(0) | Err(_) => false,
         Ok(_) => is_yes_answer(&line),
     }
+}
+
+/// Community localization: the prompt runs before the TUI owns the terminal, so it resolves the UI locale itself.
+/// Precedence mirrors the pager: requirements > `--locale` > env > user config > managed config > host locale > product default.
+fn trust_prompt_locale() -> xai_grok_locale::LocaleContext {
+    let layers = crate::config::ConfigLayers::load().ok();
+    let args: Vec<String> = std::env::args().collect();
+    let environment = std::env::var(xai_grok_product::LOCALE_ENV).ok();
+    let system = xai_grok_locale::system_locale();
+    resolve_trust_prompt_locale(
+        layers.as_ref(),
+        cli_locale_arg(&args),
+        environment.as_deref(),
+        system.as_deref(),
+    )
+}
+
+fn resolve_trust_prompt_locale(
+    layers: Option<&crate::config::ConfigLayers>,
+    cli: Option<&str>,
+    environment: Option<&str>,
+    system: Option<&str>,
+) -> xai_grok_locale::LocaleContext {
+    fn ui_locale(value: Option<&toml::Value>) -> Option<&str> {
+        value?
+            .get("ui")?
+            .get("locale")?
+            .as_str()
+            .map(str::trim)
+            .filter(|value| xai_grok_locale::UiLocale::parse(value).is_some())
+    }
+    let requirement = layers.and_then(|layers| {
+        ui_locale(layers.mdm_requirements.as_ref())
+            .or_else(|| ui_locale(layers.system_requirements.as_ref()))
+            .or_else(|| ui_locale(layers.user_requirements.as_ref()))
+    });
+    let config = layers.and_then(|layers| ui_locale(Some(&layers.user)));
+    let managed = layers.and_then(|layers| {
+        ui_locale(Some(&layers.managed)).or_else(|| ui_locale(Some(&layers.system_managed)))
+    });
+    xai_grok_locale::LocaleContext::new(xai_grok_locale::ResolvedLocale::resolve(
+        xai_grok_locale::LocalePreferences {
+            requirement,
+            cli,
+            environment,
+            config,
+            managed,
+            system,
+            product_default: Some(xai_grok_product::DEFAULT_UI_LOCALE),
+        },
+    ))
+}
+
+fn cli_locale_arg(args: &[String]) -> Option<&str> {
+    args.windows(2)
+        .find_map(|pair| (pair[0] == "--locale").then_some(pair[1].as_str()))
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--locale=")))
+}
+
+/// Full prompt text; the question has no trailing newline so the answer is typed on the same line.
+fn trust_prompt_text(locale: &xai_grok_locale::LocaleContext, key: &Path) -> String {
+    let intro = locale.named_text(
+        "cli.folder_trust.prompt.intro",
+        "This folder contains repo-local config (MCP/LSP servers, hooks, permission rules) \
+         or project instructions/skills that Grok would otherwise apply automatically.",
+    );
+    let folder = locale
+        .named_text("cli.folder_trust.prompt.folder", "  Folder: {path}")
+        .replacen("{path}", &key.display().to_string(), 1);
+    let question = locale.named_text(
+        "cli.folder_trust.prompt.question",
+        "Trust the authors of this folder and apply them? [y/N] ",
+    );
+    format!("{intro}\n{folder}\n{question}")
 }
 
 fn is_yes_answer(line: &str) -> bool {
@@ -1570,5 +1635,59 @@ mod tests {
             !reused,
             "a config added after gather must flip the provisional allow"
         );
+    }
+
+    fn trust_prompt_locale_for(
+        locale: xai_grok_locale::UiLocale,
+    ) -> xai_grok_locale::LocaleContext {
+        xai_grok_locale::LocaleContext::new(xai_grok_locale::ResolvedLocale {
+            locale,
+            source: xai_grok_locale::LocaleSource::Cli,
+        })
+    }
+
+    #[test]
+    fn trust_prompt_english_keeps_upstream_text() {
+        let text = trust_prompt_text(
+            &trust_prompt_locale_for(xai_grok_locale::UiLocale::EnUs),
+            Path::new("/repo"),
+        );
+        assert_eq!(
+            text,
+            "This folder contains repo-local config (MCP/LSP servers, hooks, permission rules) \
+             or project instructions/skills that Grok would otherwise apply automatically.\n  \
+             Folder: /repo\nTrust the authors of this folder and apply them? [y/N] "
+        );
+    }
+
+    #[test]
+    fn trust_prompt_chinese_explains_configs_and_keeps_answer_keys() {
+        let text = trust_prompt_text(
+            &trust_prompt_locale_for(xai_grok_locale::UiLocale::ZhCn),
+            Path::new("/repo"),
+        );
+        for expected in ["MCP", "钩子", "权限规则", "  文件夹：/repo\n", "信任"] {
+            assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+        }
+        assert!(
+            text.ends_with("[y/N] "),
+            "answer hint must stay [y/N]: {text:?}"
+        );
+        assert!(!text.contains("Trust the authors"), "{text:?}");
+        assert!(is_yes_answer("y\n") && is_yes_answer("YES") && !is_yes_answer("是"));
+    }
+
+    #[test]
+    fn trust_prompt_locale_follows_config_then_cli() {
+        let mut layers = crate::config::ConfigLayers::default();
+        layers.user = toml::from_str("[ui]\nlocale = \"en-US\"\n").unwrap();
+        let resolved = resolve_trust_prompt_locale(Some(&layers), None, None, Some("zh_CN.UTF-8"));
+        assert_eq!(resolved.locale(), xai_grok_locale::UiLocale::EnUs);
+        let resolved = resolve_trust_prompt_locale(Some(&layers), Some("zh-CN"), None, None);
+        assert_eq!(resolved.locale(), xai_grok_locale::UiLocale::ZhCn);
+        let resolved = resolve_trust_prompt_locale(None, None, None, None);
+        assert_eq!(resolved.locale(), xai_grok_locale::UiLocale::ZhCn);
+        let args = ["grok-zh".to_owned(), "--locale=en-US".to_owned()];
+        assert_eq!(cli_locale_arg(&args), Some("en-US"));
     }
 }
