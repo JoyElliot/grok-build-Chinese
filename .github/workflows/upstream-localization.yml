@@ -41,4 +41,5 @@ jobs:
           python3 .github/scripts/tests/test_announcement_translations.py
           python3 .github/scripts/tests/test_package_protocol.py
           python3 .github/scripts/tests/test_macos_build.py
+          python3 .github/scripts/tests/test_cargo_cache_prune.py
           python3 packaging/macos/tests/test_install_lock.py

@@ -198,3 +198,12 @@ Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM
 - **Windows GNU 测试兜底**：core/ui 的 `target/debug` 缓存新增一层不含 manifest 哈希的 zh-dev restore-key，依赖或 manifest 变化后 PR 仍可从 zh-dev 最近一份测试缓存增量编译。
 - **容量估算**：按 2026-09-26/27 日志的压缩大小，zh-dev 单轮全部缓存约 17 GB（Linux x64 ≈2.6、Linux ARM64 ≈2.6、Windows GNU 测试 core+ui ≈3.7、GNU 交叉 ≈1.9、Windows ARM64 ≈1.6、MSVC 交叉 ≈1.5、macOS ARM64 ≈1.5、macOS Intel ≈1.5、Windows GNU home ≈0.3），合并只消除指纹错配、不减少体积，仍高于 10 GB 免费额度。PR 不再写入后，churn 只来自 zh-dev 自身；精确命中不重复保存，但总量超额时仍会按最后访问时间轮换淘汰。是否进一步停存体积大且不在关键路径上的缓存（如 Windows GNU 测试或 GNU 交叉），需以本轮暖缓存实测结果决定。
 - **Linux 预览**：x64 与 ARM64 预览追加 `--config profile.release-dist.debug=0`（与 Windows GNU 交叉一致），并发由 J3 提高到 J4（标准 ubuntu-24.04/ubuntu-24.04-arm 为 4 vCPU）；正式 Release 不传该参数，保持 release-dist 原配置。
+
+## 缓存瘦身：保存前清理本仓 crate 产物（2026-10-09）
+
+- **原因**：2026-10-09 两轮手动触发（37882323840 冷、37888274643 暖）实测全部缓存约 16.4 GB（7 个平台 build+home ≈12.7 GB，Windows GNU 测试 core+ui ≈3.7 GB），超过 10 GB 上限；dispatch1 刚保存完，Linux ARM64 与 GNU 交叉就被淘汰，暖态轮又冷编了这两个平台。暖态轮第三方依赖 0 重编，而本仓 98 个 crate 每轮都重编（checkout 刷新源码 mtime，版本号和 commit 编译时注入），缓存它们的产物只占配额、没有命中收益。
+- **做法**：`.github/actions/save-cargo-cache` 新增可选输入 `prune-profile-dirs`。仅在主键尚不存在、确实要保存时，先运行 `.github/scripts/prune-cargo-workspace-artifacts.py`，从列出的 profile 目录删除本仓 crate 的 `.fingerprint/<包名>-<hash>`、`build/<包名>-<hash>`、`deps`/`examples` 中的 `[lib]<crate>-<hash>.*`（rlib、rmeta、d、exe、pdb、dSYM 等）、`incremental/<crate>-*`，以及 profile 根目录下的最终二进制和 uplift 副本。第三方单元的指纹不引用本仓单元，命中不受影响。
+- **名单来源**：本仓包名与 target 名由 `cargo metadata --format-version 1 --no-deps --offline` 生成，不写死；build script（`custom-build`）只按包名清理 `build/`，避免误伤第三方 `build_script_build`。按 `名称-16 位哈希` 精确匹配，`lib` 前缀只对 rlib/rmeta/so/dylib/a 剥离，例如本仓若有 `c` 也不会误删第三方 `libc`。cargo metadata 失败或名单为空时步骤直接失败，拒绝静默保存未清理的大缓存。
+- **覆盖范围**：Linux x64/ARM64、macOS ARM64/Intel（bash + python3）、Windows ARM64/x64 MSVC 与 ARM64 宿主 MSVC 交叉（pwsh + python）、Linux 宿主 GNU 交叉（bash）、Windows GNU core/ui 测试 `target/debug`（pwsh）。Cargo home（registry/git/工具）缓存不含本仓产物，不清理。清理结果（原大小、删除量、占比、保留量）写入日志与步骤摘要，用于核对实际节省。
+- **本地参考**：本机 4 个 debug target 目录 dry-run，本仓产物占 62–78%，但其中大部分是 incremental（CI 关闭 incremental）；去掉 incremental 后本仓约占 19–31%。release-dist（thin LTO、cgu1）的真实比例以下一轮 CI 步骤摘要为准。
+- **仍超额时的评估**：若清理后仍超过 10 GB，优先顺序为：① 保留 Windows GNU 测试缓存但同样清理本仓产物（已做），不直接停存；② 再考虑停存 Cargo home（7 份合计约 2.1 GB），代价是每个 job 多 1–1.5 分钟下载依赖、且关键路径（MSVC 交叉）同样变慢，因此只在实测仍超额时启用。旧缓存在新方案落地后需删除一次，否则精确命中旧的未清理缓存时不会重新保存。

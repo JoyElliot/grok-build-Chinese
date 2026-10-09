@@ -107,6 +107,8 @@ class MacosBuildTests(unittest.TestCase):
             with self.subTest(action=name):
                 self.assertNotIn("github.event_name == 'pull_request'", action)
                 self.assertNotIn("cargo_host_cache", action)
+                # Build caches drop this workspace's own outputs before saving.
+                self.assertEqual(action.count("prune-profile-dirs: |"), 1)
 
     def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
         with tempfile.TemporaryDirectory() as folder:

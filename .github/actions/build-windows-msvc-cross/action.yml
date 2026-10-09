@@ -106,6 +106,9 @@ runs:
           ${{ runner.temp }}/grok-msvc-cross-target/release-dist
           ${{ runner.temp }}/grok-msvc-cross-target/x86_64-pc-windows-msvc/release-dist
         key: ${{ steps.build.outputs.cache-primary-key }}
+        prune-profile-dirs: |
+          ${{ runner.temp }}/grok-msvc-cross-target/release-dist
+          ${{ runner.temp }}/grok-msvc-cross-target/x86_64-pc-windows-msvc/release-dist
 
     - name: 保存交叉依赖缓存
       if: ${{ success() && env.GROK_ZH_CACHE_WRITE == 'true' && steps.home.outputs.cache-hit != 'true' }}

@@ -528,6 +528,9 @@ runs:
             ${{ runner.temp }}/grok-zh-target/release-dist
             ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
           key: ${{ steps.cargo_build_cache.outputs.cache-primary-key }}
+          prune-profile-dirs: |
+            ${{ runner.temp }}/grok-zh-target/release-dist
+            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
 
       - name: 保存 Cargo 依赖与工具缓存
         if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}

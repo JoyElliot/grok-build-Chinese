@@ -61,3 +61,5 @@ runs:
       with:
         path: ${{ runner.temp }}/grok-zh-target/debug
         key: ${{ steps.cache.outputs.cache-primary-key }}
+        prune-profile-dirs: |
+          ${{ runner.temp }}/grok-zh-target/debug

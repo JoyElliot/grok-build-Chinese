@@ -87,6 +87,9 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn("inputs.save-cache == 'true'", action)
         self.assertIn('key: ${{ steps.cache.outputs.cache-primary-key }}', action)
         self.assertNotIn('github.sha', action)  # Bound immutable cache count per configuration.
+        # Workspace test binaries are rebuilt every run; only third-party outputs are saved.
+        save = action.split('uses: ./.github/actions/save-cargo-cache', 1)[1]
+        self.assertIn('prune-profile-dirs: |\n          ${{ runner.temp }}/grok-zh-target/debug', save)
 
     def test_preview_cross_build_requires_native_packaging_and_all_native_tests(self):
         jobs = job_blocks((ROOT / '.github/workflows/zh-dev-windows-preview.yml').read_text(encoding='utf-8'))

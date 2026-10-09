@@ -440,6 +440,9 @@ runs:
             ${{ runner.temp }}/grok-zh-target/${{ env.MACOS_CARGO_PROFILE }}
             ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/${{ env.MACOS_CARGO_PROFILE }}
           key: ${{ steps.cargo_build_cache.outputs.cache-primary-key }}
+          prune-profile-dirs: |
+            ${{ runner.temp }}/grok-zh-target/${{ env.MACOS_CARGO_PROFILE }}
+            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/${{ env.MACOS_CARGO_PROFILE }}
 
       - name: 保存 Cargo 依赖缓存
         if: ${{ success() && inputs.phase != 'test' && env.MACOS_CACHE_WRITABLE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}

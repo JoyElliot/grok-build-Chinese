@@ -171,6 +171,9 @@ runs:
           ${{ runner.temp }}/grok-gnu-cross-target/release-dist
           ${{ runner.temp }}/grok-gnu-cross-target/x86_64-pc-windows-gnu/release-dist
         key: ${{ steps.build.outputs.cache-primary-key }}
+        prune-profile-dirs: |
+          ${{ runner.temp }}/grok-gnu-cross-target/release-dist
+          ${{ runner.temp }}/grok-gnu-cross-target/x86_64-pc-windows-gnu/release-dist
 
     - name: 保存交叉编译依赖缓存
       if: ${{ success() && env.GROK_ZH_CACHE_WRITE == 'true' && steps.home.outputs.cache-hit != 'true' }}
