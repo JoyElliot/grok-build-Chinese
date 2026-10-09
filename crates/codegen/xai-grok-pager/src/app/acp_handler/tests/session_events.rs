@@ -1235,48 +1235,40 @@
         );
     }
 
+    /// Upstream 1.0.4x routes a child's hook annotation into the child view; it must follow the plugin toggle both ways
     #[test]
-    fn child_hook_annotation_is_not_routed_by_session_event_handler() {
+    fn child_hook_annotation_follows_plugin_visibility() {
+        fn hook(message: &str) -> XaiSessionUpdate {
+            XaiSessionUpdate::HookAnnotation {
+                message: message.into(),
+                kind: Default::default(),
+            }
+        }
+        fn set_plugins_visible(agent: &mut AgentView, child_sid: &str, visible: bool) {
+            let child = agent.subagent_views.get_mut(child_sid).unwrap();
+            let mut appearance = child.scrollback.appearance().clone();
+            appearance.disable_plugins = !visible;
+            child.scrollback.set_appearance(appearance);
+            agent.set_plugins_visible_recursive(visible);
+        }
+
         let mut agent = make_agent(Some("root-sess"));
         let child_sid = "child-hook";
         agent.insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
-        let update = XaiSessionUpdate::HookAnnotation {
-            message: "custom hook text".into(),
-            kind: Default::default(),
-        };
+        let root_len = agent.scrollback.len();
 
-        assert!(!handle_child_session_notification(
-            update,
-            child_sid,
-            &mut agent,
-            false,
-            None,
-        ));
-        let child = agent.subagent_views.get_mut(child_sid).unwrap();
-        assert!(child.scrollback.is_empty(), "upstream child routing leaves hook annotations unhandled");
+        assert!(handle_child_session_notification(hook("custom hook text"), child_sid, &mut agent, false, None));
+        assert_eq!(agent.scrollback.len(), root_len, "the root transcript is untouched");
+        assert_eq!(agent.subagent_views.get(child_sid).unwrap().scrollback.len(), 1);
 
-        let visible_entry_count = child.scrollback.entries_mut().len();
-        agent.set_plugins_visible_recursive(false);
-        assert!(!handle_child_session_notification(
-            XaiSessionUpdate::HookAnnotation {
-                message: "hidden hook text".into(),
-                kind: Default::default(),
-            },
-            child_sid,
-            &mut agent,
-            false,
-            None,
-        ));
-        assert_eq!(
-            agent
-                .subagent_views
-                .get_mut(child_sid)
-                .unwrap()
-                .scrollback
-                .entries_mut()
-                .len(),
-            visible_entry_count
-        );
+        set_plugins_visible(&mut agent, child_sid, false);
+        assert!(!handle_child_session_notification(hook("hidden hook text"), child_sid, &mut agent, false, None));
+        assert_eq!(agent.subagent_views.get(child_sid).unwrap().scrollback.len(), 1);
+
+        set_plugins_visible(&mut agent, child_sid, true);
+        assert!(handle_child_session_notification(hook("visible again"), child_sid, &mut agent, false, None));
+        assert_eq!(agent.subagent_views.get(child_sid).unwrap().scrollback.len(), 2);
+        assert_eq!(agent.scrollback.len(), root_len);
     }
 
     #[test]
