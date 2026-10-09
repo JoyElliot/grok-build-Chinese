@@ -250,5 +250,84 @@ class PreviewNativeValidationTests(unittest.TestCase):
                         self.assertIn("release_build: 'true'", block, job)
 
 
+class LinuxGlibcBaselineTests(unittest.TestCase):
+    """Linux 发行包必须在 glibc 2.35（Ubuntu 22.04）镜像上编译，预览与正式发布一致。"""
+
+    RUNNERS = {"x86_64-unknown-linux-gnu": "ubuntu-22.04",
+               "aarch64-unknown-linux-gnu": "ubuntu-22.04-arm"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.release = job_blocks(WORKFLOW.read_text(encoding="utf-8"))
+        cls.preview = job_blocks(
+            (ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
+        cls.action = (ROOT / ".github/actions/build-linux-x64/action.yml").read_text(encoding="utf-8")
+
+    def test_every_linux_package_job_uses_the_jammy_runner_in_preview_and_release(self):
+        pairs = (("linux-x64-gnu-release", "linux-x64-gnu-preview", "x86_64-unknown-linux-gnu"),
+                 ("linux-arm64-gnu-release", "linux-arm64-gnu-preview", "aarch64-unknown-linux-gnu"))
+        for release, preview, target in pairs:
+            runner = self.RUNNERS[target]
+            for job, block in ((release, self.release[release]), (preview, self.preview[preview])):
+                with self.subTest(job=job):
+                    self.assertRegex(block, rf"(?m)^    runs-on: {re.escape(runner)}$")
+                    self.assertIn(f"TARGET: {target}", block)
+                    self.assertIn("uses: ./.github/actions/build-linux-x64", block)
+        builders = [job for jobs in (self.release, self.preview) for job, block in jobs.items()
+                    if "uses: ./.github/actions/build-linux-x64" in block]
+        self.assertCountEqual(builders, [
+            "linux-x64-gnu-release", "linux-arm64-gnu-release", "linux-x64-gnu-preview",
+            "linux-arm64-gnu-preview", "native-rust-validation",
+        ])
+        self.assertNotRegex("\n".join(self.release.values()), r"ubuntu-24\.04-arm")
+
+    def test_linux_native_tests_run_on_the_same_baseline_images(self):
+        tests = self.preview["native-rust-validation"]
+        for label, target in (("Linux x64 GNU", "x86_64-unknown-linux-gnu"),
+                              ("Linux ARM64 GNU", "aarch64-unknown-linux-gnu")):
+            with self.subTest(label=label):
+                self.assertRegex(tests, rf"(?s)label: {label}\n.*?os: {re.escape(self.RUNNERS[target])}\n"
+                                        rf"\s+family: linux\n\s+target: {target}")
+
+    def test_packaged_binary_glibc_floor_is_enforced_before_upload(self):
+        self.assertIn('echo "GROK_ZH_LINUX_MAX_GLIBC=2.35"', self.action)
+        steps = re.split(r"^      - name: ", self.action, flags=re.M)[1:]
+        package = next(s for s in steps if s.startswith("打包并验证 Linux 构建"))
+        self.assertIn("if: inputs.phase != 'test'", package)
+        check = package.index("check-elf-glibc.py")
+        self.assertLess(package.index("strip-unix-binary.py"), check)
+        self.assertLess(check, package.index("tar --format=ustar"))
+        self.assertIn('--binary "$package/grok-zh"', package)
+        self.assertIn('--max "$GROK_ZH_LINUX_MAX_GLIBC"', package)
+        names = [s.splitlines()[0] for s in steps]
+        self.assertLess(names.index("打包并验证 Linux 构建"), names.index("上传 Linux GNU 构建"))
+
+    def test_linux_cache_keys_are_partitioned_by_host_glibc(self):
+        steps = re.split(r"^      - name: ", self.action, flags=re.M)[1:]
+        names = [s.splitlines()[0] for s in steps]
+        glibc = names.index("记录宿主 glibc 版本")
+        restores = [i for i, s in enumerate(steps) if "actions/cache/restore@" in s]
+        self.assertEqual(len(restores), 2)
+        for index in restores:
+            with self.subTest(step=names[index]):
+                self.assertLess(glibc, index)
+                self.assertIn("inputs.release_build == 'true'", steps[index].splitlines()[1])
+                keys = re.findall(r"grok-zh-(?:cargo-home|build)-[^\n]*", steps[index])
+                self.assertEqual(len(keys), 3)
+                for key in keys:
+                    self.assertIn(
+                        "${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-",
+                        key)
+        self.assertIn("getconf GNU_LIBC_VERSION", steps[glibc])
+        self.assertNotIn("actions/cache/save", self.action)
+        self.assertNotIn("save-cargo-cache", self.action)
+
+    def test_install_guide_documents_the_floor(self):
+        guide = (ROOT / "packaging/linux/INSTALL-LINUX.md").read_text(encoding="utf-8")
+        self.assertIn("glibc 2.35 或更高", guide)
+        for distro in ("Ubuntu 22.04", "Debian 12", "RHEL / AlmaLinux / Rocky Linux 9（2.34）"):
+            self.assertIn(distro, guide)
+
+
 if __name__ == "__main__":
     unittest.main()

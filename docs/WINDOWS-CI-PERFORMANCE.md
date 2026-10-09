@@ -197,7 +197,15 @@ Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM
 - **定时预热**：`cron: '17 19 */5 * *'`（UTC 19:17，即 JST 04:17；每月 1/6/11/16/21/26/31 日），在默认分支 zh-dev 上运行整套预览，用于在 zh-dev 长时间无提交时防止缓存 7 天未访问被清除。精确命中时只恢复、不重复保存。
 - **Windows GNU 测试兜底**：core/ui 的 `target/debug` 缓存新增一层不含 manifest 哈希的 zh-dev restore-key，依赖或 manifest 变化后 PR 仍可从 zh-dev 最近一份测试缓存增量编译。
 - **容量估算**：按 2026-09-26/27 日志的压缩大小，zh-dev 单轮全部缓存约 17 GB（Linux x64 ≈2.6、Linux ARM64 ≈2.6、Windows GNU 测试 core+ui ≈3.7、GNU 交叉 ≈1.9、Windows ARM64 ≈1.6、MSVC 交叉 ≈1.5、macOS ARM64 ≈1.5、macOS Intel ≈1.5、Windows GNU home ≈0.3），合并只消除指纹错配、不减少体积，仍高于 10 GB 免费额度。PR 不再写入后，churn 只来自 zh-dev 自身；精确命中不重复保存，但总量超额时仍会按最后访问时间轮换淘汰。是否进一步停存体积大且不在关键路径上的缓存（如 Windows GNU 测试或 GNU 交叉），需以本轮暖缓存实测结果决定。
-- **Linux 预览**：x64 与 ARM64 预览追加 `--config profile.release-dist.debug=0`（与 Windows GNU 交叉一致），并发由 J3 提高到 J4（标准 ubuntu-24.04/ubuntu-24.04-arm 为 4 vCPU）；正式 Release 不传该参数，保持 release-dist 原配置。
+- **Linux 预览**：x64 与 ARM64 预览追加 `--config profile.release-dist.debug=0`（与 Windows GNU 交叉一致），并发由 J3 提高到 J4（标准 ubuntu-22.04/ubuntu-22.04-arm 为 4 vCPU）；正式 Release 不传该参数，保持 release-dist 原配置。
+
+## Linux glibc 基线：改在 Ubuntu 22.04 上编译（2026-10-09）
+
+- **原因**：此前 Linux x64/ARM64 在 ubuntu-24.04 / ubuntu-24.04-arm 上编译，产物引用 `GLIBC_2.38`（很可能 `GLIBC_2.39`），Ubuntu 22.04、Debian 12、WSL 旧版 Ubuntu 都无法启动。
+- **做法**：预览（`linux-x64-gnu-preview`、`linux-arm64-gnu-preview`、Linux 原生测试矩阵）与正式发布（`linux-x64-gnu-release`、`linux-arm64-gnu-release`）统一改用 `ubuntu-22.04` / `ubuntu-22.04-arm`。Rust 1.94.0、release-dist 配置、`target-cpu` 与包内容不变；只换 runner，系统 C 编译器从 GCC 13 变为 GCC 11，仅影响少量第三方 C 依赖。
+- **防回归**：`build-linux-x64` 打包时运行 `.github/scripts/check-elf-glibc.py`，用 `readelf --version-info` 读取 `.gnu.version_r` 中最高的 `GLIBC_` 版本，超过 `GROK_ZH_LINUX_MAX_GLIBC=2.35` 即失败，并把实际值写进步骤摘要（日志行 `GROK_ZH_MAX_GLIBC=…`）。
+- **缓存隔离**：Linux 的 Cargo home 与 release-dist 缓存键在 `<OS>-<arch>` 后追加 `glibc<宿主版本>`（如 `glibc2.35`），正式 Release 恢复缓存时不会读到 24.04（glibc 2.39）镜像编出的第三方 C 产物。
+- **对用户的影响**：最低要求降到 glibc 2.35（Ubuntu 22.04+、Debian 12+、Fedora 36+），附件名和更新协议不变，见 [Linux 使用说明](../packaging/linux/INSTALL-LINUX.md#系统要求)。
 
 ## 缓存瘦身：保存前清理本仓 crate 产物（2026-10-09）
 

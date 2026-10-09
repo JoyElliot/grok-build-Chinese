@@ -521,14 +521,15 @@ jobs:
             schema: windows-arm64-v1
             jobs: 4
           - label: Linux x64 GNU
-            os: ubuntu-24.04
+            # 与发布包同一 glibc 2.35 基线镜像，测试结果同时覆盖 22.04 的编译依赖。
+            os: ubuntu-22.04
             family: linux
             target: x86_64-unknown-linux-gnu
             schema: linux-x64-v1
             jobs: 3
             dotslash_sha256: 7400dd0dbdf05d3be4e604b62807eb1bcbaa0d1bced010d30746243759e0ac03
           - label: Linux ARM64 GNU
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
             family: linux
             target: aarch64-unknown-linux-gnu
             schema: linux-arm64-v1
@@ -749,14 +750,15 @@ jobs:
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版
     needs: rust-format-preflight
-    runs-on: ubuntu-24.04
+    # glibc 2.35 基线：必须与正式 Release 的 linux-x64-gnu-release 使用同一镜像。
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
     outputs:
       package_name: ${{ steps.build.outputs.package_name }}
       archive_name: ${{ steps.build.outputs.archive_name }}
       artifact_name: ${{ steps.build.outputs.artifact_name }}
     env:
-      # 标准 ubuntu-24.04 / ubuntu-24.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
+      # 标准 ubuntu-22.04 / ubuntu-22.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
       CARGO_BUILD_JOBS: "4"
       # 不保存也不恢复 Cargo 缓存（10GB 缓存池放不下，且本 job 不在关键路径上），见 build-linux-x64。
       CARGO_CACHE_SCHEMA: linux-x64-v1
@@ -784,14 +786,15 @@ jobs:
   linux-arm64-gnu-preview:
     name: Linux ARM64 GNU 预览版
     needs: rust-format-preflight
-    runs-on: ubuntu-24.04-arm
+    # glibc 2.35 基线：必须与正式 Release 的 linux-arm64-gnu-release 使用同一镜像。
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 180
     outputs:
       package_name: ${{ steps.build.outputs.package_name }}
       archive_name: ${{ steps.build.outputs.archive_name }}
       artifact_name: ${{ steps.build.outputs.artifact_name }}
     env:
-      # 标准 ubuntu-24.04 / ubuntu-24.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
+      # 标准 ubuntu-22.04 / ubuntu-22.04-arm 为 4 vCPU；预览已关闭调试信息，链接内存压力下降。
       CARGO_BUILD_JOBS: "4"
       # 不保存也不恢复 Cargo 缓存（10GB 缓存池放不下，且本 job 不在关键路径上），见 build-linux-x64。
       CARGO_CACHE_SCHEMA: linux-arm64-v1

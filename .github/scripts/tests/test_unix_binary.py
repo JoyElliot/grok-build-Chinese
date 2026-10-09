@@ -18,6 +18,10 @@ SPEC = importlib.util.spec_from_file_location(
     "strip_unix", Path(__file__).resolve().parents[1] / "strip-unix-binary.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+GLIBC_SPEC = importlib.util.spec_from_file_location(
+    "check_elf_glibc", Path(__file__).resolve().parents[1] / "check-elf-glibc.py")
+GLIBC = importlib.util.module_from_spec(GLIBC_SPEC)
+GLIBC_SPEC.loader.exec_module(GLIBC)
 
 
 def elf(symbols=True, machine=62):
@@ -314,6 +318,83 @@ class SmokePairTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, self.VERSION + (b"changed" if count == index + 1 else b""))
                 with self.subTest(rosetta=rosetta, index=index):
                     rejected(run, rosetta, "CLI output changed")
+
+
+VERSION_INFO = """
+Version symbols section '.gnu.version' contains 6 entries:
+ Addr: 0x0000000000000500  Offset: 0x00000500  Link: 5 (.dynsym)
+  000:   0 (*local*)       2 (GLIBC_2.2.5)   3 (GLIBC_2.39)    4 (GLIBC_2.3.4)
+
+Version needs section '.gnu.version_r' contains 2 entries:
+ Addr: 0x0000000000000600  Offset: 0x00000600  Link: 6 (.dynstr)
+  000000: Version: 1  File: libgcc_s.so.1  Cnt: 1
+  0x0010:   Name: GCC_3.0  Flags: none  Version: 7
+  0x0020: Version: 1  File: libc.so.6  Cnt: 5
+  0x0030:   Name: GLIBC_2.9  Flags: none  Version: 6
+  0x0040:   Name: GLIBC_2.10  Flags: none  Version: 5
+  0x0050:   Name: GLIBC_PRIVATE  Flags: none  Version: 4
+  0x0060:   Name: GLIBC_2.3.4  Flags: none  Version: 3
+  0x0070:   Name: GLIBC_2.2.5  Flags: none  Version: 2
+"""
+
+DYN_SYMS = """
+     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND getenv@GLIBC_2.2.5 (2)
+     2: 0000000000000000     0 FUNC    WEAK   DEFAULT  UND pidfd_spawnp@GLIBC_2.39 (3)
+     3: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __isoc23_strtol@GLIBC_2.38 (4)
+"""
+
+
+class GlibcFloorTests(unittest.TestCase):
+    def test_only_verneed_glibc_versions_count_and_compare_numerically(self):
+        # GLIBC_2.39 only appears in the .gnu.version listing; GLIBC_PRIVATE is not a floor.
+        versions = GLIBC.required_glibc_versions(VERSION_INFO)
+        self.assertEqual(versions, ["2.2.5", "2.3.4", "2.9", "2.10"])
+        self.assertGreater(GLIBC.version_key("2.10"), GLIBC.version_key("2.9"))
+        self.assertLess(GLIBC.version_key("2.3.4"), GLIBC.version_key("2.35"))
+
+    def test_missing_or_empty_verneed_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "no .gnu.version_r"):
+            GLIBC.required_glibc_versions("Version symbols section '.gnu.version'\n")
+        empty = ("Version needs section '.gnu.version_r' contains 1 entry:\n"
+                 "  0x0010:   Name: GCC_3.0  Flags: none  Version: 2\n")
+        with self.assertRaisesRegex(ValueError, "no GLIBC_"):
+            GLIBC.required_glibc_versions(empty)
+
+    def test_offending_symbols_are_listed(self):
+        self.assertEqual(GLIBC.symbols_newer_than(DYN_SYMS, "2.35"),
+                         ["__isoc23_strtol@GLIBC_2.38", "pidfd_spawnp@GLIBC_2.39"])
+        self.assertEqual(GLIBC.symbols_newer_than(DYN_SYMS, "2.39"), [])
+
+    def run_check(self, version_info, limit):
+        def fake_readelf(*arguments):
+            return version_info if "--version-info" in arguments else DYN_SYMS
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary.md"
+            output = io.StringIO()
+            with mock.patch.object(GLIBC, "readelf", fake_readelf), \
+                    contextlib.redirect_stdout(output):
+                code = GLIBC.main(["--binary", "grok-zh", "--max", limit,
+                                   "--label", "Linux x86_64 GNU", "--summary", str(summary)])
+            return code, output.getvalue(), summary.read_text(encoding="utf-8")
+
+    def test_floor_pass_and_failure_are_reported_in_log_and_summary(self):
+        code, log, summary = self.run_check(VERSION_INFO, "2.35")
+        self.assertEqual(code, 0)
+        self.assertIn("GROK_ZH_MAX_GLIBC=2.10", log)
+        self.assertIn("`GLIBC_2.10`", summary)
+        self.assertIn("结果：通过", summary)
+
+        newer = VERSION_INFO.replace("GLIBC_2.10  Flags", "GLIBC_2.38  Flags")
+        code, log, summary = self.run_check(newer, "2.35")
+        self.assertEqual(code, 1)
+        self.assertIn("GROK_ZH_MAX_GLIBC=2.38", log)
+        self.assertIn("::error::", log)
+        self.assertIn("__isoc23_strtol@GLIBC_2.38", log)
+        self.assertIn("结果：失败", summary)
+
+    def test_invalid_floor_is_rejected(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            GLIBC.main(["--binary", "grok-zh", "--max", "latest", "--summary", ""])
 
 
 if __name__ == "__main__":

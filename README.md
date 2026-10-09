@@ -54,7 +54,7 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 | 平台 | 支持范围与详细步骤 |
 | --- | --- |
 | macOS | [Apple Silicon（M1 及后续机型）与 Intel](packaging/macos/INSTALL-MACOS.md) |
-| Linux | [x86_64 与 ARM64 GNU](packaging/linux/INSTALL-LINUX.md) |
+| Linux | [x86_64 与 ARM64 GNU](packaging/linux/INSTALL-LINUX.md)，需 glibc 2.35+（Ubuntu 22.04+、Debian 12+） |
 
 Windows 包未签名，macOS 包未签名或公证，首次运行可能出现系统安全提示；处理方式见对应安装说明。
 

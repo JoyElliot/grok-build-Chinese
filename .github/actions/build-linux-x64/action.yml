@@ -1,5 +1,5 @@
 name: Build Linux GNU
-description: 在 GitHub 托管的原生 Ubuntu runner 上构建并验证 Linux GNU 制品
+description: 在 GitHub 托管的原生 Ubuntu 22.04 runner（glibc 2.35 基线）上构建并验证 Linux GNU 制品
 inputs:
   version:
     description: 正式构建使用的严格 SemVer；预览构建留空即可
@@ -76,6 +76,8 @@ runs:
             echo "ARCHIVE_NAME=$archive_name"
             echo "LINUX_ARCH=$linux_arch"
             echo "LINUX_MACHINE=$machine"
+            # Linux 发布包承诺的最低 glibc（见 packaging/linux/INSTALL-LINUX.md）。
+            echo "GROK_ZH_LINUX_MAX_GLIBC=2.35"
           } >> "$GITHUB_ENV"
           {
             echo "package_name=$package_name"
@@ -115,6 +117,22 @@ runs:
           rustc --version --verbose
           cargo --version --verbose
 
+      # 发布基线：Linux 包在 ubuntu-22.04 / ubuntu-22.04-arm（glibc 2.35）上编译。宿主 glibc 版本写进
+      # 缓存 key，保证正式 Release 恢复缓存时不会读到其他镜像（如 ubuntu-24.04 / glibc 2.39）编出的
+      # 第三方 C 产物；打包步骤再用 readelf 复核产物引用的最高 GLIBC_ 符号版本。
+      - name: 记录宿主 glibc 版本
+        id: host_glibc
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_glibc="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
+          if [[ ! "$host_glibc" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::无法识别宿主 glibc 版本：$host_glibc"
+            exit 1
+          fi
+          echo "宿主 glibc：$host_glibc（发布基线上限：$GROK_ZH_LINUX_MAX_GLIBC）"
+          echo "version=$host_glibc" >> "$GITHUB_OUTPUT"
+
       # Linux 预览与原生测试不保存、也不恢复 Cargo 缓存：10GB 缓存池放不下全部平台，
       # Linux 两个预览 job 不在关键路径上（冷编每个约多 3–4 分钟）。合并后不再有任何
       # 新格式 Linux 缓存写入，保留恢复只会每轮做一次必然落空的查询，故只在正式 Release
@@ -129,10 +147,10 @@ runs:
             ${{ runner.temp }}/grok-zh-cargo/git
             ${{ runner.temp }}/grok-zh-dotslash
             ${{ runner.temp }}/grok-zh-tools
-          key: grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          key: grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
+            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
 
       - name: 恢复 Cargo Linux release-dist 编译缓存（宿主与目标合一）
         if: inputs.phase != 'test' && inputs.release_build == 'true'
@@ -143,10 +161,10 @@ runs:
           path: |
             ${{ runner.temp }}/grok-zh-target/release-dist
             ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          key: grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-glibc${{ steps.host_glibc.outputs.version }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ inputs.release_build == 'true' && 'debugdefault' || 'debug0' }}-
 
       - name: 安装并验证 DotSlash 与 protoc
         shell: bash
@@ -235,6 +253,9 @@ runs:
           python3 .github/scripts/strip-unix-binary.py --platform linux \
             --input "$built_bin" --output "$package/grok-zh" \
             --diagnostics "$dist/diagnostics/linux" --version "$GROK_VERSION"
+          # 防回归：产物引用的最高 GLIBC_ 符号版本不得超过发布基线（实际值写入步骤摘要）。
+          python3 .github/scripts/check-elf-glibc.py --binary "$package/grok-zh" \
+            --max "$GROK_ZH_LINUX_MAX_GLIBC" --label "Linux $LINUX_ARCH GNU"
           cp LICENSE "$package/LICENSE-grok-build.txt"
           cp SOURCE_REV "$package/SOURCE_REV"
           cp THIRD-PARTY-NOTICES "$package/THIRD-PARTY-NOTICES.txt"
@@ -517,6 +538,7 @@ runs:
             echo "- 目标：$TARGET"
             echo "- 软件包外层校验：$ARCHIVE_NAME.sha256"
             echo "- 软件包内层校验：SHA256SUMS.txt"
+            echo "- 最低 glibc 基线：$GROK_ZH_LINUX_MAX_GLIBC（产物实际引用的最高 GLIBC_ 版本见上方 glibc 基线一节）"
             echo "- 已验证 ELF 架构、精确包结构、包内外校验和、共享安装锁、安装器幂等性、四个兼容入口及与官方入口共存。"
             if [[ "${{ inputs.release_build }}" == "true" ]]; then
               echo "- 此制品交给 Release 工作流完成 attestation、精确资产核验与发布。"

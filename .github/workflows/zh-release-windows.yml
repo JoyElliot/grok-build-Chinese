@@ -706,7 +706,8 @@ jobs:
     name: Linux x64 GNU 构建
     needs: release-plan
     if: ${{ needs.release-plan.outputs.include_linux == 'true' }}
-    runs-on: ubuntu-24.04
+    # glibc 2.35 基线（Ubuntu 22.04+ / Debian 12+）；不要升级到更新的镜像，打包步骤会拒绝更高的 GLIBC_ 引用。
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
     outputs:
       package_name: ${{ steps.build.outputs.package_name }}
@@ -772,7 +773,8 @@ jobs:
     name: Linux ARM64 GNU 构建
     needs: release-plan
     if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
-    runs-on: ubuntu-24.04-arm
+    # glibc 2.35 基线，与 Linux x64 一致。
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 180
     outputs:
       package_name: ${{ steps.build.outputs.package_name }}

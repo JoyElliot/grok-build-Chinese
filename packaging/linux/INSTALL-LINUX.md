@@ -3,6 +3,20 @@
 此软件包是 Grok Build 简体中文社区版的 Linux GNU 构建，按设备选用
 `x86_64-unknown-linux-gnu` 或 `aarch64-unknown-linux-gnu`。它不是 SpaceXAI 官方发行版。
 
+## 系统要求
+
+- **glibc 2.35 或更高。** 发布包在 Ubuntu 22.04（glibc 2.35）上编译，CI 打包时会检查二进制
+  引用的最高 `GLIBC_` 符号版本，超过 2.35 即拒绝发布。可运行 `ldd --version` 查看本机版本。
+- 可用的发行版示例：Ubuntu 22.04 LTS 及更新版本（含基于它的 Linux Mint 21+、WSL 中的
+  Ubuntu 22.04+）、Debian 12 及更新版本（glibc 2.36）、Fedora 36 及更新版本、
+  RHEL / AlmaLinux / Rocky Linux 10（glibc 2.39），以及 Arch Linux 等滚动发行版。
+- 不支持（glibc 低于 2.35）：Ubuntu 20.04（2.31）、Debian 11（2.31）、
+  RHEL / AlmaLinux / Rocky Linux 9（2.34）、Amazon Linux 2023（2.34）。在这些系统上启动会报
+  `version 'GLIBC_2.xx' not found`。
+- 除 glibc 外，程序只动态链接 `libz.so.1`（zlib）与 `libgcc_s.so.1`，上述发行版默认已安装。
+- 已发布的 1.0.45 Linux 包在 Ubuntu 24.04 上编译，要求 glibc 2.39；2.35 基线从下一个正式版开始生效，
+  附件名与自动更新方式不变。
+
 ## 校验与安装
 
 下载 `tar.gz` 后，先运行 `sha256sum <归档文件名>`，与 GitHub Release 对应附件旁显示的
