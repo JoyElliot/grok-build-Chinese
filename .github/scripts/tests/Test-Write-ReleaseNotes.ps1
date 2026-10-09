@@ -101,6 +101,26 @@ try {
     }
     $bytes = [IO.File]::ReadAllBytes($outputPath)
     Assert-True (!($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'UTF-8 无 BOM'
+    Assert-NotContains $body '## 贡献者' '未提供 contributors 时不显示贡献者段'
+
+    $withContributors = Reset-Notes
+    $withContributors.contributors = @('感谢 @someone 完成本次同步（#1）。')
+    $withContributors.notices = @('安装说明。')
+    Write-Notes $withContributors
+    & $generator @invoke
+    $contributorBody = Get-Content -LiteralPath $outputPath -Raw
+    Assert-Contains $contributorBody "## 贡献者`n`n- 感谢 @someone 完成本次同步（#1）。" '渲染贡献者段'
+    $contributorIndex = $contributorBody.IndexOf('## 贡献者')
+    Assert-True ($contributorBody.IndexOf('## 上游更新') -lt $contributorIndex) '贡献者段位于上游更新之后'
+    Assert-True ($contributorIndex -lt $contributorBody.IndexOf('## 安装与兼容性')) '贡献者段位于安装与兼容性之前'
+    Assert-True ($contributorIndex -lt $contributorBody.IndexOf('[完整变更]')) '贡献者段位于完整变更链接之前'
+    $withContributors.contributors = 'not-an-array'
+    Write-Notes $withContributors
+    Assert-Throws { & $generator @invoke } 'contributors 必须为数组'
+    $withContributors.contributors = @('Thanks without Chinese')
+    Write-Notes $withContributors
+    Assert-Throws { & $generator @invoke } 'contributors 必须为中文单行文本'
+    Write-Notes $valid
 
     # Invoke-RestMethod emits a JSON array as one pipeline object. Include a
     # historical prerelease with a stable-looking tag and a later same-SHA tag.
@@ -264,6 +284,9 @@ foreach ($tag in ($records.Keys | Sort-Object)) {
     if ($tag -in @('release-v1.0.12', 'release-v1.0.12-rc.1')) {
         Assert-NotContains $rendered '## 安装与兼容性' 'RC 不再单设安装兼容性区块'
         Assert-NotContains $rendered '预发布' 'RC 不重复强调预发布身份'
+    }
+    if ($tag -eq 'release-v1.0.45') {
+        Assert-Contains $rendered "## 贡献者`n`n- 感谢 @liao666brant" '1.0.45 保留贡献者致谢'
     }
     if ($tag -eq 'release-v1.0.12') {
         Assert-Contains $rendered '## 已知问题' 'rc2 保留已知问题'

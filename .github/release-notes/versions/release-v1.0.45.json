@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "tag": "release-v1.0.45",
+  "prerelease": false,
+  "previous_tag": "release-v1.0.41",
+  "community": [
+    {
+      "text": "补齐 1.0.45 新增界面的中文显示，包括上下文窗口选择、自动审查模式、模型通知横幅、子代理等待状态、工作树创建及 MCP 工具输入请求。",
+      "commits": [
+        "bbde0a5dca12aff20c9efaae0903f7c0ecbe3e05",
+        "93000093194ee84af36cf68002cb638cadce22d4"
+      ]
+    },
+    {
+      "text": "打开包含仓库内 MCP、Hooks 或权限规则配置的文件夹时，信任确认提示改为中文显示。",
+      "commits": [
+        "2444a07a5ebde5edf06f3e08a2712a54b1323e59"
+      ]
+    },
+    {
+      "text": "中文请求生成的轮次摘要改为中文；MCP、配置迁移和模型相关诊断信息显示中文说明，路径和标识符保持原样。",
+      "commits": [
+        "bbde0a5dca12aff20c9efaae0903f7c0ecbe3e05",
+        "93000093194ee84af36cf68002cb638cadce22d4"
+      ]
+    },
+    {
+      "text": "快捷键面板搜索可匹配中文帮助说明；新增 1.0.45 中文版本日志，并同步更新中文使用指南。",
+      "commits": [
+        "93000093194ee84af36cf68002cb638cadce22d4"
+      ]
+    }
+  ],
+  "upstream": [
+    {
+      "base": "f0e3be1100ef5252488e3be8bb0e91cf68d8c305",
+      "tip": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+      "label": "上游 1.0.42–1.0.45",
+      "highlights": [
+        {
+          "text": "新增 /context-window 命令，可为当前会话选择上下文窗口大小；模型提供多种窗口时，/model 会先选窗口再选推理强度。",
+          "commits": [
+            "97f190f644ae1ba07fd6ee185ef54c650e142666"
+          ]
+        },
+        {
+          "text": "插件或配置中的自定义智能体可直接作为子代理启动；父回合等待子代理时显示等待数量。",
+          "commits": [
+            "97f190f644ae1ba07fd6ee185ef54c650e142666"
+          ]
+        },
+        {
+          "text": "新增 worktree create 命令，无需进入交互会话即可创建受管理的工作树；使用 smart-auto 时，页脚和 /usage 显示实际使用的模型。",
+          "commits": [
+            "97f190f644ae1ba07fd6ee185ef54c650e142666"
+          ]
+        },
+        {
+          "text": "MCP 服务器支持令牌文件，每次请求重新读取以适配凭据轮换；MCP 结构化结果已包含在文本中时不再重复显示。",
+          "commits": [
+            "97f190f644ae1ba07fd6ee185ef54c650e142666"
+          ]
+        },
+        {
+          "text": "macOS 沙箱改用系统 Seatbelt；修改同一文件的并行工具调用改为依次执行，其他工具仍并发运行。",
+          "commits": [
+            "97f190f644ae1ba07fd6ee185ef54c650e142666"
+          ]
+        },
+        {
+          "text": "修复 Windows 上剪贴板操作冲突导致的粘贴崩溃；计划评论可点击 [✗] 删除；快捷键面板搜索可匹配标签、按键和说明中的任意词。",
+          "commits": [
+            "97f190f644ae1ba07fd6ee185ef54c650e142666"
+          ]
+        }
+      ]
+    }
+  ],
+  "contributors": [
+    "感谢 @liao666brant 完成本次上游 1.0.45 同步及中文适配（#11）。"
+  ],
+  "notices": []
+}

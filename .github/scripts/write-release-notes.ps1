@@ -255,6 +255,7 @@ if ($document.upstream.Count -gt 0) {
     }
 }
 foreach ($section in @(
+    @{ Field = 'contributors'; Heading = '贡献者' },
     @{ Field = 'notices'; Heading = '安装与兼容性' },
     @{ Field = 'known_issues'; Heading = '已知问题' }
 )) {
