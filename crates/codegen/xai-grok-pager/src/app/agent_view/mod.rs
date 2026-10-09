@@ -1437,10 +1437,6 @@ pub struct AgentView {
     pub active_subagent: Option<String>,
     /// Root of its session, or a child mirrored under a parent's takeover; every child-specific gate derives from it.
     role: AgentRole,
-    /// Whether shell/plugin hook annotations may be rendered in this view.
-    /// Kept recursive so child live updates and transcript replay honor the
-    /// same disable-plugins appearance setting as the root view.
-    pub(crate) hook_annotations_visible: bool,
     /// Hit area for the [✗] close button in the subagent frame title bar.
     pub hit_subagent_frame_close: HitArea,
     /// Whether the `/share` slash command is available (mirrors

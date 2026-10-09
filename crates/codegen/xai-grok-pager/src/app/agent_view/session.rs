@@ -409,7 +409,6 @@ impl AgentView {
             subagent_views: HashMap::new(),
             active_subagent: None,
             role: AgentRole::Root,
-            hook_annotations_visible: true,
             hit_subagent_frame_close: Default::default(),
             sharing_enabled: false,
             memory_mode: None,
@@ -476,7 +475,6 @@ impl AgentView {
         child_view.queue.set_mutation(QueueMutation::ReadOnly);
         let locale = self.scrollback.locale().clone();
         child_view.set_locale_recursive(&locale);
-        child_view.set_hook_annotations_visible_recursive(self.hook_annotations_visible);
         self.subagent_views.insert(child_sid, child_view);
     }
 
@@ -502,20 +500,13 @@ impl AgentView {
         }
     }
 
-    /// Apply plugin UI visibility to this view and every nested child.
+    /// Apply plugin UI visibility to this view's slash registry.
+    /// Child hook annotations follow each child's `scrollback.appearance().disable_plugins` instead.
     pub(crate) fn set_plugins_visible_recursive(&mut self, visible: bool) {
         self.prompt
             .slash_controller
             .registry_mut()
             .set_plugins_visible(visible);
-        self.set_hook_annotations_visible_recursive(visible);
-    }
-
-    fn set_hook_annotations_visible_recursive(&mut self, visible: bool) {
-        self.hook_annotations_visible = visible;
-        for child in self.subagent_views.values_mut() {
-            child.set_hook_annotations_visible_recursive(visible);
-        }
     }
     /// The folder the header and the dashboard show, on the session's own computer
     pub(crate) fn location_path(&self) -> &std::path::Path {
