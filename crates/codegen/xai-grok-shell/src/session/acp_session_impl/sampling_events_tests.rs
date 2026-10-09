@@ -94,6 +94,70 @@ async fn channel_tokens_accumulate_into_streaming_capture() {
         .await;
 }
 
+/// A `Narration` token re-emits a thinking block's text whole.
+/// Its deltas already streamed and were captured on the `Reasoning` channel.
+#[tokio::test(flavor = "current_thread")]
+async fn narration_token_sends_message_chunk_and_skips_capture() {
+    use xai_grok_sampler::{RequestId, SamplingChannel, SamplingEvent};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut fixture = make_replay_send_update_fixture().await;
+            let actor = Arc::new(fixture.actor);
+
+            *actor
+                .current_prompt_id
+                .lock()
+                .expect("current_prompt_id mutex poisoned") = Some("prompt-narration".to_string());
+
+            let req = RequestId::random();
+            own_request(&actor, &req);
+            actor
+                .handle_sampling_event(SamplingEvent::ChannelToken {
+                    request_id: req.clone(),
+                    channel: SamplingChannel::Reasoning,
+                    text: "Found the bug; fixing next.".to_string(),
+                    chunk_index: 0,
+                })
+                .await;
+            // Discard the reasoning thought chunk so the next event is the narration chunk
+            while fixture.event_rx.try_recv().is_ok() {}
+
+            actor
+                .handle_sampling_event(SamplingEvent::ChannelToken {
+                    request_id: req,
+                    channel: SamplingChannel::Narration,
+                    text: "Found the bug; fixing next.".to_string(),
+                    chunk_index: 1,
+                })
+                .await;
+
+            let cap = actor.streaming_turn_capture.lock().clone();
+            assert_eq!(cap.reasoning_text, "Found the bug; fixing next.");
+            assert_eq!(
+                cap.response_text, "",
+                "narration must not double-capture as response text"
+            );
+
+            let event = fixture
+                .event_rx
+                .try_recv()
+                .expect("narration must enter the client event queue");
+            let SessionEvent::Notification(SessionNotification::Acp(notification)) = event else {
+                panic!("expected ACP notification event");
+            };
+            let acp::SessionUpdate::AgentMessageChunk(chunk) = &notification.update else {
+                panic!("expected AgentMessageChunk, got {:?}", notification.update);
+            };
+            let acp::ContentBlock::Text(t) = &chunk.content else {
+                panic!("expected text content, got {:?}", chunk.content);
+            };
+            // Paragraph breaks on both sides keep the block from gluing onto adjacent message text
+            assert_eq!(t.text, "\n\nFound the bug; fixing next.\n\n");
+        })
+        .await;
+}
+
 /// A same-prompt `StreamStarted` restart (a doomloop retry) must accumulate a second generation rather than wipe the first.
 /// This guards the `if cap.prompt_id != prompt_id` branch in the `StreamStarted` arm, which the pure-struct tests bypass.
 #[tokio::test(flavor = "current_thread")]
@@ -1264,6 +1328,7 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 actor,
                 event_rx,
                 sent: _sent,
+                sent_ext: _,
                 persistence_rx: _persistence_rx,
             } = make_replay_send_update_fixture().await;
             let actor = Arc::new(actor);

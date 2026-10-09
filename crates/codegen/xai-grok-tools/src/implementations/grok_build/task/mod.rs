@@ -1522,6 +1522,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn omitted_type_stays_general_purpose_when_types_are_selectable() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(crate::types::resources::Params(model_policy::TaskParams {
+            selectable_subagent_types: vec![xai_tool_types::SubagentDescriptor {
+                name: "demo-plugin:reviewer".to_owned(),
+                description: "Reviews diffs.".to_owned(),
+                tools: None,
+            }],
+            ..model_policy::TaskParams::default()
+        }));
+        let shared = resources.into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!("general-purpose", request.subagent_type);
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .expect("respond to spawn");
+        });
+
+        xai_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared),
+            task_input("general-purpose", false),
+        )
+        .await
+        .expect("omitted type spawns general-purpose");
+        handle.await.expect("spawn responder");
+    }
+
+    #[tokio::test]
     async fn explicit_type_is_not_replaced_by_implicit_or_allowlist() {
         let (backend, mut rx) = make_backend_with_validation_fn(|subagent_type, _| {
             if subagent_type == "plan" {

@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::agent::config::{EndpointsConfig, ModelEntry};
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
 use tokio::sync::mpsc;
@@ -112,20 +113,7 @@ async fn create_test_actor(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
-        },
+        compaction: test_compaction_config(threshold_percent),
         long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
             enabled: false,
             tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
@@ -434,6 +422,42 @@ async fn test_response_header_context_window_downgrade_rejected() {
         })
         .await;
 }
+/// A kept selection the catalog did not list at resume applies at the next turn once it does.
+#[tokio::test(flavor = "current_thread")]
+async fn a_kept_context_window_selection_applies_once_the_catalog_lists_it() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) =
+                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor
+                .compaction
+                .context_window_selection
+                .store(500_000, std::sync::atomic::Ordering::Relaxed);
+            let model = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .unwrap()
+                .model;
+            actor.apply_supported_context_window_selection().await;
+            let cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            assert_eq!(256_000, cfg.context_window.get(), "not listed yet");
+            let mut entry = ModelEntry::fallback(&model, &EndpointsConfig::default());
+            entry.info.context_window = std::num::NonZeroU64::new(256_000).unwrap();
+            entry.info.context_windows = vec![
+                std::num::NonZeroU64::new(256_000).unwrap(),
+                std::num::NonZeroU64::new(500_000).unwrap(),
+            ];
+            actor.models_manager.insert_test_entry(model.clone(), entry);
+            actor.apply_supported_context_window_selection().await;
+            let cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            assert_eq!(500_000, cfg.context_window.get());
+        })
+        .await;
+}
 #[allow(clippy::field_reassign_with_default)]
 async fn create_test_actor_with_memory(
     total_tokens: u64,
@@ -540,20 +564,7 @@ async fn create_test_actor_with_memory(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
-        },
+        compaction: test_compaction_config(threshold_percent),
         long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
             enabled: false,
             tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
+use xai_grok_config::BearerTokenPath;
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 
@@ -33,6 +34,7 @@ use rmcp::{
 
 pub use crate::auth_status::McpOauthDiscovery;
 use crate::auth_status::{HttpAuthDecision, decide_http_auth_from_disk};
+use crate::bearer_token_file::BearerTokenFile;
 use crate::call_result::mcp_output_from_call_result;
 pub use crate::generation::{Generation, Replacement, Superseded};
 use crate::oauth::OAUTH_DISCOVERY_TIMEOUT;
@@ -1188,6 +1190,8 @@ const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 /// How long a stdio server gets to exit after its transport closes before its process group is killed.
 const STDIO_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Bound on writing a dropped call's `notifications/cancelled`, so a child that stopped reading stdin cannot keep the service alive.
+const CANCEL_NOTIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 const ANONYMOUS_ACCESS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -1826,6 +1830,7 @@ impl McpErasedTool {
         let mut params = CallToolRequestParams::new(self.tool.name.clone());
         params.arguments = raw.as_object().cloned();
 
+        let call = client.request_tracker.begin_request();
         let mut input_rounds = 0usize;
         let mut pending_polls = 0u32;
         let mut pending_since: Option<std::time::Instant> = None;
@@ -1838,6 +1843,7 @@ impl McpErasedTool {
             let response = self
                 .call_tool_round(
                     client,
+                    &call,
                     params.clone(),
                     timeout_duration,
                     tool_timeout,
@@ -1848,8 +1854,15 @@ impl McpErasedTool {
                 .await?;
             attempt_span.close();
             let input_required = match response {
-                rmcp::model::CallToolResponse::Complete(call_result) => return Ok(call_result),
-                rmcp::model::CallToolResponse::InputRequired(input_required) => input_required,
+                rmcp::model::CallToolResponse::Complete(mut call_result) => {
+                    call.annotate(&self.tool.server_name, &mut call_result)
+                        .await;
+                    return Ok(call_result);
+                }
+                rmcp::model::CallToolResponse::InputRequired(input_required) => {
+                    call.note_input_required();
+                    input_required
+                }
                 // SEP-2663 tasks are never advertised by this client, so a conforming server
                 // cannot return one; `CallToolResponse` is also non_exhaustive.
                 _ => {
@@ -1897,8 +1910,9 @@ impl McpErasedTool {
                 pending_polls = pending_polls.saturating_add(1);
             }
 
-            let (input_responses, request_state) =
-                self.gather_input_responses(client, input_required).await?;
+            let (input_responses, request_state) = self
+                .gather_input_responses(client, &call, input_required)
+                .await?;
             params.input_responses = input_responses;
             params.request_state = request_state;
         }
@@ -1909,6 +1923,7 @@ impl McpErasedTool {
     async fn call_tool_round(
         &self,
         client: &Arc<McpClient>,
+        call: &crate::elicitation::RunningRequest,
         params: CallToolRequestParams,
         timeout_duration: std::time::Duration,
         tool_timeout: u64,
@@ -1920,7 +1935,16 @@ impl McpErasedTool {
             .ensure_initialized()
             .await
             .map_err(|e| xai_tool_runtime::ToolError::custom("process_manager", e.to_string()))?;
-        match call_tool_cancel_aware(&mcp_service, params.clone(), timeout_duration).await {
+        let service_id = mcp_service.service().service_id;
+        call.begin_send();
+        match send_tool_call(
+            &mcp_service,
+            params.clone(),
+            Some(timeout_duration),
+            |request_id| call.bind_send(service_id, request_id),
+        )
+        .await
+        {
             Ok(response) => Ok(response),
             Err(ServiceError::Timeout { .. }) => {
                 *is_timeout = true;
@@ -1946,6 +1970,7 @@ impl McpErasedTool {
             {
                 self.recover_and_retry(
                     client,
+                    call,
                     params,
                     timeout_duration,
                     tool_timeout,
@@ -1965,6 +1990,7 @@ impl McpErasedTool {
     async fn gather_input_responses(
         &self,
         client: &Arc<McpClient>,
+        call: &crate::elicitation::RunningRequest,
         result: rmcp::model::InputRequiredResult,
     ) -> Result<(Option<rmcp::model::InputResponses>, Option<String>), xai_tool_runtime::ToolError>
     {
@@ -1988,7 +2014,9 @@ impl McpErasedTool {
                         tool = %self.tool.name,
                         "MCP elicitation received in input_required round"
                     );
-                    let elicit_result = client.bridge_elicit(elicit.params).await;
+                    let elicit_result = client
+                        .bridge_elicit(elicit.params, call.begin_answer_ask())
+                        .await;
                     let value = serde_json::to_value(elicit_result).map_err(|e| {
                         xai_tool_runtime::ToolError::custom(
                             "process_manager",
@@ -2023,6 +2051,7 @@ impl McpErasedTool {
     async fn recover_and_retry(
         &self,
         client: &Arc<McpClient>,
+        call: &crate::elicitation::RunningRequest,
         params: CallToolRequestParams,
         timeout_duration: std::time::Duration,
         tool_timeout: u64,
@@ -2061,7 +2090,13 @@ impl McpErasedTool {
                 return Err(tool_error_for_service_error(&original_err));
             }
         };
-        match call_tool_cancel_aware(&mcp_service, params, timeout_duration).await {
+        let service_id = mcp_service.service().service_id;
+        call.begin_send();
+        match send_tool_call(&mcp_service, params, Some(timeout_duration), |request_id| {
+            call.bind_send(service_id, request_id)
+        })
+        .await
+        {
             Ok(response) => Ok(response),
             Err(ServiceError::Timeout { .. }) => {
                 *is_timeout = true;
@@ -2078,17 +2113,27 @@ impl McpErasedTool {
     }
 }
 
-/// One `tools/call` that tells the server when the host stops waiting for it.
+/// One `tools/call` that sends `notifications/cancelled` when the caller stops waiting for it.
 ///
-/// Two abandonment paths send `notifications/cancelled` for the request id: rmcp sends it itself
-/// when the tool timeout elapses (surfaced as [`ServiceError::Timeout`]), and [`CancelOnDrop`]
-/// sends it when the future is dropped before a reply, which is how a cancelled turn (Esc)
-/// reaches the server. A server that honors the notification can stop the work; one that
-/// ignores it sees no other change.
-async fn call_tool_cancel_aware(
+/// rmcp sends the notification itself when `timeout` elapses.
+/// The call then returns [`ServiceError::Timeout`].
+/// A `None` timeout waits for the reply with no deadline.
+/// `CancelOnDrop` sends the notification when this future is dropped before the reply arrives.
+/// A server that ignores the notification sees no other change.
+pub async fn call_tool_cancel_aware(
     service: &McpService,
     params: CallToolRequestParams,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
+) -> Result<rmcp::model::CallToolResponse, ServiceError> {
+    send_tool_call(service, params, timeout, |_| {}).await
+}
+
+/// [`call_tool_cancel_aware`], passing the request's rmcp id to `on_sent` once it is sent.
+async fn send_tool_call(
+    service: &McpService,
+    params: CallToolRequestParams,
+    timeout: Option<std::time::Duration>,
+    on_sent: impl FnOnce(&rmcp::model::RequestId),
 ) -> Result<rmcp::model::CallToolResponse, ServiceError> {
     use rmcp::model::{CallToolRequest, CallToolResponse, ClientRequest, ServerResult};
     use rmcp::service::PeerRequestOptions;
@@ -2097,11 +2142,15 @@ async fn call_tool_cancel_aware(
         .peer()
         .send_cancellable_request(
             ClientRequest::CallToolRequest(CallToolRequest::new(params)),
-            PeerRequestOptions::with_timeout(timeout),
+            timeout.map_or_else(
+                PeerRequestOptions::no_options,
+                PeerRequestOptions::with_timeout,
+            ),
         )
         .await?;
+    on_sent(&handle.id);
     let mut guard = CancelOnDrop {
-        peer: service.peer().clone(),
+        service: service.clone(),
         request_id: Some(handle.id.clone()),
     };
     let response = handle.await_response().await;
@@ -2116,9 +2165,10 @@ async fn call_tool_cancel_aware(
 }
 
 /// Sends `notifications/cancelled` for an in-flight request when its future is dropped before
-/// the reply arrived. Disarmed (`request_id = None`) once the request settles.
+/// the reply arrived. Disarmed (`request_id = None`) once the request settles. Holds the service
+/// so a last-owner drop cannot end the rmcp loop before the notification is written.
 struct CancelOnDrop {
-    peer: rmcp::service::Peer<RoleClient>,
+    service: McpService,
     request_id: Option<rmcp::model::RequestId>,
 }
 
@@ -2135,14 +2185,16 @@ impl Drop for CancelOnDrop {
             );
             return;
         };
-        let peer = self.peer.clone();
+        let service = self.service.clone();
         runtime.spawn(async move {
             let params = rmcp::model::CancelledNotificationParam::new(
                 Some(request_id.clone()),
                 Some("client cancelled".to_owned()),
             );
-            if let Err(e) = peer.notify_cancelled(params).await {
-                tracing::debug!(?request_id, error = %e, "notifications/cancelled not delivered");
+            let sent =
+                tokio::time::timeout(CANCEL_NOTIFY_TIMEOUT, service.notify_cancelled(params)).await;
+            if !matches!(sent, Ok(Ok(()))) {
+                tracing::debug!(?request_id, ?sent, "notifications/cancelled not delivered");
             }
         });
     }
@@ -2432,19 +2484,32 @@ async fn decide_http_auth_over_network(
 }
 
 /// Configuration for HTTP MCP server connection.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct HttpConfig {
     pub url: String,
     pub headers: Vec<(String, String)>,
     /// This server is a first-party local app endpoint addressed by [`GROK_AGENT_ID_HEADER`]. Set only from the spawn context — never inferred from headers — and it keys the transport hardening (no proxy, no redirects) and the OAuth skip.
     pub local_agent_endpoint: bool,
+    /// `bearer_token_file` from config; it replaces any configured `Authorization` header.
+    pub bearer_token_file: Option<BearerTokenFile>,
 }
 
 impl HttpConfig {
-    fn has_authorization_header(&self) -> bool {
+    /// Config supplies the credential: an `Authorization` header or a bearer token file.
+    fn has_configured_auth(&self) -> bool {
+        self.bearer_token_file.is_some()
+            || self
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    }
+
+    /// Configured headers minus `Authorization`, for transports that set the token per request.
+    fn headers_except_authorization(&self) -> impl Iterator<Item = (&str, &str)> {
         self.headers
             .iter()
-            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .filter(|(key, _)| !key.eq_ignore_ascii_case("Authorization"))
+            .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 }
 
@@ -3098,6 +3163,8 @@ pub struct McpClient {
     /// `parking_lot::Mutex` is sufficient: the lock is never held across an `.await`, and the handler's `emit` path is short and allocation-free.
     notify_tx: SharedEventTx,
     elicitation_tx: crate::elicitation::SharedElicitationTx,
+    /// Shared with the [`GrokClientHandler`], which records `elicitation/create` requests on the running call.
+    request_tracker: Arc<crate::elicitation::RequestTracker>,
     /// RAII handle for the per-client transport-liveness poller.
     /// `Some` after [`Self::arm_liveness_watcher`] succeeds; `None` initially.
     /// `parking_lot::Mutex` is sufficient because the lock is only ever held for the duration of a slot swap.
@@ -3211,6 +3278,7 @@ impl McpClient {
             reconnect,
             notify_tx: Arc::new(parking_lot::Mutex::new(None)),
             elicitation_tx: Arc::new(parking_lot::Mutex::new(None)),
+            request_tracker: Arc::default(),
             liveness_handle: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -3419,12 +3487,12 @@ impl McpClient {
         self.http_config.is_some()
     }
 
-    /// `true` when the transport carries a config-provided `Authorization` header.
+    /// `true` when config supplies the transport's credential: an `Authorization` header or a `bearer_token_file`.
     /// Its 401s are a config problem OAuth login cannot fix (spawn and the login rebuild both skip discovery for such servers).
-    pub fn has_configured_auth_header(&self) -> bool {
+    pub fn has_configured_auth(&self) -> bool {
         self.http_config
             .as_ref()
-            .is_some_and(HttpConfig::has_authorization_header)
+            .is_some_and(HttpConfig::has_configured_auth)
     }
 
     /// `true` for an in-process SDK client reached over the ACP reverse channel (rather than HTTP/stdio).
@@ -3990,11 +4058,7 @@ impl McpClient {
         let mut headers = parse_config_headers(
             name,
             "oauth-transport",
-            config
-                .headers
-                .iter()
-                .filter(|(key, _)| !key.eq_ignore_ascii_case("Authorization"))
-                .map(|(key, value)| (key.as_str(), value.as_str())),
+            config.headers_except_authorization(),
         );
         apply_user_agent_policy(&mut headers, name, &config.url);
         // reqwest 0.13; the policy chokepoint is typed for 0.12 and cannot wrap this builder.
@@ -4068,6 +4132,8 @@ impl McpClient {
             server_name: self.server_name.clone(),
             notify_tx: Arc::clone(&self.notify_tx),
             elicitation_tx: Arc::clone(&self.elicitation_tx),
+            request_tracker: Arc::clone(&self.request_tracker),
+            service_id: self.request_tracker.next_service_id(),
         }
     }
 
@@ -4089,14 +4155,21 @@ impl McpClient {
         *self.elicitation_tx.lock() = tx;
     }
 
+    /// Hold the returned guard while sending this server a request that is not an agent tool call.
+    pub fn begin_outbound_request(&self) -> crate::elicitation::OutboundRequest {
+        crate::elicitation::OutboundRequest::new(&self.request_tracker)
+    }
+
     /// Bridge one elicitation request from an MRTR `input_required` round to the HITL UI.
     /// Same inbox path as the server-initiated `elicitation/create` handler, so both protocol
     /// generations share the coordinator, wire format, and card rendering.
     pub(crate) async fn bridge_elicit(
         &self,
         params: rmcp::model::ElicitRequestParams,
+        ask: crate::elicitation::AskGuard,
     ) -> rmcp::model::ElicitResult {
-        crate::elicitation::bridge_elicit(&self.elicitation_tx, &self.server_name, params).await
+        crate::elicitation::bridge_elicit(&self.elicitation_tx, &self.server_name, params, ask)
+            .await
     }
 
     /// Snapshot the current event sender, if any.
@@ -4148,14 +4221,22 @@ impl McpClient {
         server_name: &str,
         warn_budget: crate::mcp_http_client::WarnBudget,
     ) -> Result<crate::mcp_http_client::McpHttpClient<reqwest::Client>, McpError> {
-        let mut headers = parse_config_headers(
-            server_name,
-            "transport",
-            config
-                .headers
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str())),
-        );
+        let mut headers = if config.bearer_token_file.is_some() {
+            parse_config_headers(
+                server_name,
+                "transport",
+                config.headers_except_authorization(),
+            )
+        } else {
+            parse_config_headers(
+                server_name,
+                "transport",
+                config
+                    .headers
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            )
+        };
         apply_user_agent_policy(&mut headers, server_name, &config.url);
         // reqwest 0.13; the policy chokepoint is typed for 0.12 and cannot wrap this builder.
         #[allow(clippy::disallowed_methods)]
@@ -4176,11 +4257,10 @@ impl McpClient {
         let client = builder
             .build()
             .map_err(|e| McpError::ClientError(format!("Failed to build HTTP client: {e}")))?;
-        Ok(crate::mcp_http_client::McpHttpClient::new(
-            client,
-            server_name,
-            warn_budget,
-        ))
+        Ok(
+            crate::mcp_http_client::McpHttpClient::new(client, server_name, warn_budget)
+                .with_bearer_token_file(config.bearer_token_file.clone()),
+        )
     }
 
     /// Cheap, non-blocking liveness predicate.
@@ -4488,6 +4568,7 @@ impl McpClient {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
+        let _request = self.begin_outbound_request();
         let mcp_service = self.ensure_initialized().await?;
         let result = mcp_service
             .call_tool({
@@ -4843,10 +4924,18 @@ pub async fn start_mcp_server(
             ))
         }
         acp::McpServer::Http(acp::McpServerHttp {
-            name, url, headers, ..
+            name,
+            url,
+            headers,
+            meta,
+            ..
         })
         | acp::McpServer::Sse(acp::McpServerSse {
-            name, url, headers, ..
+            name,
+            url,
+            headers,
+            meta,
+            ..
         }) => {
             if let Some(mc) = meta_config {
                 tracing::info!(server = %name, %url, ?mc, "MCP http: meta config override");
@@ -4863,16 +4952,20 @@ pub async fn start_mcp_server(
                 })?;
                 headers.push((GROK_AGENT_ID_HEADER.to_owned(), session_id.to_owned()));
             }
+            let bearer_token_file = BearerTokenPath::from_meta(meta.as_ref())
+                .map_err(|e| McpError::ClientError(format!("MCP server '{name}': {e}")))?
+                .map(BearerTokenFile::new);
             let http_config = HttpConfig {
                 url: url.clone(),
                 headers,
                 local_agent_endpoint,
+                bearer_token_file,
             };
 
-            let auth_decision = if http_config.has_authorization_header() {
+            let auth_decision = if http_config.has_configured_auth() {
                 tracing::debug!(
                     server = %name,
-                    "Skipping OAuth discovery: server already has Authorization header"
+                    "Skipping OAuth discovery: config supplies an Authorization header or bearer_token_file"
                 );
                 HttpAuthDecision::NoOauthSupport
             } else if http_config.local_agent_endpoint {
@@ -5014,11 +5107,7 @@ impl McpClient {
         };
         let mut client = Self::new_with_transport(
             name.to_string(),
-            PendingTransport::Http(HttpConfig {
-                url: String::new(),
-                headers: Vec::new(),
-                local_agent_endpoint: false,
-            }),
+            PendingTransport::Http(HttpConfig::default()),
             Some(&overrides),
             None,
             None,
@@ -5047,6 +5136,8 @@ pub struct GrokClientHandler {
     /// So wiring the sender post-handshake works without restarting the rmcp service loop.
     notify_tx: SharedEventTx,
     elicitation_tx: crate::elicitation::SharedElicitationTx,
+    request_tracker: Arc<crate::elicitation::RequestTracker>,
+    service_id: crate::elicitation::ServiceId,
 }
 
 impl GrokClientHandler {
@@ -5087,8 +5178,17 @@ impl ClientHandler for GrokClientHandler {
         // `context.ct` fires when the server cancels this request (`notifications/cancelled`)
         // Dropping the bridge future closes the job's response channel, which the shell coordinator observes to tear down the HITL card
         // Otherwise the popup would outlive the abandoned request and answer into the void
-        let bridged =
-            crate::elicitation::bridge_elicit(&self.elicitation_tx, &self.server_name, request);
+        let bridged = crate::elicitation::bridge_elicit(
+            &self.elicitation_tx,
+            &self.server_name,
+            request,
+            self.request_tracker.begin_server_ask(
+                self.service_id,
+                context
+                    .extensions
+                    .get::<rmcp::service::InboundStreamOrigin>(),
+            ),
+        );
         tokio::select! {
             result = bridged => Ok(result),
             _ = context.ct.cancelled() => {

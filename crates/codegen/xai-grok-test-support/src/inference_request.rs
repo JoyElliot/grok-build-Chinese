@@ -51,6 +51,9 @@ impl InferenceRequestKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct BodyHash(u64);
 impl BodyHash {
+    pub(crate) const fn zero() -> Self {
+        BodyHash(0)
+    }
     pub(crate) fn of(body: &Value) -> Self {
         let mut hasher = DefaultHasher::new();
         serde_json::to_string(body)
@@ -133,6 +136,9 @@ impl<'a> InferenceRequest<'a> {
     }
     pub(crate) fn headers(&self) -> &'a HeaderMap {
         self.headers
+    }
+    pub(crate) fn request_id(&self) -> Option<&str> {
+        nonempty_header(self.headers, REQUEST_ID_HEADER)
     }
 }
 fn nonempty_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {

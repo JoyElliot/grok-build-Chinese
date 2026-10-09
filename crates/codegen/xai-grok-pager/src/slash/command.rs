@@ -67,6 +67,11 @@ pub enum CommandResult {
 /// A suggestion item for command argument completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArgPresentation {
+    ContextWindow {
+        window: u64,
+        active: bool,
+        default: bool,
+    },
     OfficialSkill {
         skill_id: String,
     },
@@ -347,7 +352,7 @@ pub trait SlashCommand: Send + Sync {
     }
 
     /// Placeholder text shown in the prompt when args are empty.
-    /// E.g., `"[context]"` for `/compact`.
+    /// E.g., `"<question>"` for `/btw`.
     fn arg_placeholder(&self) -> Option<&str> {
         None
     }

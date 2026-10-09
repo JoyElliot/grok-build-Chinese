@@ -26,6 +26,7 @@ pub(crate) struct MemoryInjectionMetrics {
     pub(crate) global_entry_count: usize,
     pub(crate) workspace_entry_count: usize,
     pub(crate) was_reused: bool,
+    pub(crate) compact_index: bool,
 }
 
 pub(crate) fn log_memory_injection(
@@ -47,6 +48,7 @@ pub(crate) fn log_memory_injection(
         global_entry_count: metrics.global_entry_count,
         workspace_entry_count: metrics.workspace_entry_count,
         was_reused: metrics.was_reused,
+        compact_index: metrics.compact_index,
     });
 }
 

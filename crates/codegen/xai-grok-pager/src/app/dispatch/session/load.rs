@@ -9,9 +9,10 @@ use super::lifecycle::{
 };
 use super::picker_routing::{PickerRequest, PickerSeqKind, accept_picker_result};
 use crate::acp::tracker::AcpUpdateTracker;
-use crate::app::actions::{Action, Effect};
+use crate::app::actions::{Action, Effect, ModelChoice};
+use crate::app::agent::QueueEntryKind;
 use crate::app::agent::{AgentCommand, AgentId, AgentSession, AgentState};
-use crate::app::agent_view::AgentView;
+use crate::app::agent_view::{AgentView, PromptInputMode};
 #[cfg(feature = "local-workspace")]
 use crate::app::app_view::ActiveView;
 use crate::app::app_view::AppView;
@@ -572,14 +573,10 @@ pub(in crate::app::dispatch) fn dispatch_pick_session_in_worktree(
         return vec![];
     }
     if crate::app::is_daemon_or_remote_control_row(&source) {
-        let toast = app
-            .locale
-            .named_text(
-                "session.toast.daemon_worktree_forbidden",
-                "Daemon sessions can't be resumed in a worktree",
-            )
-            .into_owned();
-        app.show_toast(&toast);
+        app.show_toast(app.locale.named_static_text(
+            "session.worktree.remote_forbidden",
+            "Sessions from the daemon or another machine can't be resumed in a worktree",
+        ));
         return vec![];
     }
     #[cfg(feature = "local-workspace")]
@@ -1313,11 +1310,7 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             app.models.retain_shell_presentation(app.is_grok_shell);
             agent.session.models = app.models.clone();
         }
-        crate::app::dispatch::session::lifecycle::apply_session_modes_dropping_auto(
-            agent,
-            modes,
-            &mut app.current_ui.permission_mode,
-        );
+        agent.apply_session_modes(modes);
         let deferred =
             crate::app::dispatch::session::lifecycle::apply_deferred_model_switch_with_locale(
                 agent,
@@ -1415,8 +1408,10 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             effects.push(Effect::SwitchModel {
                 agent_id,
                 session_id: hydrate_sid.clone(),
-                model_id: switch.model_id,
-                effort: switch.effort,
+                choice: ModelChoice {
+                    effort: switch.effort,
+                    ..ModelChoice::new(switch.model_id)
+                },
                 prev_model_id: switch.prev_model_id,
             });
         }
@@ -1466,6 +1461,9 @@ pub(in crate::app::dispatch) fn handle_session_load_failed(
         agent.session.loading_replay = false;
         agent.pending_first_prompt = None;
         agent.pending_fork_banner = None;
+        agent.unbind_session_id();
+        agent.load_failed = true;
+        restore_prompts_held_during_load(agent);
         agent
             .scrollback
             .push_block(RenderBlock::session_event(SessionEvent::TurnFailed {
@@ -1474,6 +1472,75 @@ pub(in crate::app::dispatch) fn handle_session_load_failed(
             }));
     }
     vec![]
+}
+/// A single row held during the load returns whole when the composer is empty, as a queue edit would.
+/// Otherwise the draft stays, and the held rows are listed as not sent, since their image numbers would clash.
+fn restore_prompts_held_during_load(agent: &mut AgentView) {
+    if let crate::app::agent_view::PromptMode::EditingQueued {
+        id,
+        server_id: None,
+        ..
+    } = agent.prompt_mode
+    {
+        if agent.prompt.text().trim().is_empty() {
+            agent.exit_editing_mode();
+        } else {
+            agent.save_local_queued_edit(id);
+        }
+    }
+    let held: Vec<_> = agent.session.pending_prompts.drain(..).collect();
+    if held.is_empty() {
+        return;
+    }
+    if agent.prompt.text().is_empty()
+        && let [row] = held.as_slice()
+    {
+        agent
+            .prompt
+            .restore(crate::views::prompt_widget::StashedPrompt::from_submission(
+                row.text.clone(),
+                row.images.clone(),
+                row.chip_elements.clone(),
+            ));
+        agent.prompt_input_mode = if row.kind == QueueEntryKind::BashCommand {
+            PromptInputMode::Bash
+        } else {
+            PromptInputMode::Normal
+        };
+        return;
+    }
+    let mut dropped_images = 0;
+    let lines: Vec<String> = held
+        .into_iter()
+        .map(|mut row| {
+            dropped_images += row.images.len();
+            crate::prompt_images::drain_and_cleanup(
+                crate::prompt_images::SessionPathPolicy::Preserve,
+                &mut row.images,
+            );
+            match row.kind {
+                QueueEntryKind::BashCommand => format!("!{}", row.text),
+                _ => row.text,
+            }
+        })
+        .collect();
+    let locale = agent.scrollback.locale();
+    let images = match dropped_images {
+        0 => String::new(),
+        1 => locale
+            .named_text("session.images.dropped_one", " (1 image dropped)")
+            .into_owned(),
+        n => locale
+            .named_text("session.images.dropped_many", " ({count} images dropped)")
+            .replace("{count}", &n.to_string()),
+    };
+    let message = localized_template(
+        locale,
+        "session.not_sent",
+        "Not sent, since the session didn't open{images}:\n{content}",
+        &[("{images}", &images), ("{content}", &lines.join("\n"))],
+    );
+    agent.scrollback.push_block(RenderBlock::system(message));
 }
 pub(in crate::app::dispatch) fn handle_session_search_debounce_expired(
     app: &mut AppView,

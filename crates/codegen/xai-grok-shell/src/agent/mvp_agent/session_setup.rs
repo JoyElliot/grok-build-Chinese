@@ -779,6 +779,7 @@ impl MvpAgent {
                     self,
                     acp::SetSessionModelRequest::new(session_id.clone(), acp::ModelId::new(model_id)),
                     crate::agent::handlers::model_switch::SwitchEffort::Set(switch_effort),
+                    crate::agent::handlers::model_switch::SwitchContextWindow::Preserve,
                     crate::agent::handlers::model_switch::ConfigNotice::Skip,
                 )
                 .await
@@ -1735,7 +1736,6 @@ impl MvpAgent {
         }
     }
     /// Model-restore phase: point the actor at the persisted model without writing the global `current_model_id` (shared across leader clients).
-    /// A vanished model falls back within its family, or blocks prompts.
     pub(super) async fn restore_persisted_model(
         &self,
         session_id: &acp::SessionId,
@@ -1743,10 +1743,61 @@ impl MvpAgent {
         initial_reasoning_effort: Option<ReasoningEffort>,
     ) {
         let session_id = session_id.clone();
-        let persisted_model = summary.current_model_id.clone();
+        let catalog_ready = summary.context_window.is_none()
+            || self
+                .models_manager
+                .wait_for_first_catalog(self.models_manager.is_models_fetch_enabled())
+                .await;
+        let model_id = self
+            .resolve_restored_model(&session_id, summary.current_model_id.clone())
+            .await;
+        tracing::debug!(
+            session_id = %session_id.0,
+            final_model_id = %model_id.0,
+            "load_session: resolved final model_id for set_session_model"
+        );
+        {
+            let _timer = crate::instrumentation_timer!("session.restore_model");
+            let restore_effort = initial_reasoning_effort.or(summary.reasoning_effort);
+            let restore_window = if catalog_ready {
+                crate::agent::handlers::model_switch::SwitchContextWindow::Set(
+                    summary.context_window,
+                )
+            } else {
+                if let Some(handle) = self.resident_handle(&session_id) {
+                    handle.context_window_selection.store(
+                        summary.context_window.map_or(0, std::num::NonZeroU64::get),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+                crate::agent::handlers::model_switch::SwitchContextWindow::Preserve
+            };
+            if let Err(err) = crate::agent::handlers::model_switch::apply(
+                self,
+                acp::SetSessionModelRequest::new(session_id.to_owned(), model_id),
+                crate::agent::handlers::model_switch::SwitchEffort::Set(restore_effort),
+                restore_window,
+                crate::agent::handlers::model_switch::ConfigNotice::Skip,
+            )
+            .await
+            {
+                tracing::warn!(
+                    session_id = %session_id.0,
+                    error = ?err,
+                    "load_session: restoring persisted model/effort failed; session keeps spawn defaults"
+                );
+            }
+        }
+    }
+    /// A vanished model falls back within its family, or blocks prompts.
+    async fn resolve_restored_model(
+        &self,
+        session_id: &acp::SessionId,
+        persisted_model: acp::ModelId,
+    ) -> acp::ModelId {
         let models = self.models_manager.models();
         let available = self.models_manager.available();
-        self.session_registry.take_unavailable_model(&session_id);
+        self.session_registry.take_unavailable_model(session_id);
         let resolved_catalog_key = resolve_catalog_key(&models, &persisted_model);
         tracing::debug!(
             session_id = %session_id.0,
@@ -1771,7 +1822,7 @@ impl MvpAgent {
         };
         let selectable_catalog_key =
             selectable_catalog_key_for_persisted(&models, &available, &persisted_model);
-        let model_id = if let Some(catalog_key) = selectable_catalog_key {
+        if let Some(catalog_key) = selectable_catalog_key {
             if catalog_key != persisted_model {
                 tracing::info!(
                     session_id = %session_id.0,
@@ -1814,7 +1865,7 @@ impl MvpAgent {
                 "Model \"{}\" is no longer available for your account.",
                 persisted_model.0,
             );
-            self.send_model_auto_switched(&session_id, &persisted_model, &fallback, &reason)
+            self.send_model_auto_switched(session_id, &persisted_model, &fallback, &reason)
                 .await;
             fallback
         } else {
@@ -1845,34 +1896,11 @@ impl MvpAgent {
                 persisted_model.0,
             );
             let empty_id = acp::ModelId::new(String::new());
-            self.send_model_auto_switched(&session_id, &persisted_model, &empty_id, &reason)
+            self.send_model_auto_switched(session_id, &persisted_model, &empty_id, &reason)
                 .await;
             self.session_registry
-                .set_unavailable_model(&session_id, persisted_model.clone());
+                .set_unavailable_model(session_id, persisted_model.clone());
             fallback
-        };
-        tracing::debug!(
-            session_id = %session_id.0,
-            final_model_id = %model_id.0,
-            "load_session: resolved final model_id for set_session_model"
-        );
-        {
-            let _timer = crate::instrumentation_timer!("session.restore_model");
-            let restore_effort = initial_reasoning_effort.or(summary.reasoning_effort);
-            if let Err(err) = crate::agent::handlers::model_switch::apply(
-                self,
-                acp::SetSessionModelRequest::new(session_id.to_owned(), model_id),
-                crate::agent::handlers::model_switch::SwitchEffort::Set(restore_effort),
-                crate::agent::handlers::model_switch::ConfigNotice::Skip,
-            )
-            .await
-            {
-                tracing::warn!(
-                    session_id = %session_id.0,
-                    error = ?err,
-                    "load_session: restoring persisted model/effort failed; session keeps spawn defaults"
-                );
-            }
         }
     }
     /// Response phase: assemble the attach `_meta`, including the running prompt id a mid-turn loader adopts to pass the `session/update` gate.

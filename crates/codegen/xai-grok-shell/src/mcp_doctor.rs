@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Serialize;
+use xai_grok_config::mcp_servers::{McpServerOrigin, SessionMcpTier};
 use xai_grok_tools::types::config_source::ConfigSource;
 
 use crate::session::mcp_servers;
@@ -42,6 +43,8 @@ pub struct Check {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    #[serde(skip)]
+    token_path_error: Option<(String, xai_grok_config::BearerTokenPathError)>,
 }
 
 impl Check {
@@ -51,6 +54,7 @@ impl Check {
             passed: true,
             detail: Some(detail.into()),
             hint: None,
+            token_path_error: None,
         }
     }
 
@@ -60,6 +64,7 @@ impl Check {
             passed: false,
             detail: Some(detail.into()),
             hint: Some(hint.into()),
+            token_path_error: None,
         }
     }
 
@@ -69,6 +74,7 @@ impl Check {
             passed: false,
             detail: Some(detail.into()),
             hint: None,
+            token_path_error: None,
         }
     }
 }
@@ -87,33 +93,7 @@ pub struct DoctorReport {
 
 struct DiscoveredServer {
     server: agent_client_protocol::McpServer,
-    source: ConfigSource,
-}
-
-/// Plugin registry as a one-shot CLI sees it: discovery gated by the live folder-trust verdict
-/// (no session resolve has run for a one-shot command).
-fn cli_plugin_registry(cwd: &Path) -> xai_grok_agent::plugins::PluginRegistry {
-    let trust_store = xai_grok_agent::plugins::TrustStore::load();
-    let mut plugins_cfg: crate::agent::config::PluginsConfig =
-        crate::config::load_effective_config()
-            .ok()
-            .and_then(|t| t.get("plugins").and_then(|v| v.clone().try_into().ok()))
-            .unwrap_or_default();
-    plugins_cfg.merge_claude_enabled_plugins(Some(cwd));
-    let mut plugin_config = plugins_cfg.to_discovery_config();
-    let project_trusted = crate::agent::folder_trust::resolve_and_record(cwd, None, false);
-    let discovered_plugins = xai_grok_agent::plugins::discover_plugins(
-        Some(cwd),
-        &plugin_config,
-        &trust_store,
-        project_trusted,
-    );
-    plugin_config.populate_plugin_lists(&discovered_plugins);
-    xai_grok_agent::plugins::PluginRegistry::from_discovered(
-        discovered_plugins,
-        &plugin_config.disabled,
-        &plugin_config.enabled,
-    )
+    origin: McpServerOrigin,
 }
 
 /// Which config file declares each TOML server: the user config.toml unless a
@@ -138,7 +118,7 @@ fn toml_declaring_paths(
 }
 
 fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServer>) {
-    let plugin_registry = cli_plugin_registry(cwd);
+    let plugin_registry = crate::util::config::load_cli_plugin_registry(cwd);
 
     // mcp-doctor is a diagnostic tool; use default (all-on) compat to show everything.
     let sourced = crate::session::managed_mcp::merge_managed_mcp_servers_sourced(
@@ -169,23 +149,22 @@ fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServe
     let mut mcp_json_count = 0usize;
     let mut plugin_counts: HashMap<String, usize> = HashMap::new();
     let mut servers = Vec::new();
-    for (server, source) in sourced {
-        match &source {
-            ConfigSource::ConfigToml { .. } | ConfigSource::Project { .. } => {
+    for (server, origin) in sourced {
+        match &origin {
+            McpServerOrigin::ConfigToml { .. } => {
                 let path = declaring
                     .get(mcp_servers::mcp_server_name(&server))
                     .cloned()
                     .unwrap_or_else(|| user_config.clone());
                 *toml_counts.entry(path).or_default() += 1;
             }
-            ConfigSource::ClaudeJson { .. } => claude_count += 1,
-            ConfigSource::McpJson { .. } => mcp_json_count += 1,
-            ConfigSource::Plugin { plugin_name, .. } => {
+            McpServerOrigin::ClaudeJson { .. } => claude_count += 1,
+            McpServerOrigin::McpJson { .. } => mcp_json_count += 1,
+            McpServerOrigin::Plugin { plugin_name, .. } => {
                 *plugin_counts.entry(plugin_name.clone()).or_default() += 1;
             }
-            _ => {}
         }
-        servers.push(DiscoveredServer { server, source });
+        servers.push(DiscoveredServer { server, origin });
     }
 
     let mut sources = Vec::new();
@@ -325,6 +304,20 @@ async fn check_server_start(
     acp_server: agent_client_protocol::McpServer,
     cwd: &Path,
 ) -> Result<(mcp_servers::McpClient, Check), Check> {
+    let token_path_error = match &acp_server {
+        agent_client_protocol::McpServer::Http(server) => {
+            xai_grok_config::BearerTokenPath::from_meta(server.meta.as_ref())
+                .err()
+                .map(|error| (server.name.clone(), error))
+        }
+        agent_client_protocol::McpServer::Sse(server) => {
+            xai_grok_config::BearerTokenPath::from_meta(server.meta.as_ref())
+                .err()
+                .map(|error| (server.name.clone(), error))
+        }
+        agent_client_protocol::McpServer::Stdio(_) => None,
+        _ => None,
+    };
     let start = std::time::Instant::now();
     let noop = xai_grok_session_events::EventWriter::noop();
     let ctx = mcp_servers::McpSpawnCtx::standalone(&noop)
@@ -337,7 +330,16 @@ async fn check_server_start(
                 Check::pass("server started", format!("{:.1}s", elapsed.as_secs_f64())),
             ))
         }
-        Err(e) => Err(format_mcp_error("server failed to start", &e)),
+        Err(e) => {
+            let mut check = format_mcp_error("server failed to start", &e);
+            if let Some((server, error)) = token_path_error
+                && matches!(&e, mcp_servers::McpError::ClientError(message)
+                    if message == &format!("MCP server '{server}': {error}"))
+            {
+                check.token_path_error = Some((server, error));
+            }
+            Err(check)
+        }
     }
 }
 
@@ -553,7 +555,7 @@ fn policy_blocked_reasons(
     crate::session::managed_mcp::mcp_blocked_reasons(
         discovered.iter().map(|d| {
             let subject =
-                crate::session::managed_mcp::mcp_subject(&d.server, &d.source, project_names);
+                crate::session::managed_mcp::mcp_subject(&d.server, &d.origin, project_names);
             (mcp_servers::mcp_server_name(&d.server), &d.server, subject)
         }),
         ms,
@@ -573,7 +575,6 @@ fn policy_subjects(
         MCP_SCOPE_PROJECT, McpEnabledFilter, load_mcp_preferences,
         load_mcp_server_configs_with_project, materialize_mcp_config,
     };
-    use xai_grok_tools::types::config_source::ConfigSource;
     let project_names = crate::agent::folder_trust::project_scoped_mcp_names(cwd);
     let preferences = load_mcp_preferences().file();
     let sub = &crate::config::expand_env_vars_in_string;
@@ -596,25 +597,27 @@ fn policy_subjects(
                 raw.expand_strings(sub);
                 raw.to_acp_mcp_server(&name)
             })?;
-            let subject = crate::session::managed_mcp::mcp_subject_for_tier(
-                &name,
-                scope != MCP_SCOPE_PROJECT,
-                &project_names,
-            );
+            let tier = if scope == MCP_SCOPE_PROJECT {
+                SessionMcpTier::Foreign
+            } else {
+                SessionMcpTier::Native
+            };
+            let subject =
+                crate::session::managed_mcp::mcp_subject_for_tier(&name, tier, &project_names);
             Some((name, server, subject))
         })
         .collect();
     let plugin_registry = crate::util::config::load_cli_plugin_registry(cwd);
-    for (server, source) in crate::session::managed_mcp::merge_managed_mcp_servers_sourced(
+    for (server, origin) in crate::session::managed_mcp::merge_managed_mcp_servers_sourced(
         cwd,
         Some(&plugin_registry),
         &xai_grok_tools::types::compat::CompatConfig::default(),
     ) {
         // The merge re-adds enabled TOML servers; the walk above already judged every TOML one.
-        if matches!(source, ConfigSource::ConfigToml { .. }) {
+        if matches!(origin, McpServerOrigin::ConfigToml { .. }) {
             continue;
         }
-        let subject = crate::session::managed_mcp::mcp_subject(&server, &source, &project_names);
+        let subject = crate::session::managed_mcp::mcp_subject(&server, &origin, &project_names);
         subjects.push((
             mcp_servers::mcp_server_name(&server).to_string(),
             server,
@@ -686,7 +689,11 @@ fn policy_add_refusal_with(
         // The definition lands in a project source, so it is project-claimed before it exists there.
         project_names.insert(name.to_owned());
     }
-    let subject = crate::session::managed_mcp::mcp_subject_for_tier(name, true, &project_names);
+    let subject = crate::session::managed_mcp::mcp_subject_for_tier(
+        name,
+        SessionMcpTier::Native,
+        &project_names,
+    );
     crate::extensions::mcp::policy_enable_error(ms, &server, subject)
 }
 
@@ -769,7 +776,7 @@ pub async fn run_doctor(cwd: &Path, name_filter: Option<&str>) -> DoctorReport {
     use futures::StreamExt;
     let results: Vec<McpServerStatus> = futures::stream::iter(to_probe)
         .map(|d| {
-            let label = d.source.display_label();
+            let label = ConfigSource::from(d.origin.clone()).display_label();
             let name = mcp_servers::mcp_server_name(&d.server).to_string();
             let block_detail = blocked
                 .get(&name)
@@ -809,7 +816,29 @@ pub async fn run_doctor(cwd: &Path, name_filter: Option<&str>) -> DoctorReport {
 
 // ── Human-readable output ───────────────────────────────────────
 
+fn check_display_detail(check: &Check, locale: &xai_grok_locale::LocaleContext) -> String {
+    match &check.token_path_error {
+        Some((server, error)) => {
+            let english = error.to_string();
+            let detail = xai_grok_locale::diagnostics::localize(
+                locale,
+                xai_grok_locale::diagnostics::DiagnosticDomain::Mcp,
+                &english,
+            );
+            if detail == english {
+                return check.detail.as_deref().unwrap_or("").to_owned();
+            }
+            format!("MCP client error: MCP server '{server}': {detail}")
+        }
+        None => check.detail.as_deref().unwrap_or("").to_owned(),
+    }
+}
+
 pub fn print_report(report: &DoctorReport) {
+    print_report_with_locale(report, &xai_grok_locale::LocaleContext::default());
+}
+
+pub fn print_report_with_locale(report: &DoctorReport, locale: &xai_grok_locale::LocaleContext) {
     println!();
     println!("MCP Doctor");
     println!();
@@ -845,7 +874,7 @@ pub fn print_report(report: &DoctorReport) {
         );
         for check in &server.checks {
             let icon = if check.passed { "\u{2713}" } else { "\u{2717}" };
-            let detail = check.detail.as_deref().unwrap_or("");
+            let detail = check_display_detail(check, locale);
             if detail.is_empty() {
                 println!("    {} {}", icon, check.label);
             } else {
@@ -875,6 +904,66 @@ pub fn print_report(report: &DoctorReport) {
 mod tests {
     use super::*;
     use mcp_servers::McpError;
+
+    fn diagnostic_zh_locale() -> xai_grok_locale::LocaleContext {
+        xai_grok_locale::LocaleContext::new(xai_grok_locale::ResolvedLocale {
+            locale: xai_grok_locale::UiLocale::ZhCn,
+            source: xai_grok_locale::LocaleSource::Requirement,
+        })
+    }
+
+    #[test]
+    fn doctor_does_not_translate_opaque_command_or_server_error() {
+        let command = "bearer_token_file /tmp/{0} is empty";
+        let check = check_command_exists(command);
+        assert!(!check.passed);
+        assert_eq!(
+            check_display_detail(&check, &diagnostic_zh_locale()),
+            command
+        );
+        let error = McpError::ClientError(
+            "MCP server 'opaque': bearer_token_file `relative` must be an absolute or ~/ path"
+                .into(),
+        );
+        let check = format_mcp_error("server failed to start", &error);
+        assert_eq!(
+            check_display_detail(&check, &diagnostic_zh_locale()),
+            error.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_localizes_verified_token_path_failure_and_preserves_json() {
+        let server: agent_client_protocol::McpServer = serde_json::from_value(serde_json::json!({
+            "type": "http",
+            "name": "opaque {0}",
+            "url": "http://127.0.0.1:1/mcp",
+            "headers": [],
+            "_meta": { "x.ai/mcp/bearerTokenFile": "relative {1}" }
+        }))
+        .unwrap();
+        let check = match check_server_start(server, Path::new("/tmp")).await {
+            Ok(_) => panic!("relative token path must fail before network access"),
+            Err(check) => check,
+        };
+        let raw = "MCP client error: MCP server 'opaque {0}': bearer_token_file `relative {1}` must be an absolute or ~/ path";
+        assert_eq!(check.detail.as_deref(), Some(raw));
+        assert_eq!(
+            check_display_detail(&check, &diagnostic_zh_locale()),
+            "MCP client error: MCP server 'opaque {0}': bearer_token_file `relative {1}` 必须是绝对路径或以 ~/ 开头的路径"
+        );
+        assert_eq!(
+            check_display_detail(&check, &xai_grok_locale::LocaleContext::default()),
+            raw
+        );
+        assert_eq!(
+            serde_json::to_value(&check).unwrap(),
+            serde_json::json!({
+                "label": "server failed to start", "passed": false,
+                "detail": raw, "hint": "check server logs"
+            })
+        );
+    }
 
     /// A hint must only survive on the first barrier.
     #[test]

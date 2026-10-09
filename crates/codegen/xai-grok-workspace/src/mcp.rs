@@ -17,11 +17,11 @@ use xai_computer_hub_sdk::ToolServerHandler;
 use xai_grok_mcp::rmcp;
 use xai_grok_mcp::servers::{
     InitClaimGuard, LivenessCheck, MCP_TOOL_NAME_DELIMITER, McpClient, McpClientTimeoutOverrides,
-    McpSpawnCtx, OauthInteractivity, SharedMcpState, parse_mcp_qualified_name,
+    McpSpawnCtx, OauthInteractivity, SharedMcpState, call_tool_cancel_aware,
+    parse_mcp_qualified_name,
 };
-use xai_grok_tools::util::mcp_structured_content::render_structured_content;
 use xai_tool_protocol::{SessionId, ToolId};
-use xai_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput};
+use xai_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput, render_structured_content};
 use xai_tool_types::ToolDescription;
 
 use crate::error::{WorkspaceError, WorkspaceResult};
@@ -68,16 +68,35 @@ impl HubToolRegistry for xai_computer_hub_sdk::ToolServer {
     }
 }
 
+/// Checks one server's tool calls before the server sees them.
+/// The host sets one per server with [`crate::config::BindMcpConfig::with_call_gate`].
+pub trait McpCallGate: Send + Sync {
+    /// `Some` answers the call in the server's place.
+    /// The server never sees that call.
+    fn before_call<'a>(
+        &'a self,
+        tool: &'a str,
+    ) -> futures::future::BoxFuture<'a, Option<rmcp::model::CallToolResult>>;
+
+    /// Receives the server's answer to every call `before_call` let through.
+    fn after_call(&self, result: &rmcp::model::CallToolResult);
+}
+
+/// Call gates by server name.
+pub type McpCallGates = HashMap<String, Arc<dyn McpCallGate>>;
+
 /// Adapts [`McpClient`] to the [`McpTransport`] trait for [`McpBridge`].
 pub(crate) struct McpClientTransportAdapter {
     /// `None` once closed: the hub's handlers keep the adapter alive after a stop, and must not keep the client.
     client: arc_swap::ArcSwapOption<McpClient>,
+    gate: Option<Arc<dyn McpCallGate>>,
 }
 
 impl McpClientTransportAdapter {
-    pub fn new(client: Arc<McpClient>) -> Self {
+    pub fn new(client: Arc<McpClient>, gate: Option<Arc<dyn McpCallGate>>) -> Self {
         Self {
             client: arc_swap::ArcSwapOption::new(Some(client)),
+            gate,
         }
     }
 
@@ -147,8 +166,14 @@ impl McpTransport for McpClientTransportAdapter {
         name: &str,
         arguments: Value,
     ) -> Result<McpCallResult, xai_computer_hub_mcp_adapter::McpError> {
-        let service = self
-            .client()?
+        let client = self.client()?;
+        if let Some(gate) = &self.gate
+            && let Some(answer) = gate.before_call(name).await
+        {
+            return Ok(mcp_call_result_from_rmcp(answer));
+        }
+        let _request = client.begin_outbound_request();
+        let service = client
             .ensure_initialized()
             .await
             .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
@@ -162,16 +187,25 @@ impl McpTransport for McpClientTransportAdapter {
                 Some(wrapper)
             }
         };
-        let result = service
-            .call_tool({
-                let mut params = rmcp::model::CallToolRequestParams::new(name.to_string());
-                params.arguments = args_object;
-                params
-            })
+        let mut params = rmcp::model::CallToolRequestParams::new(name.to_string());
+        params.arguments = args_object;
+        // No client-side timeout: the hub owns the deadline; only its Cancel ends a call the server never answers.
+        let response = call_tool_cancel_aware(&service, params, None)
             .await
             .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
-
-        Ok(mcp_call_result_from_rmcp(result))
+        match response {
+            rmcp::model::CallToolResponse::Complete(result) => {
+                if let Some(gate) = &self.gate {
+                    gate.after_call(&result);
+                }
+                Ok(mcp_call_result_from_rmcp(result))
+            }
+            // This client never advertises elicitation or tasks, so a conforming server cannot
+            // answer with either; `CallToolResponse` is also `non_exhaustive`.
+            _ => Err(xai_computer_hub_mcp_adapter::McpError::Decode(format!(
+                "MCP tool '{name}' returned an unsupported response kind"
+            ))),
+        }
     }
 
     async fn close(&self) -> Result<(), xai_computer_hub_mcp_adapter::McpError> {
@@ -207,6 +241,7 @@ fn mcp_call_result_from_rmcp(result: rmcp::model::CallToolResult) -> McpCallResu
     McpCallResult {
         content,
         is_error: result.is_error.unwrap_or(false),
+        meta: result.meta.unwrap_or_default().0,
     }
 }
 
@@ -448,6 +483,7 @@ pub(crate) async fn drive_server_starts(
     configs: Vec<agent_client_protocol::McpServer>,
     discovery_timeout: Duration,
     first_party: &HashSet<String>,
+    call_gates: &McpCallGates,
     event_writer: xai_grok_session_events::EventWriter,
     outcomes: tokio::sync::mpsc::Sender<Result<StartedMcpServer, McpStartFailure>>,
     drive_scope: (tokio_util::sync::CancellationToken, u64),
@@ -519,6 +555,7 @@ pub(crate) async fn drive_server_starts(
             } else {
                 (&ctx_plain, McpServerTier::ThirdParty)
             };
+            let gate = call_gates.get(&server_name).cloned();
             async move {
                 let client = xai_grok_mcp::servers::start_mcp_server(
                     config,
@@ -534,7 +571,7 @@ pub(crate) async fn drive_server_starts(
                 })?;
                 let client = Arc::new(client);
                 let transport: Arc<dyn McpTransport> =
-                    Arc::new(McpClientTransportAdapter::new(Arc::clone(&client)));
+                    Arc::new(McpClientTransportAdapter::new(Arc::clone(&client), gate));
                 let config = McpBridgeConfig {
                     session_id: bridge_session_id,
                     // The bridge namespaces every tool by server name;
@@ -735,12 +772,15 @@ pub(crate) async fn connect_servers(
     // MAX_SERVERS by both config chokepoints — so this named capacity can
     // never fill and a send never blocks.
     let (tx, mut rx) = tokio::sync::mpsc::channel(crate::config::BindMcpConfig::MAX_SERVERS);
+    // Only the host's own servers get call gates
+    let no_gates = McpCallGates::new();
     let drive = drive_server_starts(
         session,
         session_id,
         configs,
         discovery_timeout,
         first_party,
+        &no_gates,
         event_writer,
         tx,
         drive_scope,
@@ -1113,6 +1153,7 @@ pub(crate) async fn converge_session(
             configs,
             desired.discovery_timeout(),
             desired.first_party_servers(),
+            desired.call_gates(),
             event_writer,
             tx,
             drive_scope,
@@ -1276,7 +1317,7 @@ async fn dead_servers(session: &WorkspaceSession, live: &HashSet<String>) -> Has
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     struct TestHandler;
@@ -1354,6 +1395,29 @@ mod tests {
                 folders.to_string()
             ]
         );
+    }
+
+    /// The computer-use helper sends the target app's identity in `_meta`.
+    #[test]
+    fn bridged_result_carries_meta() {
+        let app = serde_json::Map::from_iter([
+            ("app_name".into(), "TextEdit".into()),
+            ("bundle_id".into(), "com.apple.TextEdit".into()),
+        ]);
+        let mut result =
+            rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text("ok")]);
+        result.meta = Some(rmcp::model::MetaObject(app.clone()));
+        assert_eq!(mcp_call_result_from_rmcp(result).meta, app);
+    }
+
+    #[test]
+    fn bridged_result_maps_absent_meta_to_empty() {
+        for meta in [None, Some(rmcp::model::MetaObject::new())] {
+            let mut result =
+                rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text("ok")]);
+            result.meta = meta;
+            assert!(mcp_call_result_from_rmcp(result).meta.is_empty());
+        }
     }
 
     /// The client-driven configure path honors the SAME server cap as the
@@ -1560,5 +1624,206 @@ mod tests {
             &name_set(&["computer_use"]),
         );
         assert_eq!(plan, ConvergencePlan::default());
+    }
+
+    /// A stdio MCP server standing in for the computer-use helper: it appends every message it
+    /// reads to `log`, answers `initialize` and `tools/call fast`, and never answers
+    /// `tools/call slow`.
+    const RECORDING_STDIO_SERVER: &str = r#"
+import json, sys
+log = open(sys.argv[1], "a")
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    log.write(line + "\n")
+    log.flush()
+    method = msg.get("method")
+    reply = None
+    if method == "initialize":
+        reply = {"protocolVersion": msg["params"]["protocolVersion"],
+                 "capabilities": {"tools": {}},
+                 "serverInfo": {"name": "recording", "version": "0"}}
+    elif method == "tools/call" and msg["params"]["name"] == "fast":
+        reply = {"content": [{"type": "text", "text": "done"}], "isError": False}
+    if reply is not None:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": reply}) + "\n")
+        sys.stdout.flush()
+"#;
+
+    fn child_messages(log: &std::path::Path, method: &str, pointer: &str) -> Vec<Value> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|m| m.get("method").and_then(Value::as_str) == Some(method))
+            .map(|m| m.pointer(pointer).cloned().unwrap_or(Value::Null))
+            .collect()
+    }
+
+    /// Spawns the recording server under `dir` and completes the handshake; returns the adapter
+    /// and the path of the log the child appends every message to.
+    async fn recording_adapter(
+        dir: &std::path::Path,
+        gate: Option<Arc<dyn McpCallGate>>,
+    ) -> (McpClientTransportAdapter, std::path::PathBuf) {
+        let script = dir.join("server.py");
+        std::fs::write(&script, RECORDING_STDIO_SERVER).expect("write script");
+        let log = dir.join("received.jsonl");
+        let config = agent_client_protocol::McpServer::Stdio(
+            agent_client_protocol::McpServerStdio::new("recording", "python3").args(vec![
+                script.display().to_string(),
+                log.display().to_string(),
+            ]),
+        );
+        let event_writer = xai_grok_session_events::EventWriter::noop();
+        let ctx = McpSpawnCtx::standalone(&event_writer);
+        let client = xai_grok_mcp::servers::start_mcp_server(config, None, None, None, &ctx)
+            .await
+            .expect("spawn the recording stdio server (needs python3 on PATH)");
+        let adapter = McpClientTransportAdapter::new(Arc::new(client), gate);
+        adapter.initialize().await.expect("handshake");
+        (adapter, log)
+    }
+
+    #[tokio::test]
+    async fn dropped_bridged_call_sends_one_cancellation_for_its_request() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (adapter, log) = recording_adapter(dir.path(), None).await;
+        let call_ids = || child_messages(&log, "tools/call", "/id");
+        let cancellations = || child_messages(&log, "notifications/cancelled", "/params/requestId");
+
+        let mut call = Box::pin(adapter.call_tool("slow", Value::Null));
+        // The hub's Cancel drops the handler future mid-flight; the server never answers `slow`,
+        // so the call must still be pending when we let go of it.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), &mut call)
+                .await
+                .is_err()
+        );
+        drop(call);
+        // The cancel travels through a spawned task and the child's stdin; poll rather than sleep.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while cancellations().is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let slow_id = call_ids();
+        assert_eq!(slow_id.len(), 1, "{slow_id:?}");
+        assert_eq!(
+            cancellations(),
+            slow_id,
+            "exactly one notifications/cancelled, naming the dropped request"
+        );
+
+        // The child still serves after the cancel.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            adapter.call_tool("fast", Value::Null),
+        )
+        .await
+        .expect("fast tool answers")
+        .expect("fast tool completes");
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(call_ids().len(), 2);
+    }
+
+    /// Answers the tool `refused` in the server's place.
+    /// Counts the server answers it sees.
+    #[derive(Default)]
+    pub(crate) struct RecordingGate {
+        seen: std::sync::atomic::AtomicUsize,
+    }
+
+    impl McpCallGate for RecordingGate {
+        fn before_call<'a>(
+            &'a self,
+            tool: &'a str,
+        ) -> futures::future::BoxFuture<'a, Option<rmcp::model::CallToolResult>> {
+            Box::pin(async move {
+                (tool == "refused").then(|| {
+                    rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                        "refused by the gate",
+                    )])
+                })
+            })
+        }
+
+        fn after_call(&self, _result: &rmcp::model::CallToolResult) {
+            self.seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn call_gate_answers_in_the_servers_place_or_sees_its_answer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gate = Arc::new(RecordingGate::default());
+        let (adapter, log) =
+            recording_adapter(dir.path(), Some(Arc::clone(&gate) as Arc<dyn McpCallGate>)).await;
+
+        let refused = adapter
+            .call_tool("refused", Value::Null)
+            .await
+            .expect("the gate answers");
+        assert!(refused.is_error);
+        assert!(
+            matches!(refused.content.as_slice(), [McpContent::Text { text }] if text == "refused by the gate")
+        );
+
+        let fast = tokio::time::timeout(
+            Duration::from_secs(5),
+            adapter.call_tool("fast", Value::Null),
+        )
+        .await
+        .expect("fast tool answers")
+        .expect("fast tool completes");
+        assert!(!fast.is_error);
+        assert_eq!(
+            vec![Value::from("fast")],
+            child_messages(&log, "tools/call", "/params/name"),
+            "the server never saw the refused call"
+        );
+        assert_eq!(1, gate.seen.load(std::sync::atomic::Ordering::Relaxed));
+
+        // After close the transport fails the call before the gate sees it
+        adapter.close().await.expect("close");
+        let closed = adapter
+            .call_tool("refused", Value::Null)
+            .await
+            .expect_err("the closed transport fails the call");
+        assert_eq!("transport error: MCP transport closed", closed.to_string());
+    }
+
+    /// A session-wide Cancel drops every in-flight bridged call at once; each names its own request.
+    #[tokio::test]
+    async fn dropping_two_bridged_calls_sends_a_cancellation_for_each() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (adapter, log) = recording_adapter(dir.path(), None).await;
+        let cancellations = || child_messages(&log, "notifications/cancelled", "/params/requestId");
+
+        let mut first = Box::pin(adapter.call_tool("slow", Value::Null));
+        let mut second = Box::pin(adapter.call_tool("slow", Value::Null));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), async {
+                tokio::join!(&mut first, &mut second)
+            })
+            .await
+            .is_err()
+        );
+        drop(first);
+        drop(second);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while cancellations().len() < 2 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut slow_ids = child_messages(&log, "tools/call", "/id");
+        let mut cancelled = cancellations();
+        assert_eq!(slow_ids.len(), 2, "{slow_ids:?}");
+        slow_ids.sort_by_key(Value::to_string);
+        cancelled.sort_by_key(Value::to_string);
+        assert_eq!(
+            cancelled, slow_ids,
+            "one notifications/cancelled per dropped request, no more"
+        );
     }
 }

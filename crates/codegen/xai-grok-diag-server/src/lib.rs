@@ -3,6 +3,7 @@
 //! Any process inside the user's own sandbox can reach it (loopback-only TCP, or a 0600 Unix socket).
 //! It is never exposed through the sandbox port mapping.
 //! `/logs` returns the raw daemon log: treat its output as sensitive and keep the log stream free of secrets.
+//! An owner can serve its own routes on the same listener with [`serve_with`].
 
 #![deny(clippy::indexing_slicing)]
 
@@ -376,7 +377,7 @@ fn tail_file(path: &Path, max: u64) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn router(ctx: DiagContext) -> Router {
+fn router(ctx: DiagContext, extra_routes: Router) -> Router {
     Router::new()
         .route(
             "/ready",
@@ -398,6 +399,18 @@ fn router(ctx: DiagContext) -> Router {
         )
         .route("/logs", get(logs))
         .with_state(ctx)
+        // A fallback, not `merge`: an overlapping extra route cannot shadow (or panic on) a frozen built-in route.
+        .fallback_service(extra_routes)
+}
+
+/// What [`serve_with`] serves besides `/ready` and `/statusz`.
+#[derive(Debug, Default)]
+pub struct DiagServeOptions {
+    /// The daemon log served by `/logs` (`None` means `/logs` is 404).
+    pub log_file: Option<PathBuf>,
+    /// Routes owned by the caller, served on the same listener.
+    /// They only see requests whose path no built-in route matches, so the built-in contracts stay intact.
+    pub extra_routes: Router,
 }
 
 /// Bind the listener and spawn the server task.
@@ -408,10 +421,32 @@ pub async fn serve(
     handle: DiagHandle,
     log_file: Option<PathBuf>,
 ) -> anyhow::Result<BoundDiag> {
+    serve_with(
+        listener,
+        handle,
+        DiagServeOptions {
+            log_file,
+            ..DiagServeOptions::default()
+        },
+    )
+    .await
+}
+
+/// [`serve`] plus caller-owned routes on the same listener.
+pub async fn serve_with(
+    listener: DiagListener,
+    handle: DiagHandle,
+    options: DiagServeOptions,
+) -> anyhow::Result<BoundDiag> {
+    let DiagServeOptions {
+        log_file,
+        extra_routes,
+    } = options;
     let ctx = DiagContext {
         handle,
         log_file: log_file.map(Arc::new),
     };
+    let app = router(ctx, extra_routes);
     match listener {
         #[cfg(unix)]
         DiagListener::Unix(path) => {
@@ -427,7 +462,7 @@ pub async fn serve(
                 );
             }
             let task = tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, router(ctx)).await {
+                if let Err(e) = axum::serve(listener, app).await {
                     tracing::warn!(error = %e, "diagnostics server exited");
                 }
             });
@@ -443,7 +478,7 @@ pub async fn serve(
                 .map_err(|e| anyhow!("bind 127.0.0.1:{port}: {e}"))?;
             let local = listener.local_addr()?;
             let task = tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, router(ctx)).await {
+                if let Err(e) = axum::serve(listener, app).await {
                     tracing::warn!(error = %e, "diagnostics server exited");
                 }
             });
@@ -936,6 +971,35 @@ mod tests {
         let parsed: Value = serde_json::from_str(json).expect("json");
         assert_eq!(at(&parsed, "launch_id"), "nonce-uds");
         assert_eq!(at(&parsed, "state"), "connected");
+    }
+
+    #[tokio::test]
+    async fn extra_routes_are_served_without_shadowing_builtin_routes() {
+        let extra_routes = Router::new()
+            .route("/extra", get(|| async { "extra" }))
+            .route("/ready", get(|| async { "shadowed" }));
+        let bound = serve_with(
+            DiagListener::Tcp(0),
+            DiagHandle::new(Some("nonce-extra".to_owned())),
+            DiagServeOptions {
+                log_file: None,
+                extra_routes,
+            },
+        )
+        .await
+        .expect("bind");
+        let port = bound.port.expect("tcp port");
+
+        let (status, _, body) = get_text(port, "/extra").await;
+        assert_eq!(200, status);
+        assert_eq!("extra", body);
+
+        let (status, ready) = get_json(port, "/ready").await;
+        assert_eq!(503, status, "the built-in /ready still answers");
+        assert_eq!("nonce-extra", at(&ready, "launch_id"));
+
+        let (status, _, _) = get_text(port, "/missing").await;
+        assert_eq!(404, status);
     }
 
     #[tokio::test]

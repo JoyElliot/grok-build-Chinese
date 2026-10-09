@@ -1,0 +1,42 @@
+[
+  {
+    "category": "fixes",
+    "description": "**计划评论**现在可通过点击悬停时出现的 [✗] 按钮删除。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "macOS 的**沙箱执行限制**现在使用系统 Seatbelt（`sandbox-exec`）后端。",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "修改同一文件的**并行工具调用**现在会安全地依次执行；互不相关的工具仍并发运行。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**模型现在可提供多种上下文窗口大小**，列表中的第一个值为默认值。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "新增 **`/context-window` 斜杠命令**：当模型提供多种上下文窗口大小时，可为当前会话选择其中一种。",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "通过 **`/model` 选择模型**时，如果模型支持多种上下文窗口大小，现在会先选择窗口大小，再选择推理强度。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**快捷键面板搜索**现在支持匹配标签、按键、描述或帮助文本中的任意词。",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**修复 Windows 粘贴时的崩溃**，解决剪贴板操作重叠导致的问题。",
+    "breaking_change": false
+  }
+]

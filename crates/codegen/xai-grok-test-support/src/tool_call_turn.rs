@@ -1,7 +1,4 @@
-//! One tool call turn, with no reasoning and no text, in each endpoint's format, and the shapes a
-//! failure answers with, built over the frame that opens a reply in each format.
-
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::failure::{DOOM_LOOP_TRIGGER, ErrorPosition, LOOPING_REPLY, StreamError};
 use crate::inference_request::InferenceEndpoint;
@@ -12,7 +9,6 @@ use crate::sse::{
     responses_api_script_exact,
 };
 
-/// The chunk that opens a Chat Completions reply: the assistant role and no content.
 fn chat_completion_role_chunk(model: &str) -> SseEvent {
     SseEvent::data(
         json!({
@@ -24,7 +20,6 @@ fn chat_completion_role_chunk(model: &str) -> SseEvent {
     )
 }
 
-/// The `response.created` frame that opens a Responses API reply, numbered 0.
 fn responses_api_created_frame(model: &str) -> SseEvent {
     SseEvent::data(
         json!({
@@ -39,7 +34,6 @@ fn responses_api_created_frame(model: &str) -> SseEvent {
     )
 }
 
-/// The `message_start` frame that opens a Messages API reply.
 fn messages_api_message_start(model: &str) -> SseEvent {
     SseEvent::data(
         json!({
@@ -73,7 +67,6 @@ pub(crate) fn cut_reply_events(
     }
 }
 
-/// A Responses reply cut by the output token limit: one text delta, then `response.incomplete`.
 fn responses_api_cut_script(text: &str, model: &str) -> Vec<SseEvent> {
     vec![
         responses_api_created_frame(model),
@@ -168,7 +161,6 @@ fn responses_api_content_filter_script(text: &str, model: &str) -> Vec<SseEvent>
     ]
 }
 
-/// The error event alone, or after the frame that opens a reply when the position is `Midway`.
 pub(crate) fn stream_error_events(
     endpoint: InferenceEndpoint,
     stream_error: &StreamError,
@@ -190,8 +182,6 @@ pub(crate) fn stream_error_events(
     events
 }
 
-/// One error event in each format's shape: a Chat Completions `error` data frame, a Responses
-/// `error` event numbered after prior frames, or a Messages `overloaded_error`.
 fn stream_error_event(
     endpoint: InferenceEndpoint,
     message: &str,
@@ -214,6 +204,52 @@ fn stream_error_event(
             json!({ "type": "error", "error": { "type": "overloaded_error", "message": message } })
                 .to_string(),
         ),
+    }
+}
+
+/// No finish reason, terminal event, or `[DONE]` follows the delta.
+pub(crate) fn truncated_reply_events(
+    endpoint: InferenceEndpoint,
+    text: &str,
+    model: &str,
+) -> Vec<SseEvent> {
+    match endpoint {
+        InferenceEndpoint::ChatCompletions => vec![
+            chat_completion_role_chunk(model),
+            SseEvent::data(
+                json!({
+                    "id": "chatcmpl-test", "object": "chat.completion.chunk",
+                    "created": 1234567890, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": null}]
+                })
+                .to_string(),
+            ),
+        ],
+        InferenceEndpoint::Responses => vec![
+            responses_api_created_frame(model),
+            SseEvent::data(
+                json!({
+                    "type": "response.output_text.delta",
+                    "sequence_number": 1,
+                    "item_id": "item_test",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": text
+                })
+                .to_string(),
+            ),
+        ],
+        InferenceEndpoint::Messages => vec![
+            messages_api_message_start(model),
+            SseEvent::data(
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})
+                    .to_string(),
+            ),
+            SseEvent::data(
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+                    .to_string(),
+            ),
+        ],
     }
 }
 
@@ -248,14 +284,44 @@ pub(crate) struct ToolCallTurn<'a> {
     pub(crate) model: &'a str,
 }
 
-/// Chat Completions: one `tool_calls` delta, then a `finish_reason: "tool_calls"` chunk with usage.
+#[derive(Clone, Copy)]
+pub(crate) struct TurnCall<'a> {
+    pub(crate) call_id: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) arguments: &'a str,
+}
+
+impl<'a> From<ToolCallTurn<'a>> for TurnCall<'a> {
+    fn from(turn: ToolCallTurn<'a>) -> Self {
+        TurnCall {
+            call_id: turn.call_id,
+            name: turn.name,
+            arguments: turn.arguments,
+        }
+    }
+}
+
 pub(crate) fn chat_completion_tool_call_events(turn: ToolCallTurn<'_>) -> Vec<SseEvent> {
-    let ToolCallTurn {
-        call_id,
-        name,
-        arguments,
-        model,
-    } = turn;
+    chat_completion_tool_calls_events(&[TurnCall::from(turn)], turn.model)
+}
+
+pub(crate) fn chat_completion_tool_calls_events(
+    calls: &[TurnCall<'_>],
+    model: &str,
+) -> Vec<SseEvent> {
+    let tool_calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| {
+            json!({
+                "index": index,
+                "id": call.call_id,
+                "type": "function",
+                "function": { "name": call.name, "arguments": call.arguments }
+            })
+        })
+        .collect();
+
     vec![
         SseEvent::data(
             json!({
@@ -268,12 +334,7 @@ pub(crate) fn chat_completion_tool_call_events(turn: ToolCallTurn<'_>) -> Vec<Ss
                     "delta": {
                         "role": "assistant",
                         "content": null,
-                        "tool_calls": [{
-                            "index": 0,
-                            "id": call_id,
-                            "type": "function",
-                            "function": { "name": name, "arguments": arguments }
-                        }]
+                        "tool_calls": tool_calls
                     },
                     "finish_reason": null
                 }]
@@ -303,44 +364,48 @@ pub(crate) fn chat_completion_tool_call_events(turn: ToolCallTurn<'_>) -> Vec<Ss
     ]
 }
 
-/// Responses API: the `function_call` item is added before its arguments delta, its arguments are
-/// whole in `function_call_arguments.done`, and the item closes before `response.completed`.
 pub(crate) fn responses_api_tool_call_events(turn: ToolCallTurn<'_>) -> Vec<SseEvent> {
-    let ToolCallTurn {
-        call_id,
-        name,
-        arguments,
-        model,
-    } = turn;
-    let item_id = format!("fc_{call_id}");
+    responses_api_tool_calls_events(&[TurnCall::from(turn)], turn.model)
+}
+
+pub(crate) fn responses_api_tool_calls_events(
+    calls: &[TurnCall<'_>],
+    model: &str,
+) -> Vec<SseEvent> {
+    let items: Vec<(String, Value)> = calls
+        .iter()
+        .map(|call| {
+            let item_id = format!("fc_{}", call.call_id);
+            let item = json!({
+                "type": "function_call",
+                "id": item_id,
+                "call_id": call.call_id,
+                "name": call.name,
+                "arguments": call.arguments,
+                "status": "completed"
+            });
+            (item_id, item)
+        })
+        .collect();
+
     let response = json!({
         "id": "resp_test",
         "object": "response",
         "created_at": 1234567890,
         "model": model
     });
-    let call = json!({
-        "type": "function_call",
-        "id": item_id,
-        "call_id": call_id,
-        "name": name,
-        "arguments": arguments,
-        "status": "completed"
-    });
     let mut in_progress = response.clone();
     if let Some(map) = in_progress.as_object_mut() {
         map.insert("status".to_owned(), json!("in_progress"));
         map.insert("output".to_owned(), json!([]));
     }
-    let mut opened = call.clone();
-    if let Some(map) = opened.as_object_mut() {
-        map.insert("arguments".to_owned(), json!(""));
-        map.insert("status".to_owned(), json!("in_progress"));
-    }
     let mut completed = response;
     if let Some(map) = completed.as_object_mut() {
         map.insert("status".to_owned(), json!("completed"));
-        map.insert("output".to_owned(), json!([call]));
+        map.insert(
+            "output".to_owned(),
+            Value::Array(items.iter().map(|(_, item)| item.clone()).collect()),
+        );
         map.insert(
             "usage".to_owned(),
             json!({
@@ -352,25 +417,42 @@ pub(crate) fn responses_api_tool_call_events(turn: ToolCallTurn<'_>) -> Vec<SseE
             }),
         );
     }
-    let events = [
-        json!({ "type": "response.created", "response": in_progress }),
-        json!({ "type": "response.output_item.added", "output_index": 0, "item": opened }),
-        json!({
-            "type": "response.function_call_arguments.delta",
-            "item_id": item_id,
-            "output_index": 0,
-            "delta": arguments
-        }),
-        json!({
-            "type": "response.function_call_arguments.done",
-            "item_id": item_id,
-            "output_index": 0,
-            "name": name,
-            "arguments": arguments
-        }),
-        json!({ "type": "response.output_item.done", "output_index": 0, "item": call }),
-        json!({ "type": "response.completed", "response": completed }),
-    ];
+
+    let mut events = vec![json!({ "type": "response.created", "response": in_progress })];
+    for (output_index, (call, (item_id, item))) in calls.iter().zip(&items).enumerate() {
+        let mut opened = item.clone();
+        if let Some(map) = opened.as_object_mut() {
+            map.insert("arguments".to_owned(), json!(""));
+            map.insert("status".to_owned(), json!("in_progress"));
+        }
+        events.extend([
+            json!({
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": opened
+            }),
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": item_id,
+                "output_index": output_index,
+                "delta": call.arguments
+            }),
+            json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": item_id,
+                "output_index": output_index,
+                "name": call.name,
+                "arguments": call.arguments
+            }),
+            json!({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item
+            }),
+        ]);
+    }
+    events.push(json!({ "type": "response.completed", "response": completed }));
+
     events
         .into_iter()
         .enumerate()
@@ -384,33 +466,32 @@ pub(crate) fn responses_api_tool_call_events(turn: ToolCallTurn<'_>) -> Vec<SseE
         .collect()
 }
 
-/// Messages API: one `tool_use` block, its input in one `input_json_delta`; stops with `tool_use`.
-pub(crate) fn messages_api_tool_use_events(turn: ToolCallTurn<'_>) -> Vec<SseEvent> {
-    let ToolCallTurn {
-        call_id,
-        name,
-        arguments,
-        model,
-    } = turn;
-    vec![
-        messages_api_message_start(model),
-        SseEvent::data(
-            json!({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "tool_use", "id": call_id, "name": name, "input": {}}
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "input_json_delta", "partial_json": arguments}
-            })
-            .to_string(),
-        ),
-        SseEvent::data(json!({"type": "content_block_stop", "index": 0}).to_string()),
+pub(crate) fn messages_api_tool_uses_events(calls: &[TurnCall<'_>], model: &str) -> Vec<SseEvent> {
+    let mut events = vec![messages_api_message_start(model)];
+    for (index, call) in calls.iter().enumerate() {
+        events.extend([
+            SseEvent::data(
+                json!({
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {
+                        "type": "tool_use", "id": call.call_id, "name": call.name, "input": {}
+                    }
+                })
+                .to_string(),
+            ),
+            SseEvent::data(
+                json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": call.arguments}
+                })
+                .to_string(),
+            ),
+            SseEvent::data(json!({"type": "content_block_stop", "index": index}).to_string()),
+        ]);
+    }
+    events.extend([
         SseEvent::data(
             json!({
                 "type": "message_delta",
@@ -420,7 +501,8 @@ pub(crate) fn messages_api_tool_use_events(turn: ToolCallTurn<'_>) -> Vec<SseEve
             .to_string(),
         ),
         SseEvent::data(json!({"type": "message_stop"}).to_string()),
-    ]
+    ]);
+    events
 }
 
 #[cfg(test)]

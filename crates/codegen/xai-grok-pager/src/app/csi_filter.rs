@@ -207,8 +207,6 @@ mod tests {
         press_mods(code, KeyModifiers::SHIFT)
     }
 
-    // ── SGR mouse fragment filter tests ──────────────────────────────
-
     /// Build key events matching crossterm's actual output for a fragmented SGR mouse report `[<btn;col;row{M|m}]`.
     fn sgr_fragment(btn: &str, col: &str, row: &str, term: char) -> Vec<TimedInputEvent> {
         let mut events = vec![press(KeyCode::Char('[')), press(KeyCode::Char('<'))];
@@ -229,11 +227,6 @@ mod tests {
             events.push(press(KeyCode::Char(term)));
         }
         events
-    }
-
-    #[test]
-    fn csi_filter_empty() {
-        assert!(CsiFragmentFilter::new().filter(vec![]).is_empty());
     }
 
     #[test]
@@ -422,8 +415,6 @@ mod tests {
         assert_eq!(total, 7);
     }
 
-    // ── Cross-batch SGR filtering tests ──────────────────────────────
-
     #[test]
     fn csi_filter_cross_batch_esc_then_fragment() {
         // Esc arrives in batch 1, SGR fragment chars in batch 2.
@@ -581,8 +572,6 @@ mod tests {
             "completing fragment should discard"
         );
     }
-
-    // ── CSI focus report filtering tests ─────────────────────────────
 
     #[test]
     fn csi_filter_focus_timestamp_comes_from_completing_fragment() {

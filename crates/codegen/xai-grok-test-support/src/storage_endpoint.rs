@@ -2,7 +2,7 @@
 //! closed, and records the accepted ones.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -26,6 +26,7 @@ pub(crate) struct StorageEndpointState {
     unauthorized: AtomicBool,
     request_count: AtomicU32,
     uploads: Mutex<Vec<StorageUpload>>,
+    observed: AtomicUsize,
 }
 
 impl StorageEndpointState {
@@ -40,6 +41,15 @@ impl StorageEndpointState {
 
     pub(crate) fn uploads(&self) -> Vec<StorageUpload> {
         self.uploads.lock().unwrap().clone()
+    }
+
+    /// Uploads accepted since the previous call. [`Self::uploads`] stays the whole log.
+    pub(crate) fn take_for_observation(&self) -> Vec<StorageUpload> {
+        let uploads = self.uploads.lock().unwrap();
+        let start = self.observed.load(Ordering::SeqCst);
+        let fresh: Vec<StorageUpload> = uploads.iter().skip(start).cloned().collect();
+        self.observed.store(uploads.len(), Ordering::SeqCst);
+        fresh
     }
 
     /// An accepted upload is answered in the proxy's `UploadResponse` shape.

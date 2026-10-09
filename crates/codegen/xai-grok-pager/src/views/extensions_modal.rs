@@ -19,6 +19,7 @@ use crate::views::modal_window::{
     fill_overlay_content, overlay_content_rect, word_wrap,
 };
 use crate::views::picker;
+use xai_grok_shell::extensions::skills::SkillsListResponse;
 use xai_grok_tools::implementations::skills::types::SkillInfo;
 
 fn extension_static(
@@ -66,6 +67,7 @@ fn render_extension_template(template: &str, replacements: &[(&str, &str)]) -> S
 }
 
 mod metadata_localization;
+mod skills_tab;
 mod workflows_picker_rows;
 use metadata_localization::{
     localized_bundled_skill_description, localized_marketplace_category,
@@ -1887,7 +1889,7 @@ fn selected_item_enabled_at(
         ExtensionsTab::Skills => {
             let idx = data_index_at(entry_data_indices, selected)?;
             match &state.skills_data {
-                TabDataState::Loaded(skills) => skills.get(idx).map(|s| s.enabled),
+                TabDataState::Loaded(listing) => listing.skills.get(idx).map(|s| s.enabled),
                 _ => None,
             }
         }
@@ -2245,6 +2247,7 @@ fn parse_mcp_add_fields(name: &str, url_or_cmd: &str) -> Option<ButtonAction> {
             url: command_or_url.to_string(),
             transport_type: None,
             bearer_token_env_var: None,
+            bearer_token_file: None,
             headers: None,
             oauth_client_id: None,
             oauth_client_secret_env_var: None,
@@ -2349,7 +2352,9 @@ pub struct ExtensionsModalState {
     pub marketplace_selected: usize,
     pub marketplace_scroll: usize,
     /// Skills tab state.
-    pub skills_data: TabDataState<Vec<SkillInfo>>,
+    pub skills_data: TabDataState<SkillsListResponse>,
+    /// The skills fetch whose answer the tab shows; see [`Self::next_skills_fetch`].
+    pub skills_fetch: u64,
     pub skills_selected: usize,
     pub skills_scroll: usize,
     pub workflows_data: TabDataState<Vec<WorkflowInfo>>,
@@ -2442,6 +2447,7 @@ impl ExtensionsModalState {
             marketplace_selected: 0,
             marketplace_scroll: 0,
             skills_data: TabDataState::Loading,
+            skills_fetch: 0,
             skills_selected: 0,
             skills_scroll: 0,
             workflows_data: TabDataState::Loading,
@@ -3427,7 +3433,11 @@ pub fn render_extensions_modal_with_locale(
     if !in_input_mode && !loading {
         match state.active_tab {
             ExtensionsTab::Skills => {
-                if let TabDataState::Loaded(ref skills) = state.skills_data {
+                if let TabDataState::Loaded(SkillsListResponse {
+                    ref skills,
+                    ref scan_errors,
+                }) = state.skills_data
+                {
                     let filtered =
                         filter_and_sort_skills(skills, state.picker_state.query(), filter);
                     let searching = !state.picker_state.query().is_empty();
@@ -3540,6 +3550,24 @@ pub fn render_extensions_modal_with_locale(
                                 entry_badge_color.push(None);
                             }
                         }
+                    }
+                    for label in skills_tab::scan_error_rows_with_locale(
+                        scan_errors,
+                        state.picker_state.query(),
+                        locale,
+                    ) {
+                        entry_labels.push(label);
+                        entry_right_labels.push(String::new());
+                        entry_desc_lines.push(vec![]);
+                        entry_summary_lines.push(vec![]);
+                        entry_fields.push(vec![]);
+                        entry_is_header.push(true);
+                        entry_dimmed.push(false);
+                        entry_indent.push(0);
+                        entry_data_indices.push(None);
+                        entry_group_keys.push(None);
+                        entry_badge_text.push(String::new());
+                        entry_badge_color.push(None);
                     }
                 } else if let TabDataState::Error(ref msg) = state.skills_data {
                     entry_labels.push(
@@ -8556,7 +8584,7 @@ mod tests {
         let mut state = ExtensionsModalState::new(ExtensionsTab::Skills);
         let skills = vec![make_skill("alpha", "a"), make_skill("beta", "b")];
         state.seed_skills_groups_once(&skills);
-        state.skills_data = TabDataState::Loaded(skills);
+        state.skills_data = TabDataState::Loaded(skills.into());
         state.picker_state.selected = 0;
         let area = Rect::new(0, 0, 100, 40);
         let mut buf = Buffer::empty(area);
@@ -8598,7 +8626,7 @@ mod tests {
     #[test]
     fn skills_tab_renders_no_workflows_rows() {
         let mut state = ExtensionsModalState::new(ExtensionsTab::Skills);
-        state.skills_data = TabDataState::Loaded(vec![make_skill("alpha", "a")]);
+        state.skills_data = TabDataState::Loaded(vec![make_skill("alpha", "a")].into());
         state.workflows_data = TabDataState::Loaded(vec![WorkflowInfo {
             name: "fix-ci".into(),
             description: "Fix CI".into(),
@@ -8746,7 +8774,7 @@ mod tests {
 
         // Headers come from render; keep one check that they appear.
         let mut state = ExtensionsModalState::new(ExtensionsTab::Skills);
-        state.skills_data = TabDataState::Loaded(skills);
+        state.skills_data = TabDataState::Loaded(skills.into());
         let area = Rect::new(0, 0, 100, 40);
         let mut buf = Buffer::empty(area);
         render_extensions_modal(&mut buf, area, &mut state, None, false, 0);

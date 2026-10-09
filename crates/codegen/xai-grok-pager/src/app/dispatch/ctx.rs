@@ -21,6 +21,23 @@ pub(super) fn active_agent_session_id(app: &AppView) -> Option<acp::SessionId> {
     app.agents.get(&id)?.session.session_id.clone()
 }
 
+/// Tells the user, in the session or as a toast, that this build withholds `capability`, and says
+/// whether it did. The caller then drops the action.
+pub(super) fn refuse_withheld(app: &mut AppView, capability: xai_grok_config::Capability) -> bool {
+    let Some(refusal) = app.distribution.refusal(capability) else {
+        return false;
+    };
+    match get_active_agent_mut(app) {
+        Some(agent) => {
+            agent
+                .scrollback
+                .push_block(crate::scrollback::block::RenderBlock::system(refusal));
+        }
+        None => app.show_toast(refusal),
+    }
+    true
+}
+
 /// Apply a closure to the active agent (if any).
 /// When a subagent view is active, resolves to the **child** view so actions like SelectNext, GotoBottom, etc. target the visible view.
 pub(super) fn with_active_agent(app: &mut AppView, f: impl FnOnce(&mut AgentView)) {

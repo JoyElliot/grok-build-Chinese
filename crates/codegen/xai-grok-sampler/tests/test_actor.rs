@@ -283,9 +283,52 @@ async fn cancel_in_flight_request_terminates_task() {
     if let SamplingEvent::Failed { error, .. } = failed {
         assert!(error.message.contains("cancelled"));
     }
+    assert_eq!(handle.active_count().await, 0);
+    server.shutdown();
+}
 
-    // Wait briefly for the task to clean up.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_submit_and_collect_fails_the_request_without_calling_cancel() {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            let stream = stream::iter(vec![Ok::<_, std::convert::Infallible>(text_chunk_event(
+                "starting", false,
+            ))])
+            .chain(stream::pending());
+            Sse::new(stream)
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let cfg = test_config(server.base_url(), "test-model");
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+    let rid = RequestId::from("req-drop");
+    let collect = {
+        let handle = handle.clone();
+        let rid = rid.clone();
+        tokio::spawn(async move {
+            let _ = handle.submit_and_collect(rid, user_request("hi")).await;
+        })
+    };
+    let _ = await_event_matching(
+        &mut event_rx,
+        |e| matches!(e, SamplingEvent::FirstToken { .. }),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("first token");
+    collect.abort();
+    let failed = await_event_matching(
+        &mut event_rx,
+        |e| matches!(e, SamplingEvent::Failed { .. }),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Failed event after the collect future is dropped");
+    if let SamplingEvent::Failed { error, .. } = failed {
+        assert!(error.message.contains("cancelled"));
+    }
     assert_eq!(handle.active_count().await, 0);
     server.shutdown();
 }

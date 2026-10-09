@@ -41,10 +41,12 @@ use crate::app::session_startup::stamp_span_traceparent;
 use crate::views::usage_modal::SessionInfoField;
 #[cfg(test)]
 use actions::PermissionModePersist;
-#[cfg(test)]
 use agent::AgentId;
 use crate::unified_log as ulog;
 use xai_grok_shell::sampling::error::http_status_from_error;
+use xai_grok_shell::sampling::types::{
+    CONTEXT_WINDOW_META_KEY, context_window_meta_value,
+};
 use xai_grok_shell::session::{ExtMethodResult, SessionInfoResponse};
 
 fn switch_model_error_from_acp(
@@ -1085,7 +1087,19 @@ pub(crate) fn execute(
         }
         Effect::RestoreAndLoadSession { agent_id, session_id, session_cwd: _ } => {
             use xai_grok_shell::agent::session_registry_client::SessionRegistryClient;
-            use xai_grok_shell::session::restore::restore_session_with_storage;
+            use xai_grok_shell::session::restore::{
+                ensure_available, restore_session_with_storage,
+            };
+            if let Err(error) = ensure_available() {
+                tasks
+                    .spawn(async move {
+                        TaskResult::SessionRestoreFailed {
+                            agent_id,
+                            error: format!("{error:#}"),
+                        }
+                    });
+                return (false, meta);
+            }
             let setup_started = std::time::Instant::now();
             let raw_config = xai_grok_shell::config::load_effective_config();
             let setup = raw_config
@@ -1576,43 +1590,16 @@ pub(crate) fn execute(
             let trigger_str = trigger.map(|t| t.as_wire_str());
             tasks
                 .spawn(async move {
-                    ulog::info(
-                        "cancel.acp_send.start",
-                        Some(&session_id.0),
-                        Some(
-                            serde_json::json!({
-                        "cancel_subagents": cancel_subagents,
-                        "trigger": trigger_str,
-                        "rewind_if_no_output": rewind_prompt_id.is_some(),
-                        "rewind_prompt_id": rewind_prompt_id.as_deref(),
-                    }),
-                        ),
-                    );
-                    let send_start = std::time::Instant::now();
-                    let req = acp::CancelNotification::new(session_id.clone())
-                        .meta(
-                            Some(
-                                cancel_notification_meta(
-                                    cancel_subagents,
-                                    trigger_str,
-                                    rewind_prompt_id.as_deref(),
-                                ),
-                            ),
-                        );
-                    let result = acp_send(req, &tx).await;
-                    ulog::info(
-                        "cancel.acp_send.done",
-                        Some(&session_id.0),
-                        Some(
-                            serde_json::json!({
-                        "ok": result.is_ok(),
-                        "elapsed_ms": send_start.elapsed().as_millis() as u64,
-                    }),
-                        ),
-                    );
-                    if let Err(e) = result {
-                        tracing::warn!("Failed to send cancel notification: {e}");
-                    }
+                    send_cancel(
+                            &tx,
+                            &session_id,
+                            CancelMeta {
+                                cancel_subagents,
+                                trigger: trigger_str,
+                                rewind_prompt_id: rewind_prompt_id.as_deref(),
+                            },
+                        )
+                        .await;
                     TaskResult::CancelComplete
                 });
         }
@@ -1852,24 +1839,11 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::Compact { agent_id, session_id, user_context } => {
+        Effect::Compact { agent_id, session_id } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let mut params = serde_json::Map::new();
-                    params
-                        .insert(
-                            "sessionId".into(),
-                            serde_json::Value::String(session_id.0.to_string()),
-                        );
-                    if let Some(ctx) = user_context {
-                        params
-                            .insert(
-                                "userContext".into(),
-                                serde_json::Value::String(ctx),
-                            );
-                    }
-                    let params = serde_json::Value::Object(params);
+                    let params = serde_json::json!({ "sessionId": session_id.0.to_string() });
                     let req = acp::ExtRequest::new(
                         "x.ai/compact_conversation",
                         serde_json::value::to_raw_value(&params)
@@ -2034,19 +2008,14 @@ pub(crate) fn execute(
                     TaskResult::CancelComplete
                 });
         }
-        Effect::SwitchModel {
-            agent_id,
-            session_id,
-            model_id,
-            effort,
-            prev_model_id,
-        } => {
+        Effect::SwitchModel { agent_id, session_id, choice, prev_model_id } => {
             let tx = acp_tx.clone();
             let is_api_key_auth = session_flags.is_api_key_auth;
             let locale = session_flags.locale.clone();
             tasks
                 .spawn(async move {
-                    let meta = effort
+                    let mut meta = choice
+                        .effort
                         .map(|eff| {
                             use xai_grok_shell::sampling::types::{
                                 REASONING_EFFORT_META_KEY, reasoning_effort_meta_value,
@@ -2058,9 +2027,16 @@ pub(crate) fn execute(
                             );
                             m
                         });
+                    if let Some(window) = choice.context_window_selection {
+                        meta.get_or_insert_default()
+                            .insert(
+                                CONTEXT_WINDOW_META_KEY.to_owned(),
+                                context_window_meta_value(window),
+                            );
+                    }
                     let req = acp::SetSessionModelRequest::new(
                             session_id,
-                            model_id.clone(),
+                            choice.model_id.clone(),
                         )
                         .meta(meta);
                     let result = acp_send(req, &tx)
@@ -2076,8 +2052,7 @@ pub(crate) fn execute(
                         });
                     TaskResult::SwitchModelComplete {
                         agent_id,
-                        model_id,
-                        effort,
+                        choice,
                         result,
                         prev_model_id,
                     }
@@ -3067,33 +3042,33 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::FetchSkillsList { agent_id, session_id: _ } => {
+        Effect::FetchSkillsList { agent_id, session_id, refresh, fetch } => {
             xai_grok_locale::dynamic::Domain::Skills.notify_load();
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let params = serde_json::json!({
-                    "cwd": "."
-                });
+                    use crate::acp::skills_listing::parse_reply;
+                    use xai_grok_shell::extensions::skills::{
+                        SKILLS_LIST_METHOD, SkillsListRequest,
+                    };
+                    let params = SkillsListRequest {
+                        cwd: ".".to_owned(),
+                        session_id: Some(session_id.clone()),
+                        refresh,
+                    };
                     let req = acp::ExtRequest::new(
-                        "x.ai/skills/list",
+                        SKILLS_LIST_METHOD,
                         serde_json::value::to_raw_value(&params)
                             .expect("serialize skills/list params")
                             .into(),
                     );
                     let result = match acp_send(req, &tx).await {
                         Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            let inner = wrapper.get("result").unwrap_or(&wrapper);
-                            serde_json::from_value::<
-                                Vec<
-                                    xai_grok_tools::implementations::skills::types::SkillInfo,
-                                >,
-                            >(inner.get("skills").cloned().unwrap_or_default())
-                                .map_err(|_| "couldn't load skills".to_string())
+                            parse_reply(resp.0.get())
+                                .map_err(|error| {
+                                    tracing::warn!(%error, "skills list reply did not parse");
+                                    "couldn't load skills".to_string()
+                                })
                         }
                         Err(e) => {
                             Err(
@@ -3103,6 +3078,8 @@ pub(crate) fn execute(
                     };
                     TaskResult::SkillsListLoaded {
                         agent_id,
+                        session_id,
+                        fetch,
                         result,
                     }
                 });
@@ -3159,24 +3136,20 @@ pub(crate) fn execute(
                     "cwd": ".",
                 });
                     let req = acp::ExtRequest::new(
-                        "x.ai/skills/toggle",
+                        xai_grok_shell::extensions::skills::SKILLS_TOGGLE_METHOD,
                         serde_json::value::to_raw_value(&params)
                             .expect("serialize skills/toggle params")
                             .into(),
                     );
                     let result = match acp_send(req, &tx).await {
                         Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
+                            let parsed = crate::acp::skills_listing::parse_reply(
                                     resp.0.get(),
                                 )
-                                .unwrap_or_default();
-                            let inner = wrapper.get("result").unwrap_or(&wrapper);
-                            let parsed = serde_json::from_value::<
-                                Vec<
-                                    xai_grok_tools::implementations::skills::types::SkillInfo,
-                                >,
-                            >(inner.get("skills").cloned().unwrap_or_default())
-                                .map_err(|_| "couldn't toggle skill".to_string());
+                                .map_err(|error| {
+                                    tracing::warn!(%error, "skills toggle reply did not parse");
+                                    "couldn't toggle skill".to_string()
+                                });
                             if parsed.is_ok() {
                                 let refresh = acp::ExtRequest::new(
                                     "x.ai/skills/refresh-baseline",
@@ -4769,6 +4742,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             TaskResult::AvailableCommandsRefreshed {
                                 agent_id,
+                                session_id,
                                 commands,
                             }
                         }
@@ -4776,6 +4750,7 @@ pub(crate) fn execute(
                             tracing::warn!("commands/list refresh failed: {e}");
                             TaskResult::AvailableCommandsRefreshed {
                                 agent_id,
+                                session_id,
                                 commands: vec![],
                             }
                         }
@@ -4786,59 +4761,14 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let request = acp::ExtRequest::new(
-                        "x.ai/rewind/points",
-                        serde_json::value::to_raw_value(
-                                &serde_json::json!({
-                        "sessionId": session_id.0.to_string()
-                    }),
-                            )
-                            .expect("serialize rewind/points params")
-                            .into(),
-                    );
-                    match acp_send(request, &tx).await {
-                        Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            if let Some(err) = wrapper
-                                .get("error")
-                                .filter(|v| !v.is_null())
-                            {
-                                return TaskResult::RewindPointsFailed {
-                                    agent_id,
-                                    error: err.as_str().unwrap_or("unknown error").to_string(),
-                                };
-                            }
-                            let result_val = wrapper
-                                .get("result")
-                                .cloned()
-                                .unwrap_or(wrapper.clone());
-                            match serde_json::from_value::<
-                                crate::views::rewind::RewindPointsResponse,
-                            >(result_val) {
-                                Ok(r) => {
-                                    TaskResult::RewindPointsLoaded {
-                                        agent_id,
-                                        points: r.rewind_points,
-                                    }
-                                }
-                                Err(e) => {
-                                    TaskResult::RewindPointsFailed {
-                                        agent_id,
-                                        error: format!("invalid response: {e}"),
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            TaskResult::RewindPointsFailed {
-                                agent_id,
-                                error: sanitize_user_error(&e.to_string()),
-                            }
-                        }
-                    }
+                    fetch_rewind_points(&tx, agent_id, session_id).await
+                });
+        }
+        Effect::CancelTurnThenFetchRewindPoints { agent_id, session_id } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    cancel_then_fetch_rewind_points(&tx, agent_id, session_id).await
                 });
         }
         Effect::RewindExecute { agent_id, session_id, target_prompt_index } => {
@@ -5599,22 +5529,123 @@ fn prompt_request_meta(
     }
     serde_json::Value::Object(map)
 }
+/// The cancel is answered before points is asked, so the backend has already stopped the turn when it lists
+pub(crate) async fn cancel_then_fetch_rewind_points(
+    tx: &AcpAgentTx,
+    agent_id: AgentId,
+    session_id: acp::SessionId,
+) -> TaskResult {
+    send_cancel(
+            tx,
+            &session_id,
+            CancelMeta {
+                cancel_subagents: true,
+                ..CancelMeta::default()
+            },
+        )
+        .await;
+    fetch_rewind_points(tx, agent_id, session_id).await
+}
+async fn fetch_rewind_points(
+    tx: &AcpAgentTx,
+    agent_id: AgentId,
+    session_id: acp::SessionId,
+) -> TaskResult {
+    let request = acp::ExtRequest::new(
+        "x.ai/rewind/points",
+        serde_json::value::to_raw_value(
+                &serde_json::json!({
+            "sessionId": session_id.0.to_string()
+        }),
+            )
+            .expect("serialize rewind/points params")
+            .into(),
+    );
+    match acp_send(request, tx).await {
+        Ok(resp) => parse_rewind_points_response(agent_id, resp.0.get()),
+        Err(e) => {
+            TaskResult::RewindPointsFailed {
+                agent_id,
+                error: sanitize_user_error(&e.to_string()),
+            }
+        }
+    }
+}
+fn parse_rewind_points_response(agent_id: AgentId, body: &str) -> TaskResult {
+    let response = worktree_session::ext_result(body)
+        .and_then(|result| {
+            serde_json::from_value::<crate::views::rewind::RewindPointsResponse>(result)
+                .map_err(|e| format!("invalid response: {e}"))
+        });
+    match response {
+        Ok(r) => {
+            TaskResult::RewindPointsLoaded {
+                agent_id,
+                points: r.rewind_points,
+            }
+        }
+        Err(error) => {
+            TaskResult::RewindPointsFailed {
+                agent_id,
+                error,
+            }
+        }
+    }
+}
+async fn send_cancel(
+    tx: &AcpAgentTx,
+    session_id: &acp::SessionId,
+    meta: CancelMeta<'_>,
+) {
+    let CancelMeta { cancel_subagents, trigger, rewind_prompt_id } = meta;
+    ulog::info(
+        "cancel.acp_send.start",
+        Some(&session_id.0),
+        Some(
+            serde_json::json!({
+            "cancel_subagents": cancel_subagents,
+            "trigger": trigger,
+            "rewind_if_no_output": rewind_prompt_id.is_some(),
+            "rewind_prompt_id": rewind_prompt_id,
+        }),
+        ),
+    );
+    let send_start = std::time::Instant::now();
+    let req = acp::CancelNotification::new(session_id.clone())
+        .meta(Some(cancel_notification_meta(&meta)));
+    let result = acp_send(req, tx).await;
+    ulog::info(
+        "cancel.acp_send.done",
+        Some(&session_id.0),
+        Some(
+            serde_json::json!({
+            "ok": result.is_ok(),
+            "elapsed_ms": send_start.elapsed().as_millis() as u64,
+        }),
+        ),
+    );
+    if let Err(e) = result {
+        tracing::warn!("Failed to send cancel notification: {e}");
+    }
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CancelMeta<'a> {
+    pub(crate) cancel_subagents: bool,
+    pub(crate) trigger: Option<&'a str>,
+    pub(crate) rewind_prompt_id: Option<&'a str>,
+}
 /// Build the `session/cancel` `_meta`, shared by the TUI cancel effect and the headless fail-safe so the wire shape has one owner.
 /// The rewind is a request, not a command: the shell re-checks rewindable and prompt identity.
-pub(crate) fn cancel_notification_meta(
-    cancel_subagents: bool,
-    trigger: Option<&str>,
-    rewind_prompt_id: Option<&str>,
-) -> acp::Meta {
+pub(crate) fn cancel_notification_meta(cancel: &CancelMeta<'_>) -> acp::Meta {
     let mut meta = acp::Meta::new();
-    meta.insert("cancelSubagents".into(), cancel_subagents.into());
-    if let Some(trigger) = trigger {
+    meta.insert("cancelSubagents".into(), cancel.cancel_subagents.into());
+    if let Some(trigger) = cancel.trigger {
         meta.insert(
             crate::app::turn_completion::CANCEL_TRIGGER_KEY.into(),
             trigger.into(),
         );
     }
-    if let Some(pid) = rewind_prompt_id {
+    if let Some(pid) = cancel.rewind_prompt_id {
         meta.insert("rewindIfNoOutput".into(), true.into());
         meta.insert("rewindIfPristine".into(), true.into());
         meta.insert("promptId".into(), pid.into());
@@ -5747,10 +5778,12 @@ pub(crate) fn spawn_ordered_interjects(
                 if let Err(e) = acp_send(request, &tx).await {
                     let mut leftover = vec![(text, interjection_id, blocks)];
                     leftover.extend(pending);
+                    let detail = invalid_params_detail(&e)
+                        .unwrap_or_else(|| e.to_string());
                     return TaskResult::InterjectFailed {
                         agent_id,
                         error: sanitize_user_error(
-                            &format!("couldn't send interjection: {e}"),
+                            &format!("couldn't send interjection: {detail}"),
                         ),
                         remaining: leftover,
                     };

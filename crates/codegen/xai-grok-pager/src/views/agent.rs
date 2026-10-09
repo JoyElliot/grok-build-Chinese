@@ -123,6 +123,8 @@ pub struct AgentViewLayoutParams {
     pub dock_height: u16,
     /// 0 or 1: the gap row between turn status (or scrollback) and the prompt.
     pub prompt_gap: u16,
+    /// The current model's notice row directly above the prompt, 0 when it has none.
+    pub model_notice_height: u16,
     pub voice_recording_height: u16,
     pub shortcuts_height: u16,
     /// Clamped to the rows left over once every other row and the scrollback minimum are counted.
@@ -150,6 +152,8 @@ pub struct AgentViewLayout {
     /// Consolidated panel dock (Subagents/Tasks/Watchers/Queued) directly
     /// above the prompt; zero-area when hidden.
     pub dock: Rect,
+    /// The current model's notice, directly above the record indicator and the prompt.
+    pub model_notice: Rect,
     /// Single-row record indicator ("◉ Recording") directly above the prompt, shown only while voice capture is active.
     pub voice_recording: Rect,
     pub prompt: Rect,
@@ -188,6 +192,7 @@ impl AgentViewLayout {
             follow_ups_height,
             dock_height,
             prompt_gap,
+            model_notice_height,
             voice_recording_height,
             shortcuts_height,
             status_line_height,
@@ -262,6 +267,9 @@ impl AgentViewLayout {
         }
         if prompt_gap > 0 {
             constraints.push(Constraint::Length(prompt_gap));
+        }
+        if model_notice_height > 0 {
+            constraints.push(Constraint::Length(model_notice_height));
         }
         if voice_recording_height > 0 {
             constraints.push(Constraint::Length(voice_recording_height));
@@ -346,6 +354,11 @@ impl AgentViewLayout {
         if prompt_gap > 0 {
             chunks.next();
         }
+        let model_notice = if model_notice_height > 0 {
+            chunks.next().unwrap_or_default()
+        } else {
+            Rect::default()
+        };
         let voice_recording = if voice_recording_height > 0 {
             chunks.next().unwrap_or_default()
         } else {
@@ -394,6 +407,7 @@ impl AgentViewLayout {
             plugin_cta,
             follow_ups,
             dock,
+            model_notice,
             voice_recording,
             prompt,
             shortcuts,
@@ -2301,6 +2315,21 @@ mod tests {
             25 - 11 - 4,
             "each row above the prompt takes its own height plus the gap above it"
         );
+    }
+    #[test]
+    fn model_notice_row_sits_above_the_record_indicator_and_prompt() {
+        let layout = AgentViewLayout::compute(AgentViewLayoutParams {
+            prompt_height: 3,
+            prompt_gap: 1,
+            model_notice_height: 1,
+            voice_recording_height: 1,
+            ..base_params(Rect::new(0, 0, 80, 30))
+        });
+        assert_eq!(1, layout.model_notice.height);
+        assert_eq!(layout.voice_recording.y, layout.model_notice.y + 1);
+        assert_eq!(layout.prompt.y, layout.voice_recording.y + 1);
+        assert_eq!(layout.prompt.x, layout.model_notice.x);
+        assert_eq!(layout.prompt.width, layout.model_notice.width);
     }
     #[test]
     fn prompt_budget_excludes_the_prompts_own_requested_height() {

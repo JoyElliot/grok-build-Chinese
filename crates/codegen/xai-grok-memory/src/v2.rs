@@ -4,7 +4,7 @@
 //! workspace scope owns its topics, immutable observation inbox, archive,
 //! generated manifest, durable state database, and lexical index.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -12,19 +12,23 @@ use rusqlite::params;
 use xai_grok_tools::util::truncate_str;
 use xai_sqlite_journal::JournalMode;
 
+use crate::v2_topic_reads::{compare_observations_newest_first, compare_topics_by_use};
+
 const STATE_SCHEMA_VERSION: &str = "1";
 pub(crate) const MAX_DISCOVERED_FILES: usize = 10_000;
 pub(crate) const MAX_DIRECTORY_ENTRIES: usize = 100_000;
 const MAX_MANIFEST_BYTES: usize = 16 * 1024;
 const MAX_MANIFEST_ENTRIES: usize = 512;
-const MAX_DESCRIPTION_BYTES: usize = 512;
+/// Share of the budget titled entries may use before the slug tail starts.
+const SLUG_TAIL_TITLED_SHARE: (usize, usize) = (3, 4);
+const OMITTED_TOPICS_NOTE_RESERVE_BYTES: usize = 128;
+pub(crate) const MAX_DESCRIPTION_BYTES: usize = 512;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024;
 /// Maximum size accepted for a user-authored remember observation.
 ///
 /// This matches the per-source read budget so one manually saved observation
 /// cannot persist more content than v2 will inspect while building a manifest.
 pub const MAX_MANUAL_OBSERVATION_BYTES: usize = MAX_SOURCE_BYTES as usize;
-const MAX_HASH_VERIFIED_MANIFEST_FILES: usize = 4_096;
 /// Committed observation files not yet archived by Dream. The `REPLACE` join must
 /// keep this exact text so the expression index on `consolidation_archives` applies.
 pub(crate) const COMMITTED_UNARCHIVED_FILES_SQL: &str = "SELECT f.path, f.content_hash
@@ -88,6 +92,12 @@ pub struct V2ManifestBudget {
     pub max_bytes: usize,
     pub max_entries: usize,
     pub max_description_bytes: usize,
+    pub include_observations: bool,
+    /// Two-tier render: titled entries fill the first part of the budget, then
+    /// every remaining topic is listed by file name so the index stays complete
+    /// without a bigger budget. Topics that still do not fit are counted in a
+    /// closing line.
+    pub slug_tail: bool,
 }
 
 impl Default for V2ManifestBudget {
@@ -96,8 +106,53 @@ impl Default for V2ManifestBudget {
             max_bytes: 8 * 1024,
             max_entries: 64,
             max_description_bytes: MAX_DESCRIPTION_BYTES,
+            include_observations: true,
+            slug_tail: false,
         }
     }
+}
+
+static CONFIGURED_MANIFEST_BUDGET: std::sync::RwLock<Option<V2ManifestBudget>> =
+    std::sync::RwLock::new(None);
+
+impl V2ManifestBudget {
+    /// The budget every `MEMORY.md` writer in this process uses, so the file on
+    /// disk always matches the view injected into the prompt. Falls back to
+    /// [`Self::default`] until [`set_configured_manifest_budget`] runs.
+    pub fn configured() -> Self {
+        CONFIGURED_MANIFEST_BUDGET
+            .read()
+            .map(|guard| guard.unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    /// Titles-only topic index for the system prompt: no descriptions and no
+    /// pending observations, so the byte budget alone decides how many topics fit.
+    pub fn compact() -> Self {
+        Self {
+            max_bytes: 8 * 1024,
+            max_entries: MAX_MANIFEST_ENTRIES,
+            max_description_bytes: 0,
+            include_observations: false,
+            slug_tail: true,
+        }
+    }
+}
+
+/// Pin the process-wide manifest budget from the resolved memory-v2 config.
+pub fn set_configured_manifest_budget(budget: V2ManifestBudget) {
+    if let Ok(mut guard) = CONFIGURED_MANIFEST_BUDGET.write() {
+        *guard = Some(budget);
+    }
+}
+
+/// Manifest entries discovered by one scan of a scope, renderable under
+/// several budgets without re-reading the files.
+#[derive(Debug, Clone)]
+pub struct V2ManifestSource {
+    entries: Vec<ManifestEntry>,
+    discovered_topics: usize,
+    discovered_observations: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,7 +218,7 @@ pub fn ensure_scope_initialized_with_journal_mode(
     let manifest_path = scope_dir.join("MEMORY.md");
     reject_symlink_components(storage_root, scope_dir)?;
     reject_symlink(&manifest_path, "initialize symlinked v2 manifest")?;
-    regenerate_scope_manifest(scope_dir, scope, V2ManifestBudget::default())?;
+    regenerate_scope_manifest(scope_dir, scope, V2ManifestBudget::configured())?;
     Ok(())
 }
 
@@ -360,7 +415,12 @@ pub(crate) fn bump_manifest_revision_in_transaction(
         })
 }
 
-pub(crate) fn persist_scope_manifest(scope_dir: &Path, manifest: &V2Manifest) -> Result<()> {
+/// Atomically replace a scope's `MEMORY.md` with an already rendered manifest.
+///
+/// # Errors
+///
+/// Returns [`V2StorageError::Io`] if the replacement cannot be persisted.
+pub fn persist_scope_manifest(scope_dir: &Path, manifest: &V2Manifest) -> Result<()> {
     persist_replacing_file(&scope_dir.join("MEMORY.md"), manifest.content.as_bytes())
 }
 
@@ -374,33 +434,91 @@ pub fn render_scope_manifest(
     scope: V2MemoryScope,
     budget: V2ManifestBudget,
 ) -> Result<V2Manifest> {
+    let source = collect_scope_manifest_source(scope_dir)?;
+    Ok(render_manifest_from_source(
+        &source, scope, scope_dir, budget,
+    ))
+}
+
+/// Scan one scope's topics and inbox once so several budgets can render it.
+///
+/// # Errors
+///
+/// Returns [`V2StorageError::Io`] if a source directory cannot be enumerated.
+pub fn collect_scope_manifest_source(scope_dir: &Path) -> Result<V2ManifestSource> {
     reject_symlink(scope_dir, "render symlinked v2 memory scope")?;
+    let (mut entries, discovered_topics, discovered_observations) =
+        collect_entries(scope_dir, MAX_DESCRIPTION_BYTES)?;
+    entries.sort_by(|left, right| {
+        left.kind.cmp(&right.kind).then_with(|| match left.kind {
+            ManifestEntryKind::Topic => left.relative_path.cmp(&right.relative_path),
+            ManifestEntryKind::Observation => compare_observations_newest_first(
+                (left.modified, &left.relative_path),
+                (right.modified, &right.relative_path),
+            ),
+        })
+    });
+    Ok(V2ManifestSource {
+        entries,
+        discovered_topics,
+        discovered_observations,
+    })
+}
+
+/// Render a deterministic, bounded pointer index from an already scanned scope.
+pub fn render_manifest_from_source(
+    source: &V2ManifestSource,
+    scope: V2MemoryScope,
+    scope_dir: &Path,
+    budget: V2ManifestBudget,
+) -> V2Manifest {
     let budget = V2ManifestBudget {
         max_bytes: budget.max_bytes.min(MAX_MANIFEST_BYTES),
         max_entries: budget.max_entries.min(MAX_MANIFEST_ENTRIES),
         max_description_bytes: budget.max_description_bytes.min(MAX_DESCRIPTION_BYTES),
+        include_observations: budget.include_observations,
+        slug_tail: budget.slug_tail,
     };
-    let (mut entries, discovered_entries) =
-        collect_entries(scope_dir, budget.max_description_bytes)?;
-    // Observation files are written once, so modification time is when the
-    // note entered the inbox; newest first, path as a deterministic tiebreak.
-    entries.sort_by(|left, right| {
-        left.kind.cmp(&right.kind).then_with(|| match left.kind {
-            ManifestEntryKind::Topic => left.relative_path.cmp(&right.relative_path),
-            ManifestEntryKind::Observation => right
-                .modified
-                .cmp(&left.modified)
-                .then_with(|| right.relative_path.cmp(&left.relative_path)),
-        })
-    });
-
-    let selected_entries = entries.into_iter().take(budget.max_entries);
+    let entry_max_bytes = if budget.slug_tail {
+        budget.max_bytes * SLUG_TAIL_TITLED_SHARE.0 / SLUG_TAIL_TITLED_SHARE.1
+    } else {
+        budget.max_bytes
+    };
+    let discovered_entries = if budget.include_observations {
+        source
+            .discovered_topics
+            .saturating_add(source.discovered_observations)
+    } else {
+        source.discovered_topics
+    };
+    let mut selected_entries: Vec<&ManifestEntry> = source
+        .entries
+        .iter()
+        .filter(|entry| budget.include_observations || entry.kind == ManifestEntryKind::Topic)
+        .collect();
+    if budget.slug_tail {
+        // Most-read topics claim the titled tier; unread topics tie and keep
+        // the source's alphabetical order. Rank before the entry cap so a
+        // well-read topic late in the alphabet is never cut.
+        selected_entries.sort_by(|left, right| {
+            left.kind.cmp(&right.kind).then_with(|| match left.kind {
+                ManifestEntryKind::Topic => compare_topics_by_use(
+                    (&left.relative_path, left.read_count),
+                    (&right.relative_path, right.read_count),
+                ),
+                // Observations keep the source's newest-first order.
+                ManifestEntryKind::Observation => std::cmp::Ordering::Equal,
+            })
+        });
+    }
+    selected_entries.truncate(budget.max_entries);
     let header = manifest_header(scope, scope_dir);
     let mut content = truncate_str(&header, budget.max_bytes).to_owned();
     let was_header_limited = content.len() < header.len();
     let mut current_kind = None;
     let mut included_entries = 0;
     let mut was_byte_limited = was_header_limited;
+    let mut untitled_topics = Vec::new();
     if !was_header_limited {
         for entry in selected_entries {
             let mut addition = String::new();
@@ -413,14 +531,19 @@ pub fn render_scope_manifest(
             addition.push_str("\n- **");
             addition.push_str(&entry.title);
             addition.push_str("**");
-            if entry.kind == ManifestEntryKind::Topic && !entry.description.is_empty() {
+            let description = truncate_str(&entry.description, budget.max_description_bytes);
+            if entry.kind == ManifestEntryKind::Topic && !description.is_empty() {
                 addition.push_str(" — ");
-                addition.push_str(&entry.description);
+                addition.push_str(description);
             }
             addition.push_str(" (`");
             addition.push_str(&entry.relative_path);
             addition.push_str("`)\n");
-            if content.len().saturating_add(addition.len()) > budget.max_bytes {
+            if content.len().saturating_add(addition.len()) > entry_max_bytes {
+                if budget.slug_tail {
+                    untitled_topics.push(entry);
+                    continue;
+                }
                 was_byte_limited = true;
                 // Observations are newest first, so once one does not fit the
                 // remaining, older ones are dropped rather than back-filled.
@@ -436,19 +559,72 @@ pub fn render_scope_manifest(
     }
 
     if discovered_entries == 0 {
-        let empty = format!("{header}\nNo memory files have been recorded yet.\n");
+        let what = if budget.include_observations {
+            "memory files"
+        } else {
+            "topics"
+        };
+        let empty = format!("{header}\nNo {what} have been recorded yet.\n");
         content = truncate_str(&empty, budget.max_bytes).to_owned();
         was_byte_limited = content.len() < empty.len();
     }
 
+    if budget.slug_tail && !untitled_topics.is_empty() {
+        // Reserve room so the closing count line always fits after the tail.
+        let tail_max_bytes = budget
+            .max_bytes
+            .saturating_sub(OMITTED_TOPICS_NOTE_RESERVE_BYTES);
+        let tail_prefix = "\n## More topics\n\nBy file name under `topics/`:";
+        // Select tail members in rank order so a well-read topic is never cut
+        // in favour of an unread one; the selected slugs are then shown by
+        // name because the tail is scanned, not ranked.
+        let mut selected_slugs: Vec<&str> = Vec::new();
+        let mut tail_len = content.len() + tail_prefix.len() + 1;
+        for entry in &untitled_topics {
+            let slug = entry
+                .relative_path
+                .strip_prefix("topics/")
+                .unwrap_or(&entry.relative_path)
+                .strip_suffix(".md")
+                .unwrap_or(&entry.relative_path);
+            let separator_len = if selected_slugs.is_empty() { 1 } else { 2 };
+            if tail_len + separator_len + slug.len() > tail_max_bytes {
+                was_byte_limited = true;
+                break;
+            }
+            tail_len += separator_len + slug.len();
+            selected_slugs.push(slug);
+            included_entries += 1;
+        }
+        selected_slugs.sort_unstable();
+        let mut tail = String::from(tail_prefix);
+        let mut first = true;
+        for slug in selected_slugs {
+            tail.push_str(if first { " " } else { ", " });
+            tail.push_str(slug);
+            first = false;
+        }
+        if !first {
+            tail.push('\n');
+            content.push_str(&tail);
+        }
+        let omitted = discovered_entries.saturating_sub(included_entries);
+        if omitted > 0 {
+            let note = format!("\n{omitted} more topics are not listed.\n");
+            if content.len().saturating_add(note.len()) <= budget.max_bytes {
+                content.push_str(&note);
+            }
+        }
+    }
+
     let was_entry_limited = discovered_entries > included_entries;
 
-    Ok(V2Manifest {
+    V2Manifest {
         content,
         discovered_entries,
         included_entries,
         is_truncated: was_entry_limited || was_byte_limited,
-    })
+    }
 }
 
 fn manifest_header(scope: V2MemoryScope, scope_dir: &Path) -> String {
@@ -472,31 +648,33 @@ struct ManifestEntry {
     title: String,
     description: String,
     modified: Option<std::time::SystemTime>,
+    /// Ordinary model reads from the topic read ledger; always 0 for observations.
+    read_count: u64,
 }
 
 fn collect_entries(
     scope_dir: &Path,
     max_description_bytes: usize,
-) -> Result<(Vec<ManifestEntry>, usize)> {
+) -> Result<(Vec<ManifestEntry>, usize, usize)> {
     let mut entries = Vec::new();
-    let excluded = excluded_manifest_paths(scope_dir)?;
-    let mut discovered_entries = collect_entries_from(
+    let ledgers = state_ledgers(scope_dir)?;
+    let discovered_topics = collect_entries_from(
         scope_dir,
         Path::new("topics"),
         ManifestEntryKind::Topic,
         max_description_bytes,
-        &excluded,
+        &ledgers,
         &mut entries,
     )?;
-    discovered_entries += collect_entries_from(
+    let discovered_observations = collect_entries_from(
         scope_dir,
         Path::new("observations/_inbox"),
         ManifestEntryKind::Observation,
         max_description_bytes,
-        &excluded,
+        &ledgers,
         &mut entries,
     )?;
-    Ok((entries, discovered_entries))
+    Ok((entries, discovered_topics, discovered_observations))
 }
 
 fn collect_entries_from(
@@ -504,7 +682,7 @@ fn collect_entries_from(
     relative_dir: &Path,
     kind: ManifestEntryKind,
     max_description_bytes: usize,
-    tombstoned: &BTreeSet<String>,
+    ledgers: &V2StateLedgers,
     entries: &mut Vec<ManifestEntry>,
 ) -> Result<usize> {
     let directory = scope_dir.join(relative_dir);
@@ -561,7 +739,7 @@ fn collect_entries_from(
             Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        if tombstoned.contains(&relative_path) {
+        if ledgers.excluded.contains(&relative_path) {
             continue;
         }
         let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
@@ -580,30 +758,66 @@ fn collect_entries_from(
                     .to_owned();
                 (title, String::new())
             });
+        // Ledger keys are raw normalized paths, so look up before sanitizing.
+        let read_count = if kind == ManifestEntryKind::Topic {
+            ledgers
+                .read_counts
+                .get(&relative_path)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            0
+        };
         entries.push(ManifestEntry {
             kind,
             relative_path: sanitize_inline(&relative_path),
             title: sanitize_inline(truncate_str(&title, MAX_DESCRIPTION_BYTES)),
             description: sanitize_inline(&description),
             modified,
+            read_count,
         });
     }
     Ok(discovered_entries)
 }
 
+#[cfg(test)]
 pub(crate) fn excluded_manifest_paths(scope_dir: &Path) -> Result<BTreeSet<String>> {
     excluded_manifest_paths_with_journal_mode(scope_dir, None)
 }
 
+#[cfg(test)]
 pub(crate) fn excluded_manifest_paths_with_journal_mode(
     scope_dir: &Path,
     journal_mode: Option<JournalMode>,
 ) -> Result<BTreeSet<String>> {
+    Ok(state_ledgers_with_journal_mode(scope_dir, journal_mode)?.excluded)
+}
+
+/// Manifest-relevant state read from one scope's `memory_state.sqlite`.
+#[derive(Debug, Default)]
+pub(crate) struct V2StateLedgers {
+    /// Paths hidden from the manifest and browse: tombstones, record-only
+    /// observations, quarantined files.
+    pub(crate) excluded: BTreeSet<String>,
+    /// Ordinary model reads per topic, keyed by the raw `/`-normalized
+    /// relative path like `excluded`. A ledger failure degrades to empty
+    /// because ranking is advisory.
+    pub(crate) read_counts: BTreeMap<String, u64>,
+}
+
+pub(crate) fn state_ledgers(scope_dir: &Path) -> Result<V2StateLedgers> {
+    state_ledgers_with_journal_mode(scope_dir, None)
+}
+
+fn state_ledgers_with_journal_mode(
+    scope_dir: &Path,
+    journal_mode: Option<JournalMode>,
+) -> Result<V2StateLedgers> {
     let state_path = scope_dir.join("memory_state.sqlite");
     let journal_mode = journal_mode.unwrap_or_else(|| JournalMode::for_db_path(&state_path));
     match std::fs::symlink_metadata(journal_mode.effective_db_path(&state_path)) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(BTreeSet::new());
+            return Ok(V2StateLedgers::default());
         }
         Err(source) => {
             return Err(V2StorageError::Io {
@@ -622,6 +836,29 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
                 path: state_path.clone(),
                 source,
             })?;
+    let excluded = excluded_paths_from_state(&connection, scope_dir, &state_path)?;
+    let read_counts = match crate::v2_topic_reads::read_counts_from_state(&connection) {
+        Ok(counts) => counts,
+        Err(error) => {
+            tracing::warn!(
+                path = %state_path.display(),
+                %error,
+                "failed to read the memory topic read ledger; ranking falls back to path order"
+            );
+            BTreeMap::new()
+        }
+    };
+    Ok(V2StateLedgers {
+        excluded,
+        read_counts,
+    })
+}
+
+fn excluded_paths_from_state(
+    connection: &rusqlite::Connection,
+    scope_dir: &Path,
+    state_path: &Path,
+) -> Result<BTreeSet<String>> {
     let mut exclusion_tables = connection
         .prepare(
             "SELECT name FROM sqlite_master
@@ -639,7 +876,7 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
         })
         .map_err(|source| V2StorageError::Database {
             database: "state",
-            path: state_path.clone(),
+            path: state_path.to_path_buf(),
             source,
         })?;
     let state_schema_version = connection
@@ -650,13 +887,13 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
         )
         .map_err(|source| V2StorageError::Database {
             database: "state",
-            path: state_path.clone(),
+            path: state_path.to_path_buf(),
             source,
         })?;
     if state_schema_version == "4" && exclusion_tables.len() != 3 {
         return Err(V2StorageError::Database {
             database: "state",
-            path: state_path,
+            path: state_path.to_path_buf(),
             source: rusqlite::Error::InvalidQuery,
         });
     }
@@ -683,7 +920,7 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
                 .prepare(query)
                 .map_err(|source| V2StorageError::Database {
                     database: "state",
-                    path: state_path.clone(),
+                    path: state_path.to_path_buf(),
                     source,
                 })?;
         let paths = statement
@@ -691,7 +928,7 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
             .and_then(|rows| rows.collect::<std::result::Result<Vec<_>, _>>())
             .map_err(|source| V2StorageError::Database {
                 database: "state",
-                path: state_path.clone(),
+                path: state_path.to_path_buf(),
                 source,
             })?;
         excluded.extend(paths.into_iter().map(|path| path.replace('\\', "/")));
@@ -714,7 +951,7 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
         })
         .map_err(|source| V2StorageError::Database {
             database: "state",
-            path: state_path.clone(),
+            path: state_path.to_path_buf(),
             source,
         })?;
     if !capture_tables.contains("capture_observation_files")
@@ -727,7 +964,7 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
     if capture_tables.len() != 3 {
         return Err(V2StorageError::Database {
             database: "state",
-            path: state_path,
+            path: state_path.to_path_buf(),
             source: rusqlite::Error::InvalidQuery,
         });
     }
@@ -736,26 +973,25 @@ pub(crate) fn excluded_manifest_paths_with_journal_mode(
         .prepare(COMMITTED_UNARCHIVED_FILES_SQL)
         .map_err(|source| V2StorageError::Database {
             database: "state",
-            path: state_path.clone(),
+            path: state_path.to_path_buf(),
             source,
         })?;
+    // A negative SQLite LIMIT means no limit; rows stream, so a large backlog costs time, never memory.
     let committed = statement
-        .query_map(params![MAX_HASH_VERIFIED_MANIFEST_FILES + 1], |row| {
+        .query_map(params![-1i64], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
-        .and_then(|rows| rows.collect::<std::result::Result<Vec<_>, _>>())
         .map_err(|source| V2StorageError::Database {
             database: "state",
-            path: state_path.clone(),
+            path: state_path.to_path_buf(),
             source,
         })?;
-    if committed.len() > MAX_HASH_VERIFIED_MANIFEST_FILES {
-        return Err(V2StorageError::TooManyEntries {
-            path: state_path,
-            limit: MAX_HASH_VERIFIED_MANIFEST_FILES,
-        });
-    }
-    for (relative, expected_hash) in committed {
+    for row in committed {
+        let (relative, expected_hash) = row.map_err(|source| V2StorageError::Database {
+            database: "state",
+            path: state_path.to_path_buf(),
+            source,
+        })?;
         let relative = relative.replace('\\', "/");
         if !excluded.contains(&relative)
             && !committed_manifest_file_matches(scope_dir, &relative, &expected_hash)
@@ -876,7 +1112,10 @@ pub(crate) fn is_durably_excluded_with_journal_mode(
     Ok(false)
 }
 
-fn summarize_file(path: &Path, max_description_bytes: usize) -> std::io::Result<(String, String)> {
+pub(crate) fn summarize_file(
+    path: &Path,
+    max_description_bytes: usize,
+) -> std::io::Result<(String, String)> {
     let mut file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     std::io::Read::by_ref(&mut file)
@@ -943,7 +1182,8 @@ fn initialize_state_db(path: &Path) -> Result<()> {
                 value TEXT NOT NULL
             );",
         )
-        .and_then(|_| {
+        .and_then(|()| connection.execute_batch(crate::v2_topic_reads::TOPIC_READS_TABLE_SQL))
+        .and_then(|()| {
             connection.execute(
                 "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?1)",
                 params![STATE_SCHEMA_VERSION],

@@ -1,7 +1,7 @@
 //! Model-visible text for an MCP `tools/call` result.
 
 use xai_grok_tools::types::output::MCPOutput;
-use xai_grok_tools::util::mcp_structured_content::render_structured_content;
+use xai_tool_runtime::render_structured_content;
 
 /// Error results keep only their text blocks; both branches get [`render_structured_content`].
 pub(crate) fn mcp_output_from_call_result(

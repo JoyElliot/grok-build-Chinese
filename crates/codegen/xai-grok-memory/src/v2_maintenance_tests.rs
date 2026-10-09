@@ -125,6 +125,35 @@ fn forgetting_is_durable_and_reconciliation_cannot_resurrect_observation() {
 }
 
 #[test]
+fn forgetting_a_topic_does_not_count_as_a_read() {
+    let (_temporary, global, workspace) = fixture();
+    let topic = workspace.join("topics/rust.md");
+    std::fs::write(&topic, "# Rust\n\nNotes.").unwrap();
+    let store = V2MaintenanceStore::open(&workspace, V2MemoryScope::Workspace, &global, &workspace)
+        .unwrap();
+    store
+        .forget(&ForgetRequest {
+            relative_path: PathBuf::from("topics/rust.md"),
+            expected_content_hash: blake3::hash(b"# Rust\n\nNotes.").to_hex().to_string(),
+            reason: ForgetReason::UserRequest,
+            now: 20,
+        })
+        .unwrap();
+    assert!(!topic.exists());
+
+    let state_path = workspace.join("memory_state.sqlite");
+    let connection = JournalMode::for_db_path(&state_path)
+        .open_readonly(&state_path)
+        .unwrap();
+    let counted: i64 = connection
+        .query_row("SELECT COUNT(*) FROM memory_v2_topic_reads", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(counted, 0);
+}
+
+#[test]
 fn settled_tombstones_leave_the_manifest_alone_until_a_file_is_removed() {
     let (_temporary, global, workspace) = fixture();
     let first = capture_one_with_visibility(&workspace, "first", true);

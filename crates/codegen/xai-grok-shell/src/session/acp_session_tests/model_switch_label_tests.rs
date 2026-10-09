@@ -1,6 +1,7 @@
 use xai_grok_sampling_types::conversation::ConversationItem;
 
 use super::support::{build_actor, running_task_stub};
+use crate::session::SwitchContextWindow;
 use crate::session::compaction_config::AsyncCompactionCache;
 
 const SWITCH_TARGET_LABEL: &str = "Aurora";
@@ -38,6 +39,8 @@ async fn model_switch_relabels_live_agent_and_system_head() {
                     skip_prompt_rewrite: false,
                     auto_compact_threshold_percent: 85,
                     system_prompt_label: SWITCH_TARGET_LABEL.to_owned(),
+                    context_window_selection: SwitchContextWindow::Set(None),
+                    supported_context_windows: Vec::new(),
                 })
                 .await
                 .expect("model switch succeeds");

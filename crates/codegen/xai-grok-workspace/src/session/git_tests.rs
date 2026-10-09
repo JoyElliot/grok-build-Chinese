@@ -1660,3 +1660,118 @@ fn git_cli_filter_pin_plan_cases() {
         GitCliFilterPinPlan::Refuse
     );
 }
+
+async fn repo_with_readme(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    git_cli(&root, &["init", "-q", "-b", "main"]).await.unwrap();
+    git_cli(&root, &["config", "user.email", "t@example.com"])
+        .await
+        .unwrap();
+    git_cli(&root, &["config", "user.name", "t"]).await.unwrap();
+    std::fs::write(root.join("README.md"), body).unwrap();
+    git_cli(&root, &["add", "README.md"]).await.unwrap();
+    git_cli(&root, &["commit", "-q", "-m", "base"])
+        .await
+        .unwrap();
+    root
+}
+
+#[tokio::test]
+async fn discard_working_keeps_the_staged_edit_and_untracked_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    std::fs::write(root.join("README.md"), "STAGED").unwrap();
+    git_cli(&root, &["add", "README.md"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "WORKING").unwrap();
+    std::fs::write(root.join("untracked.txt"), "UNTRACKED").unwrap();
+    discard(&root, None, DiscardScope::Working, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "STAGED"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("untracked.txt")).unwrap(),
+        "UNTRACKED"
+    );
+}
+
+#[tokio::test]
+async fn discard_both_with_untracked_removes_the_untracked_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    std::fs::write(root.join("README.md"), "STAGED").unwrap();
+    git_cli(&root, &["add", "README.md"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "WORKING").unwrap();
+    std::fs::write(root.join("untracked.txt"), "UNTRACKED").unwrap();
+    discard(&root, None, DiscardScope::Both, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "committed\n"
+    );
+    assert!(!root.join("untracked.txt").exists());
+}
+
+#[tokio::test]
+async fn commit_with_a_failed_push_keeps_the_commit_and_warns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    let before = git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap();
+    std::fs::write(root.join("committed.txt"), "COMMITTED").unwrap();
+    git_cli(&root, &["add", "committed.txt"]).await.unwrap();
+    let result = commit(
+        &root,
+        &GitCommitReq {
+            message: "e2e commit".to_owned(),
+            push: true,
+            ..GitCommitReq::default()
+        },
+    )
+    .await
+    .unwrap();
+    let warning = result.warning.expect("a push with no remote warns");
+    assert!(
+        warning.starts_with("Couldn't push your changes"),
+        "{warning}"
+    );
+    let after = git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap();
+    assert_ne!(before.trim(), after.trim());
+    assert_eq!(
+        result.data.commit_hash.as_deref().map(str::trim),
+        Some(after.trim())
+    );
+}
+
+#[tokio::test]
+async fn checkout_commit_stashes_a_dirty_tree_only_when_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    let base = git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "SECOND").unwrap();
+    git_cli(&root, &["commit", "-qam", "second"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "DIRTY").unwrap();
+    let refused = checkout_commit_with_fetch(&root, base.trim(), false).await;
+    assert!(!refused.checked_out);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("would be overwritten")),
+        "{refused:?}"
+    );
+    let stashed = checkout_commit_with_fetch(&root, base.trim(), true).await;
+    assert!(stashed.checked_out, "{stashed:?}");
+    assert!(stashed.stashed, "{stashed:?}");
+    assert_eq!(
+        git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap().trim(),
+        base.trim()
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "committed\n"
+    );
+}

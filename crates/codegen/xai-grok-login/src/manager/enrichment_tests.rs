@@ -81,6 +81,7 @@ async fn held_log_write_neither_stalls_the_runtime_nor_freezes_the_answer() {
 async fn failed_log_write_leaves_the_answer_alone() {
     let (_server, manager, _home) = denying_server().await;
     let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(|| panic!("log sink down"));
+    let changes = manager.login_changes();
 
     let answer = TEST_LOG_HOOK
         .scope(
@@ -91,4 +92,8 @@ async fn failed_log_write_leaves_the_answer_alone() {
 
     assert_eq!(answer, Some(false));
     assert_eq!(manager.current().unwrap().can_administer_team, Some(false));
+    assert!(
+        !changes.has_changed(),
+        "a capability field is not a login change"
+    );
 }

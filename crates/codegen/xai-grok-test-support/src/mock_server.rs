@@ -1,5 +1,4 @@
-//! Mock inference server: logs every request, answers by the tiers in `inference_override`, shuts down on drop.
-
+use std::collections::BTreeSet;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -16,7 +15,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-use crate::conversation::ReadConversation;
+use crate::conversation::{ConversationId, ReadConversation};
 use crate::conversation_script::{Conversation, ScriptViolation};
 use crate::feedback_endpoint::FeedbackEndpointState;
 pub use crate::feedback_endpoint::FeedbackPost;
@@ -26,6 +25,8 @@ pub use crate::inference_override::{InferenceExpectation, InferenceRequestMatche
 use crate::inference_request::DEFAULT_MODEL;
 pub use crate::inference_request::InferenceEndpoint;
 use crate::inference_route::InferenceRoute;
+pub use crate::managed_gateway_endpoint::ManagedGatewayCall;
+use crate::managed_gateway_endpoint::ManagedGatewayEndpointState;
 use crate::mock_server_tls::ThrowawayCa;
 pub use crate::request_log::LogEntry;
 use crate::request_log::RequestLog;
@@ -33,6 +34,14 @@ pub use crate::scripted::{ScriptedBody, ScriptedResponse, SseEvent};
 use crate::storage_endpoint::StorageEndpointState;
 pub use crate::storage_endpoint::StorageUpload;
 use crate::telemetry_events::TelemetryEventsState;
+
+/// Records that arrived since the previous [`MockInferenceServer::arrived_since_observation`].
+pub struct ObservationRecords {
+    pub requests: Vec<LogEntry>,
+    pub telemetry: Vec<Value>,
+    pub storage_uploads: Vec<StorageUpload>,
+    pub gateway_calls: Vec<ManagedGatewayCall>,
+}
 
 /// A model served by `/v1/models`.
 /// Each field is emitted under its camelCase name when set, at the top level except for `agent_type`, which goes in `_meta`.
@@ -103,7 +112,6 @@ impl MockModelEntry {
     }
 
     fn to_json(&self) -> Value {
-        // `context_length` is the OpenRouter field a Responses-route daemon sizes its context by.
         let mut obj = json!({
             "id": self.id,
             "object": "model",
@@ -146,16 +154,24 @@ enum StartupFetchStall {
     Hang,
 }
 
+/// `Boot` is the placeholder `start` seeds. `Installed` is a catalog a test has written.
+#[derive(Clone)]
+enum ModelCatalog {
+    Boot(Vec<Value>),
+    Installed(Vec<Value>),
+}
+
 #[derive(Clone)]
 struct RouterState {
     log: Arc<RequestLog>,
-    models: Arc<std::sync::RwLock<Vec<Value>>>,
+    models: Arc<std::sync::RwLock<ModelCatalog>>,
     settings: Arc<std::sync::RwLock<Option<Value>>>,
     overrides: InferenceOverrides,
     inference: InferenceRoute,
     storage: Arc<StorageEndpointState>,
     feedback: Arc<FeedbackEndpointState>,
     telemetry: Arc<TelemetryEventsState>,
+    managed_gateway: Arc<ManagedGatewayEndpointState>,
     startup_fetch_stall: Arc<std::sync::RwLock<StartupFetchStall>>,
     startup_stalls_served: Arc<AtomicU32>,
     user_tier: Arc<std::sync::RwLock<Option<String>>>,
@@ -262,14 +278,15 @@ impl MockInferenceServer {
         let state = RouterState {
             inference: InferenceRoute::new(log.clone(), overrides.clone()),
             log,
-            models: Arc::new(std::sync::RwLock::new(
+            models: Arc::new(std::sync::RwLock::new(ModelCatalog::Boot(
                 models.iter().map(MockModelEntry::to_json).collect(),
-            )),
+            ))),
             settings: Arc::new(std::sync::RwLock::new(None)),
             overrides,
             storage: Arc::new(StorageEndpointState::default()),
             feedback: Arc::new(FeedbackEndpointState::default()),
             telemetry: Arc::new(TelemetryEventsState::default()),
+            managed_gateway: Arc::new(ManagedGatewayEndpointState::default()),
             startup_fetch_stall: Arc::new(std::sync::RwLock::new(StartupFetchStall::None)),
             startup_stalls_served: Arc::new(AtomicU32::new(0)),
             user_tier: Arc::new(std::sync::RwLock::new(None)),
@@ -323,13 +340,74 @@ impl MockInferenceServer {
     }
 
     pub fn set_models(&self, models: Vec<MockModelEntry>) {
+        *self.state.models.write().unwrap() =
+            ModelCatalog::Installed(models.iter().map(MockModelEntry::to_json).collect());
+    }
+
+    /// A call that names nothing leaves the catalog as it is, including the model `start` seeds.
+    /// The first call that names a model replaces that boot catalog. A later call keeps entries it
+    /// does not name, with `leading` in front and `trailing` after.
+    pub fn install_models(&self, leading: &[MockModelEntry], trailing: &[MockModelEntry]) {
+        if leading.is_empty() && trailing.is_empty() {
+            return;
+        }
         let mut guard = self.state.models.write().unwrap();
-        *guard = models.iter().map(MockModelEntry::to_json).collect();
+        let merged = match &mut *guard {
+            ModelCatalog::Installed(existing) => {
+                let named: Vec<&str> = leading
+                    .iter()
+                    .chain(trailing.iter())
+                    .map(|entry| entry.id.as_str())
+                    .collect();
+                let kept: Vec<Value> = existing
+                    .iter()
+                    .filter(|model| match model.get("id").and_then(Value::as_str) {
+                        Some(id) => !named.contains(&id),
+                        None => true,
+                    })
+                    .cloned()
+                    .collect();
+                leading
+                    .iter()
+                    .map(MockModelEntry::to_json)
+                    .chain(kept)
+                    .chain(trailing.iter().map(MockModelEntry::to_json))
+                    .collect()
+            }
+            ModelCatalog::Boot(_) => leading
+                .iter()
+                .chain(trailing.iter())
+                .map(MockModelEntry::to_json)
+                .collect(),
+        };
+        *guard = ModelCatalog::Installed(merged);
     }
 
     /// Stream this text instead of echoing. Deltas reconstruct it byte for byte.
     pub fn set_response(&self, text: impl Into<String>) {
         self.state.inference.set_response(text.into());
+    }
+
+    pub fn set_auxiliary_hold(&self) {
+        self.state.inference.set_auxiliary_hold();
+    }
+
+    /// Park the next foreground reply, including a tool call, until [`Self::release_parked_replies`].
+    pub fn set_foreground_hold(&self) {
+        self.state.inference.set_foreground_hold();
+    }
+
+    /// Park the next auxiliary whose `x-grok-req-id` starts with `prefix`.
+    /// An auxiliary with a different id leaves the hold armed.
+    pub fn set_auxiliary_hold_matching(&self, prefix: impl Into<String>) {
+        self.state.inference.set_auxiliary_hold_matching(prefix);
+    }
+
+    pub async fn wait_until_parked_replies(&self, at_least: usize) {
+        self.state
+            .overrides
+            .wait_until_parked_replies(at_least)
+            .await;
     }
 
     /// Consumed FIFO per `path`, e.g. `"/v1/chat/completions"`.
@@ -379,7 +457,7 @@ impl MockInferenceServer {
             .set_agent_turns(turns.into_iter().collect());
     }
 
-    /// Replaces earlier conversations; one not served through stays reported.
+    /// Replaces earlier conversations and restarts each script. One not served through stays reported.
     pub fn set_conversations(&self, conversations: impl IntoIterator<Item = Conversation>) {
         self.state
             .overrides
@@ -419,7 +497,6 @@ impl MockInferenceServer {
         self.state.inference.conversations()
     }
 
-    /// `None` until the mock has opened that many conversations.
     #[must_use]
     pub fn conversation(&self, number: usize) -> Option<ReadConversation> {
         self.conversations()
@@ -449,7 +526,6 @@ impl MockInferenceServer {
         self.set_settings(json!({ "allow_access": true }));
     }
 
-    /// Stand in for a black-holed backend.
     pub fn set_hang(&self, hang: bool) {
         *self.state.startup_fetch_stall.write().unwrap() = if hang {
             StartupFetchStall::Hang
@@ -517,7 +593,6 @@ impl MockInferenceServer {
         );
     }
 
-    /// Defaults to `"end_turn"`.
     pub fn set_messages_stop_reason(&self, stop_reason: impl Into<String>) {
         self.state
             .inference
@@ -537,18 +612,116 @@ impl MockInferenceServer {
         self.state.overrides.hold_completions();
     }
 
-    /// Let held and future agent turns emit their terminal event.
+    /// Arms the reply hold. Cancel and drop both release it.
+    pub fn arm_reply_hold(&self) -> crate::inference_override::ArmedReplyHold {
+        self.state.overrides.arm_reply_hold()
+    }
+
+    /// Later [`SseEvent::hold`] markers each wait for one [`Self::release_one_chunk`].
+    /// The completion gate is left as it was.
+    pub fn arm_chunk_release(&self) {
+        self.state.overrides.arm_chunk_release();
+    }
+
+    pub fn release_one_chunk(&self) {
+        self.state.overrides.release_one_chunk();
+    }
+
+    /// Let every held SSE chunk still waiting through, and leave later holds on the completion gate.
+    pub fn release_remaining_chunks(&self) {
+        self.state.overrides.release_remaining_chunks();
+    }
+
+    /// Other conversations stream.
+    pub fn hold_only_conversation(&self, conversation: usize) {
+        self.state.overrides.hold_only_conversation(conversation);
+    }
+
     pub fn release_agent_completions(&self) {
         self.state.overrides.release_completions();
     }
 
-    /// e.g. `http://127.0.0.1:12345/v1` (`https://` for [`Self::start_tls`])
+    /// Hold the terminal SSE event of every foreground reply in `conversation`, counted from 1, until
+    /// [`Self::release_conversation`], so one session's turn stays in flight while others finish.
+    pub fn hold_conversation(&self, conversation: usize) {
+        self.state
+            .overrides
+            .hold_conversation(ConversationId::nth(conversation));
+    }
+
+    pub fn release_conversation(&self, conversation: usize) {
+        self.state
+            .overrides
+            .release_conversation(ConversationId::nth(conversation));
+    }
+
+    /// Resolves once `n` replies for `conversation` (counted from 1) are parked.
+    pub async fn wait_until_parked_replies_for(&self, conversation: usize, at_least: usize) {
+        self.state
+            .overrides
+            .wait_until_parked_replies_for(conversation, at_least)
+            .await;
+    }
+
+    /// Resolves once `n` auxiliaries have parked under [`Self::set_auxiliary_hold_matching`].
+    pub async fn wait_until_matching_parked(&self, at_least: usize) {
+        self.state
+            .overrides
+            .wait_until_matching_parked(at_least)
+            .await;
+    }
+
+    /// Lets a scripted reply parked with `hold` finish before the mock shuts down.
+    pub fn release_parked_replies(&self) {
+        self.state.overrides.release_parked_replies();
+    }
+
+    /// A park that [`Self::release_scripted_park`] releases. The shutdown latch does not arm it.
+    pub fn arm_scripted_park(&self) -> u64 {
+        self.state.overrides.arm_scripted_park()
+    }
+
+    /// Let the reply parked under `token` finish. Other parks stay held.
+    pub fn release_scripted_park(&self, token: u64) {
+        self.state.overrides.release_scripted_park(token);
+    }
+
+    pub async fn wait_until_scripted_park(&self, token: u64) {
+        self.state.overrides.wait_until_scripted_park(token).await;
+    }
+
+    /// Lets parked auxiliary replies finish. Foreground holds stay parked.
+    pub fn release_auxiliary_replies(&self) {
+        self.state.overrides.release_auxiliary_replies();
+    }
+
+    /// Resolves once `n` foreground inference requests are logged (1 is the first). Panics after 30s.
+    pub async fn wait_for_inference_requests(&self, n: usize) {
+        let mut arrivals = self.state.log.subscribe_inference();
+        let waited = tokio::time::timeout(
+            crate::scaled(Duration::from_secs(30)),
+            arrivals.wait_for(|count| *count >= n),
+        )
+        .await;
+        assert!(
+            waited.is_ok(),
+            "expected {n} foreground inference requests, saw {} within 30s",
+            self.state.log.inference_count()
+        );
+    }
+
+    pub fn agent_completion_parked(&self) -> bool {
+        self.state.overrides.agent_completion_parked()
+    }
+
+    pub async fn wait_until_a_reply_is_held(&self) {
+        self.state.overrides.wait_until_a_reply_is_held().await;
+    }
+
     pub fn url(&self) -> String {
         format!("{}://{}/v1", self.scheme(), self.addr)
     }
 
-    /// Scheme and host without the `/v1` inference prefix (`http://127.0.0.1:PORT`, or `https://`
-    /// for [`Self::start_tls`]).
     pub fn origin(&self) -> String {
         format!("{}://{}", self.scheme(), self.addr)
     }
@@ -561,7 +734,6 @@ impl MockInferenceServer {
         }
     }
 
-    /// Path to the throwaway CA PEM a client must trust; `None` for a plain-HTTP server.
     pub fn ca_pem_path(&self) -> Option<&Path> {
         self.tls_ca.as_ref().map(ThrowawayCa::pem_path)
     }
@@ -579,8 +751,40 @@ impl MockInferenceServer {
         self.state.log.set_keep_entries(enabled);
     }
 
+    /// Without this, inference logs keep only the parsed body.
+    pub fn set_capture_request_bytes(&self, enabled: bool) {
+        self.state.log.set_capture_request_bytes(enabled);
+    }
+
+    #[must_use]
+    pub fn replies_served(&self, conversation: usize) -> usize {
+        self.state
+            .overrides
+            .conversation_scripts()
+            .replies_served(conversation)
+    }
+
+    /// Turns this conversation has already answered, by script index.
+    #[must_use]
+    pub fn answered_turns(&self, conversation: usize) -> BTreeSet<usize> {
+        self.state
+            .overrides
+            .conversation_scripts()
+            .answered_turns(conversation)
+    }
+
     pub fn requests(&self) -> Vec<LogEntry> {
         self.state.log.entries()
+    }
+
+    /// What arrived since the previous observation. The full-log getters stay complete.
+    pub fn arrived_since_observation(&self) -> ObservationRecords {
+        ObservationRecords {
+            requests: self.state.log.take_for_observation(),
+            telemetry: self.state.telemetry.take_for_observation(),
+            storage_uploads: self.state.storage.take_for_observation(),
+            gateway_calls: self.state.managed_gateway.take_for_observation(),
+        }
     }
 
     /// Bodies of all received requests, in arrival order (body-less requests such as `GET /v1/models` are skipped).
@@ -596,17 +800,14 @@ impl MockInferenceServer {
         self.state.log.has_path_containing("responses")
     }
 
-    /// Number of `POST /v1/messages` requests received so far.
     pub fn messages_request_count(&self) -> usize {
         self.state.log.count_for("/v1/messages")
     }
 
-    /// Format the request log for diagnostic output on test failures.
     pub fn request_log_summary(&self) -> String {
         self.state.log.summary()
     }
 
-    /// Get the system prompt from the most recent inference request.
     pub fn last_system_prompt(&self) -> Option<String> {
         self.state.log.last_system_prompt()
     }
@@ -641,6 +842,16 @@ impl MockInferenceServer {
         self.state.telemetry.events()
     }
 
+    /// Serves `catalog` on `GET /v1/mcp/tools/list` and answers every `POST /v1/mcp/tools/call`
+    /// with `call_result` as its `result`; both routes 404 until this is called.
+    pub fn set_managed_gateway(&self, catalog: Value, call_result: Value) {
+        self.state.managed_gateway.set_script(catalog, call_result);
+    }
+
+    pub fn managed_gateway_calls(&self) -> Vec<ManagedGatewayCall> {
+        self.state.managed_gateway.calls()
+    }
+
     fn build_router(state: RouterState) -> Router {
         Router::new()
             .route(
@@ -656,15 +867,55 @@ impl MockInferenceServer {
                 state.inference.handler(InferenceEndpoint::Messages),
             )
             .route(
+                "/v1/images/generations",
+                post({
+                    let state = state.clone();
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let state = state.clone();
+                        async move {
+                            state
+                                .log
+                                .record("POST", "/v1/images/generations", &body, &headers);
+                            Json(json!({ "data": [ { "b64_json": "" } ] })).into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/videos/generations",
+                post({
+                    let state = state.clone();
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let state = state.clone();
+                        async move {
+                            state
+                                .log
+                                .record("POST", "/v1/videos/generations", &body, &headers);
+                            Json(json!({ "request_id": "media-1" })).into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
                 "/v1/models",
                 get({
                     let state = state.clone();
-                    move || {
+                    move |headers: HeaderMap| {
                         let state = state.clone();
                         async move {
-                            state.log.record_get("/v1/models");
+                            state.log.record_get_with_authorization(
+                                "/v1/models",
+                                headers
+                                    .get("authorization")
+                                    .and_then(|value| value.to_str().ok())
+                                    .map(str::to_owned),
+                            );
                             state.stall_startup_fetch().await;
-                            let models_json = state.models.read().unwrap().clone();
+                            let models_json = match &*state.models.read().unwrap() {
+                                ModelCatalog::Boot(entries) | ModelCatalog::Installed(entries) => {
+                                    entries.clone()
+                                }
+                            };
                             Json(json!({
                                 "object": "list",
                                 "data": models_json,
@@ -704,16 +955,31 @@ impl MockInferenceServer {
                         async move {
                             let path = "/v1/privacy/coding-data-retention";
                             state.log.record("PUT", path, &body, &headers);
-                            // Lets a test refuse the write
                             if let Some(s) = state.overrides.pop_scripted(path) {
                                 return s.into_response_paced(None, None).await;
                             }
-                            // Echo the received flag back like the real cli-chat-proxy does on success
                             let opt_out = body
                                 .get("codingDataRetentionOptOut")
                                 .cloned()
                                 .unwrap_or(Value::Bool(false));
                             Json(json!({ "codingDataRetentionOptOut": opt_out })).into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/consent/accept",
+                post({
+                    let state = state.clone();
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let state = state.clone();
+                        async move {
+                            let path = "/v1/consent/accept";
+                            state.log.record("POST", path, &body, &headers);
+                            if let Some(s) = state.overrides.pop_scripted(path) {
+                                return s.into_response_paced(None, None).await;
+                            }
+                            Json(body).into_response()
                         }
                     }
                 }),
@@ -819,8 +1085,6 @@ impl MockInferenceServer {
                     }
                 }),
             )
-            // The shell POSTs `{GROK_FEEDBACK_BASE_URL}/feedback`, and the sandbox points that base at `url()` (which ends in `/v1`)
-            // `/v1/feedback/{config,requests}` are deliberately unrouted: the shell treats their 404 as an old proxy
             .route(
                 "/v1/feedback",
                 post({
@@ -831,7 +1095,6 @@ impl MockInferenceServer {
                     }
                 }),
             )
-            // Product telemetry POSTs `GROK_TELEMETRY_EVENTS_URL` verbatim; tests point it at `{url()}/events`
             .route(
                 "/v1/events",
                 post({
@@ -839,6 +1102,34 @@ impl MockInferenceServer {
                     move |body: axum::body::Bytes| {
                         let telemetry = telemetry.clone();
                         async move { telemetry.handle(&body) }
+                    }
+                }),
+            )
+            .route(
+                "/v1/mcp/tools/list",
+                get({
+                    let state = state.clone();
+                    move || {
+                        let state = state.clone();
+                        async move {
+                            state.log.record_get("/v1/mcp/tools/list");
+                            state.managed_gateway.list()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/mcp/tools/call",
+                post({
+                    let state = state.clone();
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let state = state.clone();
+                        async move {
+                            state
+                                .log
+                                .record("POST", "/v1/mcp/tools/call", &body, &headers);
+                            state.managed_gateway.call(&headers, &body)
+                        }
                     }
                 }),
             )
@@ -863,7 +1154,6 @@ impl MockInferenceServer {
                 "/v1/storage/limits",
                 get(|| async { StatusCode::NOT_FOUND }),
             )
-            // Body limit: repo-context archives can exceed axum's 2 MB default.
             .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
     }
 }
@@ -878,6 +1168,8 @@ fn lines<T: fmt::Display>(items: &[T]) -> String {
 
 impl Drop for MockInferenceServer {
     fn drop(&mut self) {
+        self.state.overrides.release_parked_replies();
+        self.state.overrides.release_completions();
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }

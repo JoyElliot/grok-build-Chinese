@@ -510,6 +510,7 @@ async fn acp_clients_are_not_liveness_watched() {
             url: "http://localhost/api/mcp".to_string(),
             headers: vec![],
             local_agent_endpoint: false,
+            ..HttpConfig::default()
         },
         None,
         None,
@@ -761,6 +762,7 @@ fn test_tool_timeout_for_returns_per_tool_override() {
             url: String::new(),
             headers: vec![],
             local_agent_endpoint: false,
+            ..HttpConfig::default()
         },
         Some(&overrides),
         None,
@@ -785,6 +787,7 @@ fn test_tool_timeout_for_empty_map_returns_default() {
             url: String::new(),
             headers: vec![],
             local_agent_endpoint: false,
+            ..HttpConfig::default()
         },
         Some(&overrides),
         None,
@@ -1545,6 +1548,7 @@ async fn recover_and_retry_surfaces_original_error_when_recover_fails() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         startup_timeout_sec: Some(1),
@@ -1579,6 +1583,7 @@ async fn recover_and_retry_surfaces_original_error_when_recover_fails() {
     let err = tool
         .recover_and_retry(
             &client,
+            &client.request_tracker.begin_request(),
             params,
             std::time::Duration::from_secs(1),
             1,
@@ -1649,6 +1654,8 @@ struct FakeMcpHandles {
     /// When set, replaces `FakeMcpOptions::discover` for later probes, so a test can turn a
     /// legacy server modern between a handshake and a recovery.
     discover_override: Arc<parking_lot::Mutex<Option<DiscoverBehavior>>>,
+    /// `Authorization` header of every POST, in arrival order.
+    authorizations: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 fn header_values(
@@ -1683,6 +1690,7 @@ struct FakeMcpOptions {
     init_unauthorized: bool,
     /// When set, `tools/list` never answers: the server connects, then stalls.
     list_tools_hangs: bool,
+    hold_initialize: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Clone)]
@@ -1698,6 +1706,11 @@ async fn fake_handle_post(
     axum::Json(req): axum::Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    state
+        .handles
+        .authorizations
+        .lock()
+        .extend(header_values(&headers, axum::http::header::AUTHORIZATION));
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let params = req.get("params");
     let ok = || {
@@ -1716,7 +1729,15 @@ async fn fake_handle_post(
     };
     match req.get("method").and_then(|m| m.as_str()) {
         Some("initialize") => {
-            state.handles.inits.fetch_add(1, Ordering::Relaxed);
+            if let Some(release) = &state.options.hold_initialize {
+                let notified = release.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                state.handles.inits.fetch_add(1, Ordering::Relaxed);
+                notified.await;
+            } else {
+                state.handles.inits.fetch_add(1, Ordering::Relaxed);
+            }
             *state.handles.init_version.lock() = params
                 .and_then(|p| p.get("protocolVersion"))
                 .and_then(|v| v.as_str())
@@ -2028,6 +2049,7 @@ async fn spawn_fake_mcp_with(
         call_bodies: Arc::new(parking_lot::Mutex::new(Vec::new())),
         call_version_headers: Arc::new(parking_lot::Mutex::new(Vec::new())),
         discover_override: Arc::new(parking_lot::Mutex::new(None)),
+        authorizations: Arc::new(parking_lot::Mutex::new(Vec::new())),
     };
     let app = axum::Router::new()
         .route(
@@ -2084,6 +2106,7 @@ fn fake_http_client_with_overrides(
             url: url.to_string(),
             headers: vec![],
             local_agent_endpoint: false,
+            ..HttpConfig::default()
         },
         Some(&overrides),
         None,
@@ -2108,6 +2131,52 @@ fn event_types(jsonl: &str) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn overlapping_ensure_initialized_sends_one_initialize() {
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (url, handles) = spawn_fake_mcp_with(
+        CallToolBehavior::HangThenOk { hang_ms: 0 },
+        FakeMcpOptions {
+            hold_initialize: Some(Arc::clone(&release)),
+            ..FakeMcpOptions::default()
+        },
+    )
+    .await;
+    let client = fake_http_client(&url, 5);
+    let entered = Arc::new(AtomicUsize::new(0));
+    let first_client = Arc::clone(&client);
+    let second_client = Arc::clone(&client);
+    let first_entered = Arc::clone(&entered);
+    let second_entered = Arc::clone(&entered);
+    let first = tokio::spawn(async move {
+        first_entered.fetch_add(1, Ordering::Relaxed);
+        first_client.ensure_initialized().await
+    });
+    let second = tokio::spawn(async move {
+        second_entered.fetch_add(1, Ordering::Relaxed);
+        second_client.ensure_initialized().await
+    });
+    let inits = Arc::clone(&handles.inits);
+    let releaser = tokio::spawn(async move {
+        loop {
+            if entered.load(Ordering::Relaxed) == 2 && inits.load(Ordering::Relaxed) >= 1 {
+                for _ in 0..64 {
+                    tokio::task::yield_now().await;
+                }
+                release.notify_waiters();
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let first = first.await.expect("first task");
+    let second = second.await.expect("second task");
+    releaser.await.expect("releaser");
+    assert_eq!(1, handles.inits.load(Ordering::Relaxed));
+    first.expect("first handshake");
+    second.expect("second handshake");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2477,6 +2546,140 @@ async fn handshake_negotiates_modern_discover_without_initialize() {
     );
 }
 
+/// A token rotated on disk between calls reaches the server without a reconnect and replaces a
+/// static `Authorization` header; once the file is gone, the call fails naming it.
+#[tokio::test(flavor = "multi_thread")]
+async fn bearer_token_file_is_reread_on_every_request() {
+    let (url, handles) = spawn_fake_mcp(CallToolBehavior::HangThenOk { hang_ms: 0 }).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let token_path = dir.path().join("token");
+    std::fs::write(&token_path, "tok-1\n").expect("write token");
+    let overrides = McpClientTimeoutOverrides {
+        startup_timeout_sec: Some(5),
+        tool_timeout_sec: Some(5),
+        ..Default::default()
+    };
+    let client = Arc::new(McpClient::new_http(
+        "fake".to_owned(),
+        HttpConfig {
+            url,
+            headers: vec![("Authorization".to_owned(), "Bearer static".to_owned())],
+            bearer_token_file: Some(BearerTokenFile::new(
+                BearerTokenPath::try_from(token_path.clone()).expect("absolute path"),
+            )),
+            ..HttpConfig::default()
+        },
+        Some(&overrides),
+        None,
+    ));
+    client.ensure_initialized().await.expect("handshake");
+
+    let tool = fake_echo_tool();
+    let ew = xai_grok_session_events::EventWriter::noop();
+    let call = || async {
+        let mut reconnect = false;
+        let mut is_timeout = false;
+        let result = tool
+            .try_call_tool(
+                &client,
+                &serde_json::json!({}),
+                &mut reconnect,
+                &mut is_timeout,
+                &ew,
+                &tracing::Span::none(),
+            )
+            .await;
+        (result, reconnect)
+    };
+    let (first, reconnect) = call().await;
+    first.expect("tools/call succeeds");
+    std::fs::write(&token_path, "tok-2").expect("rotate token");
+    let (second, reconnect_after_rotation) = call().await;
+    second.expect("tools/call succeeds after rotation");
+    assert!(
+        !reconnect && !reconnect_after_rotation,
+        "rotation must not need a reconnect"
+    );
+
+    let authorizations = handles.authorizations.lock().clone();
+    assert_eq!(
+        Some("Bearer tok-2"),
+        authorizations.last().map(String::as_str),
+        "{authorizations:?}"
+    );
+    assert!(
+        authorizations
+            .iter()
+            .all(|value| value == "Bearer tok-1" || value == "Bearer tok-2"),
+        "every request carries exactly the file token: {authorizations:?}"
+    );
+    assert!(
+        authorizations.iter().any(|value| value == "Bearer tok-1"),
+        "{authorizations:?}"
+    );
+
+    std::fs::remove_file(&token_path).expect("remove token");
+    let (removed, _) = call().await;
+    let error = removed.expect_err("tools/call fails without its token file");
+    assert!(
+        error
+            .to_string()
+            .contains(&token_path.display().to_string()),
+        "{error}"
+    );
+}
+
+/// A server whose only credential is a token file skips OAuth discovery entirely, over both
+/// HTTP and SSE, even when the caller asks for network discovery.
+#[tokio::test(flavor = "multi_thread")]
+async fn token_file_only_server_skips_network_discovery() {
+    let (url, counter) = spawn_counting_http_server().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let token_path = dir.path().join("token");
+    let event_writer = xai_grok_session_events::EventWriter::noop();
+    let ctx = session_test_ctx(&event_writer).with_oauth_discovery(McpOauthDiscovery::Network);
+
+    for transport in ["http", "sse"] {
+        let config: xai_grok_config::McpServerConfig = serde_json::from_value(serde_json::json!({
+            "type": transport,
+            "url": url,
+            "bearer_token_file": token_path,
+        }))
+        .expect("server config parses");
+        let server = config.to_acp_mcp_server("fake").expect("enabled server");
+
+        let client = start_mcp_server(server, None, None, None, &ctx)
+            .await
+            .expect("token-file client");
+
+        assert!(client.has_configured_auth(), "{transport}");
+        assert!(!client.has_auth(), "{transport}: no OAuth manager");
+    }
+    assert_eq!(0, counter.load(Ordering::SeqCst), "no discovery requests");
+}
+
+/// A token file path that does not parse fails the server rather than dropping its credential.
+#[tokio::test]
+async fn relative_token_file_fails_the_server() {
+    let event_writer = xai_grok_session_events::EventWriter::noop();
+    let config: xai_grok_config::McpServerConfig = serde_json::from_value(serde_json::json!({
+        "url": "http://127.0.0.1:9/mcp",
+        "bearer_token_file": "token",
+    }))
+    .expect("server config parses");
+    let server = config.to_acp_mcp_server("fake").expect("enabled server");
+
+    let error =
+        match start_mcp_server(server, None, None, None, &session_test_ctx(&event_writer)).await {
+            Ok(_) => panic!("a relative token file must fail the server"),
+            Err(error) => error,
+        };
+    assert!(
+        error.to_string().contains("must be an absolute or ~/ path"),
+        "{error}"
+    );
+}
+
 /// `io.modelcontextprotocol/*` keys in a request body's `params._meta`, sorted.
 fn reserved_meta_keys(body: &serde_json::Value) -> Vec<String> {
     let mut keys: Vec<String> = body
@@ -2709,6 +2912,7 @@ async fn probe_connect_failure_surfaces_instead_of_legacy_fallback() {
         url: url.clone(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let http_client = McpClient::build_http_client(
         &config,
@@ -2765,6 +2969,48 @@ fn max_startup_within_deadline_fits_the_probe_phase() {
     for deadline in 0..McpClient::MIN_HANDSHAKE_DEADLINE_SECS {
         assert_eq!(budget(deadline), McpClient::MIN_HANDSHAKE_DEADLINE_SECS);
     }
+}
+
+/// The refusal note leads the result even though the fake server's retry reports success.
+#[tokio::test(flavor = "multi_thread")]
+async fn mrtr_declined_elicitation_is_noted_ahead_of_the_call_result() {
+    use crate::elicitation::{ElicitationRefusal, decline_result, refusal_note};
+    use rmcp::model::ContentBlock;
+    let (url, _handles) = spawn_fake_mcp(CallToolBehavior::FormElicitThenOk).await;
+    let client = fake_http_client(&url, 5);
+    let inbox = crate::elicitation::ElicitationInbox::new();
+    client.set_elicitation_tx(Some(inbox.clone()));
+
+    let decline = tokio::spawn(async move {
+        let job = inbox
+            .recv()
+            .await
+            .expect("elicitation job reaches the inbox");
+        let _ = job.response_tx.send(decline_result());
+    });
+    let ew = xai_grok_session_events::EventWriter::noop();
+    let mut reconnect = false;
+    let mut is_timeout = false;
+    let out = fake_echo_tool()
+        .try_call_tool(
+            &client,
+            &serde_json::json!({"q": 1}),
+            &mut reconnect,
+            &mut is_timeout,
+            &ew,
+            &tracing::Span::none(),
+        )
+        .await
+        .expect("tool call completes after the MRTR round");
+    decline.await.unwrap();
+
+    assert_eq!(
+        vec![
+            ContentBlock::text(refusal_note("fake", ElicitationRefusal::Declined)),
+            ContentBlock::text("ok"),
+        ],
+        out.content
+    );
 }
 
 /// End-to-end SEP-2322 form flow against the wire-level fake server:
@@ -2892,6 +3138,49 @@ async fn try_call_tool_mrtr_form_elicitation_round_trip() {
             .and_then(|q| q.as_i64()),
         Some(1),
         "retry must re-send the original arguments"
+    );
+}
+
+/// The recovered re-send still carries the declined answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn mrtr_declined_elicitation_is_noted_after_transport_recovery() {
+    use crate::elicitation::{ElicitationRefusal, decline_result, refusal_note};
+    use rmcp::model::ContentBlock;
+    let (url, _handles) = spawn_fake_mcp(CallToolBehavior::FormElicitThenErrorThenOk).await;
+    let client = fake_http_client(&url, 5);
+    let inbox = crate::elicitation::ElicitationInbox::new();
+    client.set_elicitation_tx(Some(inbox.clone()));
+
+    let decline = tokio::spawn(async move {
+        let job = inbox
+            .recv()
+            .await
+            .expect("elicitation job reaches the inbox");
+        let _ = job.response_tx.send(decline_result());
+    });
+    let ew = xai_grok_session_events::EventWriter::noop();
+    let mut reconnect = false;
+    let mut is_timeout = false;
+    let out = fake_echo_tool()
+        .try_call_tool(
+            &client,
+            &serde_json::json!({}),
+            &mut reconnect,
+            &mut is_timeout,
+            &ew,
+            &tracing::Span::none(),
+        )
+        .await
+        .expect("tool call completes after recovery");
+    decline.await.unwrap();
+
+    assert!(reconnect, "the failed retry must trigger recovery");
+    assert_eq!(
+        vec![
+            ContentBlock::text(refusal_note("fake", ElicitationRefusal::Declined)),
+            ContentBlock::text("ok"),
+        ],
+        out.content
     );
 }
 
@@ -3215,6 +3504,7 @@ async fn test_reset_transport_succeeds_for_http_client() {
         url: "http://127.0.0.1:9/api/mcp".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let client = McpClient::new_http("example-mcp".to_string(), config, None, None);
     assert!(client.reset_transport().await);
@@ -3232,6 +3522,7 @@ async fn test_reset_transport_is_idempotent() {
         url: "http://127.0.0.1:9/api/mcp".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let client = McpClient::new_http("example-mcp".to_string(), config, None, None);
 
@@ -3246,6 +3537,7 @@ async fn test_reset_transport_makes_ensure_initialized_retry_handshake() {
         url: "http://127.0.0.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let client = McpClient::new_http("test".to_string(), config, None, None);
 
@@ -3406,6 +3698,8 @@ async fn try_call_tool_reconnects_then_succeeds_after_retriable_transport_error(
             server_name: "dead".to_string(),
             notify_tx: Arc::new(parking_lot::Mutex::new(None)),
             elicitation_tx: Arc::new(parking_lot::Mutex::new(None)),
+            request_tracker: Arc::default(),
+            service_id: crate::elicitation::RequestTracker::default().next_service_id(),
         };
         let transport = rmcp::transport::async_rw::AsyncRwTransport::<RoleClient, _, _>::new(
             client_read,
@@ -3526,6 +3820,8 @@ async fn watched_live_client(name: &str) -> Arc<McpClient> {
         server_name: name.to_string(),
         notify_tx: Arc::new(parking_lot::Mutex::new(None)),
         elicitation_tx: Arc::new(parking_lot::Mutex::new(None)),
+        request_tracker: Arc::default(),
+        service_id: crate::elicitation::RequestTracker::default().next_service_id(),
     };
     let transport = rmcp::transport::async_rw::AsyncRwTransport::<RoleClient, _, _>::new(
         client_read,
@@ -3544,6 +3840,7 @@ async fn watched_live_client(name: &str) -> Arc<McpClient> {
             url: "http://127.0.0.1:0/".to_string(),
             headers: Vec::new(),
             local_agent_endpoint: false,
+            ..HttpConfig::default()
         },
         None,
         None,
@@ -3871,6 +4168,7 @@ fn new_http_propagates_expose_image_base64_override_to_getter() {
         url: "http://localhost/api/mcp".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         expose_image_base64: Some(true),
@@ -3911,6 +4209,7 @@ async fn ensure_initialized_concurrent_callers_never_see_legacy_fast_fail() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         startup_timeout_sec: Some(1),
@@ -3953,6 +4252,7 @@ async fn ensure_initialized_parked_caller_retries_after_notify() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         startup_timeout_sec: Some(1),
@@ -4003,6 +4303,7 @@ async fn ensure_initialized_inflight_wait_times_out_when_holder_silent() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         startup_timeout_sec: Some(0),
@@ -4030,6 +4331,7 @@ async fn ensure_initialized_drop_guard_restores_state_after_holder_aborted() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         startup_timeout_sec: Some(10),
@@ -4168,6 +4470,7 @@ async fn is_healthy_pending_returns_false() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let client = McpClient::new_http("pending".to_string(), config, None, None);
     assert!(matches!(
@@ -4192,6 +4495,7 @@ async fn is_healthy_pending_does_not_block_on_handshake() {
         url: "http://192.0.2.1:1/unreachable".to_string(),
         headers: vec![],
         local_agent_endpoint: false,
+        ..HttpConfig::default()
     };
     let overrides = McpClientTimeoutOverrides {
         startup_timeout_sec: Some(10),
@@ -4309,6 +4613,8 @@ async fn client_handler_routes_tools_changed() {
         server_name: "test".to_string(),
         notify_tx: Arc::new(parking_lot::Mutex::new(Some(tx))),
         elicitation_tx: Arc::new(parking_lot::Mutex::new(None)),
+        request_tracker: Arc::default(),
+        service_id: crate::elicitation::RequestTracker::default().next_service_id(),
     };
     handler.emit(McpClientEvent::ToolsChanged {
         server: handler.server_name.clone(),
@@ -5304,6 +5610,8 @@ async fn recording_service(
         server_name: "recording".to_string(),
         notify_tx: Arc::new(parking_lot::Mutex::new(None)),
         elicitation_tx: Arc::new(parking_lot::Mutex::new(None)),
+        request_tracker: Arc::default(),
+        service_id: crate::elicitation::RequestTracker::default().next_service_id(),
     };
     let transport = rmcp::transport::async_rw::AsyncRwTransport::<RoleClient, _, _>::new(
         client_read,
@@ -5339,22 +5647,31 @@ fn messages_with_method(
         .collect()
 }
 
-#[tokio::test]
-async fn dropped_tool_call_sends_one_cancellation_for_its_request() {
-    let (service, received) = recording_service(/* reply */ false).await;
-    let params = CallToolRequestParams::new("slow");
+/// A `tools/call` the recording server has received and will never answer.
+async fn pending_call(
+    service: &McpService,
+    timeout: Option<std::time::Duration>,
+) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, ServiceError>> {
     let mut call = Box::pin(call_tool_cancel_aware(
-        &service,
-        params,
-        std::time::Duration::from_secs(30),
+        service,
+        CallToolRequestParams::new("slow"),
+        timeout,
     ));
-    // Let the request go out, then abandon it the way an aborted turn does.
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), &mut call)
             .await
             .is_err(),
         "the server never replies, so the call must still be pending"
     );
+    call
+}
+
+#[tokio::test]
+async fn dropped_tool_call_sends_one_cancellation_for_its_request() {
+    let (service, received) = recording_service(/* reply */ false).await;
+    let call = pending_call(&service, Some(std::time::Duration::from_secs(30))).await;
+
+    // An aborted turn drops its call the same way
     drop(call);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -5368,12 +5685,32 @@ async fn dropped_tool_call_sends_one_cancellation_for_its_request() {
 }
 
 #[tokio::test]
+async fn dropped_call_still_sends_its_cancellation_when_the_service_is_dropped_too() {
+    let (service, received) = recording_service(/* reply */ false).await;
+    let call = pending_call(&service, None).await;
+
+    // Stopping or replacing a server mid-call drops the call and then the service.
+    // No spawned task runs between the two drops.
+    drop(call);
+    drop(service);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let ids = call_ids(&received);
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    assert_eq!(
+        cancellations(&received),
+        ids,
+        "the cancel is written before the service loop shuts down"
+    );
+}
+
+#[tokio::test]
 async fn timed_out_tool_call_is_classified_and_cancelled_once() {
     let (service, received) = recording_service(/* reply */ false).await;
     let round = call_tool_cancel_aware(
         &service,
         CallToolRequestParams::new("slow"),
-        std::time::Duration::from_millis(50),
+        Some(std::time::Duration::from_millis(50)),
     )
     .await;
     assert!(matches!(round, Err(ServiceError::Timeout { .. })));
@@ -5386,13 +5723,32 @@ async fn timed_out_tool_call_is_classified_and_cancelled_once() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn tool_call_without_timeout_waits_for_the_reply() {
+    let (service, _) = recording_service(/* reply */ false).await;
+    let mut call = Box::pin(call_tool_cancel_aware(
+        &service,
+        CallToolRequestParams::new("slow"),
+        None,
+    ));
+
+    // With time paused, this day-long timeout fires as soon as every task is idle.
+    // Only a timeout inside the call could end it sooner.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(24 * 60 * 60), &mut call)
+            .await
+            .is_err(),
+        "no timeout was requested, so only the reply may settle the call"
+    );
+}
+
 #[tokio::test]
 async fn completed_tool_call_sends_no_cancellation() {
     let (service, received) = recording_service(/* reply */ true).await;
     let round = call_tool_cancel_aware(
         &service,
         CallToolRequestParams::new("fast"),
-        std::time::Duration::from_secs(5),
+        Some(std::time::Duration::from_secs(5)),
     )
     .await;
     assert!(matches!(

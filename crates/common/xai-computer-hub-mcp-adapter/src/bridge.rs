@@ -279,7 +279,7 @@ mod tests {
     use super::*;
     use crate::types::{McpCallResult, McpContent, McpServerInfo, McpToolDefinition};
     use futures::StreamExt;
-    use serde_json::json;
+    use serde_json::{Map, json};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Mutex;
     use xai_computer_hub_sdk::ToolServerHandler;
@@ -481,6 +481,7 @@ mod tests {
                 text: "found 3 results".into(),
             }],
             is_error: false,
+            meta: Default::default(),
         })
         .await;
 
@@ -501,6 +502,7 @@ mod tests {
                 png_content(),
             ],
             is_error: false,
+            meta: Default::default(),
         })
         .await;
 
@@ -522,6 +524,7 @@ mod tests {
                 png_content(),
             ],
             is_error: true,
+            meta: Default::default(),
         })
         .await;
 
@@ -623,6 +626,7 @@ mod tests {
                 },
             ],
             is_error: false,
+            meta: Default::default(),
         })
         .unwrap();
 
@@ -639,21 +643,63 @@ mod tests {
         );
     }
 
+    fn app_meta() -> Map<String, Value> {
+        Map::from_iter([
+            ("app_name".into(), "TextEdit".into()),
+            ("bundle_id".into(), "com.apple.TextEdit".into()),
+        ])
+    }
+
+    /// `_meta` stays on the value when `content` is empty.
     #[test]
     fn translate_mcp_result_empty_content_reaches_model_as_empty_text() {
+        let app = app_meta();
+
         for is_error in [false, true] {
             let value = translate_mcp_result(McpCallResult {
                 content: vec![],
                 is_error,
+                meta: app.clone(),
             })
             .unwrap();
             assert_eq!(
                 value,
-                json!({"content": [{"type": "text", "text": ""}], "isError": is_error})
+                json!({
+                    "content": [{"type": "text", "text": ""}],
+                    "isError": is_error,
+                    "_meta": app,
+                })
             );
 
             let typed = TypedToolOutput::from_value(ToolId::new("search").unwrap(), value);
             assert_eq!(typed.model_output, vec![text_block("")]);
         }
+    }
+
+    #[tokio::test]
+    async fn bridge_forwards_call_meta_to_clients() {
+        let app = app_meta();
+
+        let typed = call_with_response(McpCallResult {
+            content: vec![McpContent::Text {
+                text: "Typed 5 characters into TextEdit.".into(),
+            }],
+            is_error: false,
+            meta: app.clone(),
+        })
+        .await;
+
+        assert_eq!(
+            typed.value,
+            json!({
+                "content": [{"type": "text", "text": "Typed 5 characters into TextEdit."}],
+                "isError": false,
+                "_meta": app,
+            })
+        );
+        assert_eq!(
+            typed.model_output,
+            vec![text_block("Typed 5 characters into TextEdit.")]
+        );
     }
 }

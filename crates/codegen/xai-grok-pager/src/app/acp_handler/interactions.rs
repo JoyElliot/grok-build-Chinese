@@ -63,7 +63,9 @@ pub(crate) fn handle_mcp_elicit(
         crate::views::feedback_modal::FeedbackModalDisplacement::McpElicitation,
     );
 
-    if let Some(mut old) = agent.elicitation_view.take() {
+    if let Some(mut old) =
+        agent.take_unanswered_elicitation(crate::app::agent_view::UnansweredElicitation::Superseded)
+    {
         if let Some(old_tx) = old.take_response_tx() {
             cancel_elicitation_request(old_tx);
         }

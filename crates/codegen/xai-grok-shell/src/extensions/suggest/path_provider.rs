@@ -1,11 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
 use super::shell_token::{CurrentToken, build_insert_token, parse_current_token};
-use super::{RankedSuggestion, SuggestContext, SuggestionSource, splice_token_into_line};
+use super::{
+    RankedSuggestion, RefreshGuard, SuggestContext, SuggestionSource, splice_token_into_line,
+};
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const MAX_RESULTS: usize = 10;
@@ -111,14 +113,11 @@ async fn get_or_refresh_path_cache() -> Arc<PathCacheInner> {
         return current;
     }
 
-    if PATH_REFRESHING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    let Some(_refreshing) = RefreshGuard::try_acquire(&PATH_REFRESHING) else {
         return current;
-    }
+    };
 
-    let result = match tokio::task::spawn_blocking(scan_path_dirs).await {
+    match tokio::task::spawn_blocking(scan_path_dirs).await {
         Ok(executables) => {
             let new = Arc::new(PathCacheInner {
                 executables,
@@ -129,10 +128,7 @@ async fn get_or_refresh_path_cache() -> Arc<PathCacheInner> {
             new
         }
         Err(_) => current,
-    };
-
-    PATH_REFRESHING.store(false, Ordering::Release);
-    result
+    }
 }
 
 fn scan_path_dirs() -> Vec<String> {

@@ -26,6 +26,7 @@ fs2 = { workspace = true }
 ignore = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-dirs = { workspace = true }
+xai-grok-permission-rules = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }

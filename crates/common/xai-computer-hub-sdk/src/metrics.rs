@@ -236,7 +236,7 @@ mod inner {
     static CANCEL_APPLIED_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
         register_int_counter!(
             "hub_cancel_applied_total",
-            "Cancel hooks that hit a live in-flight call and cancelled it."
+            "Live calls cancelled by a Cancel hook. A hook with no call_id counts each call it cancels."
         )
         .expect("hub_cancel_applied_total must register once")
     });
@@ -252,7 +252,7 @@ mod inner {
     static CANCEL_NO_TARGET_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
         register_int_counter!(
             "hub_cancel_no_target_total",
-            "Cancel hooks with no call_id (session-wide, no specific call to cancel)."
+            "Cancel hooks with no call_id that cancelled nothing. The hook set tool_id, or no call was live."
         )
         .expect("hub_cancel_no_target_total must register once")
     });
@@ -465,8 +465,8 @@ mod inner {
         HEARTBEAT_PONG_DROPPED_TOTAL.get()
     }
 
-    pub(crate) fn cancel_applied() {
-        CANCEL_APPLIED_TOTAL.inc();
+    pub(crate) fn cancel_applied(calls: u64) {
+        CANCEL_APPLIED_TOTAL.inc_by(calls);
     }
 
     pub(crate) fn cancel_pending_tombstoned() {
@@ -633,7 +633,8 @@ mod inner {
     pub(crate) fn heartbeat_pong_dropped_count() -> u64 {
         TEST_HEARTBEAT_PONG_DROPPED.load(std::sync::atomic::Ordering::Relaxed)
     }
-    pub(crate) fn cancel_applied() {}
+
+    pub(crate) fn cancel_applied(_calls: u64) {}
     pub(crate) fn cancel_pending_tombstoned() {}
     pub(crate) fn cancel_no_target() {}
     pub(crate) fn tool_call_rejected_overloaded() {}

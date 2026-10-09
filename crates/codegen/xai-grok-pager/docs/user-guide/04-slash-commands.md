@@ -26,14 +26,9 @@ Open the [Agent Dashboard](23-dashboard.md): live roster of top-level sessions i
 
 Not `/config-agents` (alias `/agents`), which manages agent *definitions* and personas. Hidden in minimal mode; disable with `GROK_AGENT_DASHBOARD=0` or `[dashboard].enabled = false`.
 
-### `/compact [context]`
+### `/compact`
 
-Compress conversation history to reclaim context-window space. Pass a note to tell Grok what to keep:
-
-```
-/compact
-/compact keep the auth implementation details
-```
+Compress conversation history to reclaim context-window space.
 
 Grok also auto-compacts once the context window hits 85% (tune it with `[session] auto_compact_threshold_percent`).
 
@@ -102,12 +97,13 @@ Rename the current session. Alias: `/title`.
 
 ### `/model <name>`
 
-Switch models. Accepts a model ID or display name (case-insensitive), and for reasoning models you can add an effort level as a second argument. Alias: `/m`.
+Switch models. Accepts a model ID or display name (case-insensitive). When the model offers more than one context window, you can add a window size next. For reasoning models you can add an effort level last. The picker asks in the same order: model, then window, then effort. Alias: `/m`.
 
 ```
 /model grok-4.6
 /model Grok 4.6
 /model Reasoning X high
+/model Reasoning X 500k high
 ```
 
 ### `/effort <level>`
@@ -118,6 +114,15 @@ Set reasoning effort on the **current** model without reselecting it. Levels are
 /effort high
 ```
 
+### `/context-window <size>`
+
+Set the context window for the current model. The command is listed only when the model supports more than one size. It accepts the short label or the raw token count. The choice lasts for the session. It carries over to a new model that supports the same size. A size smaller than the current usage starts an auto-compact.
+
+```
+/context-window 500k
+/context-window 256000
+```
+
 ### `/always-approve` and `/auto`
 
 Both are real toggles for the permission mode: they stay in the menu, and running the mode you're already in turns it back off.
@@ -125,9 +130,9 @@ Both are real toggles for the permission mode: they stay in the menu, and runnin
 | Command | When off | When already on |
 |---|---|---|
 | `/always-approve` | Skip all permission prompts | Back to ask |
-| `/auto` | Classifier approves safe tools (dangerous ones may still prompt) | Back to ask |
+| `/auto` | Auto-review: a classifier approves safe tools (dangerous ones may still prompt) | Back to ask |
 
-Running one while the other is active switches modes — for example, `/auto` while always-approve is on switches to auto. `/auto` only appears when the auto permission-mode feature is enabled. You can also change mode with `Shift+Tab` (cycles Normal / Plan / Auto (when enabled) / Always-approve), `Ctrl+O`, or `/settings`.
+Running one while the other is active switches modes — for example, `/auto` while always-approve is on switches to Auto-review. `/auto` only appears when the Auto-review permission-mode feature is enabled. You can also change mode with `Shift+Tab` (cycles Normal / Plan / Auto-review (when enabled) / Always-approve), `Ctrl+O`, or `/settings`.
 
 ### `/multiline`
 

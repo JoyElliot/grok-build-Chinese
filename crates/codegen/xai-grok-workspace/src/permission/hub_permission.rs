@@ -51,6 +51,13 @@ pub fn hitl_permission_live_enabled() -> bool {
 #[async_trait]
 pub trait PermissionHookTransport: Send + Sync {
     async fn request_permission(&self, payload: Value) -> Result<Value, String>;
+
+    /// The sandbox card for the held connection `hold_id` is stale: the hold was released by
+    /// something other than that card's answer, so a late answer records nothing. Told once per
+    /// card; a transport that can take a card off the screen does so here, the default cannot.
+    async fn withdraw_permission(&self, hold_id: &str) {
+        let _ = hold_id;
+    }
 }
 
 pub struct ToolServerPermissionTransport {
@@ -103,6 +110,16 @@ impl PermissionHookTransport for ToolServerPermissionTransport {
             .with_label_values(&[outcome])
             .observe(start.elapsed().as_secs_f64());
         reply_result.map_err(|e| e.to_string())
+    }
+
+    /// The hub's permission channel carries no frame that takes a card back, so the desktop
+    /// shows this card until its deadline; logged so the gap is visible.
+    async fn withdraw_permission(&self, hold_id: &str) {
+        tracing::debug!(
+            hold_id,
+            session = ?self.session_id,
+            "sandbox card withdrawn on the daemon; the hub has no frame to take it off the screen"
+        );
     }
 }
 

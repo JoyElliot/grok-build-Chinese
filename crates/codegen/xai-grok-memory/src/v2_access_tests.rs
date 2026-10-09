@@ -418,6 +418,64 @@ fn caps_new_file_contents_before_filesystem_access() {
 }
 
 #[test]
+fn ordinary_topic_reads_are_counted_per_scope() {
+    let fixture = Fixture::new();
+    let topic = fixture.workspace.join("topics/rust.md");
+    std::fs::write(&topic, "# Rust\n\nNotes.").unwrap();
+    let note = fixture.workspace.join("observations/_inbox/note.md");
+    std::fs::write(&note, "# Note\n\nEvidence.").unwrap();
+
+    fixture.policy.record_read(&topic, b"# Rust").unwrap();
+    fixture.policy.record_read(&topic, b"# Rust").unwrap();
+    fixture.policy.record_read(&note, b"# Note").unwrap();
+    fixture
+        .policy
+        .record_read(&fixture.workspace.join("MEMORY.md"), b"")
+        .unwrap();
+
+    let read_ledger = |scope: &PathBuf| {
+        let state_path = scope.join("memory_state.sqlite");
+        let connection = JournalMode::for_db_path(&state_path)
+            .open_readonly(&state_path)
+            .unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT relative_path, read_count FROM memory_v2_topic_reads
+                 ORDER BY relative_path",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        read_ledger(&fixture.workspace),
+        vec![("topics/rust.md".to_owned(), 2)]
+    );
+    assert!(read_ledger(&fixture.global).is_empty());
+
+    // Internal snapshot reads (Dream, forget, carry-over) never count.
+    fixture.policy.record_read_typed(&topic, b"# Rust").unwrap();
+    assert_eq!(
+        read_ledger(&fixture.workspace),
+        vec![("topics/rust.md".to_owned(), 2)]
+    );
+
+    // A topic read while the state database is missing is skipped, and the
+    // read itself still succeeds without recreating the database.
+    let state_path = fixture.workspace.join("memory_state.sqlite");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", state_path.display()));
+    }
+    fixture.policy.record_read(&topic, b"# Rust").unwrap();
+    assert!(!state_path.exists());
+}
+
+#[test]
 fn rejects_oversized_previous_content_without_replacing_it() {
     let fixture = Fixture::new();
     let path = fixture.workspace.join("topics/oversized.md");

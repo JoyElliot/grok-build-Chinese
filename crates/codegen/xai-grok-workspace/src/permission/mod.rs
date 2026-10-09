@@ -1,20 +1,30 @@
 pub mod auto_mode;
-pub mod bash_command_splitting;
-mod bash_permission_script;
-pub mod claude_settings;
-mod exec_risk;
-mod gate_preflight;
+pub use xai_grok_permission_rules::bash_command_splitting;
+use xai_grok_permission_rules::bash_permission_script;
+pub use xai_grok_permission_rules::claude_settings;
+use xai_grok_permission_rules::exec_risk;
+use xai_grok_permission_rules::gate_preflight;
 mod grants;
 mod hub_gate;
 mod hub_permission;
-pub mod managed_policy;
+mod managed_hooks;
+pub mod managed_policy {
+    pub use crate::permission::managed_hooks::disabled_hooks_snapshot;
+    pub use xai_grok_permission_rules::managed_policy::*;
+}
 mod manager;
-mod policy;
+use xai_grok_permission_rules::policy;
 mod prompter;
-pub mod reasons;
-pub mod resolution;
-pub mod rules;
-mod shell_access;
+pub use xai_grok_permission_rules::reasons;
+pub mod resolution {
+    pub use crate::permission::managed_hooks::disabled_hooks_snapshot;
+    pub use xai_grok_permission_rules::resolution::*;
+}
+pub use xai_grok_permission_rules::rules;
+mod sandbox_gate;
+mod sandbox_network;
+pub mod sandbox_wire;
+use xai_grok_permission_rules::shell_access;
 mod state;
 pub mod types;
 
@@ -57,11 +67,16 @@ pub use auto_mode::{
 };
 pub use gate_preflight::GatePreflight;
 
+#[cfg(test)]
+pub(crate) use hub_gate::grant_store_access;
 pub(crate) use hub_gate::{SessionApproval, approve_hub_call};
 pub use hub_gate::{ToolApprovalGate, approval_gate_for};
 pub use hub_permission::{
     PermissionHookTransport, ToolServerPermissionTransport, hitl_permission_live_enabled,
     prompt_outcome_allows, request_permission_via_hub,
+};
+pub(crate) use sandbox_gate::{
+    SandboxPath, SettleContext, ViolationSettlement, refuse_mode_layer_write, settle_violation,
 };
 
 pub(crate) fn init_metrics() {
@@ -88,9 +103,16 @@ pub use prompter::{
     mcp_pretty_name_if_qualified, mcp_titleize_segment, mcp_tool_action, mcp_tool_display_name,
     tool_name_for_access as prompter_tool_name_for_access,
 };
+pub use sandbox_network::{
+    GrantView, HoldAnswer, SandboxNetworkDecider, SandboxNetworkDeciderConfig, ViolationSink,
+    WebFetchDomainFile, WebFetchDomains,
+};
 pub use shell_access::{ProtectedEditPermission, ProtectedEditReason};
 pub use state::PermissionState;
 pub use state::cleanup_stale_permission_state;
+/// The folder's grant store, for tests of the hub path that seed a `permission.toml` row.
+#[cfg(test)]
+pub(crate) use state::{StateFileAccess, load_state_from_disk, persist_state};
 pub use types::{
     AccessKind, ClientType, Decision, HOOK_ASK_META_KEY, HookAsk, PermissionCommand,
     PermissionEvent, PermissionRequest, PermissionResolution,

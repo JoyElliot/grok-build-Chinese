@@ -11,8 +11,8 @@ const LEADER_VERSION: &str = match option_env!("VERSION_WITH_COMMIT") {
 };
 use super::protocol::{
     ClientCapabilities, ClientId, ClientMessage, ClientMode, ControlCommand, ControlPayload,
-    InternalMethod, LEADER_PROTOCOL_VERSION, LeaderCapabilities, ProtocolError, ServerMessage,
-    internal_notification, read_message, write_message,
+    FrameReader, InternalMethod, LEADER_PROTOCOL_VERSION, LeaderCapabilities, ProtocolError,
+    ServerMessage, internal_notification, write_message,
 };
 use super::transport::{LeaderListener, LeaderStream};
 use crate::agent::activity::AgentActivity;
@@ -24,7 +24,6 @@ use crate::cpu_profile::{
 use crate::leader::cursor_worker::{self, CursorWorkerControl};
 use crate::leader::roster_merge::ExternalRoster;
 use agent_client_protocol::AGENT_METHOD_NAMES;
-use kanal::{AsyncReceiver, AsyncSender};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -140,7 +139,7 @@ impl ModelSwitchTracker {
     }
 }
 struct ClientState {
-    tx: AsyncSender<ClientOutbound>,
+    tx: mpsc::UnboundedSender<ClientOutbound>,
     mode: ClientMode,
     capabilities: ClientCapabilities,
     /// The client type string from IPC registration (e.g., "grok-tui", "grok-code-extension").
@@ -1522,7 +1521,7 @@ pub async fn run_leader_server(
     let shutdown_reason_rx = shutdown_tx.subscribe();
     let listener = LeaderListener::bind(&socket_path)?;
     info!("Leader server listening");
-    let (event_tx, event_rx) = kanal::unbounded_async::<ServerEvent>();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ServerEvent>();
     let mut clients: HashMap<ClientId, ClientState> = HashMap::new();
     let mut session_driver: HashMap<String, ClientId> = HashMap::new();
     let mut session_subscribers: HashMap<String, std::collections::HashSet<ClientId>> =
@@ -1544,7 +1543,7 @@ pub async fn run_leader_server(
             accept_result = listener.accept() => {
                 LeaderServerPoll::Accept(accept_result.map(|(stream, _)| stream))
             }
-            Ok(event) = event_rx.recv() => LeaderServerPoll::Event(event),
+            Some(event) = event_rx.recv() => LeaderServerPoll::Event(event),
             Some(payload) = response_rx.recv() => LeaderServerPoll::Response(payload),
         };
         match poll {
@@ -1555,14 +1554,14 @@ pub async fn run_leader_server(
                     debug!(pending_requests, "Resetting agent_busy on shutdown");
                     agent_busy.store(false, Ordering::Relaxed);
                 }
-                broadcast_shutdown(&clients, reason).await;
+                broadcast_shutdown(&clients, reason);
                 break;
             }
             LeaderServerPoll::Accept(accept_result) => match accept_result {
                 Ok(stream) => {
                     had_clients = true;
                     let client_id = ClientId::new();
-                    let (tx, rx) = kanal::unbounded_async();
+                    let (tx, rx) = mpsc::unbounded_channel();
                     clients.insert(
                         client_id,
                         ClientState {
@@ -1635,7 +1634,7 @@ pub async fn run_leader_server(
                                 leader_version = effective_leader_version,
                                 "Version mismatch: client binary differs from leader binary"
                             );
-                            let _ = client.tx.try_send(ClientOutbound::Acp(payload.into()));
+                            let _ = client.tx.send(ClientOutbound::Acp(payload.into()));
                         }
                     }
                 }
@@ -1778,7 +1777,6 @@ pub async fn run_leader_server(
                                 matches!(result, Ok(ControlPayload::Relaunching { .. }));
                             if let Err(e) = client_tx
                                 .send(ServerMessage::ControlResult { request_id, result }.into())
-                                .await
                             {
                                 warn!(client_id = id.0, error = %e, "Failed to send control response to client");
                             }
@@ -1801,9 +1799,7 @@ pub async fn run_leader_server(
                             json.as_ref().and_then(make_leader_starting_error)
                         {
                             if let Some(client) = clients.get(&id) {
-                                let _ = client
-                                    .tx
-                                    .try_send(ClientOutbound::Acp(error_payload.into()));
+                                let _ = client.tx.send(ClientOutbound::Acp(error_payload.into()));
                             }
                             trace!(
                                 client_id = id.0,
@@ -1973,23 +1969,9 @@ pub async fn run_leader_server(
                         patch_initialize_response_model(json, &client.capabilities.default_model);
                     }
                     let restored_payload: Arc<str> = json.to_string().into();
-                    match client.tx.try_send(ClientOutbound::Acp(restored_payload)) {
-                        Ok(true) => {
+                    match client.tx.send(ClientOutbound::Acp(restored_payload)) {
+                        Ok(()) => {
                             trace!(client_id = client_id.0, "Routed response via request ID");
-                        }
-                        Ok(false) => {
-                            warn!(
-                                client_id = client_id.0,
-                                "Failed to send response to client (channel full)"
-                            );
-                            xai_grok_telemetry::unified_log::warn(
-                                "leader.response.send_failed",
-                                None,
-                                Some(serde_json::json!({
-                                    "client_id": client_id.0,
-                                    "reason": "channel_full",
-                                })),
-                            );
                         }
                         Err(e) => {
                             warn!(client_id = client_id.0, error = %e, "Failed to send response to client (channel closed)");
@@ -2021,7 +2003,7 @@ pub async fn run_leader_server(
                                     continue;
                                 }
                                 if let Err(e) =
-                                    target.tx.try_send(ClientOutbound::Acp(buffered_payload))
+                                    target.tx.send(ClientOutbound::Acp(buffered_payload))
                                 {
                                     warn!(client_id = buf_client.0, error = %e, "Failed to flush buffered live notification after load (channel closed)");
                                     break;
@@ -2042,8 +2024,7 @@ pub async fn run_leader_server(
                         {
                             let count = cached.len();
                             for req in cached.values() {
-                                if let Err(e) = target.tx.try_send(ClientOutbound::Acp(req.clone()))
-                                {
+                                if let Err(e) = target.tx.send(ClientOutbound::Acp(req.clone())) {
                                     warn!(client_id = buf_client.0, error = %e, "Failed to replay interaction request after load (channel closed)");
                                     break;
                                 }
@@ -2067,7 +2048,7 @@ pub async fn run_leader_server(
                     .is_some_and(is_machine_wide_broadcast_notification)
                 {
                     for client in clients.values() {
-                        let _ = client.tx.try_send(ClientOutbound::Acp(payload.clone()));
+                        let _ = client.tx.send(ClientOutbound::Acp(payload.clone()));
                     }
                     trace!("Broadcast machine-wide notification to all clients");
                     continue;
@@ -2109,8 +2090,8 @@ pub async fn run_leader_server(
                             .as_ref()
                             .and_then(extract_session_id)
                             .zip(json.as_ref().and_then(event_seq_of));
-                        match client.tx.try_send(ClientOutbound::Acp(payload)) {
-                            Ok(true) => {
+                        match client.tx.send(ClientOutbound::Acp(payload)) {
+                            Ok(()) => {
                                 if let Some((sid, seq)) = replay_seq {
                                     let entry =
                                         load_replay_max_seq.entry((target, sid)).or_insert(0);
@@ -2119,12 +2100,6 @@ pub async fn run_leader_server(
                                 trace!(
                                     client_id = target.0,
                                     "Unicast replay notification to loading client"
-                                );
-                            }
-                            Ok(false) => {
-                                warn!(
-                                    client_id = target.0,
-                                    "Replay notification dropped: loading client channel full (not counted toward flush cutoff)"
                                 );
                             }
                             Err(e) => {
@@ -2196,8 +2171,7 @@ pub async fn run_leader_server(
                     if is_reverse_request && !is_interaction {
                         if let Some(&driver_id) = session_driver.get(sid.as_str()) {
                             if let Some(client) = clients.get(&driver_id) {
-                                if let Err(e) =
-                                    client.tx.try_send(ClientOutbound::Acp(payload.clone()))
+                                if let Err(e) = client.tx.send(ClientOutbound::Acp(payload.clone()))
                                 {
                                     warn!(client_id = driver_id.0, session_id = sid.as_str(), error = %e, "Failed to route driver-only message (channel closed)");
                                 } else {
@@ -2238,8 +2212,7 @@ pub async fn run_leader_server(
                                 );
                             }
                             if let Some(client) = clients.get(&cid) {
-                                if let Err(e) =
-                                    client.tx.try_send(ClientOutbound::Acp(payload.clone()))
+                                if let Err(e) = client.tx.send(ClientOutbound::Acp(payload.clone()))
                                 {
                                     warn!(client_id = cid.0, session_id = sid.as_str(), error = %e, "Failed to broadcast notification to subscriber (channel closed)");
                                 } else {
@@ -2312,7 +2285,7 @@ pub async fn run_leader_server(
                         client_id = client_id.0,
                         "Using fallback routing to last active client"
                     );
-                    if let Err(e) = client.tx.try_send(ClientOutbound::Acp(payload)) {
+                    if let Err(e) = client.tx.send(ClientOutbound::Acp(payload)) {
                         warn!(client_id = client_id.0, error = %e, "Failed to send notification via fallback routing (channel closed)");
                     }
                 } else {
@@ -2330,8 +2303,8 @@ pub async fn run_leader_server(
 fn spawn_client_handler(
     client_id: ClientId,
     stream: LeaderStream,
-    server_rx: AsyncReceiver<ClientOutbound>,
-    event_tx: AsyncSender<ServerEvent>,
+    server_rx: mpsc::UnboundedReceiver<ClientOutbound>,
+    event_tx: mpsc::UnboundedSender<ServerEvent>,
     cancel: CancellationToken,
     ready_rx: watch::Receiver<bool>,
     control_state: LeaderServerControlState,
@@ -2350,43 +2323,44 @@ fn spawn_client_handler(
         if let Err(e) = &result {
             debug!(client_id = client_id.0, error = %e, "Client session ended");
         }
-        let _ = event_tx.send(ServerEvent::Disconnected(client_id)).await;
+        let _ = event_tx.send(ServerEvent::Disconnected(client_id));
     });
 }
 async fn run_client_session(
     client_id: ClientId,
     stream: LeaderStream,
-    server_rx: AsyncReceiver<ClientOutbound>,
-    event_tx: AsyncSender<ServerEvent>,
+    mut server_rx: mpsc::UnboundedReceiver<ClientOutbound>,
+    event_tx: mpsc::UnboundedSender<ServerEvent>,
     cancel: CancellationToken,
     mut ready_rx: watch::Receiver<bool>,
     control_state: LeaderServerControlState,
 ) -> Result<(), ProtocolError> {
-    let (mut reader, mut writer) = tokio::io::split(stream);
-    let msg: ClientMessage =
-        match tokio::time::timeout(REGISTRATION_TIMEOUT, read_message(&mut reader)).await {
-            Ok(Ok(msg)) => msg,
-            Ok(Err(e)) => {
-                warn!(client_id = client_id.0, error = %e, "Registration failed");
-                return Err(e);
-            }
-            Err(_) => {
-                warn!(
-                    client_id = client_id.0,
-                    "Registration timeout - client did not register within {:?}",
-                    REGISTRATION_TIMEOUT
-                );
-                let _ = write_message(
-                    &mut writer,
-                    &ServerMessage::Error {
-                        code: 3,
-                        message: "Registration timeout".into(),
-                    },
-                )
-                .await;
-                return Ok(());
-            }
-        };
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut reader = FrameReader::new(reader);
+    let msg: ClientMessage = match tokio::time::timeout(REGISTRATION_TIMEOUT, reader.read_message())
+        .await
+    {
+        Ok(Ok(msg)) => msg,
+        Ok(Err(e)) => {
+            warn!(client_id = client_id.0, error = %e, "Registration failed");
+            return Err(e);
+        }
+        Err(_) => {
+            warn!(
+                client_id = client_id.0,
+                "Registration timeout - client did not register within {:?}", REGISTRATION_TIMEOUT
+            );
+            let _ = write_message(
+                &mut writer,
+                &ServerMessage::Error {
+                    code: 3,
+                    message: "Registration timeout".into(),
+                },
+            )
+            .await;
+            return Ok(());
+        }
+    };
     let (client_type, mode, capabilities, was_ready_at_registration) = match msg {
         ClientMessage::Register {
             client_type,
@@ -2430,7 +2404,7 @@ async fn run_client_session(
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
-                    drain_client_outbound_on_cancel(&server_rx, &mut writer).await;
+                    drain_client_outbound_on_cancel(&mut server_rx, &mut writer).await;
                     return Ok(());
                 }
                 result = ready_rx.changed() => {
@@ -2448,31 +2422,29 @@ async fn run_client_session(
             "Leader ready; sent LeaderReady to client"
         );
     }
-    let _ = event_tx
-        .send(ServerEvent::Registered(
-            client_id,
-            mode,
-            capabilities.clone(),
-            client_type.clone(),
-        ))
-        .await;
+    let _ = event_tx.send(ServerEvent::Registered(
+        client_id,
+        mode,
+        capabilities.clone(),
+        client_type.clone(),
+    ));
     info!(client_id = client_id.0, client_type = %client_type, ?mode, yolo_mode = capabilities.yolo_mode, client_version = ?capabilities.client_version, "Client registered");
     loop {
         tokio::select! {
             biased;
 
             _ = cancel.cancelled() => {
-                drain_client_outbound_on_cancel(&server_rx, &mut writer).await;
+                drain_client_outbound_on_cancel(&mut server_rx, &mut writer).await;
                 break;
             }
 
-            Ok(msg) = server_rx.recv() => {
+            Some(msg) = server_rx.recv() => {
                 if write_outbound(&mut writer, &msg).await.is_err() {
                     break;
                 }
             }
 
-            msg_result = read_message::<_, ClientMessage>(&mut reader) => {
+            msg_result = reader.read_message::<ClientMessage>() => {
                 match handle_client_inbound_message(
                     msg_result,
                     client_id,
@@ -2494,7 +2466,7 @@ enum ClientSessionAction {
     Break,
 }
 async fn drain_client_outbound_on_cancel<W>(
-    server_rx: &AsyncReceiver<ClientOutbound>,
+    server_rx: &mut mpsc::UnboundedReceiver<ClientOutbound>,
     writer: &mut W,
 ) where
     W: tokio::io::AsyncWrite + Unpin,
@@ -2505,7 +2477,7 @@ async fn drain_client_outbound_on_cancel<W>(
         }
         tokio::task::yield_now().await;
     }
-    while let Ok(Some(msg)) = server_rx.try_recv() {
+    while let Ok(msg) = server_rx.try_recv() {
         if write_outbound(writer, &msg).await.is_err() {
             break;
         }
@@ -2514,7 +2486,7 @@ async fn drain_client_outbound_on_cancel<W>(
 async fn handle_client_inbound_message<W>(
     msg_result: Result<ClientMessage, ProtocolError>,
     client_id: ClientId,
-    event_tx: &AsyncSender<ServerEvent>,
+    event_tx: &mpsc::UnboundedSender<ServerEvent>,
     writer: &mut W,
 ) -> Result<ClientSessionAction, ProtocolError>
 where
@@ -2522,7 +2494,7 @@ where
 {
     match msg_result {
         Ok(msg @ (ClientMessage::Acp { .. } | ClientMessage::Control { .. })) => {
-            let _ = event_tx.send(ServerEvent::Message(client_id, msg)).await;
+            let _ = event_tx.send(ServerEvent::Message(client_id, msg));
             Ok(ClientSessionAction::Continue)
         }
         Ok(ClientMessage::Ping) => {
@@ -2553,22 +2525,19 @@ where
 /// Broadcast a planned shutdown to all connected clients. Sends `ShuttingDown` (advance notice with reason and `delay_ms: 0`) followed immediately by `Shutdown`.
 /// Both messages are sent before the server exits, so clients that process the channel quickly will see both.
 /// `delay_ms` is set to 0 because the server sends `Shutdown` immediately after `ShuttingDown`; there is no actual grace period. The cancel token propagates to client session handlers simultaneously. A sleep between the two messages would let session writers exit before `Shutdown` is delivered.
-async fn broadcast_shutdown(
+fn broadcast_shutdown(
     clients: &HashMap<ClientId, ClientState>,
     reason: super::protocol::ShutdownReason,
 ) {
     for client in clients.values() {
-        let _ = client
-            .tx
-            .send(
-                ServerMessage::ShuttingDown {
-                    reason: reason.clone(),
-                    delay_ms: 0,
-                }
-                .into(),
-            )
-            .await;
-        let _ = client.tx.send(ServerMessage::Shutdown.into()).await;
+        let _ = client.tx.send(
+            ServerMessage::ShuttingDown {
+                reason: reason.clone(),
+                delay_ms: 0,
+            }
+            .into(),
+        );
+        let _ = client.tx.send(ServerMessage::Shutdown.into());
     }
 }
 pub struct ServerHandle {

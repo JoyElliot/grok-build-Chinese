@@ -1003,28 +1003,17 @@ impl AgentView {
         }
         InputOutcome::Changed
     }
+    /// The `x` key in both plan approval and the casual plan preview.
     pub(super) fn delete_plan_comment_at_cursor(&mut self) -> InputOutcome {
-        let viewer = match self.line_viewer.as_ref() {
-            Some(v) => v,
-            None => return InputOutcome::Changed,
-        };
-        let vi = match viewer.list_state.selected_index() {
-            Some(vi) => vi,
-            None => return InputOutcome::Changed,
-        };
-        let pi = viewer.list_state.to_physical(vi);
-        let comment_id = match viewer.lines.get(pi).and_then(|item| item.comment_id()) {
+        let comment_id = match self
+            .line_viewer
+            .as_ref()
+            .and_then(|v| v.selected_comment_id())
+        {
             Some(id) => id,
-            None => return InputOutcome::Changed,
+            None => return InputOutcome::Unchanged,
         };
-        if let Some(ref mut pav) = self.plan_approval_view {
-            pav.comments.retain(|c| c.id != comment_id);
-            let comments = pav.comments.clone();
-            if let Some(ref mut viewer) = self.line_viewer {
-                viewer.rebuild_with_comments(&comments);
-            }
-        }
-        InputOutcome::Changed
+        self.delete_plan_comment_by_id(comment_id)
     }
     /// Enter casual commenting mode from the plan preview.
     /// If the cursor is on a comment line, enter edit mode for that comment.
@@ -1034,21 +1023,18 @@ impl AgentView {
             Some(v) => v,
             None => return InputOutcome::Changed,
         };
-        if let Some(vi) = viewer.list_state.selected_index() {
-            let pi = viewer.list_state.to_physical(vi);
-            if let Some(comment_id) = viewer.lines.get(pi).and_then(|item| item.comment_id())
-                && let Some(comment) = self.plan_comments.iter().find(|c| c.id == comment_id)
-            {
-                let comment_text = comment.text.clone();
-                let comment_range = comment.line_range.clone();
-                if self.casual_stashed_prompt.is_none() {
-                    self.casual_stashed_prompt = Some(self.prompt.stash());
-                }
-                self.casual_editing_comment_id = Some(comment_id);
-                self.casual_commenting_range = Some(comment_range);
-                self.prompt.set_text(&comment_text);
-                return InputOutcome::Changed;
+        if let Some(comment_id) = viewer.selected_comment_id()
+            && let Some(comment) = self.plan_comments.iter().find(|c| c.id == comment_id)
+        {
+            let comment_text = comment.text.clone();
+            let comment_range = comment.line_range.clone();
+            if self.casual_stashed_prompt.is_none() {
+                self.casual_stashed_prompt = Some(self.prompt.stash());
             }
+            self.casual_editing_comment_id = Some(comment_id);
+            self.casual_commenting_range = Some(comment_range);
+            self.prompt.set_text(&comment_text);
+            return InputOutcome::Changed;
         }
         let range = viewer.selected_line_range();
         let Some(range) = range else {
@@ -1153,27 +1139,30 @@ impl AgentView {
             PromptEvent::Ignored => InputOutcome::Changed,
         }
     }
-    /// Delete the casual comment under the cursor in the plan preview.
-    pub(super) fn delete_casual_plan_comment_at_cursor(&mut self) -> InputOutcome {
-        let viewer = match self.line_viewer.as_ref() {
-            Some(v) => v,
-            None => return InputOutcome::Unchanged,
+    /// Both the comment row's `[✗]` button and the `x` key delete through this.
+    pub(super) fn delete_plan_comment_by_id(&mut self, comment_id: u64) -> InputOutcome {
+        self.abandon_edit_of_deleted_comment(comment_id);
+        let comments = if let Some(ref mut pav) = self.plan_approval_view {
+            pav.comments.retain(|c| c.id != comment_id);
+            pav.comments.clone()
+        } else {
+            self.plan_comments.retain(|c| c.id != comment_id);
+            self.plan_comments.clone()
         };
-        let vi = match viewer.list_state.selected_index() {
-            Some(vi) => vi,
-            None => return InputOutcome::Unchanged,
-        };
-        let pi = viewer.list_state.to_physical(vi);
-        let comment_id = match viewer.lines.get(pi).and_then(|item| item.comment_id()) {
-            Some(id) => id,
-            None => return InputOutcome::Unchanged,
-        };
-        self.plan_comments.retain(|c| c.id != comment_id);
-        let comments = self.plan_comments.clone();
         if let Some(ref mut viewer) = self.line_viewer {
             viewer.rebuild_with_comments(&comments);
         }
         InputOutcome::Changed
+    }
+    fn abandon_edit_of_deleted_comment(&mut self, comment_id: u64) {
+        if let Some(ref mut pav) = self.plan_approval_view {
+            if pav.editing_comment_id == Some(comment_id) {
+                pav.focus = PlanApprovalFocus::Preview;
+                self.leave_plan_commenting_restore_freeform();
+            }
+        } else if self.casual_editing_comment_id == Some(comment_id) {
+            self.cancel_casual_plan_commenting();
+        }
     }
     pub(super) fn send_casual_plan_comments(&mut self) -> InputOutcome {
         if self.plan_comments.is_empty() {

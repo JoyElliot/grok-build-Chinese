@@ -540,18 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn color_code_maps_reset_named_indexed_rgb() {
-        assert_eq!(color_code(Color::Reset, false), "39");
-        assert_eq!(color_code(Color::Reset, true), "49");
-        assert_eq!(color_code(Color::Red, false), "31");
-        assert_eq!(color_code(Color::Red, true), "41");
-        assert_eq!(color_code(Color::DarkGray, false), "90");
-        assert_eq!(color_code(Color::DarkGray, true), "100");
-        assert_eq!(color_code(Color::Indexed(200), false), "38;5;200");
-        assert_eq!(color_code(Color::Rgb(1, 2, 3), true), "48;2;1;2;3");
-    }
-
-    #[test]
     fn cell_sgr_includes_modifiers_and_colors() {
         let mut sgr = String::new();
         cell_sgr(

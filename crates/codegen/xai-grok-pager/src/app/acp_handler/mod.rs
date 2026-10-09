@@ -421,6 +421,7 @@ fn handle_inner(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         .get_mut(&parent_id)
                         .expect("find_session_match returned an existing AgentId");
                     let child_key: &str = notif.request.session_id.0.as_ref();
+                    record_child_usage_update(parent, child_key, &notif.request.update);
                     let activity_label = {
                         let child_view = parent
                             .child_view_for_live_update_mut(child_key)
@@ -507,6 +508,22 @@ fn handle_inner(msg: AcpClientMessage, app: &mut AppView) -> bool {
             false
         }
         _ => false,
+    }
+}
+/// Copies a child's `UsageUpdate` into its `SubagentInfo` for the dock.
+/// A child on a daemon backend sends no `SubagentProgress`.
+fn record_child_usage_update(parent: &mut AgentView, child_key: &str, update: &acp::SessionUpdate) {
+    if let acp::SessionUpdate::UsageUpdate(usage) = update
+        && usage.used > 0
+        && let Some(info) = parent.subagent_sessions.get_mut(child_key)
+    {
+        info.attempt.tokens_used = Some(usage.used);
+        if usage.size > 0 {
+            info.attempt.context_window_tokens = Some(usage.size);
+            info.attempt.context_usage_pct = Some(xai_token_estimation::usage_percentage_u8(
+                usage.used, usage.size,
+            ));
+        }
     }
 }
 pub(super) fn note_first_turn_activity(agent: &mut AgentView) {

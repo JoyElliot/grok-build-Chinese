@@ -173,7 +173,7 @@ async fn handle_logout(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let result = xai_grok_login::perform_logout(
         &agent.auth_manager,
         params.scope.as_deref(),
-        crate::managed_config::clear_orphan,
+        xai_grok_cloud_config::managed_config::clear_orphan,
     )
     .map_err(|e| acp::Error::internal_error().data(format!("failed to logout: {e}")))?;
     // `auth.lifecycle` (not `auth`) avoids colliding with the pre-existing per-request `AuthManager::auth()` `#[instrument]` span

@@ -740,6 +740,27 @@ fn topic_prompt_rejects_excess_file_count() {
 }
 
 #[test]
+fn dream_topic_reads_do_not_count_toward_the_read_ledger() {
+    let fixture = Fixture::new();
+    let _observation = fixture.add_observation("one", 1, "Ledger stays put", 10);
+    std::fs::write(fixture.workspace.join("topics/rust.md"), "# Rust\n\nNotes.").unwrap();
+    let lease = fixture.claim("dream", 20, 60);
+    let input = fixture.dream.consolidation_input(&lease, 21).unwrap();
+    assert_eq!(input.topics.len(), 1);
+
+    let state_path = fixture.workspace.join("memory_state.sqlite");
+    let connection = JournalMode::for_db_path(&state_path)
+        .open_readonly(&state_path)
+        .unwrap();
+    let counted: i64 = connection
+        .query_row("SELECT COUNT(*) FROM memory_v2_topic_reads", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(counted, 0);
+}
+
+#[test]
 fn topic_prompt_rejects_excess_total_bytes() {
     let fixture = Fixture::new();
     let _observation = fixture.add_observation("one", 1, "Bounded topic bytes", 10);
@@ -910,6 +931,91 @@ fn capture_events_use_count_or_age_and_coalesce_while_active() {
         DreamTriggerDisposition::Ready
     );
     assert!(!fixture.dream.has_coalesced_trigger().unwrap());
+}
+
+fn write_manual_note(fixture: &Fixture, name: &str, content: &str, modified_at: i64) -> PathBuf {
+    let relative = PathBuf::from("observations/_inbox").join(name);
+    let path = fixture.workspace.join(&relative);
+    std::fs::write(&path, content).unwrap();
+    let modified = std::time::UNIX_EPOCH + Duration::from_secs(modified_at as u64);
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    relative
+}
+
+#[test]
+fn manual_inbox_notes_count_toward_eligibility_and_are_claimed() {
+    let fixture = Fixture::new();
+    let manual = write_manual_note(&fixture, "model-slug.md", "# Manual\n\nA fact.\n", 10);
+    // Capture publishes files before it commits the outcome row.
+    write_manual_note(&fixture, "sess__t000001-000001__n001.md", "in flight", 10);
+    let config = DreamEligibilityConfig {
+        min_pending_count: 2,
+        max_pending_age: Duration::from_secs(100),
+    };
+    assert_eq!(
+        fixture.dream.on_capture_completed(20, config).unwrap(),
+        DreamEligibility {
+            disposition: DreamTriggerDisposition::Ineligible,
+            pending_count: 1,
+            oldest_pending_at: Some(10),
+        }
+    );
+    assert_eq!(
+        fixture
+            .dream
+            .on_capture_completed(111, config)
+            .unwrap()
+            .disposition,
+        DreamTriggerDisposition::Ready
+    );
+    let captured = fixture.add_observation("one", 1, "Captured fact", 30);
+    let eligibility = fixture.dream.on_capture_completed(40, config).unwrap();
+    assert_eq!(eligibility.pending_count, 2);
+    assert_eq!(eligibility.oldest_pending_at, Some(10));
+    assert_eq!(eligibility.disposition, DreamTriggerDisposition::Ready);
+
+    let lease = fixture.claim("dream", 50, 60);
+    let mut claimed = lease
+        .observations
+        .iter()
+        .map(|item| item.relative_path.clone())
+        .collect::<Vec<_>>();
+    claimed.sort();
+    let mut expected = vec![manual.clone(), captured];
+    expected.sort();
+    assert_eq!(claimed, expected);
+    fixture
+        .dream
+        .commit(
+            &lease,
+            &[TopicOperation::Create {
+                path: PathBuf::from("topics/manual.md"),
+                content: "# Manual\n\nA fact.".to_owned(),
+                evidence: vec![manual.clone()],
+            }],
+            51,
+        )
+        .unwrap();
+    assert!(!fixture.workspace.join(&manual).exists());
+    assert!(
+        fixture
+            .workspace
+            .join("archive")
+            .join(&lease.operation_id)
+            .join("model-slug.md")
+            .is_file()
+    );
+    assert_eq!(
+        fixture.dream.on_capture_completed(60, config).unwrap(),
+        DreamEligibility {
+            disposition: DreamTriggerDisposition::Ineligible,
+            pending_count: 0,
+            oldest_pending_at: None,
+        }
+    );
 }
 
 #[test]

@@ -2,9 +2,11 @@
 //! expectation matching the request, the endpoint's compatibility FIFO, the required auth check,
 //! the request's conversation script, then the concurrency cap.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Json;
@@ -12,18 +14,22 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use crate::conversation::ConversationId;
 use crate::conversation_replay::ConversationReplay;
 use crate::failure::ObservedFailure;
 use crate::inference_request::{
     InferenceEndpoint, InferenceRequest, InferenceRequestKind, RepostIdentity, model_name,
 };
-use crate::scripted::{BoxWait, ScriptedResponse, TerminalWait};
+use crate::scripted::{BodyHold, BoxWait, ScriptedResponse, TerminalWait};
 
 /// Typed match criteria for one named inference response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InferenceRequestMatcher {
     endpoint: InferenceEndpoint,
     kind: InferenceRequestKind,
+    /// When set, the request body must contain this text. A compaction summary is an auxiliary
+    /// request like any side query, so the hold has to name it.
+    body_contains: Option<&'static str>,
 }
 
 impl InferenceRequestMatcher {
@@ -32,6 +38,15 @@ impl InferenceRequestMatcher {
         InferenceRequestMatcher {
             endpoint,
             kind: InferenceRequestKind::Foreground,
+            body_contains: None,
+        }
+    }
+
+    pub fn foreground_containing(endpoint: InferenceEndpoint, fragment: &'static str) -> Self {
+        InferenceRequestMatcher {
+            endpoint,
+            kind: InferenceRequestKind::Foreground,
+            body_contains: Some(fragment),
         }
     }
 
@@ -40,11 +55,27 @@ impl InferenceRequestMatcher {
         InferenceRequestMatcher {
             endpoint,
             kind: InferenceRequestKind::Auxiliary,
+            body_contains: None,
+        }
+    }
+
+    /// An auxiliary request whose body contains `fragment`, such as the compaction summary prompt.
+    pub fn auxiliary_containing(endpoint: InferenceEndpoint, fragment: &'static str) -> Self {
+        InferenceRequestMatcher {
+            endpoint,
+            kind: InferenceRequestKind::Auxiliary,
+            body_contains: Some(fragment),
         }
     }
 
     fn matches(self, request: &InferenceRequest<'_>) -> bool {
-        self.endpoint == request.endpoint() && self.kind == request.kind()
+        self.endpoint == request.endpoint()
+            && self.kind == request.kind()
+            && self.body_contains.is_none_or(|fragment| {
+                serde_json::to_string(request.body())
+                    .unwrap_or_default()
+                    .contains(fragment)
+            })
     }
 }
 
@@ -117,6 +148,14 @@ impl InferenceExpectation {
         self.wait_for(ExpectationPhase::Received).await;
     }
 
+    /// A wait that resolves when a request claims this expectation, without dropping it.
+    /// Dropping the expectation releases a hold, so a cancel watches this instead.
+    pub fn received_wait(&self) -> ReceivedWait {
+        ReceivedWait {
+            rx: self.phase_rx.clone(),
+        }
+    }
+
     /// Wait until the response reaches its terminal-event barrier.
     pub async fn wait_blocked(&mut self) {
         self.wait_for(ExpectationPhase::Blocked).await;
@@ -184,6 +223,19 @@ impl InferenceExpectation {
     }
 }
 
+pub struct ReceivedWait {
+    rx: tokio::sync::watch::Receiver<ExpectationPhase>,
+}
+
+impl ReceivedWait {
+    pub async fn wait(mut self) {
+        let _ = self
+            .rx
+            .wait_for(|phase| *phase != ExpectationPhase::Pending)
+            .await;
+    }
+}
+
 impl Drop for InferenceExpectation {
     fn drop(&mut self) {
         self.control.release();
@@ -227,6 +279,22 @@ pub(crate) struct InferenceOverrides {
     scripted: ScriptQueues,
     conversation_scripts: ConversationReplay,
     completion_gate: Arc<CompletionGate>,
+    /// Permits for [`SseEvent::hold`] while a streamed reply is released one chunk at a time.
+    /// Unarmed holds still wait on [`Self::completion_gate`].
+    chunk_release: Arc<ChunkReleaseGate>,
+    /// Released when the mock shuts down, so a parked scripted reply cannot outlive the server.
+    /// Foreground holds wait on this watch. Auxiliary holds wait on `auxiliary_replies`, so a side
+    /// request can be released while the primary tool-call reply stays parked.
+    parked_replies: tokio::sync::watch::Sender<bool>,
+    /// One gate per [`Self::arm_scripted_park`]. Shutdown still opens a gate that is waiting.
+    scripted_parks: Arc<Mutex<HashMap<u64, Arc<ScriptedPark>>>>,
+    next_park_token: Arc<AtomicU64>,
+    auxiliary_replies: tokio::sync::watch::Sender<bool>,
+    parked_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    parked_by_conversation: Arc<Mutex<HashMap<usize, usize>>>,
+    /// How many auxiliaries have parked under a request-id prefix hold. Monotonic.
+    matching_parked: Arc<AtomicUsize>,
+    parked_arrived: std::sync::Arc<tokio::sync::Notify>,
     required_token: Option<Arc<str>>,
     concurrency_cap: Arc<std::sync::Mutex<Option<ConcurrencyCap>>>,
 }
@@ -238,6 +306,15 @@ impl InferenceOverrides {
             scripted: Arc::new(std::sync::Mutex::new(HashMap::new())),
             conversation_scripts: ConversationReplay::default(),
             completion_gate: Arc::new(CompletionGate::default()),
+            chunk_release: Arc::new(ChunkReleaseGate::default()),
+            parked_replies: tokio::sync::watch::Sender::new(false),
+            scripted_parks: Arc::new(Mutex::new(HashMap::new())),
+            next_park_token: Arc::new(AtomicU64::new(0)),
+            auxiliary_replies: tokio::sync::watch::Sender::new(false),
+            parked_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            parked_by_conversation: Arc::new(Mutex::new(HashMap::new())),
+            matching_parked: Arc::new(AtomicUsize::new(0)),
+            parked_arrived: std::sync::Arc::new(tokio::sync::Notify::new()),
             required_token: required_token.map(Arc::from),
             concurrency_cap: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -262,10 +339,20 @@ impl InferenceOverrides {
         request: &InferenceRequest<'_>,
         delay: Option<Duration>,
         note_failure: impl FnOnce(ObservedFailure),
+        conversation_requests: impl Fn(usize) -> usize,
+        note_scripted: impl FnOnce(usize),
     ) -> Option<Response> {
+        if let Ok(body) = serde_json::to_string(request.body()) {
+            self.conversation_scripts.release_parks(&body);
+        }
+
         if let Some(claimed) = self.claim_expectation(request) {
             let (response, wait) = claimed.into_parts();
-            return Some(response.into_response_paced(delay, Some(wait)).await);
+            return Some(
+                self.hold_body(response)
+                    .into_response_paced(delay, Some(wait))
+                    .await,
+            );
         }
 
         if let Some(response) = self.pop_scripted(request.endpoint().path()) {
@@ -274,7 +361,11 @@ impl InferenceOverrides {
             } else {
                 None
             };
-            return Some(response.into_response_paced(delay, wait).await);
+            return Some(
+                self.hold_body(response)
+                    .into_response_paced(delay, wait)
+                    .await,
+            );
         }
 
         if let Some(rejection) = self.auth_rejection(request.headers()) {
@@ -283,22 +374,56 @@ impl InferenceOverrides {
         }
 
         if let Some(served) = self.conversation_scripts.respond(request) {
+            if let Some(index) = served.reply_index {
+                note_scripted(index);
+            }
+            if let Some(needle) = served.park_until.clone() {
+                self.conversation_scripts.park_until(needle).await;
+            }
             if let Some(observed) = served.observed {
                 note_failure(observed);
+            }
+            if served.park {
+                if let Some(token) = served.park_token {
+                    self.wait_for_scripted_park(token).await;
+                } else {
+                    self.wait_until_park_released(
+                        request.conversation().map(ConversationId::number),
+                    )
+                    .await;
+                }
+            }
+            if let Some(log) = &served.hold_until_lsp_log {
+                wait_for_respawned_lsp(log).await;
             }
             if let Some(hold) = served.hold {
                 tokio::time::sleep(hold).await;
             }
+            if let Some((conversation, request_number)) = served.hold_until {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+                while conversation_requests(conversation) < request_number {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "conversation {conversation} request {request_number} did not arrive"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
             let response = served
                 .reply
                 .into_response(request.endpoint(), model_name(request.body()));
-            // A refusal or a dropped connection has no terminal event to hold on the gate.
+            // A refusal has no terminal event to hold; an SSE reply waits before any byte.
             let wait = if response.is_sse() {
+                self.completion_gate.wait_if_held(None).await;
                 self.fallback_terminal_wait(request)
             } else {
                 None
             };
-            return Some(response.into_response_paced(delay, wait).await);
+            return Some(
+                self.hold_body(response)
+                    .into_response_paced(delay, wait)
+                    .await,
+            );
         }
 
         let cap = self.concurrency_cap.lock().unwrap().clone()?;
@@ -384,17 +509,224 @@ impl InferenceOverrides {
             return None;
         }
         let completion_gate = self.completion_gate.clone();
+        let conversation = request.conversation();
         Some(Box::new(move || {
-            Box::pin(async move { completion_gate.wait_if_held().await })
+            Box::pin(async move { completion_gate.wait_if_held(conversation).await })
         }))
+    }
+
+    fn hold_body(&self, response: ScriptedResponse) -> ScriptedResponse {
+        if !response.is_sse() {
+            return response;
+        }
+        let gate = Arc::clone(&self.completion_gate);
+        let chunks = Arc::clone(&self.chunk_release);
+        response.with_body_hold(BodyHold::new(move || {
+            let gate = Arc::clone(&gate);
+            let chunks = Arc::clone(&chunks);
+            Box::pin(async move {
+                if chunks.armed() {
+                    chunks.wait_one().await;
+                } else {
+                    gate.wait_if_held(None).await;
+                }
+            })
+        }))
+    }
+
+    pub(crate) fn arm_chunk_release(&self) {
+        self.chunk_release.arm();
+    }
+
+    pub(crate) fn release_one_chunk(&self) {
+        self.chunk_release.release_one();
+    }
+
+    pub(crate) fn release_remaining_chunks(&self) {
+        self.chunk_release.release_rest();
     }
 
     pub(crate) fn hold_completions(&self) {
         self.completion_gate.hold();
     }
 
+    pub(crate) fn arm_reply_hold(&self) -> ArmedReplyHold {
+        ArmedReplyHold::arm(Arc::clone(&self.completion_gate))
+    }
+
+    /// Keep holding `conversation` and let every other conversation stream its terminal event.
+    pub(crate) fn hold_only_conversation(&self, conversation: usize) {
+        self.completion_gate.hold_only(conversation);
+    }
+
     pub(crate) fn release_completions(&self) {
         self.completion_gate.release();
+    }
+
+    pub(crate) fn hold_conversation(&self, conversation: ConversationId) {
+        self.completion_gate.hold_conversation(conversation);
+    }
+
+    pub(crate) fn release_conversation(&self, conversation: ConversationId) {
+        self.completion_gate.release_conversation(conversation);
+    }
+
+    /// Lets every parked scripted reply finish. Called when the mock shuts down.
+    pub(crate) fn release_parked_replies(&self) {
+        self.parked_replies.send_replace(true);
+        self.auxiliary_replies.send_replace(true);
+    }
+
+    /// A park released only by [`Self::release_scripted_park`], not by the shutdown latch.
+    pub(crate) fn arm_scripted_park(&self) -> u64 {
+        let token = self.next_park_token.fetch_add(1, Ordering::SeqCst) + 1;
+        let (released, _) = tokio::sync::watch::channel(false);
+        self.scripted_parks.lock().unwrap().insert(
+            token,
+            Arc::new(ScriptedPark {
+                released,
+                parked: AtomicUsize::new(0),
+                arrived: tokio::sync::Notify::new(),
+            }),
+        );
+        token
+    }
+
+    pub(crate) fn release_scripted_park(&self, token: u64) {
+        if let Some(gate) = self.scripted_parks.lock().unwrap().get(&token) {
+            gate.released.send_replace(true);
+        }
+    }
+
+    async fn wait_for_scripted_park(&self, token: u64) {
+        let gate = self
+            .scripted_parks
+            .lock()
+            .unwrap()
+            .get(&token)
+            .cloned()
+            .expect("scripted park");
+        gate.parked.fetch_add(1, Ordering::SeqCst);
+        gate.arrived.notify_waiters();
+        let mut own = gate.released.subscribe();
+        let mut shutdown = self.parked_replies.subscribe();
+        if !*own.borrow() && !*shutdown.borrow() {
+            tokio::select! {
+                result = own.wait_for(|open| *open) => {
+                    let _ = result;
+                }
+                result = shutdown.wait_for(|open| *open) => {
+                    let _ = result;
+                }
+            }
+        }
+        gate.parked.fetch_sub(1, Ordering::SeqCst);
+        gate.arrived.notify_waiters();
+    }
+
+    pub(crate) async fn wait_until_scripted_park(&self, token: u64) {
+        let gate = self
+            .scripted_parks
+            .lock()
+            .unwrap()
+            .get(&token)
+            .cloned()
+            .expect("scripted park");
+        loop {
+            let arrived = gate.arrived.notified();
+            if gate.parked.load(Ordering::SeqCst) >= 1 {
+                return;
+            }
+            arrived.await;
+        }
+    }
+
+    /// Lets parked auxiliary replies finish and leaves foreground holds parked.
+    pub(crate) fn release_auxiliary_replies(&self) {
+        self.auxiliary_replies.send_replace(true);
+    }
+
+    pub(crate) async fn wait_until_park_released(&self, conversation: Option<usize>) {
+        use std::sync::atomic::Ordering;
+        self.parked_count.fetch_add(1, Ordering::SeqCst);
+        if let Some(conversation) = conversation {
+            *self
+                .parked_by_conversation
+                .lock()
+                .unwrap()
+                .entry(conversation)
+                .or_insert(0) += 1;
+        }
+        self.parked_arrived.notify_waiters();
+        let replies = if conversation.is_some() {
+            &self.parked_replies
+        } else {
+            &self.auxiliary_replies
+        };
+        let mut released = replies.subscribe();
+        if !*released.borrow() {
+            let _ = released.wait_for(|open| *open).await;
+        }
+        self.parked_count.fetch_sub(1, Ordering::SeqCst);
+        if let Some(conversation) = conversation {
+            let mut counts = self.parked_by_conversation.lock().unwrap();
+            if let Some(count) = counts.get_mut(&conversation) {
+                *count = count.saturating_sub(1);
+            }
+        }
+        self.parked_arrived.notify_waiters();
+    }
+
+    /// The request is parked under a request-id prefix hold. Counted before the park await.
+    pub(crate) fn note_matching_park(&self) {
+        self.matching_parked.fetch_add(1, Ordering::SeqCst);
+        self.parked_arrived.notify_waiters();
+    }
+
+    pub(crate) async fn wait_until_matching_parked(&self, at_least: usize) {
+        loop {
+            let arrived = self.parked_arrived.notified();
+            if self.matching_parked.load(Ordering::SeqCst) >= at_least {
+                return;
+            }
+            arrived.await;
+        }
+    }
+
+    pub(crate) async fn wait_until_parked_replies(&self, at_least: usize) {
+        use std::sync::atomic::Ordering;
+        loop {
+            let arrived = self.parked_arrived.notified();
+            if self.parked_count.load(Ordering::SeqCst) >= at_least {
+                return;
+            }
+            arrived.await;
+        }
+    }
+
+    pub(crate) async fn wait_until_parked_replies_for(&self, conversation: usize, at_least: usize) {
+        loop {
+            let arrived = self.parked_arrived.notified();
+            let count = self
+                .parked_by_conversation
+                .lock()
+                .unwrap()
+                .get(&conversation)
+                .copied()
+                .unwrap_or(0);
+            if count >= at_least {
+                return;
+            }
+            arrived.await;
+        }
+    }
+
+    pub(crate) fn agent_completion_parked(&self) -> bool {
+        self.completion_gate.parked()
+    }
+
+    pub(crate) async fn wait_until_a_reply_is_held(&self) {
+        self.completion_gate.wait_until_a_reply_is_held().await;
     }
 
     fn claim_expectation(&self, request: &InferenceRequest<'_>) -> Option<ClaimedExpectation> {
@@ -586,10 +918,147 @@ impl Drop for ClaimLease {
     }
 }
 
+const LSP_RESPAWN_BOUND: Duration = Duration::from_secs(20);
+const LSP_LOG_POLL: Duration = Duration::from_millis(20);
+
+/// Waits until `log` names two language-server processes. The mock appends one line per request,
+/// so the second pid is the respawned server's own request, not a timer.
+async fn wait_for_respawned_lsp(log: &Path) {
+    let deadline = tokio::time::Instant::now() + crate::scaled(LSP_RESPAWN_BOUND);
+    loop {
+        if respawned_server_opened_a_document(log) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the respawned language server did not log a request"
+        );
+        tokio::time::sleep(LSP_LOG_POLL).await;
+    }
+}
+
+/// The respawned server logs `textDocument/didOpen` once its documents are replayed, which is the
+/// same moment it records its pid. Two such lines means the first server and its replacement.
+fn respawned_server_opened_a_document(log: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(log) else {
+        return false;
+    };
+    text.lines()
+        .filter(|line| line.ends_with("textDocument/didOpen"))
+        .count()
+        >= 2
+}
+
+#[derive(Default)]
+struct ChunkReleaseGate {
+    armed: AtomicBool,
+    permits: AtomicUsize,
+    notify: tokio::sync::Notify,
+}
+
+impl ChunkReleaseGate {
+    fn arm(&self) {
+        self.permits.store(0, Ordering::SeqCst);
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    fn armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
+    }
+
+    fn release_one(&self) {
+        let mut current = self.permits.load(Ordering::SeqCst);
+        loop {
+            if current == usize::MAX {
+                return;
+            }
+            match self.permits.compare_exchange(
+                current,
+                current.saturating_add(1),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    self.notify.notify_waiters();
+                    return;
+                }
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    fn release_rest(&self) {
+        self.permits.store(usize::MAX, Ordering::SeqCst);
+        self.armed.store(false, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait_one(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if !self.armed.load(Ordering::SeqCst) {
+                return;
+            }
+            let current = self.permits.load(Ordering::SeqCst);
+            if current == usize::MAX {
+                return;
+            }
+            if current > 0
+                && self
+                    .permits
+                    .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct ScriptedPark {
+    released: tokio::sync::watch::Sender<bool>,
+    parked: AtomicUsize,
+    arrived: tokio::sync::Notify,
+}
+
+/// The reply hold for one turn. [`release`](Self::release) and drop both disarm it.
+pub struct ArmedReplyHold {
+    gate: Arc<CompletionGate>,
+    armed: AtomicBool,
+}
+
+impl ArmedReplyHold {
+    fn arm(gate: Arc<CompletionGate>) -> Self {
+        gate.hold();
+        Self {
+            gate,
+            armed: AtomicBool::new(true),
+        }
+    }
+
+    pub fn release(&self) {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            self.gate.release();
+        }
+    }
+}
+
+impl Drop for ArmedReplyHold {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 #[derive(Default)]
 struct CompletionGate {
     held: AtomicBool,
+    /// When set, only this conversation number waits. Other conversations stream.
+    only: Mutex<Option<usize>>,
+    held_conversations: std::sync::Mutex<BTreeSet<ConversationId>>,
+    parked: AtomicUsize,
     notify: tokio::sync::Notify,
+    arrived: tokio::sync::Notify,
 }
 
 impl CompletionGate {
@@ -597,18 +1066,120 @@ impl CompletionGate {
         self.held.store(true, Ordering::SeqCst);
     }
 
+    fn hold_only(&self, conversation: usize) {
+        *self.only.lock().unwrap() = Some(conversation);
+    }
+
     fn release(&self) {
         self.held.store(false, Ordering::SeqCst);
+        *self.only.lock().unwrap() = None;
         self.notify.notify_waiters();
     }
 
-    async fn wait_if_held(&self) {
+    fn hold_conversation(&self, conversation: ConversationId) {
+        self.held_conversations.lock().unwrap().insert(conversation);
+    }
+
+    fn release_conversation(&self, conversation: ConversationId) {
+        self.held_conversations
+            .lock()
+            .unwrap()
+            .remove(&conversation);
+        self.notify.notify_waiters();
+    }
+
+    fn parked(&self) -> bool {
+        self.parked.load(Ordering::SeqCst) > 0
+    }
+
+    async fn wait_until_a_reply_is_held(&self) {
         loop {
-            let notified = self.notify.notified();
-            if !self.held.load(Ordering::SeqCst) {
+            let arrived = self.arrived.notified();
+            if self.parked.load(Ordering::SeqCst) > 0 {
                 return;
             }
-            notified.await;
+            arrived.await;
         }
+    }
+
+    async fn wait_if_held(&self, conversation: Option<ConversationId>) {
+        loop {
+            let notified = self.notify.notified();
+            let conversation_held = conversation.is_some_and(|conversation| {
+                self.held_conversations
+                    .lock()
+                    .unwrap()
+                    .contains(&conversation)
+            });
+            if !self.held.load(Ordering::SeqCst) && !conversation_held {
+                return;
+            }
+            let only = *self.only.lock().unwrap();
+            if only.is_some_and(|held| conversation.map(ConversationId::number) != Some(held)) {
+                return;
+            }
+            let parked = ParkedGuard::arm(&self.parked);
+            self.arrived.notify_waiters();
+            notified.await;
+            drop(parked);
+        }
+    }
+}
+
+struct ParkedGuard<'a>(&'a AtomicUsize);
+
+impl<'a> ParkedGuard<'a> {
+    fn arm(parked: &'a AtomicUsize) -> Self {
+        parked.fetch_add(1, Ordering::SeqCst);
+        Self(parked)
+    }
+}
+
+impl Drop for ParkedGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::task::{Context, Poll};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn reply_hold_blocks_until_cancel_releases_it() {
+        let gate = Arc::new(CompletionGate::default());
+        let hold = ArmedReplyHold::arm(Arc::clone(&gate));
+        let conversation = ConversationId::nth(1);
+        let mut wait = Box::pin(gate.wait_if_held(Some(conversation)));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Pending));
+        hold.release();
+        assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Ready(())));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_reply_hold_lets_the_next_request_through() {
+        let gate = Arc::new(CompletionGate::default());
+        let hold = ArmedReplyHold::arm(Arc::clone(&gate));
+        let mut wait = Box::pin(gate.wait_if_held(Some(ConversationId::nth(1))));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Pending));
+        drop(hold);
+        assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Ready(())));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_parked_reply_returns_the_count_to_zero() {
+        let gate = CompletionGate::default();
+        gate.hold();
+        let mut wait = Box::pin(gate.wait_if_held(None));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Pending));
+        assert_eq!(1, gate.parked.load(Ordering::SeqCst));
+        drop(wait);
+        assert_eq!(0, gate.parked.load(Ordering::SeqCst));
     }
 }

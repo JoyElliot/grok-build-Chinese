@@ -1712,6 +1712,10 @@ fn permission_mode_toast_returns_brand_consistent_strings() {
         permission_mode_toast(PermissionModeKind::Ask),
         "\u{2713} Permission mode: Ask",
     );
+    assert_eq!(
+        permission_mode_toast(PermissionModeKind::Auto),
+        "\u{2713} Permission mode: Auto-review",
+    );
     // AlwaysApprove still goes through `yolo_toast(true)`, the destructive variant
     assert_eq!(
         permission_mode_toast(PermissionModeKind::AlwaysApprove),
@@ -2523,22 +2527,23 @@ fn show_export_copy_tip_shows_and_counts_when_flag_on() {
 }
 
 #[test]
-fn cycle_mode_walks_the_published_modes_then_always_approve() {
+fn cycle_mode_walks_the_published_modes_then_auto_then_always_approve() {
     let mut app = test_app_with_agent();
     publish_agent_ask_plan(&mut app);
 
-    let presses: Vec<_> = (0..4).map(|_| press_shift_tab(&mut app)).collect();
+    let presses: Vec<_> = (0..5).map(|_| press_shift_tab(&mut app)).collect();
 
     assert_eq!(
         vec![
             ("Switched to mode: Ask", vec!["set_mode:ask".to_owned()]),
             ("Switched to mode: Plan", vec!["set_mode:plan".to_owned()]),
             (
+                "Switched to mode: Auto-review",
+                vec!["set_mode:default".to_owned(), "persist:auto".to_owned()]
+            ),
+            (
                 "Switched to mode: Always-Approve",
-                vec![
-                    "set_mode:default".to_owned(),
-                    "persist:always-approve".to_owned()
-                ]
+                vec!["persist:always-approve".to_owned()]
             ),
             ("Switched to mode: Agent", vec!["persist:ask".to_owned()]),
         ],
@@ -2556,13 +2561,14 @@ fn cycle_mode_under_the_policy_pin_returns_to_the_first_published_mode() {
     app.yolo_policy_block = Some(POLICY_WARNING);
     publish_agent_ask_plan(&mut app);
 
-    press_shift_tab(&mut app);
-    press_shift_tab(&mut app);
+    for _ in 0..3 {
+        press_shift_tab(&mut app);
+    }
 
     let (banner, effects) = press_shift_tab(&mut app);
 
     assert_eq!("Switched to mode: Agent", banner);
-    assert_eq!(vec!["set_mode:default", "persist:ask"], effects);
+    assert_eq!(vec!["persist:ask"], effects);
     assert_eq!(Some(POLICY_WARNING), agent_toast(&app).as_deref());
     assert!(!test_agent(&app, AgentId(0)).session.is_yolo());
 }
@@ -2671,26 +2677,28 @@ fn published_modes_keep_the_always_approve_staged_before_the_session() {
     );
 }
 
-/// The published cycle has no Auto.
 #[test]
-fn an_agent_that_publishes_modes_drops_auto() {
+fn published_modes_keep_the_auto_staged_before_the_session() {
     let mut app = test_app_with_agent();
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
 
     // Two presses move the agent from Normal to Plan to Auto before a session exists
     dispatch(Action::CycleMode, &mut app);
     dispatch(Action::CycleMode, &mut app);
-    assert!(test_agent(&app, AgentId(0)).session.is_auto());
 
     let effects = create_session_with_published_modes(&mut app);
 
-    assert!(!test_agent(&app, AgentId(0)).session.is_auto());
-    assert_eq!(Some("ask"), app.current_ui.permission_mode.as_deref());
+    assert!(test_agent(&app, AgentId(0)).session.is_auto());
+    assert_eq!(Some("auto"), app.current_ui.permission_mode.as_deref());
     assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistPermissionMode { .. })),
-        "a permission the published cycle cannot show must not be persisted: {effects:?}"
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::PersistPermissionMode {
+                canonical: "auto",
+                ..
+            }
+        )),
+        "the shell must be told the permission the prompt row shows: {effects:?}"
     );
 }
 

@@ -42,7 +42,7 @@ use xai_grok_shell::agent::app::{run_headless, run_leader};
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::leader::{
     ClientCapabilities, ClientMode, ControlCommand, LeaderCapabilities, LeaderDescriptor,
-    LeaderRegistration, LeaderTarget, leader_is_older_than,
+    LeaderRegistration, LeaderTarget,
 };
 use xai_grok_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
@@ -154,7 +154,6 @@ fn load_disk_agent_config(locale: &LocaleContext) -> Result<AgentConfig> {
         ))
     })
 }
-
 #[cfg(all(feature = "test-seams", debug_assertions))]
 mod test_seam {
     const TEST_TRUSTED_PUBKEY_FILE_ENV: &str = "GROK_TEST_TRUSTED_PUBKEY_FILE";
@@ -296,10 +295,10 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         ),
     );
 }
-/// `grok-zh setup`: rendering + exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
-/// `json` prints the served configuration instead of installing it.
+/// `json` prints the managed configuration without installing it.
+#[tracing::instrument(level = "debug", skip_all)]
 async fn run_setup_command(json: bool, locale: &LocaleContext) {
-    use xai_grok_shell::managed_config::{self, SetupOutcome};
+    use xai_grok_cloud_config::managed_config::{self, SetupOutcome};
     if !managed_config::has_principal() {
         eprintln!(
             "{}",
@@ -1946,7 +1945,8 @@ async fn run_agent_command(
                             match auto_update::ensure_latest_on_disk(&uc).await {
                                 Ok(outcome) => {
                                     if let Some(v) = &outcome.installed {
-                                        if let Err(e) = xai_grok_shell::managed_config::sync().await
+                                        if let Err(e) =
+                                            xai_grok_cloud_config::managed_config::sync().await
                                         {
                                             tracing::warn!(
                                                 "Leader auto-update: managed config refresh failed: {e}"
@@ -2579,7 +2579,8 @@ async fn async_main(
                     agent_cfg.grok_com_config.auth_provider_command.clone(),
                     None,
                 );
-                xai_grok_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
+                xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager)
+                    .await;
             }
             Err(e) => {
                 tracing::warn!(
@@ -2783,19 +2784,21 @@ async fn async_main(
                 auto,
             } => {
                 init_tracing_simple("cli");
-                let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let channel_switch = get_channel_switch(alpha, stable, enterprise);
-                let trigger = resolve_update_trigger(trigger.as_deref(), auto);
-                return run_update_command(
-                    check,
-                    json,
-                    force_reinstall,
-                    version,
-                    channel_switch,
-                    trigger,
-                    &update_config,
-                )
-                .await;
+                {
+                    let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+                    let trigger = resolve_update_trigger(trigger.as_deref(), auto);
+                    return run_update_command(
+                        check,
+                        json,
+                        force_reinstall,
+                        version,
+                        channel_switch,
+                        trigger,
+                        &update_config,
+                    )
+                    .await;
+                }
             }
             Command::Login {
                 legacy: _,
@@ -2932,8 +2935,9 @@ async fn async_main(
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let check_updates = should_check_for_updates(args.no_auto_update);
     let bg_update_rx: Option<tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>> =
-        if should_check_for_updates(args.no_auto_update) {
+        if check_updates {
             let update_config = update_config.clone();
             let wait_slot = bg_update_wait.clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3034,11 +3038,12 @@ fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
     if cfg!(debug_assertions) {
         return false;
     }
-    if no_auto_update_flag {
-        return false;
-    }
-    !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
-        .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
+    !is_opted_out_of_updates(no_auto_update_flag)
+}
+fn is_opted_out_of_updates(no_auto_update_flag: bool) -> bool {
+    no_auto_update_flag
+        || std::env::var_os("GROK_DISABLE_AUTOUPDATER")
+            .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
 }
 /// Gate for the stdio agent's background auto-update: only the direct stdio agent, from the managed install.
 /// Other modes update in `run_agent_command`.
@@ -3168,7 +3173,10 @@ async fn signal_leaders_to_relaunch(installed_version: &str) {
             continue;
         };
         if let Some(ref live) = d.live_info
-            && !leader_is_older_than(&live.leader_binary_version, installed_version)
+            && !xai_grok_shell::leader::leader_is_older_than(
+                &live.leader_binary_version,
+                installed_version,
+            )
         {
             continue;
         }

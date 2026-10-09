@@ -931,7 +931,11 @@ pub(crate) fn list_blocked_reasons<'a>(
             let name = crate::session::mcp_servers::mcp_server_name(server);
             // Raw catalog entries carry no source tier; classify through the one classifier with the
             // fail-closed non-native tier (only `project_scoped` feeds the pin arm).
-            let subject = crate::session::managed_mcp::mcp_subject_for_tier(name, false, &project);
+            let subject = crate::session::managed_mcp::mcp_subject_for_tier(
+                name,
+                xai_grok_config::mcp_servers::SessionMcpTier::Foreign,
+                &project,
+            );
             if let Some(reason) = ms.mcp_project_pin_block(server, subject) {
                 blocked.entry(name.to_string()).or_insert(reason);
             }
@@ -1313,6 +1317,7 @@ pub(crate) async fn read_mcp_resource(
         )
     };
 
+    let _request = client.begin_outbound_request();
     let mcp_service = client
         .ensure_initialized()
         .await
@@ -1463,6 +1468,7 @@ impl xai_grok_tools::types::resources::McpResourceProvider for McpStateResourceP
             )
         };
 
+        let _request = client.begin_outbound_request();
         let mcp_service = client
             .ensure_initialized()
             .await
@@ -2144,7 +2150,7 @@ fn upsert_policy_subject(
 ) -> xai_grok_workspace::permission::resolution::McpSubject {
     crate::session::managed_mcp::mcp_subject_for_tier(
         server_name,
-        true,
+        xai_grok_config::mcp_servers::SessionMcpTier::Native,
         &crate::agent::folder_trust::project_scoped_mcp_names(cwd),
     )
 }

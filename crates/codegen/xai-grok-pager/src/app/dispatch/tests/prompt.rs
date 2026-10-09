@@ -1490,6 +1490,28 @@ fn prompt_response_resets_turn_state() {
     assert_eq!(agent_ref(&app, id).scrollback.len(), 1);
 }
 
+/// A turn that ends through its prompt response returns freed pages exactly once, counted on the dispatching thread.
+#[test]
+fn prompt_response_releases_retained_memory_once() {
+    use crate::memory_release::test_support;
+    test_support::install_counting_hook();
+
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
+    let before = test_support::calls();
+    dispatch(
+        Action::TaskComplete(TaskResult::PromptResponse {
+            agent_id: id,
+            result: Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+            http_status: None,
+            prompt_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(test_support::calls(), before + 1);
+}
+
 /// Turn end with prompt suggestions enabled fires the `x.ai/suggestPrompt` fetch (before the billing refresh).
 /// The loaded suggestion routes back into the agent's controller by id and generation.
 #[test]
@@ -3465,10 +3487,7 @@ fn switch_model_holds_prompt_until_complete() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
 
     dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(agent_ref(&app, id).session.model_switch_pending);
@@ -3483,8 +3502,7 @@ fn switch_model_holds_prompt_until_complete() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -3504,15 +3522,10 @@ fn slash_compact_enqueues_command() {
     let id = AgentId(0);
 
     let effects = dispatch(Action::SendPrompt("/compact".into()), &mut app);
+
     // /compact enqueues as Command and drains immediately (agent was idle).
     assert_eq!(effects.len(), 1);
-    assert!(matches!(
-        effects.first(),
-        Some(Effect::Compact {
-            user_context: None,
-            ..
-        })
-    ));
+    assert!(matches!(effects.first(), Some(Effect::Compact { .. })));
     assert!(agent_ref(&app, id).prompt.text().is_empty());
 }
 
@@ -3610,20 +3623,65 @@ fn palette_dispatch_preserves_prompt_draft() {
     );
 }
 
-#[test]
-fn slash_compact_with_context_enqueues_command() {
+#[rstest::rstest]
+#[case::english_fullscreen(
+    crate::locale::UiLocale::EnUs,
+    crate::app::ScreenMode::Fullscreen,
+    "/compact takes no arguments."
+)]
+#[case::chinese_fullscreen(
+    crate::locale::UiLocale::ZhCn,
+    crate::app::ScreenMode::Fullscreen,
+    "/compact 不接受参数。"
+)]
+#[case::english_minimal(
+    crate::locale::UiLocale::EnUs,
+    crate::app::ScreenMode::Minimal,
+    "/compact takes no arguments."
+)]
+#[case::chinese_minimal(
+    crate::locale::UiLocale::ZhCn,
+    crate::app::ScreenMode::Minimal,
+    "/compact 不接受参数。"
+)]
+fn slash_compact_with_trailing_text_is_refused(
+    #[case] locale: crate::locale::UiLocale,
+    #[case] screen_mode: crate::app::ScreenMode,
+    #[case] expected: &str,
+) {
     let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.locale = Arc::new(crate::locale::LocaleContext::new(
+        crate::locale::ResolvedLocale {
+            locale,
+            source: crate::locale::LocaleSource::Cli,
+        },
+    ));
+    app.screen_mode = screen_mode;
+    let agent = app.agents.get_mut(&id).unwrap();
+    agent.set_locale_recursive(&app.locale);
+    agent.prompt.set_text("/compact focus on auth");
+
     let effects = dispatch(
         Action::SendPrompt("/compact focus on auth".into()),
         &mut app,
     );
-    assert_eq!(effects.len(), 1);
-    assert!(matches!(effects.first(),Some(
-        Effect::Compact {
-            user_context: Some(ctx),
-            ..
-        }) if ctx == "focus on auth"
-    ));
+
+    assert!(effects.is_empty(), "nothing runs, got {effects:?}");
+    let notice = if screen_mode.is_minimal() {
+        Some(last_system_text(&app, id))
+    } else {
+        agent_ref(&app, id)
+            .toast
+            .as_ref()
+            .map(|(text, _)| text.clone())
+    };
+    assert_eq!(
+        notice.as_deref(),
+        Some(expected),
+        "the send path refuses before the command runs"
+    );
+    assert_eq!(agent_ref(&app, id).prompt.text(), "/compact focus on auth");
 }
 
 #[test]
@@ -6202,13 +6260,7 @@ fn compact_with_images_toasts_and_drops() {
     let effects = dispatch(Action::SendPrompt(text), &mut app);
 
     assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::Compact {
-                user_context: None,
-                ..
-            }]
-        ),
+        matches!(effects.as_slice(), [Effect::Compact { .. }]),
         "the command must still run, got {effects:?}"
     );
     assert_eq!(

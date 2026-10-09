@@ -77,6 +77,7 @@ fn registered_settings() {
             ),
             ("dock", ("GROK_DOCK", false)),
             ("terminal_theme", ("GROK_TERMINAL_THEME", false)),
+            ("file_acceleration", ("GROK_FILE_ACCELERATION", false)),
         ]),
     );
 }
@@ -111,6 +112,7 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             Feature::ActiveAgentMessages => settings.active_agent_messages_enabled = Some(value),
             Feature::Dock => settings.dock_enabled = Some(value),
             Feature::TerminalTheme => settings.terminal_theme_enabled = Some(value),
+            Feature::FileAcceleration => settings.file_acceleration_enabled = Some(value),
             // The one row with no remote tier, stated as such rather than as a projection that reads nothing
             Feature::BackendTools => {
                 assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
@@ -288,4 +290,23 @@ fn config_layers_split_the_config_tier_around_the_user_file() {
     layers.user_requirements = Some(doc(true));
     let split = feature.config_layers(&layers, &[]);
     assert_eq!(split.pin, Some(true));
+}
+
+#[test]
+fn a_withheld_capability_turns_its_feature_off_over_every_source() {
+    let on = || FeatureSources {
+        pin: Some(true),
+        env: Some(true),
+        config: Some(true),
+        remote: Some(true),
+    };
+    let withheld =
+        Feature::VoiceMode.resolve_as(Distribution::withholding(&[Capability::Voice]), on());
+    assert!(!withheld.value);
+    assert_eq!(ConfigSource::Default, withheld.source);
+    assert!(
+        Feature::VoiceMode
+            .resolve_as(Distribution::STOCK, on())
+            .value
+    );
 }

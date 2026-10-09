@@ -6,8 +6,10 @@ use crate::agent::mvp_agent::{
     MvpAgent, agent_name_after_model_switch, harnesses_are_compatible, resolve_required_agent_type,
 };
 use crate::sampling::EffortTarget;
+pub(crate) use crate::session::SwitchContextWindow;
 use crate::session::{SessionCommand, SessionModelSwitch};
 use agent_client_protocol::{self as acp};
+use std::num::NonZeroU64;
 use tokio::sync::oneshot;
 use xai_grok_sampling_types::ReasoningEffort;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,7 @@ pub(crate) async fn apply(
     agent: &MvpAgent,
     args: acp::SetSessionModelRequest,
     effort: SwitchEffort,
+    context_window: SwitchContextWindow,
     config_notice: ConfigNotice,
 ) -> Result<acp::SetSessionModelResponse, acp::Error> {
     tracing::info!("Received set session model request {args:?}");
@@ -165,6 +168,9 @@ pub(crate) async fn apply(
         EffortTarget::ModelSwitch,
     );
     let applied_effort = model_sampling.reasoning_effort;
+    let supported_context_windows = std::iter::once(model.info().context_window)
+        .chain(model.info().context_windows.iter().copied())
+        .collect();
     let (new_threshold, system_prompt_label) = {
         let cfg = agent.cfg.borrow();
         (
@@ -241,6 +247,8 @@ pub(crate) async fn apply(
             skip_prompt_rewrite: did_rebuild || model_unchanged,
             auto_compact_threshold_percent: new_threshold,
             system_prompt_label,
+            context_window_selection: context_window,
+            supported_context_windows,
         },
         responds_to: tx,
     });
@@ -258,6 +266,8 @@ pub(crate) async fn apply(
         &session_id,
         model_id.0.as_ref(),
         applied_effort.map(|eff| eff.to_string()),
+        crate::session::handle::load_context_window_selection(&handle.context_window_selection)
+            .map(NonZeroU64::get),
     );
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
@@ -319,6 +329,8 @@ pub(crate) async fn apply_reasoning_effort(
         &session_id,
         model_id.0.as_ref(),
         Some(effort.to_string()),
+        crate::session::handle::load_context_window_selection(&handle.context_window_selection)
+            .map(NonZeroU64::get),
     );
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
@@ -339,13 +351,15 @@ fn notify_model_changed(
     session_id: &acp::SessionId,
     model_id: &str,
     reasoning_effort: Option<String>,
+    context_window_selection: Option<u64>,
 ) {
     let notification = crate::extensions::notification::SessionNotification {
         session_id: session_id.clone(),
-        update: crate::extensions::notification::SessionUpdate::ModelChanged {
-            model_id: model_id.to_owned(),
+        update: crate::extensions::notification::SessionUpdate::model_changed(
+            model_id,
             reasoning_effort,
-        },
+            context_window_selection,
+        ),
         meta: None,
     };
     if let Ok(params) = serde_json::value::to_raw_value(&notification) {

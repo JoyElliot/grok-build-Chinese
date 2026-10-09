@@ -331,15 +331,15 @@ fn reconnect_restore_outcome(
     (all_restored, active_restored)
 }
 /// Compute the folder-trust verdict for the session cwd and seed [`AppView::trust_state`].
-/// Pager-side mirror of the agent's resolve.
-/// Reads the local store, scans for repo-local code-exec config, and runs the pure [`decide`](xai_grok_workspace::folder_trust::decide) precedence.
+/// The agent makes the same decision with `resolve_trust`.
 fn seed_trust_state(
     app: &mut AppView,
     remote: Option<&xai_grok_shell::util::config::RemoteSettings>,
 ) {
     use std::io::IsTerminal;
     use xai_grok_workspace::folder_trust::{
-        TrustOutcome, decide, decide_inputs_with_interactive, feature_enabled,
+        PromptPolicy, TrustResolution, decide_inputs_with_interactive, feature_enabled,
+        resolve_trust,
     };
     use xai_grok_workspace::trust::workspace_key;
     let feature = feature_enabled(remote);
@@ -350,9 +350,9 @@ fn seed_trust_state(
     let cwd = app.cwd.clone();
     let key = workspace_key(&cwd);
     let inputs = decide_inputs_with_interactive(&cwd, &key, std::io::stdin().is_terminal());
-    app.trust_state = match decide(feature, &inputs) {
-        TrustOutcome::Prompt => TrustState::Pending { workspace: key },
-        TrustOutcome::Trusted | TrustOutcome::Untrusted => TrustState::Done,
+    app.trust_state = match resolve_trust(feature, &inputs, PromptPolicy::MayPrompt) {
+        TrustResolution::NeedsPrompt => TrustState::Pending { workspace: key },
+        TrustResolution::Decided(_) => TrustState::Done,
     };
 }
 /// Must run before the first render, or the startup-intent block opens a session behind the gate and the first frame shows the normal welcome.
@@ -1439,26 +1439,26 @@ pub(crate) async fn run(
     let requirements = xai_grok_shell::config::load_merged_requirements();
     let user_config = xai_grok_shell::config::load_from_disk().ok();
     let managed_config = xai_grok_shell::config::load_managed_config().ok();
-    let (config_layers, effective_config) = {
+    let config_layers = {
         let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.effective_config");
-        match xai_grok_shell::config::load_effective_config_with_layers() {
-            Ok((layers, raw)) => (Some(layers), Some(raw)),
-            Err(e) => {
+        xai_grok_shell::config::load_effective_config_with_layers()
+            .inspect_err(|e| {
                 tracing::debug!(error = %e, "failed to load effective config, using partial layers");
-                (None, None)
-            }
-        }
+            })
+            .ok()
     };
-    let compat = xai_grok_shell::agent::config::resolve_compat_sessions_from_raw(
-        effective_config.as_ref().ok_or(()),
+    let effective_config = config_layers.as_ref().map(|loaded| &loaded.effective);
+    let compat = xai_grok_config::compat::resolve_compat_sessions(
+        effective_config,
+        &xai_grok_config::compat::CompatEnv::from_process(),
         remote_settings.as_ref(),
     );
     app.foreign_session_compat = xai_grok_foreign_sessions::EnabledForeignSessionSources {
-        claude: compat.claude.sessions,
-        codex: compat.codex.sessions,
-        cursor: compat.cursor.sessions,
+        claude: compat.claude,
+        codex: compat.codex,
+        cursor: compat.cursor,
     };
-    if let Some(ref raw) = effective_config {
+    if let Some(raw) = effective_config {
         app.notification_service = crate::notifications::NotificationService::new(
             crate::notifications::load_notification_config(raw),
             app.escape_writer.clone(),
@@ -1552,7 +1552,7 @@ pub(crate) async fn run(
             .as_ref()
             .and_then(|s| s.slash_command_tags.as_ref());
         let empty_toml = toml::Value::Table(Default::default());
-        let tags_config = effective_config.as_ref().unwrap_or(&empty_toml);
+        let tags_config = effective_config.unwrap_or(&empty_toml);
         *app.command_tags.borrow_mut() = resolve_slash_command_tags(tags_config, remote_slash_tags);
         app.locale.set_remote_command_tags(
             xai_grok_shell::util::config::resolve_remote_slash_command_tags(
@@ -1562,7 +1562,7 @@ pub(crate) async fn run(
         );
     }
     let hints = xai_grok_shell::util::config::resolve_hints(
-        effective_config.as_ref(),
+        effective_config,
         requirements.as_ref(),
         user_config.as_ref(),
         managed_config.as_ref(),
@@ -1682,7 +1682,7 @@ pub(crate) async fn run(
     );
     app.apply_contextual_hints(resolved_hints);
     let mouse_toggle = xai_grok_shell::util::config::resolve_mouse_reporting_toggle(
-        effective_config.as_ref(),
+        effective_config,
         &app.current_ui,
     );
     app.registry = crate::actions::ActionRegistry::defaults_with_config_for(
@@ -1753,7 +1753,7 @@ pub(crate) async fn run(
     let mut acp_peek: Option<AcpClientMessage> = None;
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
-    let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
+    let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::TaggedVoiceEvent>>;
     let voice_auth_factory = connection.auth_manager.clone();
     let mut tick_interval = tick_interval;
     let mut animation_tick_at: Option<Instant> = None;
@@ -2045,17 +2045,17 @@ pub(crate) async fn run(
         }
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
-                let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+                let stt_routes = crate::voice::build_stt_routes(voice_auth_factory.clone());
+                app.voice_auth = Some(stt_routes.auth.clone());
                 let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
                 let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
                 let voice_config = app.voice_config.clone();
                 tokio::spawn(xai_grok_voice::run_voice_pipeline(
                     voice_config,
-                    voice_auth.clone(),
+                    stt_routes,
                     cmd_rx,
                     event_tx,
                 ));
-                app.voice_auth = Some(voice_auth);
                 app.voice_cmd_tx = Some(cmd_tx);
                 voice_rx = Some(event_rx);
                 tracing::info!("voice pipeline started (/voice or Ctrl+Space)");
@@ -2065,19 +2065,20 @@ pub(crate) async fn run(
                 ) {
                     app.voice_begin_recording(target, hold);
                 } else {
-                    app.voice_state = VoiceState::Idle;
+                    app.voice_reset();
                     app.voice_ui_active = false;
                 }
             } else if app.voice_cmd_tx.is_none() {
-                app.voice_state = VoiceState::Idle;
+                app.voice_reset();
                 app.voice_ui_active = false;
                 app.show_toast("Voice could not start. Restart grok-zh.");
             } else {
-                app.voice_state = VoiceState::Idle;
+                app.voice_reset();
             }
             presenter.request_presentation(&mut app, terminal, false);
         }
         app.enforce_voice_session_bound();
+        app.voice_expire_outstanding_clip(std::time::Instant::now());
         let want_gboom_keyboard = app.gboom_active();
         if want_gboom_keyboard {
             if !gboom_keyboard_pushed {
@@ -2291,8 +2292,85 @@ pub(crate) async fn run(
                 );
             }
 
-            // Biased order: cancellation/quit, writer acks/failures, blocked-writer report, ACP, task/progress results, updates, input, and render/poll timers
-            // All of them precede the deliberately-last voice STT arm (see its note below)
+            // These self-limiting timers sit above ACP: during heavy streaming acp_rx is ready on
+            // nearly every `biased` pass and starves everything below it
+
+            // Gated: an overdue gap tick must not end the scroll stream while a wheel event waits
+            _ = scroll_tick, if input_rx.is_empty() => {
+                if app.tick_scroll() {
+                    presenter.request(false);
+                }
+                // Scroll dispatch can start work that animates (e.g. viewport state)
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            _ = deferred_draw => {
+                presenter.draw_scheduled_at = None;
+                presenter.request(false);
+            }
+
+            _ = animation_tick => {
+                animation_tick_at = None;
+                // Lost-cancel recovery
+                if let Some(resends) = dispatch::reconcile_overdue_cancels(&mut app)
+                    && process_effects(resends, &mut tasks, &mut app, &progress_tx)
+                {
+                    break;
+                }
+
+                // Unacknowledged-prompt recovery
+                if let Some(effs) =
+                    dispatch::reconcile_overdue_prompt_acks(&mut app, &ack_deadlines)
+                {
+                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+                        break;
+                    }
+                    presenter.request(false);
+                }
+
+                // Lost-response recovery
+                let reconciled = dispatch::reconcile_overdue_turn_ends(&mut app);
+                // The reconcile queues image notices without dispatching an action
+                let notice_shown = app.flush_image_notices_if_root();
+                if let Some(effs) = reconciled {
+                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+                        break;
+                    }
+                    presenter.request(false);
+                } else {
+                    let ticked = app.tick();
+                    if ticked || notice_shown {
+                        presenter.request(false);
+                    }
+                }
+
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            // Gated: an overdue deadline must not paint an intermediate size while a resize event waits
+            _ = resize_debounce, if input_rx.is_empty() => {
+                resize_debounce_at = None;
+                presenter.request(false);
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+            }
+
+            _ = status_line_refresh => {
+                status_line_refresh_at = None;
+                // This queues an effect in `pending_effects` for the drain below
+                app.note_status_line_refresh_due();
+                schedule_tick(&mut animation_tick_at, &app, tick_interval);
+                if app.status_line.take_changed() {
+                    presenter.request(false);
+                }
+                // The interval restarts at fire time; `status_line_tick_demand` stops a slow script
+                // from stacking runs behind the timer
+                if let Some(interval) = status_line_refresh_interval {
+                    status_line_refresh_at = Some(Instant::now() + interval);
+                }
+            }
+
+            // Biased order: cancel/quit, writer acks/failures, blocked-writer report, timers, ACP,
+            // task/progress results, updates, input, slow polls, and the deliberately-last voice STT arm
 
             // Without the gate, buffered wheel/key events sat in input_rx until the stream went quiet
             // Gating, not reordering: moving input above ACP would flip the starvation direction (streaming redraws starving behind held keys)
@@ -2526,71 +2604,9 @@ pub(crate) async fn run(
 
             _ = stall_flush => {}
 
-            // Debounced resize: draw once the terminal size has stabilized.
-            _ = resize_debounce => {
-                resize_debounce_at = None;
-                presenter.request(false);
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
-            }
-
-            // Deferred draw: fires when an ACP-triggered draw was throttled.
-            _ = deferred_draw => {
-                presenter.draw_scheduled_at = None;
-                presenter.request(false);
-            }
-
             // Only opens the gate; the next loop-top attempt owns the blocking handoff so no select arm performs it inline
             _ = suspend_retry => {
                 suspend_retry_after = None;
-            }
-
-            // Scroll clock: flush residual wheel/trackpad lines and detect the 80ms stream gap
-            // Runs on the 16ms redraw cadence, not the slower animation fps
-            // The next deadline is re-derived at loop top from the post-tick scroll state
-            _ = scroll_tick => {
-                if app.tick_scroll() {
-                    presenter.request(false);
-                }
-                // Scroll dispatch can start work that animates (e.g. viewport state), so keep the animation arm in sync too.
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
-            }
-
-            _ = animation_tick => {
-                animation_tick_at = None;
-                // Lost-cancel recovery: re-send cancels for panes still cancelling past the grace (`dispatch::reconcile_overdue_cancels`)
-                // `needs_animation()` keeps ticks alive while either recovery is armed, so these checks cannot be starved
-                if let Some(resends) = dispatch::reconcile_overdue_cancels(&mut app)
-                    && process_effects(resends, &mut tasks, &mut app, &progress_tx)
-                {
-                    break;
-                }
-                // Unacknowledged-prompt recovery (see `dispatch::reconcile_overdue_prompt_acks`)
-                if let Some(effs) =
-                    dispatch::reconcile_overdue_prompt_acks(&mut app, &ack_deadlines)
-                {
-                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-                        break;
-                    }
-                    presenter.request(false);
-                }
-                // Lost-response recovery (see `dispatch::reconcile_overdue_turn_ends`)
-                // Finish any turn whose `prompt_complete` broadcast outlived the grace window without its `session/prompt` RPC response arriving
-                let reconciled = dispatch::reconcile_overdue_turn_ends(&mut app);
-                // The reconcile drains queues outside any dispatched action; its image notices show now.
-                let notice_shown = app.flush_image_notices_if_root();
-                if let Some(effs) = reconciled {
-                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
-                        break;
-                    }
-                    presenter.request(false);
-                } else {
-                    let ticked = app.tick();
-                    if ticked || notice_shown {
-                        presenter.request(false);
-                    }
-                }
-                // Keep ticking as long as there are running animations or pending actions waiting to expire
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
             }
 
             _ = billing_poll => {
@@ -2618,22 +2634,6 @@ pub(crate) async fn run(
                 }
                 if !app.has_access() {
                     gate_poll_at = Some(Instant::now() + GATE_POLL_INTERVAL);
-                }
-            }
-
-            _ = status_line_refresh => {
-                status_line_refresh_at = None;
-                // Lands in `pending_effects`, drained below like every arm's
-                app.note_status_line_refresh_due();
-                // A run is owed; `status_line_tick_demand` owns the routing
-                schedule_tick(&mut animation_tick_at, &app, tick_interval);
-                if app.status_line.take_changed() {
-                    presenter.request(false);
-                }
-                // Re-armed at fire time, so the cadence is independent of how long a run takes
-                // The owed-run rule above is what keeps a slow script from stacking runs behind the timer
-                if let Some(interval) = status_line_refresh_interval {
-                    status_line_refresh_at = Some(Instant::now() + interval);
                 }
             }
 
@@ -3070,7 +3070,7 @@ pub(crate) async fn run(
             } => {
                 match ev {
                     Some(ev) => {
-                        let needs_draw = crate::voice::handle_voice_event(&mut app, ev);
+                        let needs_draw = crate::voice::handle_tagged_voice_event(&mut app, ev);
                         if needs_draw {
                             schedule_tick(&mut animation_tick_at, &app, tick_interval);
                             let now = Instant::now();
@@ -3473,7 +3473,7 @@ async fn drain_and_process(
             && is_voice_chord(ke)
             && !app.voice_hold_owned()
             && !app.voice_listening()
-            && !app.voice_state.pending_cold_start()
+            && !app.voice_state.is_pending_cold_start()
             && active_feedback_modal_open(app)
         {
             return false;

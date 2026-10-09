@@ -541,7 +541,7 @@ fn permission_mode_toast_with_locale(
         PermissionModeKind::AlwaysApprove => return yolo_toast_with_locale(true, locale),
         PermissionModeKind::Auto => (
             "toast.permission.mode_auto",
-            "\u{2713} Permission mode: Auto (classifier)",
+            "\u{2713} Permission mode: Auto-review",
         ),
         PermissionModeKind::Ask => ("toast.permission.mode_ask", "\u{2713} Permission mode: Ask"),
         PermissionModeKind::Default => (
@@ -818,7 +818,12 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                     agent.session.yolo_mode = false;
                     app.default_yolo = false;
                     app.current_ui.permission_mode = Some("auto".into());
-                    agent.show_mode_switch_banner("Auto");
+                    agent.show_mode_switch_banner(
+                        agent
+                            .scrollback
+                            .locale()
+                            .named_static_text("mode.auto_review.label", "Auto-review"),
+                    );
                     tracing::info!("Mode cycle (pre-session): Plan → Auto");
                     Some("auto")
                 } else if let Some(warning) = yolo_locked {
@@ -885,7 +890,12 @@ fn dispatch_cycle_mode_inner(app: &mut AppView) -> Vec<Effect> {
                 // A launch-seeded default_yolo would start the session in yolo while the UI shows Auto
                 app.default_yolo = false;
                 app.current_ui.permission_mode = Some("auto".into());
-                agent.show_mode_switch_banner("Auto");
+                agent.show_mode_switch_banner(
+                    agent
+                        .scrollback
+                        .locale()
+                        .named_static_text("mode.auto_review.label", "Auto-review"),
+                );
                 tracing::info!("Mode cycle (pre-session): Plan+Auto → Auto");
                 Some("auto")
             }
@@ -983,7 +993,20 @@ fn mode_choices(
 ) -> Vec<(ModeChoice, String)> {
     let mut choices = published_mode_choices(agent);
     if choices.is_empty() {
-        choices = builtin_mode_choices(auto_gate);
+        choices = vec![
+            (ModeChoice::Session(SessionMode::Default), "Normal".into()),
+            (ModeChoice::Session(SessionMode::Plan), "Plan".into()),
+        ];
+    }
+    if auto_gate {
+        choices.push((
+            ModeChoice::Auto,
+            agent
+                .scrollback
+                .locale()
+                .named_text("mode.auto_review.label", "Auto-review")
+                .into_owned(),
+        ));
     }
     choices.push((ModeChoice::AlwaysApprove, "Always-Approve".into()));
     choices
@@ -999,18 +1022,6 @@ fn published_mode_choices(agent: &crate::app::agent_view::AgentView) -> Vec<(Mod
             Some((ModeChoice::Session(id), mode.name.clone()))
         })
         .collect()
-}
-
-/// The cycle for an agent that publishes no modes of its own.
-fn builtin_mode_choices(auto_gate: bool) -> Vec<(ModeChoice, String)> {
-    let mut choices = vec![
-        (ModeChoice::Session(SessionMode::Default), "Normal".into()),
-        (ModeChoice::Session(SessionMode::Plan), "Plan".into()),
-    ];
-    if auto_gate {
-        choices.push((ModeChoice::Auto, "Auto".into()));
-    }
-    choices
 }
 
 /// The next choice, plus the warning when policy refuses Always-Approve.

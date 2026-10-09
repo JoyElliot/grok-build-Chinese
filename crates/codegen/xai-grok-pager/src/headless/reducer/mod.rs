@@ -80,6 +80,10 @@ pub(crate) enum StreamEvent {
         /// Provider's matched stop sequence; set only by the Messages reducer.
         stop_sequence: Option<String>,
     },
+    /// Token counts for a whole turn. Not one model call, so the Messages reducer does not stamp them on an assistant message.
+    TurnUsage {
+        usage: ResponseUsage,
+    },
 }
 
 pub(crate) struct ToolCallEvent {

@@ -777,13 +777,33 @@ impl AgentView {
         let appearance = self.scrollback.appearance().clone();
         let layout_cfg = &appearance.scrollback.layout;
         let scrollbar_cfg = &appearance.scrollback.scrollbar;
-        let model_id = self
+        let model_label = self
             .session
             .models
-            .current_model_name()
-            .unwrap_or_else(|| "unknown".to_string());
+            .footer_model_name()
+            .map(|name| {
+                crate::views::localized_model_name(
+                    name,
+                    self.session.models.reasoning_effort,
+                    locale,
+                )
+            })
+            .unwrap_or_else(|| {
+                if self.session_starting_since.is_some() {
+                    String::new()
+                } else {
+                    "unknown".to_owned()
+                }
+            });
         let effective_plan = self.plan_mode_pending.unwrap_or(self.plan_mode_active);
         let casual_commenting = self.is_casual_commenting();
+        let mode_accent = if effective_plan || casual_commenting {
+            Some(theme.accent_plan)
+        } else if self.effective_session_mode() == xai_grok_tools::types::SessionMode::Ask {
+            Some(theme.accent_success)
+        } else {
+            None
+        };
         let prompt_focused = if self.plan_approval_view.is_some() {
             self.plan_approval_view
                 .as_ref()
@@ -804,17 +824,12 @@ impl AgentView {
             bg: PromptBg::Default,
             accent_color_override: if let Some(c) = self.prompt_input_mode.accent_color(&theme) {
                 Some(c)
-            } else if effective_plan || casual_commenting {
-                Some(theme.accent_plan)
             } else {
-                None
+                mode_accent
             },
-            border_color_override: if effective_plan || casual_commenting {
-                crate::render::color::blend_color(theme.bg_base, theme.accent_plan, 0.4)
-                    .or(Some(theme.accent_plan))
-            } else {
-                None
-            },
+            border_color_override: mode_accent.map(|accent| {
+                crate::render::color::blend_color(theme.bg_base, accent, 0.4).unwrap_or(accent)
+            }),
             prefix_override: if let Some(p) = self.prompt_input_mode.prefix_override(&theme) {
                 Some(p)
             } else if casual_commenting
@@ -1179,6 +1194,12 @@ impl AgentView {
             1
         };
         let voice_recording_height = if voice_listening { 1 } else { 0 };
+        let model_notice = self.session.models.current_notice();
+        let model_notice_height = model_notice.as_ref().map_or(0, |notice| {
+            let text_width =
+                inner_width.saturating_sub(layout_cfg.block_pad_left + layout_cfg.block_pad_right);
+            crate::views::model_notice_banner::height(notice, text_width)
+        });
         let _tool_usage_height = 0u16;
         let btw_height =
             crate::views::btw_overlay::btw_panel_height(self.btw_state.as_ref(), inner_width);
@@ -1221,6 +1242,7 @@ impl AgentView {
             follow_ups_height,
             dock_height,
             prompt_gap,
+            model_notice_height,
             voice_recording_height,
             shortcuts_height: 1,
             status_line_height: status_line.height(),
@@ -1503,7 +1525,10 @@ impl AgentView {
             }),
             dropdown_open,
         );
-        let short = crate::util::display_location_path(&self.session.cwd);
+        let location_path = self.location_path().to_string_lossy();
+        let location_path = crate::views::session_title::sanitize_display_text(&location_path);
+        let short =
+            crate::util::display_location_path(std::path::Path::new(location_path.as_ref()));
         let left_budget = areas
             .values()
             .map(|r| r.x)
@@ -1518,7 +1543,10 @@ impl AgentView {
         let location_budget = left_budget.saturating_sub(upgrade_reserve);
         use unicode_width::UnicodeWidthStr;
         let mut location: Vec<Span> = Vec::new();
-        let lazy_git = crate::git_info::cwd_git_info_lazy(&self.session.cwd);
+        let probe_local_git = true;
+        let lazy_git = probe_local_git
+            .then(|| crate::git_info::cwd_git_info_lazy(&self.session.cwd))
+            .flatten();
         let branch = self
             .current_branch
             .clone()
@@ -2187,14 +2215,7 @@ impl AgentView {
                         .tracker
                         .running_execute_tool_call_id()
                         .is_some();
-                let is_pending_user_input = matches!(
-                    self.blocking_card(),
-                    Some(
-                        BlockingCard::Permission
-                            | BlockingCard::Question
-                            | BlockingCard::McpElicitation
-                    )
-                );
+                let is_pending_user_input = self.is_awaiting_user_answer();
                 let goal_verifying = self
                     .goal_state
                     .as_ref()
@@ -2339,6 +2360,17 @@ impl AgentView {
             }
         }
         self.draw_plugin_cta(buf, layout.plugin_cta, &theme);
+        if let Some(notice) = &model_notice {
+            let row = layout.model_notice;
+            let inset = Rect {
+                x: row.x.saturating_add(layout_cfg.block_pad_left),
+                width: row
+                    .width
+                    .saturating_sub(layout_cfg.block_pad_left + layout_cfg.block_pad_right),
+                ..row
+            };
+            crate::views::model_notice_banner::render(inset, buf, notice);
+        }
         if voice_listening && layout.voice_recording.height > 0 && layout.voice_recording.width > 0
         {
             let rec_area = layout.voice_recording;
@@ -2413,7 +2445,7 @@ impl AgentView {
             .plan_approval_view
             .as_ref()
             .is_some_and(|pav| pav.focus == PlanApprovalFocus::Commenting);
-        let plan_label: Option<&str> = if effective_plan || casual_commenting {
+        let mode_label: Option<&str> = if effective_plan || casual_commenting {
             let commenting_range: Option<&std::ops::Range<usize>> = if approval_is_commenting {
                 self.plan_approval_view
                     .as_ref()
@@ -2453,10 +2485,12 @@ impl AgentView {
             self.published_mode_label()
         };
         let mut flags: Vec<PromptFlag> =
-            mode_flags(plan_label, self.session.permission_label(), &theme);
+            mode_flags(mode_label, self.session.permission_label(), &theme);
         for flag in &mut flags {
             flag.text = match flag.text {
-                "auto" => localized_ui_label(locale, "mode.auto.label", "auto"),
+                "auto-review" => {
+                    localized_ui_label(locale, "mode.auto_review.label", "auto-review")
+                }
                 "always-approve" => {
                     localized_ui_label(locale, "mode.always_approve.label", "always-approve")
                 }
@@ -2476,11 +2510,7 @@ impl AgentView {
         let usage_warning_text: Option<String> = warning.as_ref().map(|(t, _)| t.clone());
         let usage_warning = usage_warning_text.as_deref();
         let usage_warning_critical = warning.is_some_and(|(_, critical)| critical);
-        let model_label = crate::views::localized_model_name(
-            model_id,
-            self.session.models.reasoning_effort,
-            locale,
-        );
+
         let info = match &self.prompt_mode {
             PromptMode::Normal => PromptInfo {
                 model_name: &model_label,
@@ -3439,6 +3469,8 @@ impl AgentView {
                 .is_some_and(|p| p.focus != PlanApprovalFocus::Preview);
             let overlay_bottom = if layout.turn_status.height > 0 {
                 layout.turn_status.y
+            } else if layout.model_notice.height > 0 {
+                layout.model_notice.y
             } else if layout.voice_recording.height > 0 {
                 layout.voice_recording.y
             } else {

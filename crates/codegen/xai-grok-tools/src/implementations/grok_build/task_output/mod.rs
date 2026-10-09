@@ -797,7 +797,9 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
             xai_tool_types::build_task_output_description(&xai_tool_types::TaskOutputToolNaming {
                 monitor_tool: Some("monitor"),
                 read_tool: Some("read_file"),
-                bash_background_param: Some("is_background"),
+                // The current bash tool has no `is_background` param
+                bash_background_param: None,
+                bash_block_param: Some("block_until_ms"),
                 subagent_background_param: Some("run_in_background"),
                 task_ids_param: "task_ids",
                 timeout_ms_param: "timeout_ms",
@@ -839,9 +841,8 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
     }
 }
 
-/// Resolve the model-facing `get_task_output` description from the finalized toolset, honoring an explicit config override. Wording lives in
-/// the shared [`xai_tool_types::build_task_output_description`] builder so the CLI and prod-chat can't drift; presence-gated clauses (monitor
-/// note, subagent source, read-file hint) follow the tools actually registered this turn.
+/// Resolves the `get_task_output` description from the finalized toolset. An explicit config override wins.
+/// The CLI and prod-chat share the wording in [`xai_tool_types::build_task_output_description`].
 fn task_output_description(
     renderer: &TemplateRenderer,
     description_override: Option<&str>,
@@ -852,10 +853,17 @@ fn task_output_description(
             ovr.to_string()
         });
     }
-    xai_tool_types::build_task_output_description(&xai_tool_types::TaskOutputToolNaming {
+    xai_tool_types::build_task_output_description(&task_output_naming(renderer))
+}
+
+/// The tool and param names the finalized toolset advertises for this description.
+/// The builder drops the clause for any tool not registered this turn.
+fn task_output_naming(renderer: &TemplateRenderer) -> xai_tool_types::TaskOutputToolNaming<'_> {
+    xai_tool_types::TaskOutputToolNaming {
         monitor_tool: renderer.tool_for_kind(ToolKind::Monitor),
         read_tool: renderer.tool_for_kind(ToolKind::Read),
         bash_background_param: renderer.param_for_kind(ToolKind::Execute, "is_background"),
+        bash_block_param: renderer.param_for_kind(ToolKind::Execute, "block_until_ms"),
         subagent_background_param: renderer.param_for_kind(ToolKind::Task, "run_in_background"),
         task_ids_param: renderer
             .param_for_kind(ToolKind::BackgroundTaskAction, "task_ids")
@@ -867,7 +875,7 @@ fn task_output_description(
         task_id_param: renderer
             .param_for_kind(ToolKind::KillTaskAction, "task_id")
             .unwrap_or("task_id"),
-    })
+    }
 }
 
 impl xai_tool_runtime::Tool for TaskOutputTool {
@@ -1263,37 +1271,22 @@ mod tests {
         for (label, kinds) in cases {
             let tools: HashMap<ToolKind, String> =
                 kinds.iter().map(|(k, n)| (*k, n.to_string())).collect();
-            // Seed the param map for present tools the way `finalize` does, so
-            // the background sources / subagent header resolve via
-            // `param_for_kind` (which reads the param map, not the tool map).
-            let mut params: HashMap<ToolKind, HashMap<String, String>> = HashMap::new();
-            for (k, _) in kinds.iter() {
-                match k {
-                    ToolKind::Execute => {
-                        params
-                            .entry(ToolKind::Execute)
-                            .or_default()
-                            .insert("is_background".to_string(), "is_background".to_string());
-                    }
-                    ToolKind::Task => {
-                        params.entry(ToolKind::Task).or_default().insert(
-                            "run_in_background".to_string(),
-                            "run_in_background".to_string(),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            let renderer = TemplateRenderer::new(tools, params);
+            let renderer = TemplateRenderer::new(tools, params_finalize_would_seed(kinds));
             let rendered = task_output_description(&renderer, None);
 
             let has_monitor = kinds.iter().any(|(k, _)| *k == ToolKind::Monitor);
             let has_task = kinds.iter().any(|(k, _)| *k == ToolKind::Task);
             let has_read = kinds.iter().any(|(k, _)| *k == ToolKind::Read);
+            let has_bash = kinds.iter().any(|(k, _)| *k == ToolKind::Execute);
 
             assert!(
                 !rendered.contains("${"),
                 "[{label}] left an unrendered template marker:\n{rendered}"
+            );
+            assert_eq!(
+                rendered.contains("block_until_ms=0 commands"),
+                has_bash,
+                "[{label}] bash source mention must match execute-tool presence:\n{rendered}"
             );
             assert_eq!(
                 rendered.contains("monitor"),
@@ -1318,6 +1311,34 @@ mod tests {
         }
     }
 
+    /// Builds the param map for `kinds` the way `finalize` does.
+    /// `param_for_kind` reads this map, not the tool map.
+    fn params_finalize_would_seed(
+        kinds: &[(ToolKind, &str)],
+    ) -> std::collections::HashMap<ToolKind, std::collections::HashMap<String, String>> {
+        use std::collections::HashMap;
+
+        let mut params: HashMap<ToolKind, HashMap<String, String>> = HashMap::new();
+        for (k, _) in kinds.iter() {
+            match k {
+                ToolKind::Execute => {
+                    params
+                        .entry(ToolKind::Execute)
+                        .or_default()
+                        .insert("block_until_ms".to_string(), "block_until_ms".to_string());
+                }
+                ToolKind::Task => {
+                    params.entry(ToolKind::Task).or_default().insert(
+                        "run_in_background".to_string(),
+                        "run_in_background".to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        params
+    }
+
     #[test]
     fn description_tracks_renamed_task_ids_and_timeout_ms() {
         use crate::types::template_renderer::TemplateRenderer;
@@ -1335,7 +1356,7 @@ mod tests {
         let params = HashMap::from([
             (
                 ToolKind::Execute,
-                HashMap::from([("is_background".to_string(), "is_background".to_string())]),
+                HashMap::from([("block_until_ms".to_string(), "wait_ms".to_string())]),
             ),
             (
                 ToolKind::BackgroundTaskAction,
@@ -1357,6 +1378,10 @@ mod tests {
         assert!(
             rendered.contains("max_wait"),
             "renamed timeout_ms must appear:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("from wait_ms=0 commands"),
+            "renamed bash block param must appear:\n{rendered}"
         );
         assert!(
             rendered.contains("monitor"),

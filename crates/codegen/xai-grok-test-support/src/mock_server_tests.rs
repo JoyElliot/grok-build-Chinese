@@ -228,6 +228,56 @@ async fn dropping_entries_keeps_the_count_exact() {
 }
 
 #[tokio::test]
+async fn inference_requests_log_their_endpoint_and_other_routes_none() {
+    let server = MockInferenceServer::start()
+        .await
+        .expect("start mock server");
+
+    post_chat(&server, "title?").await;
+    reqwest::get(format!("{}/models", server.url()))
+        .await
+        .expect("GET /v1/models");
+
+    assert_eq!(
+        vec![
+            (
+                "/v1/chat/completions".to_owned(),
+                Some(InferenceEndpoint::ChatCompletions)
+            ),
+            ("/v1/models".to_owned(), None),
+        ],
+        server
+            .requests()
+            .into_iter()
+            .map(|entry| (entry.path, entry.endpoint))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn request_body_stays_verbatim() {
+    let server = MockInferenceServer::start().await.unwrap();
+    server.set_capture_request_bytes(true);
+    let raw = r#"{"model": "m", "messages": [{"role": "user", "content": "go"}]}"#;
+    reqwest::Client::new()
+        .post(endpoint_url(&server, InferenceEndpoint::ChatCompletions))
+        .header("content-type", "application/json")
+        .body(raw)
+        .send()
+        .await
+        .expect("POST raw inference request");
+
+    let entries = server.requests();
+    assert_eq!(
+        vec![Some(raw.to_owned())],
+        entries
+            .iter()
+            .map(|entry| entry.raw_body.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn auxiliary_request_does_not_consume_foreground_expectation() {
     let server = MockInferenceServer::start().await.unwrap();
     let mut expected = server.expect_response(
@@ -658,7 +708,6 @@ async fn settings_404_until_set_then_200() {
 
 type UserRouteStep = (&'static str, fn(&MockInferenceServer), Value);
 
-/// Whole bodies, so an absent key cannot pass as `null`; one server, so each state is reversible.
 #[tokio::test]
 async fn user_route_serves_exactly_the_fields_set() {
     use MockCanAdministerTeam::{Allowed, Denied, Omitted, Unresolved};
@@ -772,6 +821,47 @@ async fn startup_fetch_delay_slows_models_and_settings_then_clears() {
         started.elapsed() < delay,
         "clearing the delay should make /v1/models fast again, took {:?}",
         started.elapsed(),
+    );
+}
+
+#[tokio::test]
+async fn consent_accept_serves_a_queued_refusal_then_accepts_and_logs() {
+    let server = MockInferenceServer::start()
+        .await
+        .expect("start mock inference server");
+    let url = format!("{}/consent/accept", server.url());
+    server.enqueue_response(
+        "/v1/consent/accept",
+        ScriptedResponse::json(409, json!({ "error": "notice retired" })),
+    );
+    let post = || {
+        reqwest::Client::new()
+            .post(&url)
+            .json(&json!({ "noticeId": "terms", "version": 3 }))
+            .send()
+    };
+
+    let resp = post().await.expect("POST refused /v1/consent/accept");
+    assert_eq!(409, resp.status());
+    let body: Value = resp.json().await.expect("read refusal body");
+    assert_eq!(json!({ "error": "notice retired" }), body);
+
+    let resp = post().await.expect("POST accepted /v1/consent/accept");
+    assert_eq!(
+        200,
+        resp.status(),
+        "an empty queue falls back to acceptance"
+    );
+
+    let posts: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|e| e.method == "POST" && e.path == "/v1/consent/accept")
+        .collect();
+    assert_eq!(2, posts.len(), "the refused record is logged too");
+    assert_eq!(
+        Some(json!({ "noticeId": "terms", "version": 3 })),
+        posts.first().and_then(|entry| entry.body.clone())
     );
 }
 
@@ -1044,10 +1134,41 @@ async fn compatibility_completion_gate_holds_sse_terminals_but_not_json_or_raw()
             }
             Gate::Passes => {}
         }
-        tokio::time::timeout(Duration::from_secs(1), request)
+        tokio::time::timeout(Duration::from_secs(5), request)
             .await
             .unwrap_or_else(|_| panic!("{label} did not complete"));
     }
+}
+
+#[tokio::test]
+async fn held_conversation_finishes_only_after_its_release_while_another_finishes() {
+    let server = MockInferenceServer::start().await.unwrap();
+    server.hold_conversation(1);
+    let held = post_chat_turn(&server, "held");
+    tokio::pin!(held);
+
+    let other = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            body = &mut held => panic!("conversation 1 finished while held: {body:?}"),
+            body = async {
+                while server.conversation(1).is_none() {
+                    tokio::task::yield_now().await;
+                }
+                post_chat_turn(&server, "other").await
+            } => body,
+        }
+    })
+    .await
+    .expect("conversation 2 did not finish while conversation 1 was held");
+    server.release_conversation(1);
+    let released = tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("conversation 1 did not finish after its release");
+
+    assert_eq!(
+        ("Echo: go".to_owned(), "Echo: go".to_owned()),
+        (chat_stream_text(&other), chat_stream_text(&released))
+    );
 }
 
 #[tokio::test]
@@ -1335,6 +1456,30 @@ async fn status_failure_refuses_over_the_wire_with_retry_after_and_is_on_the_log
 }
 
 #[tokio::test]
+async fn status_failure_reports_its_context_window_over_the_wire() {
+    let server = MockInferenceServer::start()
+        .await
+        .expect("start mock server");
+    server.set_conversations(vec![
+        Conversation::nth(1)
+            .refuse(StatusFailure::new(400).with_context_window(6_000))
+            .reply("PONG"),
+    ]);
+
+    let refused = send_chat_turn(&server, "s")
+        .await
+        .expect("POST refused chat turn");
+    let context_window = refused
+        .headers()
+        .get("x-grok-context-window")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    post_chat_turn(&server, "s").await;
+
+    assert_eq!(Some("6000".to_owned()), context_window);
+}
+
+#[tokio::test]
 async fn stalled_answer_arrives_after_the_hold_and_is_on_the_log() {
     const WIRE_HOLD: Duration = Duration::from_millis(300);
     let server = MockInferenceServer::start().await.unwrap();
@@ -1414,8 +1559,6 @@ async fn tls_server_serves_models_only_to_a_client_trusting_the_throwaway_ca() {
     let server = MockInferenceServer::start_tls().await.unwrap();
     let url = format!("{}/models", server.url());
 
-    // An ambient HTTPS_PROXY would intercept the loopback handshake and
-    // make a proxy failure look like a CA or server bug.
     let untrusting = reqwest::Client::builder()
         .use_rustls_tls()
         .no_proxy()

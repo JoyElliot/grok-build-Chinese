@@ -297,6 +297,18 @@ enabled = true
 headers = { "Authorization" = "Bearer ${INTERNAL_MCP_TOKEN}" }
 ```
 
+如果其他进程（例如凭据助手、sidecar 或定时任务）将短期令牌保存在文件中，可用 `bearer_token_file` 指向该文件。Grok 每次向服务器发送请求时都会重新读取文件，去除内容首尾的空白，然后发送 `Authorization: Bearer <contents>`。因此，轮换后的令牌会在下一次请求中生效，无需重启 Grok 或重新连接服务器：
+
+```toml
+[mcp_servers.internal-tools]
+url = "https://mcp.internal.example.com/mcp"
+bearer_token_file = "~/.config/internal-tools/token"
+```
+
+路径必须是绝对路径或以 `~/` 开头，可以引用 `${VAR}`；使用其他路径会导致服务器报错。`bearer_token_file` 适用于 HTTP 和 SSE 服务器，并会取代 `Authorization` 标头或 `bearer_token_env_var`。使用令牌文件的服务器会跳过 OAuth 发现。文件不存在、内容为空、大小超过 16 KiB、不是 UTF-8 编码，或包含 HTTP 标头不允许的字符时，请求会失败，错误信息中会包含文件路径。
+
+应以原子方式替换令牌文件：先将新令牌写入同一目录中的临时文件，再通过重命名替换原文件。直接截断并重写原文件可能与请求发生竞争，导致请求失败或发送不完整的令牌。
+
 <a id="local-stdio"></a>
 ### 本地 stdio
 

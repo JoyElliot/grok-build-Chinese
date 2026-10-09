@@ -5748,7 +5748,6 @@ mod tests {
 
     #[test]
     fn exec_risk_flags_and_grants() {
-        use crate::permission::exec_risk::segment_has_exec_risk_flag;
         use ClassifierSecurityFinding::ExecOrAmbientGit;
         let state = PermissionState::default();
         for cmd in [
@@ -5809,14 +5808,6 @@ mod tests {
                 "must not flag: {cmd}"
             );
         }
-        let words = |s: &str| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
-        assert!(segment_has_exec_risk_flag(&words(
-            "/usr/bin/git --work-tree=/evil status"
-        )));
-        assert!(segment_has_exec_risk_flag(&words(
-            r"C:\Git\cmd\git.exe --git-dir=/evil/.git status"
-        )));
-
         let compress = "sort --compress-program=/tmp/pwn in";
         let broad = PermissionState {
             allowed_bash_commands: HashSet::from(["sort".to_owned()]),

@@ -279,7 +279,8 @@ pub async fn run_stdio_agent(
             let auth_manager = Arc::new(agent_config.create_auth_manager());
             auth_manager.start_proactive_refresh(cancel_for_agent.clone());
             auth_manager.start_system_power_listener();
-            crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
+            xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager)
+                .await;
             let boot = crate::agent::init::resolve_boot_startup_settings(
                 &mut agent_config,
                 &cancel_for_agent,
@@ -443,7 +444,9 @@ pub async fn run_headless(
                 let gateway = GatewaySender::new(gw_tx);
                 let auth_manager = shared_auth_manager;
                 auth_manager.start_proactive_refresh(agent_cancel.clone());
-                crate::managed_config::ensure_managed_policy_present(&auth_manager)
+                xai_grok_cloud_config::managed_config::ensure_managed_policy_present(
+                        &auth_manager,
+                    )
                     .await;
                 let boot = match crate::agent::init::resolve_boot_startup_settings(
                         &mut agent_config_clone,
@@ -899,7 +902,8 @@ pub async fn run_leader(
     let auth_manager_for_agent = shared_auth_manager.clone();
     let auth_manager_for_config = shared_auth_manager.clone();
     let auth_manager_for_mint = shared_auth_manager.clone();
-    crate::managed_config::ensure_managed_policy_present(&auth_manager_for_agent).await;
+    xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager_for_agent)
+        .await;
     let boot = crate::agent::init::resolve_boot_startup_settings(
         &mut agent_config_for_spawn,
         &cancel_clone,

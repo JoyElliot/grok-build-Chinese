@@ -761,22 +761,24 @@ mod tests {
                 (ToolKind::Task, "spawn_subagent"),
             ],
             &[
-                (ToolKind::Execute, &[("is_background", "background")]),
+                (ToolKind::Execute, &[("block_until_ms", "block_until_ms")]),
                 (ToolKind::Task, &[("run_in_background", "background")]),
             ],
         );
         let desc = r#"Get output and status from a background task or subagent.
 
 Usage notes:
-- Use the task_id from a command run with ${{ params.execute.is_background }}=true, or a subagent launched with ${{ params.task.run_in_background }}=true
+- Use the task_id from a command run with ${{ params.execute.block_until_ms }}=0, or a subagent launched with ${{ params.task.run_in_background }}=true
 - Omit timeout_ms (or pass 0) for a non-blocking status poll; set a positive timeout_ms to wait up to that many milliseconds for completion (capped at ~10 min)."#;
+
         let rendered = r.render(desc).expect("task_output description must render");
         let _ = std::fs::write("/tmp/task_output_tool_description.txt", &rendered);
+
         assert!(
             !rendered.contains("${{"),
             "must not leak raw template source: {rendered}"
         );
-        assert!(rendered.contains("background=true"));
+        assert!(rendered.contains("block_until_ms=0") && rendered.contains("background=true"));
         assert!(rendered.contains("Omit timeout_ms") || rendered.contains("positive timeout_ms"));
     }
 

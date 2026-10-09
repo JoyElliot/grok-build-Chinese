@@ -265,8 +265,8 @@ impl SessionActor {
         (instruction, tool_specs, self.hosted_tools_for_turn())
     }
 
-    /// Snapshots the conversation and appends a single recap instruction turn, reusing the prompt prefix verbatim so the provider cache stays warm.
-    /// Makes one tool-free model call and emits the cleaned one-line summary for display only.
+    /// Sends a compact transcript of recent user messages and agent replies in one small tool-free model call.
+    /// Emits the cleaned one-line summary for display only.
     /// A missing recap must never disrupt the session.
     pub(super) async fn handle_recap(&self, auto: bool) {
         use crate::session::helpers::session_recap;
@@ -292,12 +292,13 @@ impl SessionActor {
             stored
         };
 
-        const RECAP_MIN_IDLE_MS: i64 = 3 * 60 * 1000;
+        let min_idle_ms =
+            i64::try_from(session_recap::RECAP_MIN_IDLE.as_millis()).unwrap_or(i64::MAX);
         let last_ms = self
             .last_api_request_at
             .load(std::sync::atomic::Ordering::Relaxed);
         let idle_ms = chrono::Utc::now().timestamp_millis() - last_ms;
-        let idle_ok = last_ms != 0 && idle_ms >= RECAP_MIN_IDLE_MS;
+        let idle_ok = last_ms != 0 && idle_ms >= min_idle_ms;
 
         if let Err(reason) = session_recap::recap_gate(main_turns, last, auto, idle_ok) {
             tracing::debug!(auto, main_turns, last, reason, "skipping recap");
@@ -322,8 +323,22 @@ impl SessionActor {
         // Advance the watermark only on success or suppress (not on failure, empty, or cancel) so auto can retry later for this turn
         let clear_in_flight = || self.recap_in_flight.set(false);
 
-        let setup = match self.prepare_side_call().await {
-            Ok(s) => s,
+        let settings = crate::util::config::resolve_session_recap_settings_from_disk();
+        let Some(transcript) = session_recap::recap_transcript(
+            &conversation,
+            settings.user_message_max_chars,
+            settings.agent_reply_max_chars,
+            settings.transcript_max_chars,
+        ) else {
+            tracing::debug!(auto, main_turns, "skipping recap: no transcript");
+            clear_in_flight();
+            if !auto {
+                self.emit_recap_unavailable().await;
+            }
+            return;
+        };
+        let (client, model, reasoning_effort) = match self.recap_sampling_client(&settings).await {
+            Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: failed to prepare sampling client");
                 clear_in_flight();
@@ -334,25 +349,40 @@ impl SessionActor {
                 return;
             }
         };
-        let tag = self.reminder_wrapper_tag();
-        let items = session_recap::budget_recap_items(
-            conversation,
-            tag,
-            setup.strip_reasoning,
-            setup.context_window,
-        );
-        let strip_reasoning = setup.strip_reasoning;
-        let model = setup.model.clone();
         let started_at = chrono::Utc::now().to_rfc3339();
         let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
-        let request = self
-            .side_call_request(&setup, items, x_grok_conv_id.clone(), x_grok_req_id.clone())
-            .await;
+        let request = ConversationRequest {
+            items: vec![
+                ConversationItem::system(session_recap::RECAP_SYSTEM),
+                ConversationItem::user(transcript),
+            ],
+            model: Some(model.clone()),
+            reasoning_effort,
+            x_grok_conv_id: Some(x_grok_conv_id.clone()),
+            x_grok_req_id: Some(x_grok_req_id.clone()),
+            x_grok_session_id: Some(self.session_info.id.to_string()),
+            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
+            length_policy: xai_grok_sampling_types::LengthPolicy::Fail,
+            ..Default::default()
+        };
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
 
-        let response = match setup.client.conversation_collect(request).await {
+        let response = match tokio::time::timeout(
+            settings.timeout,
+            client.conversation_collect(request),
+        )
+        .await
+        {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(format!(
+                "timed out after {} ms",
+                settings.timeout.as_millis()
+            )),
+        };
+        let response = match response {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: model call failed");
@@ -360,14 +390,12 @@ impl SessionActor {
                     chat_history_for_artifact,
                     &model,
                     auto,
-                    strip_reasoning,
-                    tag,
                     &x_grok_req_id,
                     &x_grok_conv_id,
                     started_at,
                     None,
                     None,
-                    Some(&e.to_string()),
+                    Some(&e),
                 );
                 clear_in_flight();
                 // A manual `/recap` shows a loading spinner; clear it on failure.
@@ -378,7 +406,6 @@ impl SessionActor {
             }
         };
 
-        log_prompt_cache_usage("recap", setup.client.api_backend(), &response);
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
         if summary.is_empty() {
@@ -387,8 +414,6 @@ impl SessionActor {
                 chat_history_for_artifact,
                 &model,
                 auto,
-                strip_reasoning,
-                tag,
                 &x_grok_req_id,
                 &x_grok_conv_id,
                 started_at,
@@ -417,8 +442,6 @@ impl SessionActor {
                 chat_history_for_artifact,
                 &model,
                 auto,
-                strip_reasoning,
-                tag,
                 &x_grok_req_id,
                 &x_grok_conv_id,
                 started_at,
@@ -441,8 +464,6 @@ impl SessionActor {
                 chat_history_for_artifact,
                 &model,
                 auto,
-                strip_reasoning,
-                tag,
                 &x_grok_req_id,
                 &x_grok_conv_id,
                 started_at,
@@ -460,8 +481,6 @@ impl SessionActor {
             chat_history_for_artifact,
             &model,
             auto,
-            strip_reasoning,
-            tag,
             &x_grok_req_id,
             &x_grok_conv_id,
             started_at,
@@ -487,6 +506,46 @@ impl SessionActor {
             crate::extensions::notification::SessionUpdate::SessionRecap { summary, auto },
         )
         .await;
+    }
+
+    /// Client for the recap call: the configured model when it shares the session's endpoint and auth, else the session model.
+    /// The configured effort applies when the chosen model supports it, else the session's effort stays.
+    async fn recap_sampling_client(
+        &self,
+        settings: &crate::util::config::SessionRecapSettings,
+    ) -> Result<
+        (
+            xai_grok_sampler::SamplingClient,
+            String,
+            Option<xai_grok_sampling_types::ReasoningEffort>,
+        ),
+        acp::Error,
+    > {
+        self.refresh_token_if_expired().await;
+        let mut config = self.reconstruct_full_config().await;
+        if self.models_manager.model_shares_route(
+            &settings.model,
+            &config.base_url,
+            &config.api_backend,
+        ) {
+            config.model = settings.model.clone();
+        }
+        if self
+            .models_manager
+            .model_supports_reasoning_effort_value(&config.model, settings.reasoning_effort)
+        {
+            self.models_manager.apply_supported_effort(
+                &mut config,
+                Some(settings.reasoning_effort),
+                &self.session_info.id,
+                crate::sampling::EffortTarget::SummaryClient,
+            );
+        }
+        let model = config.model.clone();
+        let reasoning_effort = config.reasoning_effort;
+        let client =
+            xai_grok_sampler::SamplingClient::new(config).map_err(|e| self.to_acp_error(e))?;
+        Ok((client, model, reasoning_effort))
     }
 
     pub(crate) fn recap_was_cancelled(&self, epoch: u64) -> bool {
@@ -527,8 +586,6 @@ impl SessionActor {
         chat_history: Vec<ConversationItem>,
         model: &str,
         auto: bool,
-        strip_reasoning: bool,
-        reminder_tag: &str,
         x_grok_req_id: &str,
         x_grok_conv_id: &str,
         started_at: String,
@@ -547,8 +604,8 @@ impl SessionActor {
             model: model.to_owned(),
             x_grok_req_id: x_grok_req_id.to_owned(),
             x_grok_conv_id: x_grok_conv_id.to_owned(),
-            strip_reasoning,
-            reminder_tag: reminder_tag.to_owned(),
+            strip_reasoning: false,
+            reminder_tag: String::new(),
             chat_history,
             summary: summary.map(str::to_owned),
             raw_response: raw_response.map(str::to_owned),

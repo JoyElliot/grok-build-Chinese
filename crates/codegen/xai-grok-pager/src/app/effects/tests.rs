@@ -1660,6 +1660,48 @@ async fn check_marketplace_updates_dispatches_update_and_skips_failed_notificati
     assert!(!saw_wrong_action.load(Ordering::SeqCst));
     assert!(!saw_success_notification.load(Ordering::SeqCst));
 }
+/// A refused interjection shows the refusal's own sentence, as a refused prompt does
+#[tokio::test]
+async fn refused_interjection_shows_the_refusal_sentence() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if let xai_acp_lib::AcpAgentMessage::ExtMethod(args) = msg {
+                let refusal = acp::Error::invalid_params()
+                    .data("Update Grok on \"desk\" to send images.");
+                let _ = args.response_tx.send(Err(refusal));
+            }
+        }
+    });
+    let mut tasks = JoinSet::new();
+    let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    execute(
+        Effect::SendInterject {
+            agent_id: AgentId(4),
+            session_id: acp::SessionId::new("test-session"),
+            text: "look".to_owned(),
+            interjection_id: "i-1".to_owned(),
+            blocks: None,
+        },
+        &mut tasks,
+        &tx,
+        Path::new("."),
+        &SessionFlags::default(),
+        &progress_tx,
+    );
+    let result = tasks
+        .join_next()
+        .await
+        .expect("task should complete")
+        .expect("task should not panic");
+    let TaskResult::InterjectFailed { error, .. } = result else {
+        panic!("expected InterjectFailed, got {result:?}");
+    };
+    assert_eq!(
+            "couldn't send interjection: Update Grok on \"desk\" to send images.",
+            error
+        );
+}
 #[tokio::test]
 async fn foreign_scan_task_echoes_sequence_without_enabled_sources() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3026,6 +3068,58 @@ fn rewind_execute_params_sends_conversation_only_with_force() {
     assert_eq!(j(&params, "force"), true);
     assert_eq!(j(&params, "mode"), REWIND_MODE_WIRE);
     assert_eq!(j(&params, "mode"), "conversation_only");
+}
+#[tokio::test]
+async fn rewind_points_are_asked_only_after_the_cancel_is_answered() {
+    use std::sync::Arc;
+    use xai_acp_lib::AcpAgentMessage;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let listing = tokio::spawn(async move {
+        cancel_then_fetch_rewind_points(&tx, AgentId(0), acp::SessionId::new("sess-1"))
+            .await
+    });
+    let Some(AcpAgentMessage::Cancel(cancel)) = rx.recv().await else {
+        panic!("the cancel goes out first")
+    };
+    tokio::task::yield_now().await;
+    assert!(rx.try_recv().is_err(), "points waits for the cancel's answer");
+    cancel.response_tx.send(Ok(())).expect("the listing waits on the cancel");
+    let Some(AcpAgentMessage::ExtMethod(points)) = rx.recv().await else {
+        panic!("points follows the answered cancel")
+    };
+    let body = serde_json::value::RawValue::from_string(
+            r#"{"rewind_points":[]}"#.to_owned(),
+        )
+        .expect("valid JSON");
+    points
+        .response_tx
+        .send(Ok(acp::ExtResponse::new(Arc::from(body))))
+        .expect("the listing waits on points");
+    assert_eq!("sess-1", cancel.request.session_id.0.as_ref());
+    assert_eq!("x.ai/rewind/points", points.request.method.as_ref());
+    match listing.await.expect("the listing task finishes") {
+        TaskResult::RewindPointsLoaded { agent_id, points } => {
+            assert_eq!((AgentId(0), 0), (agent_id, points.len()));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+#[rstest::rstest]
+#[case::error_envelope(
+    r#"{"error":"the session is answering"}"#,
+    "the session is answering"
+)]
+#[case::not_json("not json", "invalid response: expected ident at line 1 column 2")]
+fn a_failed_rewind_points_reply_names_the_failure(
+    #[case]
+    body: &str,
+    #[case]
+    expected: &str,
+) {
+    match parse_rewind_points_response(AgentId(0), body) {
+        TaskResult::RewindPointsFailed { error, .. } => assert_eq!(expected, error),
+        other => panic!("{other:?}"),
+    }
 }
 /// Exact wire bytes of the one-shot request: the shell's `upload_trace_offer_gate_allows`
 /// relaxation keys off this exact snake_case value, so the shape is a cross-crate contract.

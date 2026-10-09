@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::LazyLock;
 
+pub mod diagnostics;
 pub mod dynamic;
 
 const EN_US_SOURCE: &str = include_str!("../locales/en-US.json");

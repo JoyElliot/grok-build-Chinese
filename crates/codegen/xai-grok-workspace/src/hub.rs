@@ -483,6 +483,25 @@ impl ToolServerHandler for SessionRoutedToolHandler {
             }
         };
         let call_id = ctx.call_id.to_string();
+        let (sandbox, mode) = match self.workspace.shared.sandbox() {
+            Some(sandbox) => match sandbox.engage_unless_off().await {
+                crate::sandbox::SandboxMode::Off => (None, None),
+                mode => (Some(sandbox), Some(mode)),
+            },
+            None => (None, None),
+        };
+        let tool = session
+            .toolset()
+            .get_tool_metadata(self.name())
+            .map(|tool| (tool.kind(), tool.tool_namespace()));
+        let path = crate::permission::SandboxPath::for_tool(tool, mode)
+            .for_call(
+                self.workspace.shared.tool_approval,
+                &session,
+                self.name(),
+                &args,
+            )
+            .await;
         if self.workspace.shared.tool_approval == crate::permission::ToolApprovalGate::Enforced
             && let Err(denied) = crate::permission::approve_hub_call(
                 &self.workspace,
@@ -490,12 +509,50 @@ impl ToolServerHandler for SessionRoutedToolHandler {
                 self.name(),
                 &call_id,
                 &args,
+                path.prompt_gate(),
             )
             .await
         {
             return terminal_only(Err(denied));
         }
-        let toolset = session.toolset();
+        if path.follows_result_path()
+            && let (Some(sandbox), Some(mode)) = (&sandbox, mode)
+            && let Err(error) = sandbox.pin_mode(
+                &xai_grok_sandbox::command::CallId::tool(call_id.as_str()),
+                mode,
+            )
+        {
+            if path == crate::permission::SandboxPath::Gated
+                || !matches!(error, crate::sandbox::WorkspaceSandboxError::CallTableFull)
+            {
+                return terminal_only(Err(ToolError::new(
+                    ToolErrorKind::ConcurrencyLimit,
+                    error.to_string(),
+                )));
+            }
+            if !sandbox.floor_mode(
+                &xai_grok_sandbox::command::CallId::tool(call_id.as_str()),
+                mode,
+            ) {
+                return terminal_only(Err(ToolError::new(
+                    ToolErrorKind::ConcurrencyLimit,
+                    error.to_string(),
+                )));
+            }
+            tracing::warn!(
+                call_id = %call_id,
+                %error,
+                "no room to pin the call; it runs unpinned, no weaker than its dispatch mode"
+            );
+        }
+        if path == crate::permission::SandboxPath::None
+            && let Some(sandbox) = &sandbox
+            && let Err(refused) =
+                crate::permission::refuse_mode_layer_write(sandbox, &session, self.name(), &args)
+                    .await
+        {
+            return terminal_only(Err(refused));
+        }
         tracing::debug!(
             tool = %self.name(),
             call_id = %call_id,
@@ -508,11 +565,38 @@ impl ToolServerHandler for SessionRoutedToolHandler {
             Some(v) => v.rewrite_json_inbound(args),
             None => args,
         };
-        let inner = toolset.call_streaming(self.name(), args, &call_id, None);
         let tracker = self.workspace.shared.activity_tracker.clone();
         let name = self.name().to_owned();
         let session_label = session_id.to_owned();
-        let guard = CallCompletedGuard::new(tracker, call_id, Some(session_label.clone()));
+        let guard = CallCompletedGuard::new(tracker, call_id.clone(), Some(session_label.clone()));
+        let dispatch_session = session.clone();
+        let dispatch_name = name.clone();
+        let dispatch_call_id = call_id.clone();
+        let inner = if path.follows_result_path() {
+            let command = args
+                .get("command")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            crate::sandbox::result_path::run_shell_call_with_replay(
+                self.workspace.clone(),
+                session,
+                call_id,
+                command,
+                path == crate::permission::SandboxPath::Gated,
+                move || {
+                    dispatch_session.toolset().call_streaming(
+                        &dispatch_name,
+                        args.clone(),
+                        &dispatch_call_id,
+                        None,
+                    )
+                },
+            )
+        } else {
+            dispatch_session
+                .toolset()
+                .call_streaming(&dispatch_name, args, &dispatch_call_id, None)
+        };
         Box::pin(async_stream::stream! {
             use futures::StreamExt;
             let mut _guard = guard;

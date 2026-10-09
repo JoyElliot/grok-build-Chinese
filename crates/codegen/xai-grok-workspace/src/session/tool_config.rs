@@ -157,19 +157,11 @@ pub(crate) fn resolve_session_toolset_rebuild(
         ctx.notification_handle = handle;
     }
     let toolset = builder
-        .finalize_with_trunc_config(finalize_config, ctx, truncation.clone(), viewer_ctx)
+        .finalize_with_trunc_config(finalize_config, ctx, truncation, viewer_ctx)
         .map_err(|errs| {
             let summary: Vec<String> = errs.iter().map(|e| e.summary()).collect();
             WorkspaceError::Finalize(summary.join("; "))
         })?;
-    if !truncation.per_tool_max_output_bytes.is_empty() {
-        let Ok(mut resources) = toolset.resources.try_lock() else {
-            return Err(WorkspaceError::Finalize(
-                "TruncationCfg not installed: toolset resource lock was already held".into(),
-            ));
-        };
-        resources.insert(xai_grok_tools::types::resources::TruncationCfg(truncation));
-    }
     Ok((effective_tool_config, Arc::new(toolset)))
 }
 /// Backfill `kind: None` baseline entries from the binary's own registry (`kinds` maps fully-qualified id to declared [`ToolKind`]).
@@ -323,6 +315,18 @@ fn ensure_session_dir(root: &std::path::Path, session_id: &str) -> (PathBuf, std
     let created = std::fs::create_dir_all(&dir);
     (dir, created)
 }
+/// The session folder (`/tmp/sessions/<sanitized_id>`) as a 0700 `TMPDIR`
+/// private to one session.
+pub(crate) fn ensure_private_session_tmp_dir(session_id: &str) -> std::io::Result<PathBuf> {
+    let (dir, created) = ensure_session_dir(std::path::Path::new("/tmp"), session_id);
+    created?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
 /// Serializes tests (across modules) that mutate the process-global `GROK_WORKSPACE_TOOL_STATE_ENABLED`.
 /// Aliased to the crate-wide [`crate::ENV_TEST_LOCK`] so ALL env-mutating tests share ONE lock.
 /// The hazard is the global `environ` array, not the variable's value.
@@ -342,6 +346,10 @@ pub struct WorkspaceSessionContextFactory {
     tool_state_home: Option<PathBuf>,
     /// The ids a pinned bind may name and this factory will serve.
     served_tool_ids: Arc<std::collections::HashSet<String>>,
+    /// The per-command sandbox seam (`xai_grok_tools::sandbox_launch`): handed to the terminal
+    /// backend and stored in `Resources` so every shell spawn goes through it. `None` runs
+    /// commands unwrapped.
+    sandbox_launch: Option<xai_grok_tools::sandbox_launch::SandboxLaunchHook>,
 }
 impl Default for WorkspaceSessionContextFactory {
     fn default() -> Self {
@@ -355,6 +363,7 @@ impl WorkspaceSessionContextFactory {
             api_base_url: None,
             tool_state_home: None,
             served_tool_ids: REGISTRY_TOOL_IDS.clone(),
+            sandbox_launch: None,
         }
     }
     /// Factory with auth: gen tools use the provider's live token.
@@ -364,6 +373,7 @@ impl WorkspaceSessionContextFactory {
             api_base_url: Some(api_base_url),
             tool_state_home: None,
             served_tool_ids: REGISTRY_TOOL_IDS.clone(),
+            sandbox_launch: None,
         }
     }
     /// Factory for a host whose credential only serves the hub. Sessions get no credential, and the
@@ -385,6 +395,14 @@ impl WorkspaceSessionContextFactory {
     /// Callers should only invoke this when [`tool_state_enabled`] is `true`.
     pub fn with_tool_state_home(mut self, home: PathBuf) -> Self {
         self.tool_state_home = Some(home);
+        self
+    }
+    /// Route every shell spawn of the sessions this factory builds through `hook`.
+    pub fn with_sandbox_launch(
+        mut self,
+        hook: xai_grok_tools::sandbox_launch::SandboxLaunchHook,
+    ) -> Self {
+        self.sandbox_launch = Some(hook);
         self
     }
     /// `<tool_state_home>/sessions/<sanitized_id>/tool_state.json`, or empty when persistence is disabled or dir creation fails.
@@ -516,12 +534,21 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
         }
     }
     fn build_terminal_backend(&self) -> crate::config::SessionTerminalBackend {
-        crate::config::SessionTerminalBackend::local(
-            xai_grok_tools::computer::local::LocalTerminalBackend::new(),
-        )
+        let backend = match &self.sandbox_launch {
+            Some(hook) => {
+                xai_grok_tools::computer::local::LocalTerminalBackend::new_with_sandbox_launch(
+                    hook.shared(),
+                )
+            }
+            None => xai_grok_tools::computer::local::LocalTerminalBackend::new(),
+        };
+        crate::config::SessionTerminalBackend::local(backend)
     }
     fn registry_builder(&self) -> ToolRegistryBuilder {
-        ToolRegistryBuilder::new()
+        match &self.sandbox_launch {
+            Some(hook) => ToolRegistryBuilder::new().with_sandbox_launch(hook.clone()),
+            None => ToolRegistryBuilder::new(),
+        }
     }
     fn known_tool_ids(&self) -> Arc<std::collections::HashSet<String>> {
         self.served_tool_ids.clone()
@@ -586,6 +613,7 @@ pub mod test_support {
     pub struct TestSessionContextFactory {
         pub temp: TempDir,
         tool_state: bool,
+        sandbox_launch: Option<xai_grok_tools::sandbox_launch::SandboxLaunchHook>,
     }
     impl Default for TestSessionContextFactory {
         fn default() -> Self {
@@ -597,6 +625,7 @@ pub mod test_support {
             Self {
                 temp: TempDir::new().expect("create temp dir"),
                 tool_state: true,
+                sandbox_launch: None,
             }
         }
         /// Matches production, where `GROK_WORKSPACE_TOOL_STATE_ENABLED` is unset and the real factory returns an empty path.
@@ -605,6 +634,15 @@ pub mod test_support {
                 tool_state: false,
                 ..Self::new()
             }
+        }
+        /// Route every shell spawn through `hook`, as the production factory does for a served
+        /// folder's `WorkspaceSandbox`.
+        pub fn with_sandbox_launch(
+            mut self,
+            hook: xai_grok_tools::sandbox_launch::SandboxLaunchHook,
+        ) -> Self {
+            self.sandbox_launch = Some(hook);
+            self
         }
     }
     impl SessionContextFactory for TestSessionContextFactory {
@@ -650,10 +688,17 @@ pub mod test_support {
             }
         }
         fn build_terminal_backend(&self) -> crate::config::SessionTerminalBackend {
-            crate::config::SessionTerminalBackend::local(LocalTerminalBackend::new())
+            let backend = match &self.sandbox_launch {
+                Some(hook) => LocalTerminalBackend::new_with_sandbox_launch(hook.shared()),
+                None => LocalTerminalBackend::new(),
+            };
+            crate::config::SessionTerminalBackend::local(backend)
         }
         fn registry_builder(&self) -> ToolRegistryBuilder {
-            ToolRegistryBuilder::new()
+            match &self.sandbox_launch {
+                Some(hook) => ToolRegistryBuilder::new().with_sandbox_launch(hook.clone()),
+                None => ToolRegistryBuilder::new(),
+            }
         }
     }
     /// `ToolConfig` builder helper.
@@ -746,7 +791,13 @@ mod tests {
         )
         .unwrap();
         let resources = toolset.resources.lock().await;
-        assert!(resources.get::<TruncationCfg>().is_none());
+        let caps = resources
+            .get::<TruncationCfg>()
+            .expect("finalize installs TruncationCfg")
+            .0
+            .per_tool_max_output_bytes
+            .clone();
+        assert_eq!(HashMap::new(), caps);
     }
     #[tokio::test]
     async fn resolve_session_toolset_empty_mcp_snapshot_is_noop_for_baseline() {

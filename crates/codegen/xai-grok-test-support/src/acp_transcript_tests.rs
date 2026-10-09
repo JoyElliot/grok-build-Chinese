@@ -79,3 +79,28 @@ async fn wait_until_resolves_once_the_recorded_entries_satisfy_the_predicate() {
 
     assert_eq!(Some(()), waiting.now_or_never());
 }
+
+#[tokio::test]
+async fn wait_until_deadline_fails_with_the_message_when_no_entry_arrives() {
+    let transcript = Transcript::default();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(30);
+    let missing = "send-now: child session reported no tool call before the turn deadline";
+    let error = transcript
+        .wait_until_deadline(deadline, missing, |_| false)
+        .await
+        .expect_err("deadline");
+    assert_eq!(missing, error.to_string());
+    let source = error.chain().nth(1).expect("the elapsed timeout");
+    assert_eq!("deadline has elapsed", source.to_string());
+}
+
+#[tokio::test]
+async fn wait_until_deadline_resolves_when_the_entry_is_already_recorded() {
+    let transcript = Transcript::default();
+    transcript.record(agent_text_chunk("a"));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    transcript
+        .wait_until_deadline(deadline, "missing", |entries| !entries.is_empty())
+        .await
+        .expect("already recorded");
+}

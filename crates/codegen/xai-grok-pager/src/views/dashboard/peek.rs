@@ -441,7 +441,7 @@ fn paint_peek_config_badge(
     );
     for flag in &mut flags {
         flag.text = match flag.text {
-            "auto" => peek_static(locale, "mode.auto.label", "auto"),
+            "auto-review" => peek_static(locale, "mode.auto_review.label", "auto-review"),
             "always-approve" => peek_static(locale, "mode.always_approve.label", "always-approve"),
             other => other,
         };
@@ -1339,16 +1339,16 @@ mod tests {
         planp.auto_approve = false;
         let plan_auto_bottom = badge_row(&planp, 6);
         assert!(
-            plan_auto_bottom.contains("Grok 4 Fast · plan · auto"),
-            "plan must not hide auto: {plan_auto_bottom:?}",
+            plan_auto_bottom.contains("Grok 4 Fast · plan · auto-review"),
+            "plan must not hide auto-review: {plan_auto_bottom:?}",
         );
 
         planp.mode_label = None;
         planp.auto_approve = true;
         let yolo_bottom = badge_row(&planp, 6);
         assert!(
-            yolo_bottom.contains("always-approve") && !yolo_bottom.contains("auto"),
-            "always-approve wins over auto: {yolo_bottom:?}",
+            yolo_bottom.contains("always-approve") && !yolo_bottom.contains("auto-review"),
+            "always-approve wins over auto-review: {yolo_bottom:?}",
         );
     }
 

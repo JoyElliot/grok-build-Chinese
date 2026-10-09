@@ -1273,6 +1273,30 @@ pub fn write_atomically(
     write_atomically_bound(&dest, contents, mode)
 }
 
+/// [`write_atomically`] for a file the user owns. `rename(2)` does not follow a symlink at the
+/// destination, so a dotfile-managed `config.toml` or a `GROK_HOME`-overlay `auth.json` would be
+/// replaced by a private regular file; under the user's own grok home the link is followed and the
+/// write lands on its target. Elsewhere (a repository's `.grok/config.toml`) the link name is replaced.
+pub fn write_user_file_atomically(
+    final_path: &Path,
+    contents: &str,
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    let dest = match xai_dirs::resolve_grok_home() {
+        // A dangling or looping link does not canonicalize and keeps replacing the link name.
+        Some(home) if final_path.starts_with(&home) => {
+            dunce::canonicalize(final_path).unwrap_or_else(|_| final_path.to_path_buf())
+        }
+        _ => final_path.to_path_buf(),
+    };
+    write_via_temp(&dest, contents, mode, |tmp, dest| {
+        if mode.is_none() {
+            apply_current_dest_mode(tmp, dest)?;
+        }
+        std::fs::rename(tmp, dest)
+    })
+}
+
 /// [`write_atomically`], but the write lands only when `final_path` does not exist yet.
 /// `hard_link` refuses an existing target where `rename` would replace it, so of several concurrent
 /// first writers exactly one wins; the rest get `AlreadyExists` and the winner's file is untouched.
@@ -1302,6 +1326,71 @@ pub fn write_atomically_if_absent(
     })
 }
 
+/// [`write_atomically`], and the file renamed into place must be the temp this call wrote, as its
+/// open handle identifies it: in a directory another process may write, a file swapped in under
+/// the temp's name would otherwise be published. On a mismatch the swapped-in file is removed and
+/// the call fails with [`io::ErrorKind::InvalidData`]; the caller decides whether to write again.
+/// Where std exposes no inode (not unix), the rename is trusted.
+pub fn write_atomically_verified(
+    final_path: &Path,
+    contents: &str,
+    mode: Option<u32>,
+) -> io::Result<()> {
+    let dest = bind_slot_destination(final_path)?;
+    dest.prove_unchanged()?;
+    write_via_temp_with(
+        &dest.path,
+        contents,
+        mode,
+        std::fs::File::metadata,
+        |tmp, path, created| {
+            dest.prove_unchanged()?;
+            if mode.is_none() {
+                apply_current_dest_mode(tmp, path)?;
+            }
+            dest.prove_unchanged()?;
+            #[cfg(test)]
+            BEFORE_VERIFIED_RENAME.with_borrow_mut(|hook| hook.as_mut().map(|hook| hook(tmp)));
+            std::fs::rename(tmp, path)?;
+            if std::fs::symlink_metadata(path)
+                .is_ok_and(|landed| is_created_file(&landed, &created))
+            {
+                return Ok(());
+            }
+            let _ = std::fs::remove_file(path);
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} was swapped for another file while it was written",
+                    path.display()
+                ),
+            ))
+        },
+    )
+}
+
+#[cfg(test)]
+type RenameHook = Option<Box<dyn FnMut(&Path)>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs on the temp's path just before [`write_atomically_verified`] renames it.
+    static BEFORE_VERIFIED_RENAME: std::cell::RefCell<RenameHook> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `landed` is the regular file `created` was read from (unix: same device and inode).
+fn is_created_file(landed: &std::fs::Metadata, created: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        landed.is_file() && file_id_from_unix_meta(landed) == file_id_from_unix_meta(created)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = created;
+        landed.is_file()
+    }
+}
+
 const TMP_NAME_RETRIES: u32 = 32;
 
 fn write_via_temp(
@@ -1309,6 +1398,23 @@ fn write_via_temp(
     contents: &str,
     mode: Option<u32>,
     publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    write_via_temp_with(
+        final_path,
+        contents,
+        mode,
+        |_| Ok(()),
+        |tmp, path, ()| publish(tmp, path),
+    )
+}
+
+/// [`write_via_temp`], handing `publish` what `inspect` read from the synced temp's open handle.
+fn write_via_temp_with<T>(
+    final_path: &Path,
+    contents: &str,
+    mode: Option<u32>,
+    inspect: impl FnOnce(&std::fs::File) -> std::io::Result<T>,
+    publish: impl FnOnce(&Path, &Path, T) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     use std::io::Write as _;
 
@@ -1341,16 +1447,17 @@ fn write_via_temp(
         let result = file
             .write_all(contents.as_bytes())
             .and_then(|()| file.sync_all())
-            .and_then(|()| {
+            .and_then(|()| inspect(&file))
+            .and_then(|inspected| {
                 drop(file);
                 #[cfg(unix)]
                 if let Some(mode) = mode {
                     use std::os::unix::fs::PermissionsExt as _;
                     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
                 }
-                Ok(())
+                Ok(inspected)
             })
-            .and_then(|()| publish(&tmp, final_path));
+            .and_then(|inspected| publish(&tmp, final_path, inspected));
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }

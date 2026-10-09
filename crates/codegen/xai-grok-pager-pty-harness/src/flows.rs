@@ -169,10 +169,14 @@ fn seed_fake_oauth_raw(
     .expect("seed fake oauth auth.json");
 }
 
-/// Remove only the sandbox's fake API-key credential.
+/// Remove the sandbox's fake API key and the custom models URLs that need it.
 /// The `auth.json` entry written by [`seed_fake_oauth`] then determines the advertised auth method.
-pub fn oauth_credential_ops() -> [crate::EnvOp<'static>; 1] {
-    [crate::EnvOp::remove("XAI_API_KEY")]
+pub fn oauth_credential_ops() -> [crate::EnvOp<'static>; 3] {
+    [
+        crate::EnvOp::remove("XAI_API_KEY"),
+        crate::EnvOp::remove("GROK_MODELS_BASE_URL"),
+        crate::EnvOp::remove("GROK_MODELS_LIST_URL"),
+    ]
 }
 
 /// Campaigns apply to new sessions only, and settings prefetch is 2s-capped, so the first session may lack the model.

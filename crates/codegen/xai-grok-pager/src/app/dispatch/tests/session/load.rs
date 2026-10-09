@@ -3656,3 +3656,202 @@ fn plain_picker_fetch_carries_no_query_and_bumps_seq() {
         "picker fetch must be unfiltered and supersede the search, got {effects:?}"
     );
 }
+/// A tab whose load failed queues nothing: a prompt, a skill, or `!cmd` gets the notice, and `/new` and `exit` still run
+#[test]
+fn failed_load_unbinds_the_tab_and_refuses_prompts() {
+    use crate::app::dispatch::prompt::LOAD_FAILED_NOTICE;
+    let mut app = test_app();
+    dispatch(Action::LoadSession("dead-1".into(), None, false), &mut app);
+    let agent_0 = AgentId(0);
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionLoadFailed {
+            agent_id: agent_0,
+            session_id: acp::SessionId::new("dead-1"),
+            error: "busy".into(),
+        }),
+        &mut app,
+    );
+    assert_eq!(None, expect_agent(&app, agent_0).session.session_id);
+    for effects in [
+        dispatch(Action::SendPrompt("hi".into()), &mut app),
+        dispatch(Action::SendPrompt("/some-skill x".into()), &mut app),
+        dispatch(Action::SendBashCommand("ls".into()), &mut app),
+    ] {
+        assert!(effects.is_empty(), "nothing is sent, got {effects:?}");
+        assert!(
+            expect_agent(&app, agent_0)
+                .session
+                .pending_prompts
+                .is_empty()
+        );
+        assert_eq!(LOAD_FAILED_NOTICE, read_toast(&app));
+    }
+    assert!(
+        dispatch(Action::SendPrompt("exit".into()), &mut app)
+            .iter()
+            .any(|e| matches!(e, Effect::Quit))
+    );
+    let effects = dispatch(Action::SendPrompt("/new".into()), &mut app);
+    let new_agent = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::CreateSession { agent_id, .. } => Some(*agent_id),
+            _ => None,
+        })
+        .expect("/new still starts a session");
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionCreated {
+            agent_id: new_agent,
+            session_id: "fresh-1".into(),
+            models: None,
+            modes: None,
+        }),
+        &mut app,
+    );
+    assert!(!expect_agent(&app, new_agent).load_failed);
+    let effects = dispatch(Action::SendPrompt("hi".into()), &mut app);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::SendPrompt { .. })),
+        "the new session takes prompts, got {effects:?}"
+    );
+}
+fn test_image() -> crate::prompt_images::PastedImage {
+    crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
+        data: vec![1, 2, 3],
+        mime_type: "image/png".into(),
+    })
+}
+fn fail_load(app: &mut AppView, agent_id: AgentId) {
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionLoadFailed {
+            agent_id,
+            session_id: acp::SessionId::new("dead-1"),
+            error: "busy".into(),
+        }),
+        app,
+    );
+}
+/// One row held during a failed load returns whole to an empty composer, with its image or bash mode
+#[test]
+fn failed_load_returns_a_held_row_whole() {
+    let agent_0 = AgentId(0);
+    let mut app = test_app();
+    dispatch(Action::LoadSession("dead-1".into(), None, false), &mut app);
+    let agent = app.agents.get_mut(&agent_0).unwrap();
+    agent.prompt.set_text("look at ");
+    agent.prompt.set_cursor(agent.prompt.text().len());
+    agent.prompt.insert_image(test_image()).unwrap();
+    let (text, images, chips) = agent.prompt.stash().into_submission();
+    agent.session.enqueue_prompt(text);
+    let row = agent.session.pending_prompts.front_mut().expect("held row");
+    row.images = images;
+    row.chip_elements = chips;
+    agent.prompt.set_text("");
+    fail_load(&mut app, agent_0);
+    let agent = app.agents.get_mut(&agent_0).unwrap();
+    assert!(agent.session.pending_prompts.is_empty());
+    assert_eq!("look at [Image #1] ", agent.prompt.text());
+    assert_eq!(1, agent.prompt.drain_images().len());
+    let mut app = test_app();
+    dispatch(Action::LoadSession("dead-1".into(), None, false), &mut app);
+    dispatch(Action::SendBashCommand("ls".into()), &mut app);
+    fail_load(&mut app, agent_0);
+    let agent = expect_agent(&app, agent_0);
+    assert_eq!(
+        (crate::app::agent_view::PromptInputMode::Bash, "ls"),
+        (agent.prompt_input_mode, agent.prompt.text())
+    );
+}
+/// An edit of a held row in progress is saved into that row as text, even when it now reads as a command
+#[test]
+fn failed_load_keeps_an_edit_of_a_held_row() {
+    let agent_0 = AgentId(0);
+    for (edited, image) in [("edited draft", false), ("/compact ", true)] {
+        let mut app = test_app();
+        dispatch(Action::LoadSession("dead-1".into(), None, false), &mut app);
+        dispatch(Action::SendPrompt("first draft".into()), &mut app);
+        let agent = app.agents.get_mut(&agent_0).unwrap();
+        let id = agent.session.pending_prompts.front().expect("held row").id;
+        agent.enter_queue_edit(id, false, None);
+        agent.prompt.set_text(edited);
+        if image {
+            agent.prompt.set_cursor(edited.len());
+            agent.prompt.insert_image(test_image()).unwrap();
+        }
+        let expected = agent.prompt.text().to_owned();
+        fail_load(&mut app, agent_0);
+        let agent = app.agents.get_mut(&agent_0).unwrap();
+        assert!(matches!(
+            agent.prompt_mode,
+            crate::app::agent_view::PromptMode::Normal
+        ));
+        assert!(agent.session.pending_prompts.is_empty());
+        assert_eq!(expected, agent.prompt.text());
+        let images = agent.prompt.drain_images();
+        assert_eq!(usize::from(image), images.len());
+        assert!(images.iter().all(|image| {
+            image
+                .staged_temp_path
+                .as_ref()
+                .is_none_or(|path| path.exists())
+        }));
+    }
+}
+/// A cleared edit leaves edit mode, and the held row returns with its text
+#[test]
+fn failed_load_with_a_cleared_edit_returns_the_held_row() {
+    let agent_0 = AgentId(0);
+    let mut app = test_app();
+    dispatch(Action::LoadSession("dead-1".into(), None, false), &mut app);
+    dispatch(Action::SendPrompt("first draft".into()), &mut app);
+    let agent = app.agents.get_mut(&agent_0).unwrap();
+    let id = agent.session.pending_prompts.front().expect("held row").id;
+    agent.enter_queue_edit(id, false, None);
+    agent.prompt.set_text("");
+    fail_load(&mut app, agent_0);
+    let agent = expect_agent(&app, agent_0);
+    assert!(matches!(
+        agent.prompt_mode,
+        crate::app::agent_view::PromptMode::Normal
+    ));
+    assert_eq!("first draft", agent.prompt.text());
+}
+/// Several held rows leave the draft alone and are listed as not sent, with their images counted
+#[test]
+fn failed_load_lists_several_held_rows_as_not_sent() {
+    let mut app = test_app();
+    dispatch(Action::LoadSession("dead-1".into(), None, false), &mut app);
+    let agent_0 = AgentId(0);
+    dispatch(Action::SendPrompt("typed while loading".into()), &mut app);
+    dispatch(Action::SendBashCommand("ls".into()), &mut app);
+    let agent = app.agents.get_mut(&agent_0).unwrap();
+    agent
+        .session
+        .pending_prompts
+        .front_mut()
+        .expect("held row")
+        .images
+        .push(test_image());
+    agent.prompt.set_text("still typing");
+    fail_load(&mut app, agent_0);
+    let agent = expect_agent(&app, agent_0);
+    assert!(agent.session.pending_prompts.is_empty());
+    assert_eq!("still typing", agent.prompt.text());
+    let listed: Vec<String> = agent
+        .scrollback
+        .iter_entries()
+        .filter_map(|(_, entry)| match &entry.block {
+            crate::scrollback::block::RenderBlock::System(system) => Some(system.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        listed
+            .iter()
+            .any(|line| line.contains("1 image dropped")
+                && line.contains("typed while loading\n!ls")),
+        "{listed:?}"
+    );
+}

@@ -164,6 +164,15 @@ impl Reducer for AcpReducer {
                     signature,
                 })];
             }
+            StreamEvent::TurnUsage { usage } => {
+                return vec![to_line(&AcpUsageLine {
+                    kind: "usage",
+                    message_id: None,
+                    stop_reason: None,
+                    usage: Some(usage),
+                    signature: None,
+                })];
+            }
         };
         vec![to_line(&line)]
     }

@@ -27,6 +27,86 @@ fn collects_top_level_files_with_flat_names() {
 }
 
 #[test]
+fn trims_oversized_terminal_logs_to_both_ends_but_never_caps_other_files() {
+    let dir = TempDir::new().unwrap();
+    let cap = archive_logs::MAX_ARCHIVED_LOG_BYTES as usize;
+    fs::create_dir(dir.path().join("terminal")).unwrap();
+    fs::create_dir(dir.path().join("images")).unwrap();
+    let big_log = [vec![b'h'; cap], vec![b't'; cap]].concat();
+    fs::write(dir.path().join("terminal/big.log"), &big_log).unwrap();
+    fs::write(dir.path().join("terminal/small.log"), b"ok").unwrap();
+    for name in ["images/big.png", "chat_history.jsonl"] {
+        fs::File::create(dir.path().join(name))
+            .unwrap()
+            .set_len(cap as u64 + 1)
+            .unwrap();
+    }
+
+    let mut files = Vec::new();
+    collect_session_files_recursive(dir.path(), dir.path(), &mut files);
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let sizes: Vec<_> = files
+        .iter()
+        .map(|f| (f.name.as_str(), f.data.len()))
+        .collect();
+    assert_eq!(
+        sizes,
+        [
+            ("chat_history.jsonl", cap + 1),
+            ("images/big.png", cap + 1),
+            ("terminal/big.log", cap + archive_logs::TRIM_MARKER.len()),
+            ("terminal/small.log", 2),
+        ]
+    );
+    let trimmed = &at(&files, 2).data;
+    assert!(trimmed.starts_with(&vec![b'h'; cap / 2]));
+    assert!(trimmed.ends_with(&vec![b't'; cap / 2]));
+}
+
+#[cfg(unix)]
+#[test]
+fn ignores_a_symlinked_terminal_dir() {
+    let dir = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    fs::write(elsewhere.path().join("outside.log"), b"not session data").unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("terminal")).unwrap();
+    fs::write(dir.path().join("summary.json"), b"{}").unwrap();
+
+    let mut files = Vec::new();
+    collect_session_files_recursive(dir.path(), dir.path(), &mut files);
+
+    let names: Vec<_> = files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["summary.json"]);
+}
+
+#[test]
+fn admits_newest_terminal_logs_until_the_copy_budget_is_spent() {
+    use std::time::{Duration, SystemTime};
+
+    let dir = TempDir::new().unwrap();
+    let terminal = dir.path().join("terminal");
+    fs::create_dir(&terminal).unwrap();
+    let per_log = archive_logs::MAX_ARCHIVED_LOG_BYTES;
+    let fits = (archive_logs::MAX_ARCHIVED_TERMINAL_BYTES / per_log) as usize;
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    for i in 0..=fits {
+        let log = fs::File::create(terminal.join(format!("{i:02}.log"))).unwrap();
+        log.set_len(per_log).unwrap();
+        log.set_modified(t0 + Duration::from_secs(i as u64))
+            .unwrap();
+    }
+
+    let mut files = Vec::new();
+    collect_session_files_recursive(dir.path(), dir.path(), &mut files);
+
+    let mut names: Vec<_> = files.iter().map(|f| f.name.clone()).collect();
+    names.sort_unstable();
+    let newest: Vec<_> = (1..=fits).map(|i| format!("terminal/{i:02}.log")).collect();
+    assert_eq!(names, newest, "the oldest log is the one left out");
+}
+
+#[test]
 fn collects_subdirectory_files_with_relative_paths() {
     let dir = TempDir::new().unwrap();
     let prompts_dir = dir.path().join("prompts");

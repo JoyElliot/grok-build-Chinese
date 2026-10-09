@@ -1,12 +1,13 @@
-use std::sync::Arc;
-
 use agent_client_protocol::{self as acp, Client as _};
 use futures_util::FutureExt as _;
 use serde_json::{Value, json};
 
 use super::ScriptedClient;
 use crate::acp_ask_user_question::ASK_USER_QUESTION_METHOD;
-use crate::acp_policy::{ClientPolicy, PermissionDecision, QuestionDecision, RequestPolicy};
+use crate::acp_fixtures::ext_request;
+use crate::acp_policy::{
+    ClientHook, ClientHookReply, ClientPolicy, PermissionDecision, QuestionDecision, RequestPolicy,
+};
 use crate::acp_transcript::TranscriptEntry;
 
 fn permission_request(
@@ -25,13 +26,6 @@ fn permission_request(
 
 fn selected(option_id: &'static str) -> acp::RequestPermissionOutcome {
     acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(option_id))
-}
-
-fn ext_request(method: &'static str, params: &Value) -> acp::ExtRequest {
-    acp::ExtRequest::new(
-        method,
-        Arc::from(serde_json::value::to_raw_value(params).expect("params serialize")),
-    )
 }
 
 fn parse(response: &acp::ExtResponse) -> Value {
@@ -141,6 +135,29 @@ async fn other_extension_requests_are_answered_null_and_recorded() {
             reply: Value::Null,
         }],
         client.transcript().entries()
+    );
+}
+
+#[tokio::test]
+async fn hook_run_request_gets_the_client_hook_reply() {
+    let client = ScriptedClient::new(ClientPolicy {
+        client_hook: Some(ClientHook::new("PreToolUse").reply(ClientHookReply::Deny {
+            system_message: "no".to_owned(),
+        })),
+        ..ClientPolicy::default()
+    });
+
+    let reply = client
+        .ext_method(ext_request(
+            "x.ai/hooks/run",
+            &json!({ "hookCallbackId": "cb" }),
+        ))
+        .await
+        .expect("hook reply");
+
+    assert_eq!(
+        json!({ "decision": "deny", "systemMessage": "no" }),
+        parse(&reply)
     );
 }
 

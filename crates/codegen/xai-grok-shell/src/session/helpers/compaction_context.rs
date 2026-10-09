@@ -580,6 +580,54 @@ mod tests {
     }
 
     #[test]
+    fn missing_tool_name_still_renders_the_running_task() {
+        let ctx = CompactionStateContext {
+            running_tasks: vec![BackgroundTaskSummary {
+                task_id: "task-1".into(),
+                command: "cargo test".into(),
+                status: "running".into(),
+                tool_name: None,
+            }],
+            ..ctx_with_todos(vec![])
+        };
+        let text = to_system_reminder_sync(&ctx, &[], &[], None, None, None)
+            .expect("a missing tool name must still produce the reminder");
+        assert_eq!(
+            text,
+            "<system-reminder>\n## Running Background Tasks\nThese tasks are still running:\n- \"task-1\": `cargo test` (running)\n</system-reminder>"
+        );
+    }
+
+    #[test]
+    fn reminder_omits_a_sibling_session_id() {
+        let ctx = CompactionStateContext {
+            running_tasks: vec![BackgroundTaskSummary {
+                task_id: "task-1".into(),
+                command: "cargo test".into(),
+                status: "running".into(),
+                tool_name: Some("run_terminal_command".into()),
+            }],
+            running_subagents: vec![RunningSubagentSummary {
+                subagent_id: "child-1".into(),
+                subagent_type: "explore".into(),
+                description: "find files".into(),
+                elapsed_ms: 5_000,
+            }],
+            ..ctx_with_todos(vec![])
+        };
+        let names = SubagentToolNames {
+            poll: "get_task_output".into(),
+            cancel: "kill_task".into(),
+        };
+        let text =
+            to_system_reminder_sync(&ctx, &[], &[], Some(&names), None, None).expect("reminder");
+        assert_eq!(
+            text,
+            "<system-reminder>\n## Running Background Tasks\nThese tasks are still running:\n- \"task-1\": `cargo test` (running, run_terminal_command)\n\n## Running Subagents\nThese subagents were launched before this compaction and are still running. Use `get_task_output` with the subagent_id to check their status or retrieve results. Use `kill_task` with the subagent_id to cancel a subagent.\n- \"child-1\": `find files` (running for 5s, explore)\n</system-reminder>"
+        );
+    }
+
+    #[test]
     fn system_reminder_omits_todos_when_none_active() {
         let ctx = ctx_with_todos(vec![
             todo("1", TodoSummaryStatus::Completed, "done"),

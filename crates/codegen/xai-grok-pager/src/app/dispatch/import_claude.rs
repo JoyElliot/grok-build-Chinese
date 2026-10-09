@@ -141,7 +141,7 @@ pub(super) fn dispatch_import_claude_confirm(app: &mut AppView) -> Vec<Effect> {
     };
 
     if selected_count > 0 {
-        match xai_grok_shell::claude_import::apply_import(&filtered, &cwd) {
+        match xai_grok_external_agent_migration::apply_import(&filtered, &cwd) {
             Ok(result) => {
                 let imported = import_text(
                     app.locale.as_ref(),
@@ -164,12 +164,29 @@ pub(super) fn dispatch_import_claude_confirm(app: &mut AppView) -> Vec<Effect> {
                 }
             }
             Err(e) => {
+                let detail = match &e {
+                    xai_grok_external_agent_migration::MigrationError::Io {
+                        operation,
+                        path,
+                        source,
+                    } => xai_grok_locale::diagnostics::migration_io(
+                        app.locale.as_ref(),
+                        operation,
+                        &path.display().to_string(),
+                        &source.to_string(),
+                    ),
+                    _ => xai_grok_locale::diagnostics::localize(
+                        app.locale.as_ref(),
+                        xai_grok_locale::diagnostics::DiagnosticDomain::Migration,
+                        &e.to_string(),
+                    ),
+                };
                 let message = import_text(
                     app.locale.as_ref(),
                     "import.status.failed",
                     "Failed to import Claude settings: {error}",
                 )
-                .replace("{error}", &e.to_string());
+                .replace("{error}", &detail);
                 app.startup_warnings.push(crate::startup::StartupWarning {
                     severity: crate::startup::WarningSeverity::Warning,
                     message,

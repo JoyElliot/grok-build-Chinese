@@ -72,7 +72,7 @@ fn reload_skills_marks_both_lists_loading_and_refetches() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     let mut modal = ExtensionsModalState::new(ExtensionsTab::Workflows);
-    modal.skills_data = TabDataState::Loaded(vec![]);
+    modal.skills_data = TabDataState::Loaded(Default::default());
     modal.workflows_data = TabDataState::Loaded(vec![]);
     app.agents.get_mut(&id).unwrap().extensions_modal = Some(modal);
     let effects = dispatch(Action::ReloadSkills, &mut app);
@@ -98,6 +98,44 @@ fn reload_skills_marks_both_lists_loading_and_refetches() {
         "reload must refetch workflows, got {effects:?}"
     );
 }
+fn skills_refresh(effects: &[Effect]) -> Vec<bool> {
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::FetchSkillsList { refresh, .. } => Some(*refresh),
+            _ => None,
+        })
+        .collect()
+}
+#[test]
+fn only_reloading_the_skills_tab_rescans_skills() {
+    use crate::views::extensions_modal::ExtensionsTab;
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let opened = dispatch(
+        Action::OpenExtensionsModal {
+            tab: ExtensionsTab::Skills,
+            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+        },
+        &mut app,
+    );
+    let on_skills = dispatch(Action::ReloadSkills, &mut app);
+    if let Some(modal) = app
+        .agents
+        .get_mut(&id)
+        .and_then(|agent| agent.extensions_modal.as_mut())
+    {
+        modal.active_tab = ExtensionsTab::Workflows;
+    }
+    let on_workflows = dispatch(Action::ReloadSkills, &mut app);
+    assert_eq!(
+        vec![false],
+        skills_refresh(&opened),
+        "opening reads the cache"
+    );
+    assert_eq!(vec![true], skills_refresh(&on_skills));
+    assert_eq!(vec![false], skills_refresh(&on_workflows));
+}
 #[test]
 fn reload_skills_without_session_keeps_loaded_state() {
     use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab, TabDataState};
@@ -105,7 +143,7 @@ fn reload_skills_without_session_keeps_loaded_state() {
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let mut modal = ExtensionsModalState::new(ExtensionsTab::Workflows);
-    modal.skills_data = TabDataState::Loaded(vec![]);
+    modal.skills_data = TabDataState::Loaded(Default::default());
     modal.workflows_data = TabDataState::Loaded(vec![]);
     app.agents.get_mut(&id).unwrap().extensions_modal = Some(modal);
     let effects = dispatch(Action::ReloadSkills, &mut app);

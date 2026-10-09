@@ -1102,22 +1102,6 @@ impl SessionActor {
         Some(ctx)
     }
 
-    /// Preserves caller `/compact <text>` when folding in the goal pin.
-    pub(crate) fn merge_goal_compaction_user_context(
-        &self,
-        user_context: Option<String>,
-    ) -> Option<String> {
-        let Some(goal_ctx) = self.goal_compaction_user_context() else {
-            return user_context;
-        };
-        match user_context {
-            Some(existing) if !existing.trim().is_empty() => {
-                Some(format!("{existing}\n\n{goal_ctx}"))
-            }
-            _ => Some(goal_ctx),
-        }
-    }
-
     /// Live GoalTracker snapshot for the post-compaction reminder.
     /// `None` when no goal exists or it already completed.
     /// Continuation-style (next step), not create-style `goal_rules`.

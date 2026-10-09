@@ -8,6 +8,7 @@ use crate::input::line_editor::{LineEditOutcome, LineEditor};
 use crate::locale::LocaleContext;
 use crate::render::line_utils::truncate_str;
 use crate::theme::Theme;
+use crate::views::modal_list::{self, ListRow, RowStatus, RowTag};
 use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, ModalWindowState, Shortcut,
 };
@@ -1549,8 +1550,7 @@ fn render_agents_tab(
         }
         rows.push(FlatRow::Agent(idx));
         if !entry.description.is_empty() {
-            let indent = 6usize;
-            let desc_w = visible_width.saturating_sub(indent);
+            let desc_w = visible_width.saturating_sub(usize::from(modal_list::DETAIL_INDENT));
             if desc_w > 0 {
                 for line in word_wrap(&entry.description, desc_w) {
                     rows.push(FlatRow::Description(idx, line));
@@ -1637,111 +1637,12 @@ fn render_agents_tab(
                     continue;
                 };
                 let is_selected = *idx == state.selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
-                if let Some(bg_color) = bg {
-                    let bg_style = Style::default().bg(bg_color);
-                    for x in content_area.x..content_area.x + content_area.width {
-                        if let Some(cell) = buf.cell_mut((x, row_y)) {
-                            cell.set_style(bg_style);
-                        }
-                    }
-                }
-                let mut x = content_area.x;
-                let indicator = if entry.expanded {
-                    "\u{25bc} "
-                } else {
-                    "\u{25b6} "
-                };
-                let ind_style = Style::default().fg(theme.gray_dim);
-                let ind_style = if let Some(bg_color) = bg {
-                    ind_style.bg(bg_color)
-                } else {
-                    ind_style
-                };
-                buf.set_string(x, row_y, indicator, ind_style);
-                x += 2;
-                let status = if entry.enabled {
-                    format!("{} ", crate::glyphs::filled_dot())
-                } else {
-                    "\u{25cb} ".to_string()
-                };
-                let status_fg = if entry.enabled {
-                    theme.accent_success
-                } else {
-                    theme.gray_dim
-                };
-                let status_style = Style::default().fg(status_fg);
-                let status_style = if let Some(bg_color) = bg {
-                    status_style.bg(bg_color)
-                } else {
-                    status_style
-                };
-                buf.set_string(x, row_y, status, status_style);
-                x += 2;
-                let name_w = entry.name.width();
-                let remaining = (content_area.x + content_area.width).saturating_sub(x) as usize;
-                let name_display = truncate_str(&entry.name, remaining);
-                let mut name_style = Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD);
-                if let Some(bg_color) = bg {
-                    name_style = name_style.bg(bg_color);
-                }
-                buf.set_string(x, row_y, &name_display, name_style);
-                x += name_w.min(remaining) as u16;
                 let is_active = state
                     .active_agent
                     .as_deref()
                     .is_some_and(|a| a == entry.name);
-                if is_active {
-                    let active_label = agents_static(locale, "agents.status.active", " active");
-                    let active_remaining =
-                        (content_area.x + content_area.width).saturating_sub(x) as usize;
-                    if active_remaining >= active_label.width() {
-                        let mut active_style = Style::default()
-                            .fg(theme.accent_success)
-                            .add_modifier(Modifier::BOLD);
-                        if let Some(bg_color) = bg {
-                            active_style = active_style.bg(bg_color);
-                        }
-                        buf.set_string(x, row_y, active_label, active_style);
-                        x += active_label.width() as u16;
-                    }
-                }
                 let is_default = entry.name == state.default_agent;
-                if is_default {
-                    let default_label = agents_static(locale, "agents.status.default", " default");
-                    let default_remaining =
-                        (content_area.x + content_area.width).saturating_sub(x) as usize;
-                    if default_remaining >= default_label.width() {
-                        let mut default_style = Style::default()
-                            .fg(theme.text_primary)
-                            .add_modifier(Modifier::DIM | Modifier::BOLD);
-                        if let Some(bg_color) = bg {
-                            default_style = default_style.bg(bg_color);
-                        }
-                        buf.set_string(x, row_y, default_label, default_style);
-                        x += default_label.width() as u16;
-                    }
-                }
-                if !entry.enabled {
-                    let off_label = agents_static(locale, "agents.status.off", " [off]");
-                    let off_remaining =
-                        (content_area.x + content_area.width).saturating_sub(x) as usize;
-                    if off_remaining >= off_label.width() {
-                        let mut off_style = Style::default().fg(theme.gray_dim);
-                        if let Some(bg_color) = bg {
-                            off_style = off_style.bg(bg_color);
-                        }
-                        buf.set_string(x, row_y, off_label, off_style);
-                        x += off_label.width() as u16;
-                    }
-                }
-                let (badge_text, mut badge_style) = if entry.definition.plugin_name.is_some() {
+                let (badge_text, badge_style) = if entry.definition.plugin_name.is_some() {
                     (
                         agents_static(locale, "agents.badge.plugin", " plugin ").to_string(),
                         Style::default().fg(theme.text_secondary),
@@ -1749,36 +1650,64 @@ fn render_agents_tab(
                 } else {
                     scope_badge_with_locale(entry.scope, theme, locale)
                 };
-                if let Some(bg_color) = bg {
-                    badge_style = badge_style.bg(bg_color);
-                }
-                let badge_remaining =
-                    (content_area.x + content_area.width).saturating_sub(x + 1) as usize;
-                if badge_remaining >= badge_text.width() {
-                    buf.set_string(x + 1, row_y, &badge_text, badge_style);
-                }
+                let off_style = Style::default().fg(theme.gray_dim);
+                let active_style = Style::default()
+                    .fg(theme.accent_success)
+                    .add_modifier(Modifier::BOLD);
+                let default_style = Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::DIM | Modifier::BOLD);
+                let tags: Vec<RowTag<'_>> = [
+                    (
+                        is_active,
+                        agents_static(locale, "agents.status.active", " active"),
+                        active_style,
+                        0,
+                    ),
+                    (
+                        is_default,
+                        agents_static(locale, "agents.status.default", " default"),
+                        default_style,
+                        0,
+                    ),
+                    (
+                        !entry.enabled,
+                        agents_static(locale, "agents.status.off", " [off]"),
+                        off_style,
+                        0,
+                    ),
+                    (true, badge_text.as_str(), badge_style, 1),
+                ]
+                .into_iter()
+                .filter(|&(is_shown, ..)| is_shown)
+                .map(|(_, text, style, gap)| RowTag { text, style, gap })
+                .collect();
+                let row = ListRow {
+                    expand: Some(entry.expanded),
+                    status: if entry.enabled {
+                        RowStatus::Enabled
+                    } else {
+                        RowStatus::Disabled
+                    },
+                    name: &entry.name,
+                    tags: &tags,
+                    detail: None,
+                    is_selected,
+                };
+                modal_list::render_row(buf, content_area.x, content_area.width, row_y, &row, theme);
             }
             Some(FlatRow::Description(idx, line)) => {
                 state.row_map.push((row_y, *idx));
                 let is_selected = *idx == state.selected;
-                let bg = if is_selected {
-                    Some(theme.bg_highlight)
-                } else {
-                    None
-                };
-                let indent = 6u16;
-                let desc_x = content_area.x + indent;
-                let mut desc_style = Style::default().fg(theme.gray);
-                if let Some(bg_color) = bg {
-                    desc_style = desc_style.bg(bg_color);
-                    let fill = Style::default().bg(bg_color);
-                    for cx in content_area.x..content_area.x + content_area.width {
-                        if let Some(cell) = buf.cell_mut((cx, row_y)) {
-                            cell.set_style(fill);
-                        }
-                    }
-                }
-                buf.set_string(desc_x, row_y, line, desc_style);
+                modal_list::render_detail_line(
+                    buf,
+                    content_area.x,
+                    content_area.width,
+                    row_y,
+                    line,
+                    is_selected,
+                    theme,
+                );
             }
             Some(FlatRow::Detail(text)) => {
                 let detail_style = Style::default().fg(theme.gray);

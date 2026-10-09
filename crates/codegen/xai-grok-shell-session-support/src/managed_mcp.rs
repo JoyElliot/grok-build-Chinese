@@ -369,25 +369,9 @@ pub async fn get_or_fetch_gateway_tool_catalog(
     }
 }
 
-pub fn normalize_url(url: &str) -> String {
-    url.trim_end_matches('/').to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_url_strips_trailing_slash() {
-        assert_eq!(
-            normalize_url("https://mcp.example.com/sse/"),
-            "https://mcp.example.com/sse"
-        );
-        assert_eq!(
-            normalize_url("https://mcp.example.com/sse"),
-            "https://mcp.example.com/sse"
-        );
-    }
 
     #[test]
     fn gateway_tool_catalog_deserializes() {

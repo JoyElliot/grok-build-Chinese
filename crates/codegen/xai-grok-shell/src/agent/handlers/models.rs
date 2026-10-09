@@ -16,7 +16,7 @@ pub(crate) async fn handle(
     } else {
         agent
             .models_manager
-            .wait_for_first_catalog(crate::util::config::resolve_remote_fetch_enabled())
+            .wait_for_first_catalog(agent.models_manager.is_models_fetch_enabled())
             .await;
         agent.model_state(None)
     };

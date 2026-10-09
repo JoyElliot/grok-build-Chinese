@@ -854,3 +854,22 @@ mod timer_parents {
         }
     }
 }
+
+/// Time a named span. `$crate` is this crate, so callers outside telemetry can share one macro.
+#[macro_export]
+macro_rules! instrumentation_timer {
+    ($name:literal) => {{
+        let mode = $crate::instrumentation::current_mode();
+        match mode {
+            $crate::instrumentation::InstrumentationMode::Chrome => {
+                let span = tracing::info_span!(target: $crate::instrumentation::TARGET, $name);
+                $crate::instrumentation::InstrumentationTimer::new_with_span(
+                    $name,
+                    mode,
+                    Some(span.entered()),
+                )
+            }
+            _ => $crate::instrumentation::InstrumentationTimer::new($name),
+        }
+    }};
+}

@@ -26,6 +26,46 @@ fn write_atomically_replaces_and_if_absent_refuses() {
     );
 }
 
+/// The file renamed into place must be the inode the writer created: one swapped in under the
+/// temp's name is removed and the write refused, leaving no file behind; an undisturbed write
+/// lands with the requested mode.
+#[cfg(unix)]
+#[test]
+fn write_atomically_verified_never_keeps_a_file_swapped_in_under_the_temp_name() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("grants.toml");
+    let forged = dir.path().join("forged.toml");
+
+    write_atomically_verified(&path, "[[grant]]\n", Some(0o600)).expect("undisturbed write");
+    assert_eq!("[[grant]]\n", std::fs::read_to_string(&path).expect("read"));
+    let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+    assert_eq!(0o600, mode & 0o777);
+
+    let swaps = std::rc::Rc::new(std::cell::Cell::new(0));
+    let hook_swaps = std::rc::Rc::clone(&swaps);
+    let hook_forged = forged.clone();
+    BEFORE_VERIFIED_RENAME.set(Some(Box::new(move |tmp: &Path| {
+        hook_swaps.set(hook_swaps.get() + 1);
+        std::fs::write(&hook_forged, "forged = true\n").expect("forge");
+        std::fs::rename(&hook_forged, tmp).expect("swap");
+    })));
+    let refused = write_atomically_verified(&path, "[[grant]]\n", Some(0o600));
+    BEFORE_VERIFIED_RENAME.set(None);
+
+    assert_eq!(
+        std::io::ErrorKind::InvalidData,
+        refused.expect_err("swap").kind()
+    );
+    assert_eq!(1, swaps.get());
+    assert!(!path.exists(), "the swapped-in file is gone");
+    let left: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("dir")
+        .flatten()
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
 /// Every racing first writer learns the same outcome: one wins, the file holds that writer's bytes,
 /// and every loser sees `AlreadyExists` rather than silently replacing the winner.
 #[test]
@@ -130,6 +170,23 @@ fn resolve_atomic_destination_follows_leaf_symlink() {
     );
     assert_eq!(target, std::fs::read_link(&link).expect("read_link"));
     assert_eq!("after", std::fs::read_to_string(&target).expect("target"));
+}
+
+/// A `None` mode must inherit the destination's mode, as [`write_atomically_bound`] does.
+#[cfg(unix)]
+#[test]
+fn write_user_file_atomically_preserves_0600_dest_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "old\n").expect("seed");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod 0600");
+
+    write_user_file_atomically(&path, "new\n", None).expect("write");
+
+    let mode = std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+    assert_eq!(0o600, mode, "must not publish 0644 over a 0600 destination");
+    assert_eq!("new\n", std::fs::read_to_string(&path).expect("read"));
 }
 
 #[cfg(unix)]

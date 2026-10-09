@@ -7,6 +7,8 @@ use crate::conversation_script::{Conversation, MockToolCall, ScriptViolation};
 use crate::failure::StatusFailure;
 use crate::inference_request::{InferenceEndpoint, InferenceRequest};
 use crate::model_reply::ModelReply;
+use crate::scripted::ScriptedBody;
+use crate::sse::UsageReport;
 use crate::tools::{PickedToolCall, Tool};
 
 pub(super) const GROK_BUILD_TOOLS: [&str; 2] = ["read_file", "run_terminal_command"];
@@ -76,7 +78,10 @@ fn call(call_id: &str, name: &str, arguments: Value) -> ModelReply {
 }
 
 pub(super) fn reply(text: &str) -> ModelReply {
-    ModelReply::Text(text.to_owned())
+    ModelReply::Text {
+        text: text.to_owned(),
+        usage: None,
+    }
 }
 
 pub(super) fn read_call() -> MockToolCall {
@@ -150,6 +155,52 @@ fn calls_are_answered_in_order_until_their_results_arrive_then_the_reply() {
 }
 
 #[test]
+fn parallel_calls_are_answered_in_one_response_and_the_reply_waits_for_every_result() {
+    let respond = chat_scripts(vec![
+        Conversation::nth(1)
+            .calls([read_call(), shell_call()])
+            .parallel_tool_calls()
+            .reply("ALL-DONE"),
+    ]);
+
+    let first = respond(ConversationId::nth(1), vec![]);
+    let partial = respond(
+        ConversationId::nth(1),
+        vec![chat_result("call_mock_1_1", "file body")],
+    );
+    let complete = respond(
+        ConversationId::nth(1),
+        vec![
+            chat_result("call_mock_1_1", "file body"),
+            chat_result("call_mock_1_2", "a.rs"),
+        ],
+    );
+
+    let read = (
+        "call_mock_1_1".to_owned(),
+        PickedToolCall {
+            name: "read_file".to_owned(),
+            arguments: json!({ "target_file": "a.rs" }),
+        },
+    );
+    let shell = (
+        "call_mock_1_2".to_owned(),
+        PickedToolCall {
+            name: "run_terminal_command".to_owned(),
+            arguments: json!({ "command": "ls", "description": "ls" }),
+        },
+    );
+    assert_eq!(
+        [
+            ModelReply::ToolCalls(vec![read, shell.clone()]),
+            ModelReply::ToolCalls(vec![shell]),
+            reply("ALL-DONE"),
+        ],
+        [first, partial, complete]
+    );
+}
+
+#[test]
 fn request_after_a_reply_starts_the_next_entry() {
     let respond = chat_scripts(vec![
         Conversation::nth(1)
@@ -181,6 +232,42 @@ fn request_after_a_reply_starts_the_next_entry() {
             reply("TWO"),
         ],
         answers
+    );
+}
+
+#[test]
+fn reasoning_turn_reports_the_usage_and_cost_its_script_sets() {
+    let respond = chat_scripts(vec![
+        Conversation::nth(1)
+            .reasoning("thinking")
+            .usage(UsageReport {
+                prompt_tokens: 1234,
+                completion_tokens: 56,
+                cost_usd_ticks: Some(250_000_000),
+            })
+            .reply("OK"),
+    ]);
+
+    let ScriptedBody::Sse(events) = respond(ConversationId::nth(1), vec![])
+        .into_response(InferenceEndpoint::ChatCompletions, "m")
+        .body
+    else {
+        panic!("a reasoning reply renders as SSE");
+    };
+    let usage = events
+        .iter()
+        .filter_map(|event| serde_json::from_str::<Value>(&event.data).ok())
+        .find_map(|frame| frame.get("usage").cloned())
+        .expect("one frame carries the usage");
+
+    assert_eq!(
+        json!({
+            "prompt_tokens": 1234,
+            "completion_tokens": 56,
+            "total_tokens": 1290,
+            "cost_in_usd_ticks": 250_000_000,
+        }),
+        usage
     );
 }
 

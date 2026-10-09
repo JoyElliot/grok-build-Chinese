@@ -13,8 +13,8 @@ impl SessionActor {
             args_provided: action.args_provided(),
         });
         match action {
-            BuiltinAction::Compact { user_context } => {
-                self.run_compact(user_context).await?;
+            BuiltinAction::Compact => {
+                self.run_compact().await?;
                 ok_end_turn(0, None)
             }
             BuiltinAction::SetYolo { enabled } => {

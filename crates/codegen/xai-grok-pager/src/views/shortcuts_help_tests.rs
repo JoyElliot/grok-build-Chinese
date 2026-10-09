@@ -169,6 +169,63 @@ fn filter_matches_against_key_display() {
     );
 }
 
+/// Each query word matches on its own against every field, including the long help.
+#[test]
+fn filter_finds_stash_by_natural_queries() {
+    let registry = crate::actions::ActionRegistry::defaults();
+    let entries = build_entries(&[When::PromptFocused], &registry, false);
+    let stash_row = |filtered: &[usize]| {
+        filtered.iter().any(|&i| {
+            matches!(
+                entries.get(i),
+                Some(ShortcutsHelpEntry::Hint {
+                    action_id: Some(ActionId::StashPrompt),
+                    ..
+                })
+            )
+        })
+    };
+
+    for query in ["pop stash", "stash pop", "pop a stash", "unstash"] {
+        let filtered = filter_entries(&entries, query, false, &no_collapsed());
+        assert!(stash_row(&filtered), "{query:?} must find the stash row");
+    }
+
+    let filtered = filter_entries(&entries, "stash zzz", false, &no_collapsed());
+    assert!(
+        !stash_row(&filtered),
+        "a word matching nothing must exclude the row",
+    );
+}
+
+#[rstest::rstest]
+#[case::translated_help("分类器", true)]
+#[case::mixed_fields("分类器 shift", true)]
+#[case::english_help("classifier", true)]
+#[case::missing_word("分类器 zzz", false)]
+fn filter_matches_localized_long_help(#[case] query: &str, #[case] expected: bool) {
+    let locale = crate::locale::LocaleContext::new(crate::locale::ResolvedLocale {
+        locale: crate::locale::UiLocale::ZhCn,
+        source: crate::locale::LocaleSource::Cli,
+    });
+    let registry = crate::actions::ActionRegistry::defaults();
+    let entries = build_entries(&[When::PromptFocused], &registry, false);
+
+    let filtered =
+        filter_entries_with_locale(&entries, query, false, &no_collapsed(), Some(&locale));
+
+    let contains_mode = filtered.iter().any(|&index| {
+        matches!(
+            entries.get(index),
+            Some(ShortcutsHelpEntry::Hint {
+                action_id: Some(ActionId::CycleMode),
+                ..
+            })
+        )
+    });
+    assert_eq!(contains_mode, expected, "query: {query}");
+}
+
 #[test]
 fn filter_keeps_both_headers_when_both_sections_match() {
     let entries = vec![

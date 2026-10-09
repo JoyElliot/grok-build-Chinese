@@ -204,6 +204,19 @@ Grok reads each variable when it builds the client for a session and places the 
 
 Both fields also work on a shared `[model_providers.<id>]` block. A model that points at a provider with `model_provider = "<id>"` inherits the provider's `query_params` and `env_http_headers` when it sets none of its own, matching how `extra_headers` is inherited.
 
+### Model Notice
+
+`notice` puts a message above the prompt for as long as the model is selected. The banner cannot be dismissed. It goes away when you switch to a model without a notice.
+
+```toml
+[model.legacy]
+model = "legacy-model"
+base_url = "https://gateway.example/v1"
+notice = { severity = "warning", text = "This model is deprecated on Oct 15. Switch to grok-4.6.", label = "deprecated" }
+```
+
+`severity` sets the banner color and is `info`, `warning`, or `critical`. It defaults to `info`. `text` is required, and long text wraps. `label` is an optional short tag shown before the text. A custom models endpoint can send the same object as `notice` or `_meta.notice` on a model entry. To remove a notice a built-in or remote model carries, set `notice = { text = "" }`.
+
 ---
 
 ## Overriding Built-in Models
@@ -363,11 +376,11 @@ models_base_url = "https://api.acme.com/v1"
 api_key = "my-api-key"
 ```
 
-When you use `[endpoints]` with partial model overrides, Grok inherits the `base_url` from the endpoints config, so you do not need to specify it in each `[model.*]` section.
+When you use `[endpoints]` with partial model overrides, Grok inherits the `base_url` from the endpoints config. You do not need to specify it in each `[model.*]` section. `XAI_API_KEY` is still required. A per-model `api_key` or `env_key` authenticates inference requests for that model. The startup model-list fetch always uses `XAI_API_KEY`.
 
 ### Auth Behavior
 
-When you set `models_base_url`, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. You do not need `grok login` -- the API key is enough.
+When you set `models_base_url`, Grok authenticates the model-list request with `XAI_API_KEY` only (`Authorization: Bearer`). That request never uses your `grok login` session. With an external auth provider (`auth_provider_command`) and no `XAI_API_KEY`, it sends the provider's token instead. Otherwise, if `XAI_API_KEY` is unset, the fetch fails with an error asking you to set it. Inference requests to the custom host authenticate separately. An `api_key` or `env_key` on each model makes those requests use an API key too.
 
 ---
 

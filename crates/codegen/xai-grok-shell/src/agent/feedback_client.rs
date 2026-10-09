@@ -147,7 +147,7 @@ impl FeedbackClient {
                     am.clone(),
                     credentials.deployment_key.clone(),
                     credentials.alpha_test_key.clone(),
-                    std::sync::Arc::new(crate::managed_config::resolve_deployment_id),
+                    std::sync::Arc::new(xai_grok_cloud_config::managed_config::resolve_deployment_id),
                 ),
             )
         } else {

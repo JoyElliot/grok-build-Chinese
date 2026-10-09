@@ -32,6 +32,8 @@ const MAX_FAILURE_BYTES: usize = 512;
 /// Upper bound on unresumable durable plans one claim will abandon before it
 /// falls back to a fresh deterministic claim; the rest are handled next time.
 const MAX_DURABLE_PLAN_PROBES: usize = 64;
+/// Inbox scans stop after this many entries so a runaway inbox cannot stall a claim.
+const MAX_INBOX_SCAN_ENTRIES: usize = 100_000;
 
 pub type Result<T> = std::result::Result<T, V2ConsolidationError>;
 
@@ -70,6 +72,20 @@ pub struct DreamClaimRequest {
 pub struct ClaimedObservation {
     pub relative_path: PathBuf,
     pub content_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManualInboxNote {
+    /// Scope-relative path with `/` separators.
+    pub(crate) relative_path: String,
+    pub(crate) content_hash: String,
+    /// File modification time in Unix seconds.
+    pub(crate) created_at: i64,
+}
+
+/// Capture names its files `<session>__t<from>-<through>__n<ordinal>.md`.
+pub(crate) fn is_capture_note_name(name: &str) -> bool {
+    name.contains("__t") && name.contains("__n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +288,24 @@ impl V2ConsolidationStore {
         if lock.0.is_some() && lock.1.is_some_and(|expiry| expiry > request.now) {
             return Err(V2ConsolidationError::Busy);
         }
+        let has_batch_plan = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'batch_dream_batches'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? && transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM batch_dream_batches WHERE status IN ('planned','blocked')
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if has_batch_plan {
+            return Err(V2ConsolidationError::Conflict(
+                "a batch Dream plan must be applied or repaired by batch Dream".to_owned(),
+            ));
+        }
         if lock.0.is_some() {
             transaction.execute(
                 "UPDATE consolidation_operations SET status = 'failed',
@@ -302,7 +336,7 @@ impl V2ConsolidationStore {
             [],
             |row| row.get::<_, bool>(0),
         )?;
-        let observations = if has_capture_files {
+        let mut observations = if has_capture_files {
             let mut statement = transaction.prepare(
                 "SELECT f.path, f.content_hash
                  FROM capture_observation_files f
@@ -343,6 +377,29 @@ impl V2ConsolidationStore {
         } else {
             Vec::new()
         };
+        // Manual notes are never hidden, so shadow claims skip them.
+        if !include_hidden {
+            for note in self.manual_inbox_notes(&transaction, has_capture_files)? {
+                let is_claimed: bool = transaction.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM consolidation_claim_items ci
+                        JOIN consolidation_operations co ON co.operation_id = ci.operation_id
+                        WHERE REPLACE(ci.source_path, char(92), '/') = ?1
+                          AND co.status IN ('claimed','planned','topics_written','archived')
+                     )",
+                    params![note.relative_path],
+                    |row| row.get(0),
+                )?;
+                if !is_claimed {
+                    observations.push(ClaimedObservation {
+                        relative_path: PathBuf::from(note.relative_path),
+                        content_hash: note.content_hash,
+                    });
+                }
+            }
+            observations.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+            observations.truncate(MAX_CLAIMED_OBSERVATIONS);
+        }
         if observations.is_empty() {
             transaction.execute(
                 "INSERT INTO consolidation_lock(singleton, owner, expires_at, generation)
@@ -534,11 +591,9 @@ impl V2ConsolidationStore {
         Ok(None)
     }
 
-    /// Evaluate automatic Dream eligibility when capture publishes an outcome.
-    ///
-    /// This performs no polling. Callers invoke it from the durable
-    /// capture-completed event; simultaneous events collapse to one persisted
-    /// trigger while a canonical editor is active.
+    /// Evaluate automatic Dream eligibility after a capture outcome, a completed
+    /// turn, or a manual note may have added to the inbox; simultaneous events
+    /// collapse to one persisted trigger while a canonical editor is active.
     pub fn on_capture_completed(
         &self,
         now: i64,
@@ -579,16 +634,9 @@ impl V2ConsolidationStore {
             [],
             |row| row.get::<_, bool>(0),
         )?;
-        if !has_capture_files {
-            transaction.commit()?;
-            return Ok(DreamEligibility {
-                disposition: DreamTriggerDisposition::Ineligible,
-                pending_count: 0,
-                oldest_pending_at: None,
-            });
-        }
-        let (pending_count, oldest_pending_at) = transaction.query_row(
-            "SELECT COUNT(*), MIN(o.committed_at)
+        let (mut pending_count, mut oldest_pending_at) = if has_capture_files {
+            transaction.query_row(
+                "SELECT COUNT(*), MIN(o.committed_at)
              FROM capture_observation_files f
              JOIN capture_outcomes o USING(job_id)
              LEFT JOIN consolidation_archives a
@@ -607,9 +655,22 @@ impl V2ConsolidationStore {
                    (NOT ?1 AND h.relative_path IS NULL)
                    OR (?1 AND h.relative_path IS NOT NULL AND se.source_path IS NULL)
                )",
-            params![include_hidden],
-            |row| Ok((row.get::<_, usize>(0)?, row.get::<_, Option<i64>>(1)?)),
-        )?;
+                params![include_hidden],
+                |row| Ok((row.get::<_, usize>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )?
+        } else {
+            (0, None)
+        };
+        // Shadow evaluation covers hidden captured notes only.
+        if !include_hidden {
+            for note in self.manual_inbox_notes(&transaction, has_capture_files)? {
+                pending_count = pending_count.saturating_add(1);
+                oldest_pending_at = Some(match oldest_pending_at {
+                    Some(oldest) => oldest.min(note.created_at),
+                    None => note.created_at,
+                });
+            }
+        }
         let is_old_enough = oldest_pending_at
             .is_some_and(|oldest| max_age > 0 && now.saturating_sub(oldest) >= max_age);
         let is_eligible = pending_count >= config.min_pending_count || is_old_enough;
@@ -644,6 +705,110 @@ impl V2ConsolidationStore {
             pending_count,
             oldest_pending_at,
         })
+    }
+
+    /// Inbox notes in this scope with no capture record; Dream opens only the
+    /// workspace scope, so `/remember` notes in the global inbox are never reached.
+    /// A capture-style name with no record is still being published and is skipped.
+    pub(crate) fn manual_inbox_notes(
+        &self,
+        connection: &rusqlite::Connection,
+        has_capture_files: bool,
+    ) -> Result<Vec<ManualInboxNote>> {
+        let inbox = self.scope_dir.join("observations/_inbox");
+        let entries = match std::fs::read_dir(&inbox) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io_error(&inbox, error)),
+        };
+        let mut notes = Vec::new();
+        for (index, entry) in entries.enumerate() {
+            if index >= MAX_INBOX_SCAN_ENTRIES {
+                tracing::warn!(
+                    target: crate::MEMORY_LOG_TARGET,
+                    limit = MAX_INBOX_SCAN_ENTRIES,
+                    "inbox scan for manual notes stopped at its entry limit"
+                );
+                break;
+            }
+            let entry = entry.map_err(|error| io_error(&inbox, error))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let metadata = entry
+                .metadata()
+                .map_err(|error| io_error(entry.path(), error))?;
+            if !metadata.file_type().is_file()
+                || !name.ends_with(".md")
+                || name.starts_with('.')
+                || is_capture_note_name(&name)
+            {
+                continue;
+            }
+            let relative = format!("observations/_inbox/{name}");
+            if has_capture_files {
+                let is_captured: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM capture_observation_files
+                     WHERE REPLACE(path, char(92), '/') = ?1)",
+                    params![relative],
+                    |row| row.get(0),
+                )?;
+                if is_captured {
+                    continue;
+                }
+            }
+            let is_excluded: bool = connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM consolidation_archives
+                    WHERE REPLACE(source_path, char(92), '/') = ?1
+                    UNION ALL
+                    SELECT 1 FROM memory_v2_tombstones
+                    WHERE REPLACE(relative_path, char(92), '/') = ?1
+                    UNION ALL
+                    SELECT 1 FROM memory_v2_hidden_observations
+                    WHERE REPLACE(relative_path, char(92), '/') = ?1
+                    UNION ALL
+                    SELECT 1 FROM memory_v2_quarantined_paths
+                    WHERE REPLACE(relative_path, char(92), '/') = ?1
+                 )",
+                params![relative],
+                |row| row.get(0),
+            )?;
+            if is_excluded {
+                continue;
+            }
+            if metadata.len() > MAX_OBSERVATION_BYTES {
+                tracing::warn!(
+                    target: crate::MEMORY_LOG_TARGET,
+                    path = %relative,
+                    bytes = metadata.len(),
+                    "manual inbox note is too large for Dream and was skipped"
+                );
+                continue;
+            }
+            let bytes = match read_bounded(&entry.path(), MAX_OBSERVATION_BYTES) {
+                Ok(bytes) => bytes,
+                Err(V2ConsolidationError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let created_at = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
+                .unwrap_or(0);
+            notes.push(ManualInboxNote {
+                relative_path: relative,
+                content_hash: content_hash(&bytes),
+                created_at,
+            });
+        }
+        notes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(notes)
     }
 
     pub fn has_coalesced_trigger(&self) -> Result<bool> {
@@ -1140,7 +1305,11 @@ impl V2ConsolidationStore {
         }
         bump_manifest_revision(&self.scope_dir)
             .and_then(|_| {
-                regenerate_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::default())
+                regenerate_scope_manifest(
+                    &self.scope_dir,
+                    self.scope,
+                    V2ManifestBudget::configured(),
+                )
             })
             .map_err(|error| V2ConsolidationError::Convergence(Box::new(error)))?;
         Ok(())

@@ -66,6 +66,8 @@ pub struct LoadedPlugin {
     pub has_inline_lsp_only: bool,
     /// Inline hooks JSON from manifest (when hooks are defined inline, not file-based).
     pub inline_hooks: Option<serde_json::Value>,
+    /// Parsed hook specs from the hooks file and inline hooks. Empty unless the plugin is enabled and trusted.
+    pub hook_specs: Vec<xai_grok_hooks::config::HookSpec>,
     /// Inline MCP servers JSON from manifest (when defined inline, not file-based).
     pub inline_mcp_servers: Option<serde_json::Value>,
     /// Inline LSP servers JSON from manifest (when defined inline, not file-based).
@@ -172,7 +174,7 @@ impl PluginRegistry {
                 .any(|e| e == &dp.id.0 || e == &dp.manifest.name);
             let enabled = !is_disabled(&dp, disabled) && explicitly_enabled;
 
-            let loaded = LoadedPlugin {
+            let mut loaded = LoadedPlugin {
                 name: name.clone(),
                 id: dp.id,
                 root: dp.root,
@@ -201,10 +203,14 @@ impl PluginRegistry {
                 lsp_server_count,
                 has_inline_lsp_only,
                 inline_hooks,
+                hook_specs: Vec::new(),
                 inline_mcp_servers,
                 inline_lsp_servers,
                 conflict: dp.conflict,
             };
+            if loaded.enabled && loaded.trusted {
+                loaded.hook_specs = super::hooks_adapter::load_plugin_hook_specs(&loaded);
+            }
 
             // Track MCP server ownership for enabled and trusted plugins
             if loaded.enabled && loaded.trusted {
@@ -574,12 +580,16 @@ fn is_disabled(dp: &DiscoveredPlugin, disabled: &[String]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::discovery::PluginId;
     use super::super::manifest::PluginManifest;
     use super::*;
 
-    fn make_discovered(name: &str, scope: PluginScope, trusted: bool) -> DiscoveredPlugin {
+    pub(crate) fn make_discovered(
+        name: &str,
+        scope: PluginScope,
+        trusted: bool,
+    ) -> DiscoveredPlugin {
         let root = PathBuf::from(format!("/tmp/test-plugins/{name}"));
         DiscoveredPlugin {
             manifest: PluginManifest {

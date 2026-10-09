@@ -257,6 +257,22 @@ pub struct ResponseUsage {
     pub reasoning_tokens: u64,
 }
 
+impl From<&xai_grok_sampling_types::TokenUsage> for ResponseUsage {
+    fn from(u: &xai_grok_sampling_types::TokenUsage) -> Self {
+        Self {
+            input_tokens: u64::from(
+                u.prompt_tokens
+                    .saturating_sub(u.cached_prompt_tokens)
+                    .saturating_sub(u.cache_creation_prompt_tokens),
+            ),
+            output_tokens: u64::from(u.completion_tokens),
+            cache_read_input_tokens: u64::from(u.cached_prompt_tokens),
+            cache_creation_input_tokens: u64::from(u.cache_creation_prompt_tokens),
+            reasoning_tokens: u64::from(u.reasoning_tokens),
+        }
+    }
+}
+
 impl From<&xai_chat_state::UsageTotals> for PromptUsageModel {
     fn from(t: &xai_chat_state::UsageTotals) -> Self {
         // Exhaustive destructure: a new ledger field cannot silently miss the wire
@@ -920,6 +936,15 @@ pub enum SessionUpdate {
         /// `None` when the model does not support reasoning effort or no effort override was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
+        /// The session's context window selection; `None` means the model default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_window_selection: Option<u64>,
+    },
+    /// The model that answered the current turn when the backend routed it to one other than the requested model.
+    /// Display only: the session's selection is unchanged and the next prompt still names the model the user chose.
+    ServedModel {
+        /// The served model's display name as the backend reports it (e.g. "Grok 4.7 Fast"), which may match no catalog row.
+        display_name: String,
     },
     /// Streaming chunk of a tool call's arguments. Behaves like `acp::SessionUpdate::AgentMessageChunk` / `AgentThoughtChunk`. It flows through the replay buffer and merges with adjacent chunks for the same `tool_call_id`.
     /// It is debounced at the session's buffering interval. Only persisted as a full `acp::SessionUpdate::ToolCall`.
@@ -1167,11 +1192,29 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stop_sequence: Option<String>,
     },
+    /// Token counts for a whole turn, summed across every model call.
+    /// The streaming-json `usage` line prints them. They are not one response, so the Messages reducer must not copy them onto an assistant message.
+    TurnUsage { usage: ResponseUsage },
     /// Catch-all for unrecognized session update types.
     /// Allows forward/backward compatibility when variants are added or removed.
     /// All fields from the unrecognized variant are discarded during deserialization.
     #[serde(other)]
     Unknown,
+}
+
+impl SessionUpdate {
+    /// Builds the `ModelChanged` update a model switch broadcasts to the session's clients.
+    pub fn model_changed(
+        model_id: impl Into<String>,
+        reasoning_effort: Option<String>,
+        context_window_selection: Option<u64>,
+    ) -> Self {
+        SessionUpdate::ModelChanged {
+            model_id: model_id.into(),
+            reasoning_effort,
+            context_window_selection,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -1442,9 +1485,10 @@ pub struct CompactionSegmentFile {
     pub timestamp: String,
 }
 
-/// On-disk artifact capturing the exact compaction request sent to the model plus the response (or final error) it produced. Stored at `{session_dir}/compaction_requests/{request_id}.json`.
-/// Rides on the post-turn session archive to cloud storage, where it can be downloaded for prompt iteration.
-/// It records the exact `chat_history` sent, the prompt variant, any `/compact <text>` user context, the model, and the resulting summary (or error). Replay the request locally to A/B test alternate prompt wordings against the same input.
+/// The compaction request sent to the model and the response (or final error) it produced.
+/// It is stored at `{session_dir}/compaction_requests/{request_id}.json`.
+/// The post-turn session archive uploads it to cloud storage.
+/// Replay the request locally to A/B test alternate prompt wordings against the same input.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CompactionRequestFile {
@@ -1462,8 +1506,6 @@ pub struct CompactionRequestFile {
     pub prompt_variant: String,
     /// The model id that ran the summarization.
     pub model: String,
-    /// User-provided context from `/compact <text>`, if any.
-    pub user_context: Option<String>,
     /// The full `ConversationItem` list sent to the model, with the summarization prompt already appended as the final user message.
     /// Replaying this against any model reproduces the exact request.
     pub chat_history: Vec<crate::sampling::ConversationItem>,
@@ -1576,7 +1618,6 @@ mod tests {
             trigger: "auto".into(),
             prompt_variant: "detailed".into(),
             model: "grok".into(),
-            user_context: None,
             chat_history: vec![],
             tools: vec![],
             summary: Some("the accepted summary".into()),
@@ -2636,10 +2677,8 @@ mod tests {
     /// The wire stays smaller, and absence stays distinguishable from an explicit user clear, if that ever becomes a real distinction.
     #[test]
     fn model_changed_serializes_snake_case_with_optional_effort() {
-        let with_effort = SessionUpdate::ModelChanged {
-            model_id: "grok-4".into(),
-            reasoning_effort: Some("high".into()),
-        };
+        let with_effort =
+            SessionUpdate::model_changed("grok-4", Some("high".into()), Some(500_000));
         let json = serde_json::to_value(&with_effort).unwrap();
         assert_eq!(
             json.get("sessionUpdate"),
@@ -2650,11 +2689,12 @@ mod tests {
             json.get("reasoning_effort"),
             Some(&serde_json::json!("high"))
         );
+        assert_eq!(
+            json.get("context_window_selection"),
+            Some(&serde_json::json!(500_000))
+        );
 
-        let without_effort = SessionUpdate::ModelChanged {
-            model_id: "grok-3".into(),
-            reasoning_effort: None,
-        };
+        let without_effort = SessionUpdate::model_changed("grok-3", None, None);
         let json = serde_json::to_value(&without_effort).unwrap();
         assert_eq!(
             json.get("sessionUpdate"),
@@ -2666,6 +2706,7 @@ mod tests {
             "reasoning_effort: None must be skipped on the wire so old pagers \
              and third-party ACP clients see a smaller, no-extra-keys payload"
         );
+        assert!(json.get("context_window_selection").is_none());
     }
 
     /// `ModelChanged` round-trips through JSON: a follower client deserializes the exact same value the agent serialized.
@@ -2673,10 +2714,7 @@ mod tests {
     /// The `#[serde(other)]` catch-all would swallow that on the pager side and break multi-client model sync without any test failing.
     #[test]
     fn model_changed_roundtrips_through_json() {
-        let original = SessionUpdate::ModelChanged {
-            model_id: "grok-4".into(),
-            reasoning_effort: Some("medium".into()),
-        };
+        let original = SessionUpdate::model_changed("grok-4", Some("medium".into()), Some(256_000));
         let json_str = serde_json::to_string(&original).unwrap();
         let parsed: SessionUpdate = serde_json::from_str(&json_str).unwrap();
         assert_eq!(original, parsed);
@@ -2689,10 +2727,7 @@ mod tests {
     fn model_changed_envelope_carries_session_id_at_top_level() {
         let notif = SessionNotification {
             session_id: acp::SessionId::new("sess-abc"),
-            update: SessionUpdate::ModelChanged {
-                model_id: "grok-4".into(),
-                reasoning_effort: None,
-            },
+            update: SessionUpdate::model_changed("grok-4", None, None),
             meta: None,
         };
         let json = serde_json::to_value(&notif).unwrap();

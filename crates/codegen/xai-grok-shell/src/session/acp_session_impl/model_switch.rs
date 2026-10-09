@@ -14,6 +14,8 @@ impl SessionActor {
             skip_prompt_rewrite,
             auto_compact_threshold_percent,
             system_prompt_label,
+            context_window_selection,
+            supported_context_windows,
         } = switch;
         if let Some(current) = self.chat_state_handle.get_sampling_config().await
             && let Some(id) = current.conversation_group_id
@@ -21,6 +23,25 @@ impl SessionActor {
             sampling_config.conversation_group_id = Some(id);
         }
         let model_id = acp::ModelId::new(sampling_config.model.clone());
+        let supported = |window: &std::num::NonZeroU64| supported_context_windows.contains(window);
+        let selection = match context_window_selection {
+            crate::session::SwitchContextWindow::Preserve => {
+                crate::session::handle::load_context_window_selection(
+                    &self.compaction.context_window_selection,
+                )
+            }
+            crate::session::SwitchContextWindow::Set(selection) => {
+                let selection = selection.filter(supported);
+                self.compaction.context_window_selection.store(
+                    selection.map_or(0, std::num::NonZeroU64::get),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                selection
+            }
+        };
+        if let Some(window) = selection.filter(supported) {
+            sampling_config.context_window = window.get();
+        }
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)
@@ -143,6 +164,9 @@ impl SessionActor {
                 model_id: model_id.clone(),
                 agent: crate::session::persistence::PersistedAgent::Named(agent_name),
                 reasoning_effort: Some(sampling_config.reasoning_effort),
+                context_window: Some(crate::session::handle::load_context_window_selection(
+                    &self.compaction.context_window_selection,
+                )),
             });
         self.emit_status_snapshot_detached();
         let turn_in_flight = self.state.lock().await.running_task.is_some();
@@ -242,6 +266,7 @@ impl SessionActor {
                 model_id: model_id.clone(),
                 agent: crate::session::persistence::PersistedAgent::Named(agent_name),
                 reasoning_effort: Some(Some(effort)),
+                context_window: None,
             });
         self.emit_status_snapshot_detached();
         Ok(model_id)

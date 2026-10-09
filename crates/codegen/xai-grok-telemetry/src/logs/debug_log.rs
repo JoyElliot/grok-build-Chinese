@@ -57,7 +57,7 @@ pub const RMCP_SSE_NOISE_TARGET: &str = "rmcp::transport::common::client_side_ss
 // Broad firehose filter for the routing and GROK_DEBUG_LOG sources
 // Capture our crates at debug regardless of a narrowing RUST_LOG, with deps at info so they don't flood
 // Curated first-party allowlist: new grok crates default to `info` until added here
-const FIREHOSE_BASE_DIRECTIVES: &str = "info,xai_grok_pager=debug,xai_grok_shell=debug,xai_grok_gateway=debug,xai_grok_login=debug,xai_grok_tools=debug,xai_grok_telemetry=debug,xai_grok_agent=debug,xai_grok_mcp=debug,xai_grok_session_search=debug,xai_acp_lib=debug,sampling_log=off";
+const FIREHOSE_BASE_DIRECTIVES: &str = "info,xai_grok_pager=debug,xai_grok_shell=debug,xai_grok_gateway=debug,xai_grok_config=debug,xai_grok_cloud_config=debug,xai_grok_agent_config=debug,xai_grok_external_agent_migration=debug,xai_grok_login=debug,xai_grok_tools=debug,xai_grok_telemetry=debug,xai_grok_agent=debug,xai_grok_mcp=debug,xai_grok_session_search=debug,xai_acp_lib=debug,sampling_log=off";
 
 // Full firehose directives: the curated crate list plus the pager's ACP update target (built from the constant above, not a literal)
 fn firehose_directives() -> String {
@@ -491,6 +491,21 @@ mod tests {
     #[test]
     fn firehose_directives_allowlist_gateway_target() {
         assert!(firehose_directives().contains("xai_grok_gateway=debug"));
+    }
+
+    /// Crates split out of `xai_grok_shell` log at debug on the firehose, same as the shell.
+    #[test]
+    fn firehose_directives_allowlist_crates_split_from_the_shell() {
+        let directives = firehose_directives();
+        for target in [
+            "xai_grok_gateway",
+            "xai_grok_config",
+            "xai_grok_cloud_config",
+            "xai_grok_agent_config",
+            "xai_grok_external_agent_migration",
+        ] {
+            assert!(directives.contains(&format!("{target}=debug")), "{target}");
+        }
     }
 
     #[test]

@@ -499,7 +499,7 @@ Type `/` in the input to access commands:
 | `/new`                             |           | Start a new session (clears context)                     |
 | `/load [workspace] [session]`      | `/resume` | Load a previous session                                  |
 | `/rewind <prompt>`                 |           | Rewind to a previous prompt (restores files)             |
-| `/compact [context]`               |           | Compact conversation history                             |
+| `/compact`                         |           | Compact conversation history                             |
 | `/always-approve [on\|off]`        | `/yolo`   | Toggle auto-approve mode                                 |
 | `/multiline`                       | `/ml`     | Toggle multiline input mode                              |
 | `/memory [workspace\|global] <text>` |         | Append text to a memory file (requires memory enabled) |
@@ -1849,7 +1849,7 @@ context_window = 256000               # Total context window in tokens (for auto
 
 **Credential resolution order:** `api_key` → `env_key` → cached `auth_provider` token (terminal: a cache miss resolves to no credential, never the session token) → session token → `XAI_API_KEY`. See [Per-Model Auth Providers](#per-model-auth-providers).
 
-The `context_window` parameter is used to calculate when auto-compact should trigger. If not specified, Grok falls back to built-in defaults for known models.
+The `context_window` parameter is used to calculate when auto-compact should trigger. If not specified, Grok falls back to built-in defaults for known models. To offer a choice of windows, set `context_windows = [256000, 500000]`. `context_window` stays the default (the first listed window when unset), and older clients ignore the list.
 
 ### Overriding Built-in Models
 
@@ -1984,9 +1984,9 @@ models_base_url = "https://api.acme.com/v1"
 api_key = "my-api-key"
 ```
 
-When using `[endpoints]` with partial model overrides, the `base_url` is inherited from the endpoints config — you don't need to specify it in each `[model.*]` section.
+Each `[model.*]` section inherits `base_url` from the `[endpoints]` config. `XAI_API_KEY` is still required. A per-model `api_key`/`env_key` authenticates that model's inference requests. The startup model-list fetch still uses `XAI_API_KEY`.
 
-**Auth behavior:** When `models_base_url` is set, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. `grok login` is not required — only the API key.
+**Auth behavior:** When `models_base_url` is set, Grok authenticates the model-list request with `XAI_API_KEY` (`Authorization: Bearer`). That request never uses your `grok login` session. With an external auth provider (`auth_provider_command`) and no `XAI_API_KEY`, it sends the provider's token instead. Otherwise, if `XAI_API_KEY` is unset, the fetch fails with an error asking you to set it. Inference requests to the custom host authenticate with each model's `api_key`/`env_key`.
 
 ---
 

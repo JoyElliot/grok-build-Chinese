@@ -234,11 +234,20 @@ fn headless_remote_miss_restores_conversation_instead_of_deferring_worktree() {
 fn headless_remote_miss_defers_to_worktree_when_requested() {
     use crate::app::session_startup::{RemoteMissPlan, plan_remote_miss};
     for restore_code in [false, true] {
-        let ctx = headless_materialize_ctx(false, restore_code, true);
+        let mut ctx = headless_materialize_ctx(false, restore_code, true);
+        ctx.allow_remote_restore = true;
         assert_eq!(
             plan_remote_miss(ctx, true),
             RemoteMissPlan::DeferToWorktree {
                 deferred_local_miss: false,
+            }
+        );
+        // A build without remote restore has nothing to defer.
+        ctx.allow_remote_restore = false;
+        assert_eq!(
+            plan_remote_miss(ctx, true),
+            RemoteMissPlan::NotFound {
+                title_miss_hint: false,
             }
         );
     }

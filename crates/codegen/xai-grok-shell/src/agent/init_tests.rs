@@ -6,8 +6,8 @@ use super::{
     AgentConfig, BootstrapError, PREFETCH_RUNS, StartupPrefetch, apply_post_gate_settings,
     bootstrap_with_cancel, hold_bootstrap_gate_for_tests, startup_settings_deadline,
 };
-use crate::managed_config::LaunchProfile;
 use tokio_util::sync::CancellationToken;
+use xai_grok_cloud_config::managed_config::LaunchProfile;
 use xai_grok_login::{AuthManager, GrokComConfig};
 
 #[test]
@@ -91,6 +91,47 @@ fn supplied_settings_skip_the_getter() {
         PREFETCH_RUNS.with(std::cell::Cell::get),
         runs_before,
         "supplied settings must not spend a settings budget"
+    );
+}
+
+fn file_len_and_mtime(path: &std::path::Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.len(), meta.modified().ok()))
+}
+
+#[test]
+fn unit_test_bootstrap_does_not_touch_the_managed_config_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().to_str().expect("utf8 temp home");
+    let _env = crate::env::EnvVarGuard::set("GROK_HOME", home)
+        .and_set("GROK_DEPLOYMENT_KEY", "unit-test-deployment-key");
+    // `grok_home()` is a process-wide OnceLock. Read the env path directly so this
+    // test neither observes a home cached by an earlier test nor pins one for later tests.
+    let grok_home = xai_dirs::resolve_grok_home().expect("GROK_HOME is set");
+    let lock = grok_home.join("managed_config.lock");
+    let lock_before = file_len_and_mtime(&lock);
+    let mut cfg = AgentConfig {
+        remote_settings: Some(Default::default()),
+        ..AgentConfig::default()
+    };
+    cfg.models.allowed_models = Some(vec!["[".to_string()]);
+    let auth = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+
+    let err = match bootstrap_with_cancel(&cfg, &auth, None, &CancellationToken::new(), None) {
+        Err(err) => err,
+        Ok(_) => panic!("an invalid model filter must stop bootstrap before init"),
+    };
+
+    assert!(
+        matches!(err, BootstrapError::Config(ref message) if message.contains("allowed_models")),
+        "bootstrap must pass the gate and fail on the filter, got {err}"
+    );
+    assert_eq!(
+        lock_before,
+        file_len_and_mtime(&lock),
+        "the unit-test build must not create or touch the managed-config lock under {}",
+        grok_home.display()
     );
 }
 

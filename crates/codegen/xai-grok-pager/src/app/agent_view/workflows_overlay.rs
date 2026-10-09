@@ -97,13 +97,7 @@ impl AgentView {
                     .or_else(|| runs.get(view.selected_run).copied());
                 let outcome = match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        if in_detail && runs.len() > 1 {
-                            view.detail_run_id = None;
-                            view.phase_pinned = false;
-                            self.workflows_view = view;
-                        } else {
-                            self.show_workflows = false;
-                        }
+                        self.show_workflows = false;
                         InputOutcome::Changed
                     }
                     KeyCode::Char('g') => {
@@ -366,6 +360,24 @@ mod workflows_overlay_key_tests {
             InputOutcome::Changed
         ));
         assert!(!agent.show_workflows);
+    }
+
+    #[test]
+    fn esc_and_q_from_detail_dismiss_overlay_with_multiple_runs() {
+        let reg = ActionRegistry::defaults();
+
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut agent = workflows_agent(&["wf_old", "wf_new"]);
+
+            agent.handle_input(&key(KeyCode::Enter), &reg);
+            assert!(agent.workflows_view.detail_run_id.is_some());
+
+            agent.handle_input(&key(code), &reg);
+            assert!(
+                !agent.show_workflows,
+                "{code:?} must dismiss the overlay, not return to the run list"
+            );
+        }
     }
 
     #[test]

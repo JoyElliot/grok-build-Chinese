@@ -552,9 +552,9 @@ impl AgentView {
                 }
             }
             ButtonAction::ToggleSelectedSkill => {
-                if let TabDataState::Loaded(ref skills) = state.skills_data
+                if let TabDataState::Loaded(ref listing) = state.skills_data
                     && let Some(idx) = state.selected_data_index()
-                    && let Some(skill) = skills.get(idx)
+                    && let Some(skill) = listing.skills.get(idx)
                 {
                     (Some(skill.name.clone()), next_enabled)
                 } else {
@@ -2038,8 +2038,9 @@ impl AgentView {
                 let Some(state) = self.extensions_modal.as_mut() else {
                     return InputOutcome::Changed;
                 };
-                let crate::views::extensions_modal::TabDataState::Loaded(ref skills) =
-                    state.skills_data
+                let crate::views::extensions_modal::TabDataState::Loaded(
+                    xai_grok_shell::extensions::skills::SkillsListResponse { ref skills, .. },
+                ) = state.skills_data
                 else {
                     return InputOutcome::Changed;
                 };
@@ -3000,13 +3001,14 @@ mod extensions_action_target_tests {
             load_errors: Vec::new(),
         });
         let mut skills = ExtensionsModalState::new(ExtensionsTab::Skills);
-        skills.skills_data = TabDataState::Loaded(vec![
-            xai_grok_tools::implementations::skills::types::SkillInfo {
+        skills.skills_data = TabDataState::Loaded(
+            vec![xai_grok_tools::implementations::skills::types::SkillInfo {
                 name: "my-skill".into(),
                 enabled: true,
                 ..Default::default()
-            },
-        ]);
+            }]
+            .into(),
+        );
 
         for (noun, modal) in [("hook", hooks), ("skill", skills)] {
             let mut agent = pipeline_agent(modal);
@@ -3268,18 +3270,21 @@ mod extensions_action_target_tests {
         for enabled in [true, false] {
             let mut agent = super::test_fixtures::make_agent();
             let mut modal = ExtensionsModalState::new(ExtensionsTab::Skills);
-            modal.skills_data = TabDataState::Loaded(vec![
-                xai_grok_tools::implementations::skills::types::SkillInfo {
-                    name: "other-skill".into(),
-                    enabled,
-                    ..Default::default()
-                },
-                xai_grok_tools::implementations::skills::types::SkillInfo {
-                    name: "my-skill".into(),
-                    enabled,
-                    ..Default::default()
-                },
-            ]);
+            modal.skills_data = TabDataState::Loaded(
+                vec![
+                    xai_grok_tools::implementations::skills::types::SkillInfo {
+                        name: "other-skill".into(),
+                        enabled,
+                        ..Default::default()
+                    },
+                    xai_grok_tools::implementations::skills::types::SkillInfo {
+                        name: "my-skill".into(),
+                        enabled,
+                        ..Default::default()
+                    },
+                ]
+                .into(),
+            );
             modal.entry_data_indices = vec![None, Some(1), Some(0)];
             modal.entry_group_keys = vec![Some("User".into()), None, None];
             modal.picker_state.selected = 1;
@@ -3313,7 +3318,7 @@ mod extensions_action_target_tests {
             ..Default::default()
         };
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Skills);
-        modal.skills_data = TabDataState::Loaded(vec![skill]);
+        modal.skills_data = TabDataState::Loaded(vec![skill].into());
         modal.entry_data_indices = vec![Some(0)];
         modal.entry_group_keys = vec![None];
         modal.picker_state.selected = 0;

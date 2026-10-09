@@ -620,6 +620,8 @@ pub struct WorkspaceShared {
     pub(crate) host_kind: crate::host_kind::WorkspaceHostKind,
     /// Workspace root directory. Independent of any session; stored here so it survives session creation/deletion.
     pub(crate) root_cwd: std::path::PathBuf,
+    /// See [`crate::config::WorkspaceConfig::sandbox`].
+    pub(crate) sandbox: Option<Arc<crate::sandbox::WorkspaceSandbox>>,
     pub(crate) sessions: RwLock<HashMap<String, Arc<WorkspaceSession>>>,
     pub(crate) session_factory: Arc<dyn SessionContextFactory>,
     /// `Some` iff every admitted session binds a configured set of MCP servers. The contents are hot-swappable through [`WorkspaceHandle::reload_bind_mcp`](crate::handle::WorkspaceHandle::reload_bind_mcp), so a user can add or remove servers without restarting the process.
@@ -730,6 +732,10 @@ impl WorkspaceShared {
     /// Whether hub tool calls pass the approval gate; see [`crate::permission::approval_gate_for`].
     pub fn tool_approval(&self) -> crate::permission::ToolApprovalGate {
         self.tool_approval
+    }
+    /// The folder's per-command sandbox, when the host built the workspace with one.
+    pub fn sandbox(&self) -> Option<Arc<crate::sandbox::WorkspaceSandbox>> {
+        self.sandbox.clone()
     }
     /// Return the per-session `events.jsonl` writer for `session_id`, opened and cached on first use under `workspace_home/sessions/{session_id}/`.
     /// When `events_enabled` is `false` this returns [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop).

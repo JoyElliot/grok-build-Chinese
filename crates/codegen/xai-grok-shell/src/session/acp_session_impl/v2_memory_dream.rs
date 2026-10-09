@@ -499,8 +499,8 @@ impl SessionActor {
                 archived_observation_days: self.memory.v2_config.archived_retention_days,
                 terminal_job_days: self.memory.v2_config.job_retention_days,
             };
-            let maintenance_global = global.clone();
-            let maintenance_workspace = workspace.clone();
+            let maintenance_global = global;
+            let maintenance_workspace = workspace;
             let maintenance_clock = clock.clone();
             match tokio::task::spawn_blocking(move || {
                 let maintenance = xai_grok_memory::V2MaintenanceStore::open_with_clock(
@@ -554,6 +554,41 @@ impl SessionActor {
         if !followups.evaluate_automatic_dream {
             return;
         }
+        self.evaluate_v2_automatic_dream(cancel, clock).await;
+    }
+
+    /// Notes the model writes with file tools produce no capture outcome, so
+    /// the turn end is the event that lets them count toward the trigger.
+    pub(super) fn schedule_v2_dream_check_after_turn(self: &Arc<Self>) {
+        if !self.memory.v2_config.can_run_automatic_dream()
+            || self.startup_hints.is_subagent
+            || self.memory.storage().is_none()
+        {
+            return;
+        }
+        let cancel = self.memory.dream_workers.cancellation_token();
+        if cancel.is_cancelled() {
+            return;
+        }
+        let session = Arc::clone(self);
+        let task = xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx(async move {
+            session
+                .evaluate_v2_automatic_dream(cancel, xai_grok_memory::system_v2_clock())
+                .await;
+        });
+        self.memory.dream_workers.track(task);
+    }
+
+    async fn evaluate_v2_automatic_dream(
+        self: &Arc<Self>,
+        cancel: tokio_util::sync::CancellationToken,
+        clock: xai_grok_memory::SharedV2Clock,
+    ) {
+        let Some(storage) = self.memory.storage() else {
+            return;
+        };
+        let global = storage.global_dir().to_path_buf();
+        let workspace = storage.workspace_dir().to_path_buf();
         let is_shadow = self.memory.v2_config.rollout == crate::config::MemoryV2Rollout::Shadow;
         let started_at = std::time::Instant::now();
         let eligibility_clock = clock.clone();
@@ -725,6 +760,19 @@ impl SessionActor {
         let started_at = std::time::Instant::now();
         if cancel.is_cancelled() {
             return cancelled(false);
+        }
+        if self.memory.v2_config.batch_dream_enabled
+            && self.memory.v2_config.rollout == crate::config::MemoryV2Rollout::Active
+        {
+            let outcome = self.execute_batch_v2_dream(cancel.clone(), clock).await;
+            return self
+                .finish_v2_dream(
+                    outcome.disposition,
+                    outcome.observation_count,
+                    outcome.topics_affected,
+                    false,
+                )
+                .await;
         }
         let Some(storage) = self.memory.storage() else {
             return V2DreamPass {

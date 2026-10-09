@@ -134,6 +134,10 @@ impl crate::types::tool_metadata::ToolMetadata for EditTool {
         ToolNamespace::OpenCode
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("filePath")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }

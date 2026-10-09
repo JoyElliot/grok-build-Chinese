@@ -33,6 +33,51 @@ fn messages_usage_drops_reasoning_tokens() {
 }
 
 #[test]
+fn turn_usage_does_not_stamp_the_sum_on_one_assistant_message() {
+    let mut r = messages(false);
+    let mut out = Vec::new();
+    out.extend(r.reduce(StreamEvent::AgentMessage("look".into())));
+    out.extend(r.reduce(StreamEvent::ToolCall(tool_call_ev())));
+    out.extend(r.reduce(StreamEvent::ToolCallUpdate(tool_update(
+        "completed",
+        json!({"ok": true}),
+    ))));
+    out.extend(r.reduce(StreamEvent::AgentMessage("done".into())));
+    out.extend(r.reduce(StreamEvent::TurnUsage {
+        usage: ResponseUsage {
+            input_tokens: 5_000,
+            output_tokens: 80,
+            cache_read_input_tokens: 400,
+            cache_creation_input_tokens: 25,
+            reasoning_tokens: 10,
+        },
+    }));
+    out.extend(r.finish(&turn_end("end_turn", "done")));
+
+    let assistants: Vec<_> = out
+        .iter()
+        .filter(|line| line.get("type").and_then(Value::as_str) == Some("assistant"))
+        .collect();
+    assert_eq!(2, assistants.len(), "{out:?}");
+    for message in assistants {
+        assert_eq!(
+            Some(0),
+            message
+                .pointer("/message/usage/input_tokens")
+                .and_then(Value::as_u64),
+            "{message}"
+        );
+        assert_eq!(
+            Some(0),
+            message
+                .pointer("/message/usage/output_tokens")
+                .and_then(Value::as_u64),
+            "{message}"
+        );
+    }
+}
+
+#[test]
 fn messages_refusal_marks_result_error() {
     let mut r = messages(false);
     r.reduce(StreamEvent::AgentMessage("declined".into()));

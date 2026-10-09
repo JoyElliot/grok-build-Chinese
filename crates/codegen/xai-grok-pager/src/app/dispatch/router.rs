@@ -62,7 +62,7 @@ use super::session::fork::{
 use super::session::lifecycle::{
     clear_startup_actions, dispatch_accept_consent, dispatch_agent_type_mismatch_answered,
     dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
-    dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
+    dispatch_new_session_from_tab, dispatch_new_session_with_id, dispatch_new_worktree_session,
     dispatch_trust_folder, leave_welcome_for_session, localized_welcome_workspace_error,
     open_delete_current_session_question, open_new_session_question,
 };
@@ -116,7 +116,7 @@ use super::turn::{
     dispatch_demote_to_background, dispatch_kill_bg_task, dispatch_kill_subagent,
 };
 use super::voice::{dispatch_enable_voice_mode, dispatch_voice_stop, dispatch_voice_toggle};
-use crate::app::actions::{Action, Effect};
+use crate::app::actions::{Action, Effect, ModelChoice};
 use crate::app::agent_view::ActivePane;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::app::consent::ConsentState;
@@ -785,14 +785,19 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(session_id) = agent.session.session_id.clone() else {
                 return vec![];
             };
-            if let Some(ref mut modal) = agent.extensions_modal {
-                modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
-                modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
-            }
+            let Some(ref mut modal) = agent.extensions_modal else {
+                return vec![];
+            };
+            modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
+            modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
             vec![
                 Effect::FetchSkillsList {
                     agent_id: id,
                     session_id: session_id.clone(),
+                    // `r` on the Workflows tab reloads the skills too, from the cache
+                    refresh: modal.active_tab
+                        == crate::views::extensions_modal::ExtensionsTab::Skills,
+                    fetch: modal.next_skills_fetch(),
                 },
                 Effect::FetchWorkflowsList {
                     agent_id: id,
@@ -964,14 +969,42 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             }]
         }
         Action::NextModel => vec![],
-        Action::SwitchModel { model_id, effort } => {
+        Action::SwitchModel(mut choice) => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
             };
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            if choice.context_window_selection.is_some() && agent.session.model_switch_pending {
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(
+                        app.locale.named_static_text(
+                            "session.model.switch_pending",
+                            "Model switch in progress; retry once it completes",
+                        ),
+                    ));
+                return vec![];
+            }
+            let models = &agent.session.models;
+            choice.context_window_selection = choice.context_window_selection.filter(|window| {
+                models.current.as_ref() == Some(&choice.model_id)
+                    || Some(window.get()) != models.window_after_switch_to(&choice.model_id)
+            });
             let Some(session_id) = agent.session.session_id.clone() else {
+                if choice.context_window_selection.is_some() {
+                    agent
+                        .scrollback
+                        .push_block(
+                            crate::scrollback::block::RenderBlock::system(
+                                app.locale.named_static_text("session.context.after_start", "Context window applies once the session starts; run /context-window then"),
+                            ),
+                        );
+                }
+                let ModelChoice {
+                    model_id, effort, ..
+                } = choice;
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;
                 agent.session.models.set_current(model_id.clone(), effort);
@@ -1003,8 +1036,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![Effect::SwitchModel {
                 agent_id: id,
                 session_id,
-                model_id,
-                effort,
+                choice,
                 prev_model_id: None,
             }]
         }
@@ -1362,7 +1394,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             let mut effects = if worktree {
                 dispatch_new_worktree_session(app, None, None, None, None, None, None)
             } else {
-                dispatch_new_session_inner(app, None)
+                dispatch_new_session_from_tab(app)
             };
             apply_persist_worktree_mode(
                 &mut app.new_session_worktree_mode,

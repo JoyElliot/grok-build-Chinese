@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
-use super::{RankedSuggestion, SuggestContext, SuggestionSource, stamp_whole_line_range};
+use super::{
+    RankedSuggestion, RefreshGuard, SuggestContext, SuggestionSource, stamp_whole_line_range,
+};
 use crate::session::prompt_history;
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
@@ -111,14 +113,11 @@ async fn get_or_refresh_cross_cwd_cache() -> Arc<CrossCwdCache> {
         return current;
     }
 
-    if CROSS_CWD_REFRESHING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    let Some(_refreshing) = RefreshGuard::try_acquire(&CROSS_CWD_REFRESHING) else {
         return current;
-    }
+    };
 
-    let result = match tokio::task::spawn_blocking(scan_cross_cwd_prompts).await {
+    match tokio::task::spawn_blocking(scan_cross_cwd_prompts).await {
         Ok(prompts) => {
             let new = Arc::new(CrossCwdCache {
                 prompts,
@@ -128,10 +127,7 @@ async fn get_or_refresh_cross_cwd_cache() -> Arc<CrossCwdCache> {
             new
         }
         Err(_) => current,
-    };
-
-    CROSS_CWD_REFRESHING.store(false, Ordering::Release);
-    result
+    }
 }
 
 fn scan_cross_cwd_prompts() -> Vec<String> {
@@ -198,14 +194,11 @@ async fn get_or_refresh_shell_history_cache() -> Arc<ShellHistoryCache> {
         return current;
     }
 
-    if SHELL_HISTORY_REFRESHING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    let Some(_refreshing) = RefreshGuard::try_acquire(&SHELL_HISTORY_REFRESHING) else {
         return current;
-    }
+    };
 
-    let result = match tokio::task::spawn_blocking(load_shell_history).await {
+    match tokio::task::spawn_blocking(load_shell_history).await {
         Ok(commands) => {
             let new = Arc::new(ShellHistoryCache {
                 commands,
@@ -215,10 +208,7 @@ async fn get_or_refresh_shell_history_cache() -> Arc<ShellHistoryCache> {
             new
         }
         Err(_) => current,
-    };
-
-    SHELL_HISTORY_REFRESHING.store(false, Ordering::Release);
-    result
+    }
 }
 
 /// Detect the user's shell and load history from the appropriate file.

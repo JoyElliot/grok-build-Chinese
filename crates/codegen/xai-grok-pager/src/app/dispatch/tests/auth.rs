@@ -300,6 +300,48 @@ fn login_from_welcome_does_not_stash_return_view() {
     assert_eq!(app.auth_return_view, None);
 }
 
+/// A build without account logins refuses a login, a logout or an account switch, in the session.
+#[test]
+fn without_account_logins_login_and_logout_are_refused_in_the_session() {
+    let refusal =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin])
+            .refusal(xai_grok_config::Capability::AccountLogin)
+            .expect("a build without account logins refuses one");
+    for action in [Action::Login, Action::Logout, Action::SwitchAccount] {
+        let mut app = test_app_with_agent();
+        app.distribution = xai_grok_config::Distribution::withholding(&[
+            xai_grok_config::Capability::AccountLogin,
+        ]);
+        let view = app.active_view;
+
+        let effects = dispatch(action, &mut app);
+
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(view, app.active_view, "no login screen");
+        assert_eq!(refusal, last_system_text(&app, AgentId(0)));
+    }
+}
+
+#[test]
+fn without_account_logins_the_welcome_login_is_refused() {
+    let mut app = test_app();
+    app.distribution =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin]);
+    app.auth_state = AuthState::Pending { error: None };
+
+    assert!(dispatch(Action::Login, &mut app).is_empty());
+    assert!(matches!(app.auth_state, AuthState::Pending { .. }));
+    let refusal =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin])
+            .refusal(xai_grok_config::Capability::AccountLogin);
+    assert_eq!(
+        refusal,
+        app.welcome_toast
+            .as_ref()
+            .map(|(message, _)| message.as_str())
+    );
+}
+
 /// Compact-auth recovery: the prompt is held across an auto-compact 401, stashed on PromptResponse, and resubmitted on a mid-session AuthComplete.
 #[test]
 fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {

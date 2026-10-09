@@ -259,7 +259,7 @@ fn set_default_model_allowed_when_agent_chat_kind() {
     assert!(
         effects.iter().any(|e| matches!(
             e,
-            Effect::SwitchModel { model_id: mid, .. } if mid == &model_id
+            Effect::SwitchModel { choice, .. } if choice.model_id == model_id
         )),
         "chat_kind must still emit SwitchModel for live chat mode switches"
     );
@@ -299,7 +299,7 @@ fn slash_model_valid_dispatches_set_default_model_with_switch_and_persist() {
         effects.first(),
     );
     assert!(
-        matches!(effects.get(1), Some(Effect::SwitchModel { model_id: mid, .. }) if mid == &model_id),
+        matches!(effects.get(1), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == model_id),
         "second effect must be SwitchModel(<resolved id>), got {:?}",
         effects.get(1),
     );
@@ -312,18 +312,14 @@ fn model_switch_pending_resets_correctly_across_success_and_failure() {
     let model_a = acp::ModelId::new(std::sync::Arc::from("model-a"));
     let model_b = acp::ModelId::new(std::sync::Arc::from("model-b"));
     dispatch(
-        Action::SwitchModel {
-            model_id: model_a.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_a.clone())),
         &mut app,
     );
     assert!(expect_agent(&app, id).session.model_switch_pending);
     dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_a,
-            effort: None,
+            choice: ModelChoice::new(model_a),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -331,18 +327,14 @@ fn model_switch_pending_resets_correctly_across_success_and_failure() {
     );
     assert!(!expect_agent(&app, id).session.model_switch_pending);
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     assert!(expect_agent(&app, id).session.model_switch_pending);
     dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_b,
-            effort: None,
+            choice: ModelChoice::new(model_b),
             result: Err(SwitchModelError::Other("network error".into())),
             prev_model_id: None,
         }),
@@ -1374,7 +1366,7 @@ fn set_default_model_resolves_known_name() {
             value: crate::settings::SettingValue::String(s),
             .. }) if s == "grok-4.5"));
     assert!(
-        matches!(effects.get(1), Some(Effect::SwitchModel { model_id: mid, .. }) if mid == &id)
+        matches!(effects.get(1), Some(Effect::SwitchModel { choice, .. }) if choice.model_id == id)
     );
     assert_eq!(
         expect_agent(&app, agent_id).session.models.current,

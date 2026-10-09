@@ -561,6 +561,7 @@ fn resolve_add_with_locale(args: &AddArgs, locale: &LocaleContext) -> Result<Res
                     url: url.to_string(),
                     transport_type: (transport == McpTransport::Sse).then(|| "sse".to_string()),
                     bearer_token_env_var: None,
+                    bearer_token_file: None,
                     headers: (!headers.is_empty()).then_some(headers),
                     oauth_client_id: None,
                     oauth_client_secret_env_var: None,
@@ -1097,7 +1098,7 @@ async fn run_doctor(json: bool, name: Option<String>, locale: &LocaleContext) ->
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
     } else {
-        xai_grok_shell::mcp_doctor::print_report(&report);
+        xai_grok_shell::mcp_doctor::print_report_with_locale(&report, locale);
     }
 
     if report.failing_count > 0 {

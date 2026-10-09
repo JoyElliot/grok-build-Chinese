@@ -14,6 +14,8 @@ fn expect_agent(app: &AppView, id: AgentId) -> &AgentView {
 }
 
 use crate::app::subagent::{SubagentLifecycleReduction, SubagentLifecycleTransition};
+use std::num::NonZeroU64;
+use xai_grok_shell::agent::config::ModelSwitchIncompatibleAgentError;
 use xai_grok_shell::session::helpers::session_compact::COMPACT_CANCELLED_MSG;
 use xai_grok_shell::session::unified_list::ListScope;
 
@@ -1198,8 +1200,7 @@ fn switch_model_complete_resizes_the_context_bar_to_the_new_window() {
     dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1215,6 +1216,79 @@ fn switch_model_complete_resizes_the_context_bar_to_the_new_window() {
         (context.used, context.total),
         "the count stays, the denominator follows the new model"
     );
+}
+
+#[test]
+fn context_window_selection_survives_a_switch_through_a_model_that_does_not_support_it() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let menu_model = acp::ModelId::new(std::sync::Arc::from("menu-model"));
+    let plain_model = acp::ModelId::new(std::sync::Arc::from("plain-model"));
+    {
+        let agent = test_agent_mut(&mut app, id);
+        agent.session.models.available.insert(
+            menu_model.clone(),
+            acp::ModelInfo::new(menu_model.clone(), "Menu".to_string()).meta(
+                serde_json::json!({
+                    "totalContextTokens": 256_000,
+                    "contextWindows": [256_000, 500_000],
+                })
+                .as_object()
+                .cloned(),
+            ),
+        );
+        agent.session.models.available.insert(
+            plain_model.clone(),
+            acp::ModelInfo::new(plain_model.clone(), "Plain".to_string()).meta(
+                serde_json::json!({ "totalContextTokens": 128_000 })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+        agent.session.models.current = Some(menu_model.clone());
+        agent.apply_context_used(10_000, 256_000);
+    }
+    let initial_scrollback = expect_agent(&app, id).scrollback.len();
+
+    dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id: id,
+            choice: ModelChoice {
+                context_window_selection: std::num::NonZeroU64::new(500_000),
+                ..ModelChoice::new(menu_model.clone())
+            },
+            result: Ok(()),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+
+    let agent = expect_agent(&app, id);
+    let context = agent.context_state.as_ref().expect("context state");
+    assert_eq!(
+        (10_000, 500_000),
+        (context.used, context.total),
+        "the denominator follows the selection immediately"
+    );
+    assert_eq!(agent.scrollback.len(), initial_scrollback + 1);
+
+    // The selection stays stored while plain-model is current and applies again on menu-model
+    for (model_id, expected) in [(plain_model, 128_000), (menu_model, 500_000)] {
+        dispatch(
+            Action::TaskComplete(TaskResult::SwitchModelComplete {
+                agent_id: id,
+                choice: ModelChoice::new(model_id),
+                result: Ok(()),
+                prev_model_id: None,
+            }),
+            &mut app,
+        );
+
+        assert_eq!(
+            Some(expected),
+            expect_agent(&app, id).session.models.get_context_window()
+        );
+    }
 }
 
 #[test]
@@ -1245,8 +1319,7 @@ fn switch_model_complete_success_updates_model_and_pushes_message() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_id.clone(),
-            effort: None,
+            choice: ModelChoice::new(model_id.clone()),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1290,8 +1363,7 @@ fn switch_model_complete_skips_message_and_persist_when_unchanged() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_id.clone(),
-            effort: None,
+            choice: ModelChoice::new(model_id.clone()),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1348,8 +1420,7 @@ fn switch_model_complete_persists_resolved_effort_from_catalog_meta() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_id.clone(),
-            effort: None, // user typed `/model Blackbox 4.7` with no effort
+            choice: ModelChoice::new(model_id.clone()), // user typed `/model Blackbox 4.7` with no effort
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1414,8 +1485,7 @@ fn switch_to_non_reasoning_model_clears_persisted_effort() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_id.clone(),
-            effort: None,
+            choice: ModelChoice::new(model_id.clone()),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1459,8 +1529,7 @@ fn switch_model_complete_failure_pushes_error_and_clears_pending() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Err(SwitchModelError::Other("model not found".into())),
             prev_model_id: None,
         }),
@@ -1500,8 +1569,7 @@ fn switch_model_incompatible_agent_shows_question_modal() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Err(SwitchModelError::IncompatibleAgent {
                 error: err,
                 prev_model_id: None,
@@ -1523,6 +1591,40 @@ fn switch_model_incompatible_agent_shows_question_modal() {
     ));
     // No error message pushed to scrollback.
     assert_eq!(expect_agent(&app, id).scrollback.len(), initial_scrollback);
+}
+
+#[test]
+fn incompatible_agent_switch_with_a_window_says_the_window_waits() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let initial_scrollback = expect_agent(&app, id).scrollback.len();
+    let error = ModelSwitchIncompatibleAgentError {
+        code: "MODEL_SWITCH_INCOMPATIBLE_AGENT".into(),
+        active_agent_type: "grok-build".into(),
+        required_agent_type: "cursor".into(),
+        model_id: "cursor-model".into(),
+        suggestion: "start_new_session".into(),
+    };
+
+    dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id: id,
+            choice: ModelChoice {
+                context_window_selection: NonZeroU64::new(500_000),
+                ..ModelChoice::new(acp::ModelId::new(std::sync::Arc::from("cursor-model")))
+            },
+            result: Err(SwitchModelError::IncompatibleAgent {
+                error,
+                prev_model_id: None,
+            }),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+
+    let agent = expect_agent(&app, id);
+    assert!(agent.question_view.is_some());
+    assert_eq!(agent.scrollback.len(), initial_scrollback + 1);
 }
 
 #[test]
@@ -1561,8 +1663,7 @@ fn incompatible_agent_rollback_restores_previous_model() {
     dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: new_model,
-            effort: None,
+            choice: ModelChoice::new(new_model),
             result: Err(SwitchModelError::IncompatibleAgent {
                 error: err,
                 prev_model_id: Some(prev_model.clone()),
@@ -1606,8 +1707,7 @@ fn incompatible_agent_closes_active_modal() {
     dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Err(SwitchModelError::IncompatibleAgent {
                 error: err,
                 prev_model_id: None,
@@ -1652,8 +1752,7 @@ fn same_agent_type_switch_no_modal() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id: model_b.clone(),
-            effort: None,
+            choice: ModelChoice::new(model_b.clone()),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1682,10 +1781,7 @@ fn switch_model_pending_lifecycle() {
 
     // Action sets pending.
     dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(expect_agent(&app, id).session.model_switch_pending);
@@ -1694,8 +1790,7 @@ fn switch_model_pending_lifecycle() {
     dispatch(
         Action::TaskComplete(TaskResult::SwitchModelComplete {
             agent_id: id,
-            model_id,
-            effort: None,
+            choice: ModelChoice::new(model_id),
             result: Ok(()),
             prev_model_id: None,
         }),
@@ -1881,6 +1976,7 @@ fn available_commands_refreshed_updates_generation() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
             agent_id: id,
+            session_id: acp::SessionId::new("test-session"),
             commands,
         }),
         &mut app,
@@ -1910,6 +2006,7 @@ fn available_commands_refreshed_empty_is_noop() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
             agent_id: id,
+            session_id: acp::SessionId::new("test-session"),
             commands: vec![],
         }),
         &mut app,
@@ -1918,6 +2015,27 @@ fn available_commands_refreshed_empty_is_noop() {
     assert_eq!(
         expect_agent(&app, id).session.available_commands_generation,
         gen_before,
+    );
+}
+
+#[test]
+fn available_commands_for_a_session_the_tab_left_are_dropped() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let gen_before = expect_agent(&app, id).session.available_commands_generation;
+
+    dispatch(
+        Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
+            agent_id: id,
+            session_id: acp::SessionId::new("other-session"),
+            commands: vec![acp::AvailableCommand::new("commit", "Create a commit")],
+        }),
+        &mut app,
+    );
+
+    assert_eq!(
+        expect_agent(&app, id).session.available_commands_generation,
+        gen_before
     );
 }
 
@@ -3525,5 +3643,139 @@ fn compact_complete_renders_one_failure_line_per_completion() {
     assert!(
         agent.session.state.is_idle(),
         "compact state must be exited after the first completion"
+    );
+}
+
+fn skills_listed(
+    session: &str,
+    fetch: u64,
+    names: &[&str],
+    scan_errors: Vec<xai_grok_shell::extensions::skills::SkillScanError>,
+) -> Action {
+    use xai_grok_tools::implementations::skills::types::SkillInfo;
+    Action::TaskComplete(TaskResult::SkillsListLoaded {
+        agent_id: AgentId(0),
+        session_id: acp::SessionId::new(session),
+        fetch,
+        result: Ok(xai_grok_shell::extensions::skills::SkillsListResponse {
+            skills: names
+                .iter()
+                .map(|name| SkillInfo {
+                    name: (*name).to_owned(),
+                    path: format!("/skills/{name}/SKILL.md"),
+                    ..SkillInfo::default()
+                })
+                .collect(),
+            scan_errors,
+        }),
+    })
+}
+
+fn open_skills_tab(app: &mut AppView) -> &mut crate::views::extensions_modal::ExtensionsModalState {
+    let agent = app
+        .agents
+        .get_mut(&AgentId(0))
+        .expect("the test app has an agent");
+    agent
+        .extensions_modal
+        .insert(crate::views::extensions_modal::ExtensionsModalState::new(
+            crate::views::extensions_modal::ExtensionsTab::Skills,
+        ))
+}
+
+fn shown_modal(app: &AppView) -> &crate::views::extensions_modal::ExtensionsModalState {
+    test_agent(app, AgentId(0))
+        .extensions_modal
+        .as_ref()
+        .expect("the modal is open")
+}
+
+fn shown_skill_names(app: &AppView) -> Option<Vec<String>> {
+    match &shown_modal(app).skills_data {
+        crate::views::extensions_modal::TabDataState::Loaded(listing) => Some(
+            listing
+                .skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn shown_scan_errors(app: &AppView) -> Vec<xai_grok_shell::extensions::skills::SkillScanError> {
+    match &shown_modal(app).skills_data {
+        crate::views::extensions_modal::TabDataState::Loaded(listing) => {
+            listing.scan_errors.clone()
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn a_skills_listing_for_a_session_the_tab_left_is_dropped() {
+    let mut app = test_app_with_agent();
+    let fetch = open_skills_tab(&mut app).next_skills_fetch();
+
+    dispatch(
+        skills_listed("other-session", fetch, &["elsewhere"], Vec::new()),
+        &mut app,
+    );
+
+    assert_eq!(None, shown_skill_names(&app));
+}
+
+#[test]
+fn an_answer_to_an_older_skills_fetch_is_dropped() {
+    let mut app = test_app_with_agent();
+    let modal = open_skills_tab(&mut app);
+    let open = modal.next_skills_fetch();
+    let reload = modal.next_skills_fetch();
+
+    dispatch(
+        skills_listed("test-session", reload, &["fresh"], Vec::new()),
+        &mut app,
+    );
+    dispatch(
+        Action::TaskComplete(TaskResult::SkillsListLoaded {
+            agent_id: AgentId(0),
+            session_id: acp::SessionId::new("test-session"),
+            fetch: open,
+            result: Err("the cached read failed".to_owned()),
+        }),
+        &mut app,
+    );
+
+    assert_eq!(Some(vec!["fresh".to_owned()]), shown_skill_names(&app));
+}
+
+#[test]
+fn a_skills_listing_replaces_the_scan_errors() {
+    let mut app = test_app_with_agent();
+    let locked = xai_grok_shell::extensions::skills::SkillScanError {
+        path: "/work/locked".to_owned(),
+        message: "permission denied".to_owned(),
+    };
+
+    let first = open_skills_tab(&mut app).next_skills_fetch();
+    dispatch(
+        skills_listed("test-session", first, &["deploy"], vec![locked.clone()]),
+        &mut app,
+    );
+    assert_eq!(vec![locked], shown_scan_errors(&app));
+
+    let retry = app
+        .agents
+        .get_mut(&AgentId(0))
+        .and_then(|agent| agent.extensions_modal.as_mut())
+        .expect("the modal is open")
+        .next_skills_fetch();
+    dispatch(
+        skills_listed("test-session", retry, &["deploy"], Vec::new()),
+        &mut app,
+    );
+    assert!(
+        shown_scan_errors(&app).is_empty(),
+        "a retry that scans cleanly clears the errors"
     );
 }

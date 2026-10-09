@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use xai_grok_login::GrokAuth;
 use xai_grok_shell::agent::config::Config as AgentConfig;
+use xai_grok_shell::agent::config::TraceUploadEndpoints;
 use xai_grok_shell::session::repo_changes::UploadMethod;
 use xai_grok_shell::upload::trace_turns::{
     TraceTurnsReport, TraceTurnsRequest, upload_trace_turns,
@@ -712,13 +713,13 @@ async fn upload_with_retries(
 
 pub(crate) enum UploadGate {
     Ready(UploadMethod),
-    /// ZDR team or data-retention opt-out: session content never leaves the machine.
+    /// ZDR team, or a data-retention opt-out with no deployment-owned bucket: session content never leaves the machine.
     DataCollectionDisabled,
     NoCredentials,
 }
 
-/// Same order as the live agent's gate: identity first, so an opted-out account never reaches
-/// method resolution even when a direct bucket is configured.
+/// Same privacy gate as the live agent ([`TraceUploadEndpoints::is_trace_upload_blocked_for`]), checked before
+/// method resolution. An opted-out account still uploads to a configured `trace_upload_bucket`; a ZDR team never does.
 pub(crate) async fn resolve_upload_gate(agent_config: &AgentConfig) -> UploadGate {
     // On login failure, fall back to ambient creds rather than erroring.
     let auth = xai_grok_login::ensure_authenticated_or_noninteractive(
@@ -736,7 +737,7 @@ pub(crate) async fn resolve_upload_gate(agent_config: &AgentConfig) -> UploadGat
     .flatten();
 
     if let Some(auth) = &auth
-        && auth.is_data_collection_disabled()
+        && agent_config.endpoints.is_trace_upload_blocked_for(auth)
     {
         // The opt-out flag defaults to true until `/user` enrichment fills it (hence "not yet confirmed")
         let reason = if auth.is_zdr_team() {

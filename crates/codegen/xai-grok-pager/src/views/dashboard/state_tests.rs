@@ -7030,3 +7030,23 @@ fn workspace_identity_keeps_removed_selection_as_repair_anchor() {
 
     assert_eq!(dashboard.selected, Some(old_row));
 }
+
+/// A subdivision flag keeps its tags; loose tags and tag text hidden after a flag are dropped
+#[test]
+fn rename_keeps_flag_tags_and_drops_loose_ones() {
+    let scotland = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}";
+    let hidden_after_flag =
+        "\u{1f3f4}\u{e0069}\u{e0067}\u{e006e}\u{e0020}\u{e0061}\u{e006c}\u{e006c}";
+    let mut draft = RenameDraft::new(DashboardRowId::TopLevel(AgentId(0)), "");
+
+    let pasted = format!("go {scotland} team\u{e0068}\u{e0069} {hidden_after_flag}");
+    handle_rename_paste(&mut draft, &pasted);
+
+    assert_eq!(format!("go {scotland} team \u{1f3f4}"), draft.text());
+
+    // A cap that cuts the flag leaves the black flag without its partial tags
+    let near_cap = "a".repeat(MAX_RENAME_SCALARS - 3);
+    let mut full = RenameDraft::new(DashboardRowId::TopLevel(AgentId(0)), "");
+    handle_rename_paste(&mut full, &format!("{near_cap}{scotland}"));
+    assert_eq!(format!("{near_cap}\u{1f3f4}"), full.text());
+}

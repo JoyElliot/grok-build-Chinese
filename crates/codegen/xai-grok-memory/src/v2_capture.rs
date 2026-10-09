@@ -824,7 +824,7 @@ impl V2CaptureStore {
         before_index()?;
         self.converge_committed_rows(&rows, now)?;
         let manifest =
-            render_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::default())
+            render_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::configured())
                 .map_err(V2CaptureError::Manifest)?;
         before_manifest_publish()?;
 

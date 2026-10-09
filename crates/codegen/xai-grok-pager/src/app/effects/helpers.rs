@@ -331,10 +331,8 @@ pub(super) fn format_acp_error_with_locale(
             detail.as_deref(), is_api_key_auth, locale,
         );
     }
-    if err.code == acp::ErrorCode::InvalidParams && let Some(data) = &err.data
-        && let Some(msg) = error_detail_from_data(data) && !msg.is_empty()
-    {
-        let display = crate::scrollback::blocks::localized_model_unavailable_reason(locale, &msg);
+    if let Some(detail) = invalid_params_detail(err) {
+        let display = crate::scrollback::blocks::localized_model_unavailable_reason(locale, &detail);
         return sanitize_user_error(&display);
     }
     let raw = error_data_detail(err)
@@ -371,6 +369,14 @@ pub(crate) fn format_rate_limited_user_message_with_locale(
     sanitize_user_error(&localized)
 }
 
+/// The sentence an invalid-params error carries for the user, if any
+pub(super) fn invalid_params_detail(err: &acp::Error) -> Option<String> {
+    if err.code != acp::ErrorCode::InvalidParams {
+        return None;
+    }
+    let detail = err.data.as_ref().and_then(error_detail_from_data)?;
+    (!detail.is_empty()).then_some(detail)
+}
 /// Detail string carried in the error's `data` payload, if any.
 fn error_data_detail(err: &acp::Error) -> Option<String> {
     err.data.as_ref().and_then(error_detail_from_data)

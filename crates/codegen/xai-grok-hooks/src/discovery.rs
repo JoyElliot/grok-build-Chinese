@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+pub use xai_grok_config::ClaudeImport;
+use xai_grok_config::compat::CompatHooks;
 use xai_grok_config::resolve_global_hook_sources;
 
 use crate::config::{self, HookSpec};
 use crate::error::HookError;
 use crate::event::HookEventName;
 use crate::matcher::HookMatcher;
+use crate::trust::Trust;
 
 /// The loaded set of hooks, indexed by event type for fast lookup.
 /// This is a point-in-time snapshot.
@@ -83,9 +86,13 @@ impl HookRegistry {
         out
     }
 
-    pub fn remove_by_prefix(&mut self, prefix: &str) {
+    pub fn has_layer(&self, layer: config::HookProvenance) -> bool {
+        self.hooks.values().flatten().any(|s| s.layer == layer)
+    }
+
+    pub fn remove_layer(&mut self, layer: config::HookProvenance) {
         for specs in self.hooks.values_mut() {
-            specs.retain(|s| !s.name.starts_with(prefix));
+            specs.retain(|s| s.layer != layer);
         }
     }
 
@@ -288,13 +295,14 @@ pub struct HookSourcePaths {
 }
 
 impl HookSourcePaths {
-    pub fn as_sources(&self, include_project: bool) -> (Vec<HookSource<'_>>, Vec<HookSource<'_>>) {
+    /// The global sources, and the project sources when `trust` lets project hooks load.
+    pub fn as_sources(&self, trust: Trust) -> (Vec<HookSource<'_>>, Vec<HookSource<'_>>) {
         let global = self
             .global
             .iter()
             .map(HookSourceConfig::as_hook_source)
             .collect();
-        let project = if include_project {
+        let project = if trust.allows_project_sources() {
             self.project
                 .iter()
                 .map(HookSourceConfig::as_hook_source)
@@ -314,31 +322,29 @@ fn classify_grok_hook_source(path: PathBuf) -> HookSourceConfig {
     }
 }
 
-fn include_claude_hooks(
-    compat: &xai_grok_tools::types::compat::CompatConfig,
-    claude_import_marked: bool,
-) -> bool {
-    compat.claude.hooks && !claude_import_marked
-}
-
-fn include_cursor_hooks(compat: &xai_grok_tools::types::compat::CompatConfig) -> bool {
-    compat.cursor.hooks
+/// What decides which hook sources a discovery reads: the directories given here, and any the
+/// `hooks-paths` registry under `grok_home` names.
+#[derive(Debug, Clone, Copy)]
+pub struct DiscoveryOptions<'a> {
+    pub git_root: Option<&'a Path>,
+    /// The Grok home, which holds the user's hooks and `hooks-paths`.
+    pub grok_home: Option<&'a Path>,
+    /// The home directory, which holds the user's vendor hook settings.
+    pub home: Option<&'a Path>,
+    pub compat: CompatHooks,
+    pub claude_import: ClaudeImport,
+    pub trust: Trust,
 }
 
 /// A vendor settings path must be added here and to
 /// `xai_grok_workspace::folder_trust::repo_configs_present`, which probes the same paths.
-pub fn discover_hook_source_paths(
-    git_root: Option<&Path>,
-    compat: &xai_grok_tools::types::compat::CompatConfig,
-    claude_import_marked: bool,
-) -> HookSourcePaths {
-    let grok = xai_grok_config::user_grok_home();
-    let home = xai_dirs::home_dir();
-    let include_claude = include_claude_hooks(compat, claude_import_marked);
-    let include_cursor = include_cursor_hooks(compat);
+pub fn discover_hook_source_paths(options: DiscoveryOptions<'_>) -> HookSourcePaths {
+    let include_claude =
+        options.compat.claude && options.claude_import == ClaudeImport::NotImported;
+    let include_cursor = options.compat.cursor;
 
     let mut global: Vec<HookSourceConfig> =
-        match resolve_global_hook_sources(grok.as_deref(), /* reject_symlinks */ false) {
+        match resolve_global_hook_sources(options.grok_home, /* reject_symlinks */ false) {
             Ok(resolved) => {
                 if let Some(e) = &resolved.configured_error {
                     tracing::warn!(
@@ -360,7 +366,7 @@ pub fn discover_hook_source_paths(
             }
         };
 
-    if let Some(h) = home.as_deref() {
+    if let Some(h) = options.home {
         if include_claude {
             global.push(HookSourceConfig::SettingsFile(
                 h.join(".claude").join("settings.json"),
@@ -377,7 +383,7 @@ pub fn discover_hook_source_paths(
     }
 
     let mut project = Vec::new();
-    if let Some(root) = git_root {
+    if let Some(root) = options.git_root {
         if include_claude {
             project.push(HookSourceConfig::SettingsFile(
                 root.join(".claude").join("settings.json"),
@@ -397,34 +403,15 @@ pub fn discover_hook_source_paths(
     HookSourcePaths { global, project }
 }
 
-pub fn discover_hooks(
-    git_root: Option<&Path>,
-    compat: &xai_grok_tools::types::compat::CompatConfig,
-    claude_import_marked: bool,
-    trusted: bool,
-) -> (HookRegistry, Vec<HookError>) {
-    let config_layers = xai_grok_config::hook_config_layers();
-    assemble_hooks(
-        &config_layers,
-        git_root,
-        compat,
-        claude_import_marked,
-        trusted,
-    )
-}
-
 /// Config-layer specs go first, so first-wins dedup prefers them over a byte-identical file hook.
 pub fn assemble_hooks(
     config_layers: &[xai_grok_config::HookConfigLayer],
-    git_root: Option<&Path>,
-    compat: &xai_grok_tools::types::compat::CompatConfig,
-    claude_import_marked: bool,
-    trusted: bool,
+    options: DiscoveryOptions<'_>,
 ) -> (HookRegistry, Vec<HookError>) {
     let (mut specs, mut errors) = crate::config::parse_hooks_from_config_layers(config_layers);
 
-    let source_paths = discover_hook_source_paths(git_root, compat, claude_import_marked);
-    let (global_sources, project_sources) = source_paths.as_sources(trusted);
+    let source_paths = discover_hook_source_paths(options);
+    let (global_sources, project_sources) = source_paths.as_sources(options.trust);
     let (file_specs, file_errors) = collect_specs_from_sources(&global_sources, &project_sources);
     specs.extend(file_specs);
     errors.extend(file_errors);
@@ -542,6 +529,22 @@ fn is_valid_hook_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ALL_HOOKS: CompatHooks = CompatHooks {
+        cursor: true,
+        claude: true,
+    };
+
+    fn untrusted_without_git_root() -> DiscoveryOptions<'static> {
+        DiscoveryOptions {
+            git_root: None,
+            grok_home: None,
+            home: None,
+            compat: ALL_HOOKS,
+            claude_import: ClaudeImport::NotImported,
+            trust: Trust::Untrusted,
+        }
+    }
 
     fn write_json(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
@@ -1358,8 +1361,7 @@ timeout = 5
         );
 
         let layers = xai_grok_config::hook_config_layers_at(Some(system_dir.path()), None);
-        let compat = xai_grok_tools::types::compat::CompatConfig::default();
-        let (registry, errors) = assemble_hooks(&layers, None, &compat, false, false);
+        let (registry, errors) = assemble_hooks(&layers, untrusted_without_git_root());
         assert!(errors.is_empty(), "errors: {errors:?}");
 
         let spec = registry
@@ -1405,8 +1407,7 @@ timeout = 5
                 .count()
         );
 
-        let compat = xai_grok_tools::types::compat::CompatConfig::default();
-        let (registry, _) = assemble_hooks(&layers, None, &compat, false, false);
+        let (registry, _) = assemble_hooks(&layers, untrusted_without_git_root());
         assert_eq!(1, registry.hooks_for(HookEventName::PreToolUse).len());
     }
 
@@ -1421,13 +1422,16 @@ timeout = 5
         )
         .unwrap();
 
-        let compat = xai_grok_tools::types::compat::CompatConfig::default();
         let (registry, errors) = assemble_hooks(
             &[],
-            Some(root.path()),
-            &compat,
-            /*claude_import_marked*/ false,
-            /*trusted*/ true,
+            DiscoveryOptions {
+                git_root: Some(root.path()),
+                grok_home: None,
+                home: None,
+                compat: ALL_HOOKS,
+                claude_import: ClaudeImport::NotImported,
+                trust: Trust::Trusted,
+            },
         );
 
         assert!(

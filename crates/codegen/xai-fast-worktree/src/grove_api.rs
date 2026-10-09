@@ -83,11 +83,14 @@ pub struct DetachReply {
     pub phase: String,
     pub same_device: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct SalvageReply {
     pub virtual_remaining: Vec<String>,
     pub gitdir_copied: bool,
+    /// Steps after the copy that failed; the copy stands.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -18,6 +18,7 @@ pub const GROK_BOT_TOOL_IDS: &[&str] = &[
     "bot_await_turn",
     "bot_search_agents",
     "bot_voice_call_plan",
+    "bot_voice_call_tool",
 ];
 
 /// Whether `name` is a hub-synthesized Grok Bot harness tool.
@@ -115,6 +116,11 @@ pub const GROK_BOT_TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
          voice-side tools, greeting, and task receipt. For a voice backend at \
          dial time; sends nothing to the agent.",
     ),
+    (
+        "bot_voice_call_tool",
+        "Run a voice-side tool from bot_voice_call_plan mid-call. For a voice \
+         backend.",
+    ),
 ];
 
 /// The model-facing description for a Grok Bot tool id, if known.
@@ -189,7 +195,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
                 "paths": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Up to 8 files, 25 MiB each. Workspace-relative paths such as attachments/note.pdf; absolute guest paths are rewritten. Without a connected workspace, artifacts/ and attachments/ paths fetch conversation files."
+                    "description": "Up to 8 non-empty files, 25 MiB each. Workspace-relative paths such as attachments/note.pdf; absolute guest paths are rewritten. Without a workspace, artifacts/ and attachments/ paths fetch conversation files."
                 }
             }
         }),
@@ -340,6 +346,42 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
                 "spoken_language": {
                     "type": "string",
                     "description": "Language the call is spoken in."
+                },
+                "time_zone": {
+                    "type": "string",
+                    "description": "Caller's IANA time zone."
+                }
+            }
+        }),
+        "bot_voice_call_tool" => serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["agent_id", "call_id", "name", "line"],
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent id."
+                },
+                "call_id": {
+                    "type": "string",
+                    "description": "Voice call id."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Tool name from the plan."
+                },
+                "input": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Tool arguments."
+                },
+                "line": {
+                    "type": "object",
+                    "description": "Required booleans: they_just_talked, news_owed, receipt_owed, already_spoke_this_turn."
+                },
+                "time_zone": {
+                    "type": "string",
+                    "description": "Caller's IANA time zone."
                 }
             }
         }),
@@ -427,12 +469,12 @@ mod tests {
         assert!(!is_grok_bot_default_tool("bot_future_tool"));
     }
 
-    /// A voice backend opts in per toolbox; an ordinary agent must not see
-    /// the tool on an empty allowlist.
     #[test]
-    fn voice_call_plan_is_declared_but_not_a_default_tool() {
-        assert!(is_grok_bot_tool("bot_voice_call_plan"));
-        assert!(!is_grok_bot_default_tool("bot_voice_call_plan"));
+    fn voice_call_tools_are_declared_but_not_default_tools() {
+        for id in ["bot_voice_call_plan", "bot_voice_call_tool"] {
+            assert!(is_grok_bot_tool(id), "{id}");
+            assert!(!is_grok_bot_default_tool(id), "{id}");
+        }
     }
 
     /// Clients advertise this schema from the shared table before the

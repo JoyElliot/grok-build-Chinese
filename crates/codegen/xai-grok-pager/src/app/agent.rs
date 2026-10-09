@@ -879,6 +879,7 @@ impl AgentSession {
         self.tracker.expect_user_echo();
         self.state = AgentState::TurnRunning;
         self.in_flight_prompt = None;
+        self.models.set_served_model_name(None);
     }
     /// Finish the current turn: cleanup tracker, set state to Idle.
     ///

@@ -1,10 +1,11 @@
 use crate::agent::Agent;
 use crate::compaction::CompactionPolicy;
-use crate::config::{AGENT_TASK_CLASSIFIER_RE, short_tool_name, tool_id_eq, tool_id_matches};
+use crate::config::{AGENT_TASK_CLASSIFIER_RE, short_tool_name};
 use crate::config::{AgentDefinition, BuiltinAgentName, PermissionMode, PromptMode};
 use crate::error::AgentBuildError;
 use crate::prompt::context::{PromptAudience, PromptContext};
 use crate::system_reminder::ReminderPolicy;
+use crate::tool_list::{ToolList, listed_tools, subagent_types};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,11 +18,6 @@ use xai_grok_tools::implementations::grok_build::task::model_policy::{
 use xai_grok_tools::notification::ToolNotificationHandle;
 use xai_grok_tools::registry::types::SessionContext;
 use xai_grok_tools::types::tool::ToolKind;
-/// The Grok [`ToolKind`] a vendor-compat `tools:` allowlist entry resolves to, so a plugin's upstream allowlist still binds.
-/// Backed by the shared vendor-to-Grok tool registry in `xai-grok-tools` (also used by the hook matcher).
-fn claude_tool_kind(name: &str) -> Option<ToolKind> {
-    xai_grok_tools::types::kind_for(name)
-}
 /// Builds an [`Agent`] from an [`AgentDefinition`] (`from_definition`) or programmatic `with_*` calls, plus session context.
 #[derive(Clone)]
 pub struct AgentBuilder {
@@ -217,6 +213,38 @@ fn implicit_subagent_type(
         return None;
     }
     Some(only.to_owned())
+}
+/// Plugin and user-defined agent types the parent may spawn, sorted by name.
+/// The list leaves out built-in agents, xAI-bundled agents, and any agent that shadows a built-in name.
+fn selectable_subagent_types(
+    subagents: &[crate::discovery::SubagentEntry],
+    allowed: Option<&[String]>,
+) -> Vec<xai_tool_types::SubagentDescriptor> {
+    let mut selectable: Vec<_> = subagents
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.source,
+                crate::discovery::SubagentSource::UserDefined {
+                    scope: crate::config::AgentScope::Project | crate::config::AgentScope::User
+                }
+            ) && entry.shadows_builtin.is_none()
+        })
+        .filter(|entry| {
+            allowed.is_none_or(|allowed| {
+                allowed
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&entry.name))
+            })
+        })
+        .map(|entry| xai_tool_types::SubagentDescriptor {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+            tools: None,
+        })
+        .collect();
+    selectable.sort_by(|a, b| a.name.cmp(&b.name));
+    selectable
 }
 /// Single copy of the params-merge loop the per-tool param injections share.
 fn merge_tool_params(
@@ -879,11 +907,12 @@ impl AgentBuilder {
             "task"
         );
         let mut task_stripped = false;
+        let mut subagents = Vec::new();
         if !self.subagents_enabled {
             tool_config.tools.retain(|tc| tc.id != task_tool_id);
             task_stripped = true;
         } else {
-            let subagents = {
+            subagents = {
                 let _subagent_timer = build_step_timer!("subagent_discovery");
                 crate::discovery::all_subagents_with_plugins(
                     &self.working_directory,
@@ -960,102 +989,57 @@ impl AgentBuilder {
             merge_tool_params(&mut tool_config, &["GrokBuild:ask_user_question"], &ni);
         }
         if !definition.disallowed_tools.is_empty() {
-            let before: std::collections::HashSet<String> =
-                tool_config.tools.iter().map(|tc| tc.id.clone()).collect();
-            tool_config
-                .tools
-                .retain(|tc| !tool_id_matches(&definition.disallowed_tools, &tc.id));
-            let after: std::collections::HashSet<String> =
-                tool_config.tools.iter().map(|tc| tc.id.clone()).collect();
-            let removed: std::collections::HashSet<&String> = before.difference(&after).collect();
-            for d in &definition.disallowed_tools {
-                if AGENT_TASK_CLASSIFIER_RE.is_match(d) {
-                    continue;
-                }
-                let matched = removed.iter().any(|&id| tool_id_eq(d, id));
-                if !matched {
-                    tracing::warn!(agent = %definition.name, tool = %d, "disallowedTools entry matched nothing");
-                }
+            let listed = listed_tools(
+                ToolList::Denylist,
+                &definition.disallowed_tools,
+                &tool_config.tools,
+            );
+            for entry in &listed.unmatched {
+                tracing::warn!(agent = %definition.name, tool = %entry, "disallowedTools entry matched nothing");
             }
+            tool_config.tools = listed.tools.into_iter().cloned().collect();
         }
         if !definition.tools.is_empty() {
-            let has_agent_entry = definition
-                .tools
-                .iter()
-                .any(|t| AGENT_TASK_CLASSIFIER_RE.is_match(t));
-            let task_deps = ["task", "get_task_output", "kill_task", "wait_tasks"];
-            let registered_tool_ids = tool_bridge_builder.known_tool_ids();
-            let present_kinds: std::collections::HashSet<ToolKind> =
-                tool_config.tools.iter().filter_map(|tc| tc.kind).collect();
-            let mut allow_kinds: std::collections::HashSet<ToolKind> =
-                std::collections::HashSet::new();
-            let mut unresolved: Vec<&str> = Vec::new();
-            let mut recognized_but_unavailable: Vec<&str> = Vec::new();
-            for t in &definition.tools {
-                if AGENT_TASK_CLASSIFIER_RE.is_match(t) {
-                    continue;
-                }
-                if t.starts_with("mcp__") {
-                    continue;
-                }
-                if tool_config.tools.iter().any(|tc| tool_id_eq(t, &tc.id)) {
-                    continue;
-                }
-                match claude_tool_kind(t) {
-                    Some(kind) => {
-                        if present_kinds.contains(&kind) {
-                            allow_kinds.insert(kind);
-                        } else {
-                            recognized_but_unavailable.push(t);
-                        }
-                    }
-                    None if registered_tool_ids.iter().any(|id| tool_id_eq(t, id)) => {
-                        recognized_but_unavailable.push(t);
-                    }
-                    None => unresolved.push(t),
-                }
-            }
-            if !recognized_but_unavailable.is_empty() {
+            let known_tool_ids = tool_bridge_builder.known_tool_ids();
+            let listed = listed_tools(
+                ToolList::Allowlist {
+                    known_tool_ids: &known_tool_ids,
+                },
+                &definition.tools,
+                &tool_config.tools,
+            );
+            if !listed.unmatched.is_empty() {
                 tracing::debug!(
                     agent = %definition.name,
-                    recognized_but_unavailable = ?recognized_but_unavailable,
+                    recognized_but_unavailable = ?listed.unmatched,
                     "tools allowlist named recognized tools that aren't enabled; ignoring them"
                 );
             }
-            if unresolved.is_empty() {
-                tool_config.tools.retain(|tc| {
-                    tool_id_matches(&definition.tools, &tc.id)
-                        || tc.kind.is_some_and(|k| allow_kinds.contains(&k))
-                        || (has_agent_entry && task_deps.contains(&short_tool_name(&tc.id)))
-                        || matches!(tc.kind, Some(ToolKind::SearchTool | ToolKind::UseTool))
-                });
+            if listed.unknown.is_empty() {
                 tracing::debug!(agent = %definition.name, allowed = ?definition.tools, "tools allowlist applied");
             } else {
                 tracing::warn!(
                     agent = %definition.name,
-                    unresolved = ?unresolved,
+                    unresolved = ?listed.unknown,
                     allowed = ?definition.tools,
                     "tools allowlist had unmappable entries; keeping full grok toolset"
                 );
             }
+            tool_config.tools = listed.tools.into_iter().cloned().collect();
         }
         tool_config
             .tools
             .retain(|tc| definition.session_tools_allowed(&tc.id));
         {
-            let mut saw_directive = false;
+            let saw_directive = definition
+                .tools
+                .iter()
+                .any(|t| AGENT_TASK_CLASSIFIER_RE.is_match(t));
             let types: Vec<String> = definition
                 .tools
                 .iter()
-                .filter_map(|t| {
-                    let caps = AGENT_TASK_CLASSIFIER_RE.captures(t)?;
-                    saw_directive = true;
-                    caps.get(1)
-                })
-                .flat_map(|m| m.as_str().split(','))
-                .map(|s| s.trim().to_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>();
+                .flat_map(|t| subagent_types(t))
+                .collect();
             let types = {
                 let mut seen = std::collections::HashSet::new();
                 types
@@ -1083,10 +1067,7 @@ impl AgentBuilder {
                 let denied_types: Vec<String> = definition
                     .disallowed_tools
                     .iter()
-                    .filter_map(|d| AGENT_TASK_CLASSIFIER_RE.captures(d)?.get(1))
-                    .flat_map(|m| m.as_str().split(','))
-                    .map(|s| s.trim().to_lowercase())
-                    .filter(|s| !s.is_empty())
+                    .flat_map(|d| subagent_types(d))
                     .collect();
                 if !denied_types.is_empty()
                     && let Some(ref mut allowed) = definition.allowed_subagent_types
@@ -1109,8 +1090,17 @@ impl AgentBuilder {
                 &pinned,
             );
         }
-        let hide_task =
-            !general_purpose_spawnable(allowed_types, &self.subagent_toggle) && implicit.is_none();
+        let selectable = selectable_subagent_types(&subagents, allowed_types);
+        if !selectable.is_empty()
+            && let Ok(types) = serde_json::to_value(&selectable)
+        {
+            let mut offered = serde_json::Map::new();
+            offered.insert("selectable_subagent_types".into(), types);
+            merge_tool_params(&mut tool_config, &["GrokBuild:task"], &offered);
+        }
+        let hide_task = !general_purpose_spawnable(allowed_types, &self.subagent_toggle)
+            && implicit.is_none()
+            && selectable.is_empty();
         if allowed_types == Some(&[]) {
             tool_config.tools.retain(|tc| {
                 let short = short_tool_name(&tc.id);
@@ -2641,6 +2631,130 @@ mod tests {
             .expect("bash params");
         assert!(!bash.0.enabled_background);
     }
+    #[test]
+    fn selectable_types_are_project_and_user_agents_the_parent_may_spawn() {
+        use crate::config::{AgentScope, BuiltinAgentName};
+        use crate::discovery::{SubagentEntry, SubagentSource};
+        use xai_grok_tools::types::config_source::ConfigSource;
+        fn entry(name: &str, source: SubagentSource) -> SubagentEntry {
+            SubagentEntry {
+                name: name.to_owned(),
+                description: format!("{name} agent"),
+                source,
+                shadows_builtin: None,
+                config_source: ConfigSource::Builtin,
+            }
+        }
+        let user = |scope| SubagentSource::UserDefined { scope };
+        let shadowing_explore = SubagentEntry {
+            shadows_builtin: Some(BuiltinAgentName::Explore),
+            ..entry("explore", user(AgentScope::Project))
+        };
+        let subagents = vec![
+            entry(
+                "general-purpose",
+                SubagentSource::Builtin(BuiltinAgentName::GeneralPurpose),
+            ),
+            entry("plan", SubagentSource::Builtin(BuiltinAgentName::Plan)),
+            shadowing_explore,
+            entry("xai-bundled", user(AgentScope::Bundled)),
+            entry("reviewer", user(AgentScope::Project)),
+            entry("merlin:stash", user(AgentScope::User)),
+        ];
+        let names = |allowed: Option<&[String]>| -> Vec<String> {
+            super::selectable_subagent_types(&subagents, allowed)
+                .into_iter()
+                .map(|descriptor| descriptor.name)
+                .collect()
+        };
+        assert_eq!(vec!["merlin:stash", "reviewer"], names(None));
+        let allowed = vec!["Reviewer".to_owned(), "explore".to_owned()];
+        assert_eq!(vec!["reviewer"], names(Some(&allowed)));
+        assert!(names(Some(&[])).is_empty());
+    }
+    #[tokio::test]
+    async fn spawn_schema_offers_plugin_agent_types_by_name() {
+        use crate::plugins::SharedPluginRegistryHandle;
+        use crate::plugins::discovery::DiscoveryConfig;
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        let workdir = tempfile::tempdir().expect("workdir");
+        let plugin_dir = workdir.path().join("demo-plugin");
+        std::fs::create_dir_all(plugin_dir.join("agents")).expect("plugin agents dir");
+        std::fs::write(plugin_dir.join("plugin.json"), r#"{"name":"demo-plugin"}"#)
+            .expect("plugin manifest");
+        std::fs::write(
+            plugin_dir.join("agents").join("reviewer.md"),
+            "---\nname: reviewer\ndescription: Reviews diffs.\n---\n\nReview the diff.\n",
+        )
+        .expect("plugin agent");
+        let registry = SharedPluginRegistryHandle::new(None, Vec::new())
+            .build_for_cwd(
+                workdir.path(),
+                &DiscoveryConfig {
+                    cli_plugin_dirs: Vec::new(),
+                    config_paths: Vec::new(),
+                    disabled: Vec::new(),
+                    enabled: Vec::new(),
+                },
+                &[plugin_dir],
+                false,
+            )
+            .expect("session plugin registry");
+        let build = |tools: Vec<String>| {
+            let mut definition = crate::config::AgentDefinition::default_grok_build();
+            definition.tools = tools;
+            AgentBuilder::new(
+                workdir.path().to_path_buf(),
+                Arc::new(LocalTerminalBackend::new()),
+                ToolNotificationHandle::noop(),
+            )
+            .from_definition(definition)
+            .with_subagents_enabled(true)
+            .with_plugin_registry(Arc::clone(&registry))
+            .build()
+        };
+        async fn offered_types(agent: &crate::agent::Agent) -> Option<Vec<String>> {
+            let spawn = agent
+                .tool_definitions()
+                .await
+                .into_iter()
+                .find(|definition| definition.function.name == "spawn_subagent")?;
+            let offered = spawn
+                .function
+                .parameters
+                .pointer("/properties/subagent_type/enum")
+                .and_then(serde_json::Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(|name| name.as_str().map(str::to_owned))
+                        .collect()
+                });
+            Some(offered.unwrap_or_default())
+        }
+        let open = build(Vec::new()).await.expect("unrestricted parent builds");
+        let offered = offered_types(&open)
+            .await
+            .expect("spawn_subagent is advertised");
+        assert!(
+            offered.iter().any(|name| name == "demo-plugin:reviewer"),
+            "{offered:?}"
+        );
+        for built_in in ["general-purpose", "explore", "plan"] {
+            assert!(!offered.iter().any(|name| name == built_in), "{offered:?}");
+        }
+        let restricted = build(vec![
+            "read_file".into(),
+            "Agent(demo-plugin:reviewer, worker)".into(),
+        ])
+        .await
+        .expect("restricted parent builds");
+        assert_eq!(
+            Some(vec!["demo-plugin:reviewer".to_owned()]),
+            offered_types(&restricted).await,
+            "a parent that cannot spawn general-purpose keeps task for the named plugin type"
+        );
+    }
     #[tokio::test]
     async fn bare_agent_allows_all_spawns() {
         let mut tools: Vec<String> = AGENT_TOOLS_BASE.iter().map(|s| s.to_string()).collect();
@@ -2744,18 +2858,6 @@ mod tests {
             !names.contains(&"search_replace".to_string()),
             "Edit must be excluded by the allowlist; got: {names:?}"
         );
-    }
-    #[test]
-    fn shell_lsp_ask_and_task_tool_names_map() {
-        assert_eq!(claude_tool_kind("PowerShell"), Some(ToolKind::Execute));
-        assert_eq!(claude_tool_kind("LSP"), Some(ToolKind::Lsp));
-        assert_eq!(claude_tool_kind("AskUserQuestion"), Some(ToolKind::AskUser));
-        for name in ["TaskOutput", "BashOutputTool", "AgentOutputTool"] {
-            assert_eq!(claude_tool_kind(name), Some(ToolKind::BackgroundTaskAction));
-        }
-        assert_eq!(claude_tool_kind("TaskStop"), Some(ToolKind::KillTaskAction));
-        assert_eq!(claude_tool_kind("EnterPlanMode"), None);
-        assert_eq!(claude_tool_kind("ExitPlanMode"), None);
     }
     #[tokio::test]
     async fn ask_user_question_allowlist_builds_without_plan_tools() {

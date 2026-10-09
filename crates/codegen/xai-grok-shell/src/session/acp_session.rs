@@ -50,7 +50,6 @@ use crate::session::signals::{SessionSignalsHandle, TurnDeltaSnapshot};
 use crate::session::slash_commands::{self, BuiltinAction, SlashCommandOutcome};
 use crate::session::storage::SessionUpdate;
 use crate::session::user_message::construct_user_message_minimal;
-use crate::session::user_message::extract_user_query;
 use crate::terminal::TerminalRunRequest;
 use crate::tools::ToolContext;
 use agent_client_protocol as acp;
@@ -215,6 +214,8 @@ use extensions::*;
 #[path = "acp_session_impl/memory_dream.rs"]
 mod memory_dream;
 use memory_dream::*;
+#[path = "acp_session_impl/batch_memory_dream.rs"]
+mod batch_memory_dream;
 #[path = "acp_session_impl/goal_support.rs"]
 mod goal_support;
 #[path = "acp_session_impl/memory_capture.rs"]

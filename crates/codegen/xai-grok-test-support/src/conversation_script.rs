@@ -3,6 +3,7 @@
 //! the conversation and call number ([`mock_call_id`]) so inherited history does not advance a child's script.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use regex::Regex;
@@ -10,6 +11,8 @@ use serde_json::Value;
 
 use crate::conversation::ConversationId;
 use crate::failure::{Failure, StatusFailure, StreamError};
+use crate::model_reply::ModelEvent;
+use crate::sse::UsageReport;
 use crate::tools::Tool;
 
 const MOCK_CALL_ID_PREFIX: &str = "call_mock_";
@@ -43,7 +46,6 @@ impl TextCheck {
         Ok(TextCheck::Matches { pattern, regex })
     }
 
-    /// The substring or pattern this checks for.
     pub(crate) fn label(&self) -> &str {
         match self {
             TextCheck::Contains(expected) => expected,
@@ -59,7 +61,6 @@ impl TextCheck {
     }
 }
 
-/// Arguments are written in GrokBuild's shape; the next request's result for the call is checked.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct MockToolCall {
@@ -91,16 +92,42 @@ impl MockToolCall {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum CallDelivery {
+    #[default]
+    Sequential,
+    Parallel,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ScriptEntry {
     pub(crate) tool_calls: Vec<MockToolCall>,
+    pub(crate) delivery: CallDelivery,
     pub(crate) reply: String,
     pub(crate) at_request: Option<usize>,
+    /// A side request such as a compaction summary must not take the next ordinary reply.
+    pub(crate) body_contains: Option<String>,
+    pub(crate) release_when_body_contains: Option<String>,
     pub(crate) stall: Option<Duration>,
-    /// A reasoning stream served before the reply, so the client sees a thought first.
+    /// Answer only once conversation `0` has logged request `1`, counted from 1.
+    /// `hold_reply_only` waits on the reply step, so an earlier tool call in the same turn still returns.
+    pub(crate) hold_until: Option<(usize, usize)>,
+    pub(crate) hold_reply_only: bool,
+    /// Park the answer until the mock releases parked replies, so a cancel can fire while it is held.
+    pub(crate) park: bool,
+    /// Set when this park has its own release. Absent parks wait on the shutdown latch.
+    pub(crate) park_token: Option<u64>,
+    /// The turn in the installed script, so a later log read does not count requests.
+    pub(crate) reply_index: Option<usize>,
+    pub(crate) answered: bool,
+    /// Hold this answer until the mock LSP request log at this path shows a second process.
+    pub(crate) hold_until_lsp_log: Option<PathBuf>,
     pub(crate) reasoning: Option<String>,
-    /// In the order the case declared them; each answers until its count is spent.
+    pub(crate) usage: Option<UsageReport>,
     pub(crate) failures: Vec<Failure>,
+    /// Once every failure on this entry is spent, the entry is accounted. No later reply is required.
+    pub(crate) failure_closes_turn: bool,
+    pub(crate) events: Option<Vec<ModelEvent>>,
 }
 
 /// The last entry repeats once the script is served through, so there is always one to answer from.
@@ -126,14 +153,6 @@ impl ScriptEntries {
     pub(crate) fn pinned_to(&self, request: usize) -> Option<usize> {
         self.iter()
             .position(|entry| entry.at_request == Some(request))
-    }
-
-    pub(crate) fn next_unpinned(&self, after: Option<usize>) -> Option<usize> {
-        self.iter()
-            .enumerate()
-            .skip(after.map_or(0, |after| after + 1))
-            .find(|(_, entry)| entry.at_request.is_none())
-            .map(|(index, _)| index)
     }
 
     pub(crate) fn request_pinned_twice(&self) -> Option<usize> {
@@ -189,39 +208,108 @@ impl fmt::Display for ScriptTarget {
     }
 }
 
-/// The turn being built before `.reply` closes it; open once any setter has run.
 #[derive(Debug, Clone, Default)]
 struct PendingTurn {
     calls: Vec<MockToolCall>,
+    delivery: CallDelivery,
     at_request: Option<usize>,
+    body_contains: Option<String>,
+    release_when_body_contains: Option<String>,
     stall: Option<Duration>,
+    hold_until: Option<(usize, usize)>,
+    hold_reply_only: bool,
+    park: bool,
+    park_token: Option<u64>,
+    reply_index: Option<usize>,
+    hold_until_lsp_log: Option<PathBuf>,
     reasoning: Option<String>,
+    usage: Option<UsageReport>,
     failures: Vec<Failure>,
+    failure_closes_turn: bool,
 }
 
 impl PendingTurn {
     fn is_open(&self) -> bool {
         !self.calls.is_empty()
+            || matches!(self.delivery, CallDelivery::Parallel)
             || self.at_request.is_some()
+            || self.body_contains.is_some()
+            || self.release_when_body_contains.is_some()
             || self.stall.is_some()
+            || self.hold_until.is_some()
+            || self.park
+            || self.hold_until_lsp_log.is_some()
             || self.reasoning.is_some()
+            || self.usage.is_some()
             || !self.failures.is_empty()
     }
 
     fn close(self, reply: String) -> ScriptEntry {
         ScriptEntry {
             tool_calls: self.calls,
+            delivery: self.delivery,
             reply,
             at_request: self.at_request,
+            body_contains: self.body_contains,
+            release_when_body_contains: self.release_when_body_contains,
             stall: self.stall,
+            hold_until: self.hold_until,
+            hold_reply_only: self.hold_reply_only,
+            park: self.park,
+            park_token: self.park_token,
+            reply_index: self.reply_index,
+            answered: false,
+            hold_until_lsp_log: self.hold_until_lsp_log,
             reasoning: self.reasoning,
+            usage: self.usage,
             failures: self.failures,
+            failure_closes_turn: self.failure_closes_turn,
+            events: None,
         }
     }
 }
 
-/// `.reply` closes the turn being built: `.calls` after it starts the next turn, a second `.reply`
-/// in a row is a turn with no calls, and every conversation ends with a `.reply`.
+#[derive(Debug, Clone, Default)]
+pub struct CompiledTurn {
+    pub calls: Vec<MockToolCall>,
+    pub parallel: bool,
+    pub failures: Vec<CompiledFailure>,
+    pub reply: String,
+    pub events: Option<Vec<ModelEvent>>,
+    /// The stream error is the whole turn. Serving its count accounts the entry.
+    pub closing_stream_error: Option<StreamError>,
+    pub at_request: Option<usize>,
+    pub body_contains: Option<String>,
+    pub release_when_body_contains: Option<String>,
+    pub stall: Option<Duration>,
+    pub hold_until: Option<(usize, usize)>,
+    pub hold_reply_only: bool,
+    pub park: bool,
+    pub park_token: Option<u64>,
+    pub reply_index: Option<usize>,
+    pub hold_until_lsp_log: Option<PathBuf>,
+    pub reasoning: Option<String>,
+    pub usage: Option<UsageReport>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CompiledFailure {
+    Status(StatusFailure),
+    Stream(StreamError),
+    Dropped,
+    Malformed,
+    Hang,
+    CutOnce,
+    DoomLoop,
+    Empty { count: usize },
+    Truncated,
+    Cut { count: usize },
+    ContentFilter { count: usize },
+}
+
+/// `.reply` closes the turn being built. A pin is applied before that close: `.calls` after it
+/// starts the next turn, a second `.reply` in a row is a turn with no calls, and every conversation
+/// ends with a `.reply`.
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct Conversation {
@@ -249,17 +337,32 @@ impl Conversation {
         }
     }
 
-    /// Served in order: each call, then its result, before the next call and the reply.
     pub fn calls(mut self, calls: impl IntoIterator<Item = MockToolCall>) -> Self {
         self.pending.calls.extend(calls);
         self
     }
 
-    /// Serve this turn at the `nth` request of the conversation rather than in list order; the
-    /// unpinned turns keep their order around it. Two turns pinned to one request panic.
+    /// The reply follows once every result is back.
+    pub fn parallel_tool_calls(mut self) -> Self {
+        self.pending.delivery = CallDelivery::Parallel;
+        self
+    }
+
+    /// Pin this turn before [`Self::reply`] closes it. Two turns pinned to one request panic.
     pub fn at_request(mut self, nth: usize) -> Self {
         assert!(nth >= 1, "requests are counted from 1");
         self.pending.at_request = Some(nth);
+        self
+    }
+
+    /// Ordinary requests skip it, and settle still waits until a matching request is answered.
+    pub fn when_body_contains(mut self, text: impl Into<String>) -> Self {
+        self.pending.body_contains = Some(text.into());
+        self
+    }
+
+    pub fn release_when_body_contains(mut self, text: impl Into<String>) -> Self {
+        self.pending.release_when_body_contains = Some(text.into());
         self
     }
 
@@ -269,9 +372,59 @@ impl Conversation {
         self
     }
 
-    /// Stream `reasoning` ahead of this turn's reply, so the client receives a thought before the answer.
+    pub fn hold_until_conversation_request(mut self, conversation: usize, request: usize) -> Self {
+        assert!(
+            conversation >= 1 && request >= 1,
+            "requests are counted from 1"
+        );
+        self.pending.hold_until = Some((conversation, request));
+        self.pending.hold_reply_only = false;
+        self
+    }
+
+    /// The tool-call answers return; only the reply waits.
+    pub fn hold_reply_until_conversation_request(
+        mut self,
+        conversation: usize,
+        request: usize,
+    ) -> Self {
+        assert!(
+            conversation >= 1 && request >= 1,
+            "requests are counted from 1"
+        );
+        self.pending.hold_until = Some((conversation, request));
+        self.pending.hold_reply_only = true;
+        self
+    }
+
+    pub fn hold(mut self) -> Self {
+        self.pending.park = true;
+        self
+    }
+
+    pub fn hold_for(mut self, token: u64) -> Self {
+        self.pending.park = true;
+        self.pending.park_token = Some(token);
+        self
+    }
+
+    pub fn turn_index(mut self, index: usize) -> Self {
+        self.pending.reply_index = Some(index);
+        self
+    }
+
+    pub fn hold_until_request_log(mut self, log: impl Into<PathBuf>) -> Self {
+        self.pending.hold_until_lsp_log = Some(log.into());
+        self
+    }
+
     pub fn reasoning(mut self, reasoning: impl Into<String>) -> Self {
         self.pending.reasoning = Some(reasoning.into());
+        self
+    }
+
+    pub fn usage(mut self, usage: UsageReport) -> Self {
+        self.pending.usage = Some(usage);
         self
     }
 
@@ -298,6 +451,16 @@ impl Conversation {
         self
     }
 
+    /// The stream error is the whole turn. Serving its count accounts the entry, so a client that
+    /// does not retry still leaves the script finished.
+    pub fn end_with_stream_error(mut self, stream_error: StreamError) -> Self {
+        self.pending
+            .failures
+            .push(Failure::StreamError(stream_error));
+        self.pending.failure_closes_turn = true;
+        self.reply(String::new())
+    }
+
     /// Answer the next `count` requests with this turn's first tool call again, each under a fresh
     /// call id the way a looping model issues them, or with [`crate::LOOPING_REPLY`] when the turn
     /// has no tool calls.
@@ -312,7 +475,6 @@ impl Conversation {
         self
     }
 
-    /// Answer the next `count` requests with a body the client's stream decoder cannot parse.
     pub fn malformed_body(mut self, count: usize) -> Self {
         self.pending.failures.push(Failure::MalformedBody { count });
         self
@@ -325,13 +487,115 @@ impl Conversation {
         self
     }
 
+    pub fn empty_reply(mut self, count: usize) -> Self {
+        self.pending.failures.push(Failure::Empty { count });
+        self
+    }
+
+    /// Stream part of a reply on the next `count` requests, then end the body.
+    /// The body has no finish reason, no terminal event, and no `[DONE]`.
+    pub fn truncated_reply(mut self, count: usize) -> Self {
+        self.pending.failures.push(Failure::Truncated { count });
+        self
+    }
+
     pub fn reply(mut self, text: impl Into<String>) -> Self {
         let turn = std::mem::take(&mut self.pending).close(text.into());
         self.turns.push(turn);
         self
     }
 
-    /// Panics for a conversation with no turns or an open turn no `.reply` closed.
+    pub fn scripted_events(mut self, events: Vec<ModelEvent>) -> Self {
+        let mut turn = std::mem::take(&mut self.pending).close(String::new());
+        turn.events = Some(events);
+        self.turns.push(turn);
+        self
+    }
+
+    /// `served` marks that turn answered.
+    pub fn compile(
+        number: usize,
+        turns: impl IntoIterator<Item = CompiledTurn>,
+        mut served: impl FnMut(usize) -> bool,
+    ) -> Self {
+        let mut conversation = Conversation::nth(number);
+        for (index, turn) in turns.into_iter().enumerate() {
+            let answered = served(index);
+            conversation = conversation.apply_turn(turn);
+            conversation
+                .turns
+                .last_mut()
+                .expect("a compiled turn ends in a reply")
+                .answered = answered;
+        }
+        conversation
+    }
+
+    fn apply_turn(self, turn: CompiledTurn) -> Self {
+        let mut conversation = self.calls(turn.calls);
+        if turn.parallel {
+            conversation = conversation.parallel_tool_calls();
+        }
+        for failure in turn.failures {
+            conversation = match failure {
+                CompiledFailure::Status(status) => conversation.refuse(status),
+                CompiledFailure::Stream(error) => conversation.fail_stream(error),
+                CompiledFailure::Dropped => conversation.drop_connection(1),
+                CompiledFailure::Malformed => conversation.malformed_body(1),
+                CompiledFailure::Hang => conversation.hang(1),
+                CompiledFailure::CutOnce => conversation.cut(1),
+                CompiledFailure::DoomLoop => conversation.doom_loop(1),
+                CompiledFailure::Empty { count } => conversation.empty_reply(count),
+                CompiledFailure::Truncated => conversation.truncated_reply(1),
+                CompiledFailure::Cut { count } => conversation.cut(count),
+                CompiledFailure::ContentFilter { count } => conversation.content_filter(count),
+            };
+        }
+        if let Some(hold) = turn.stall {
+            conversation = conversation.stall(hold);
+        }
+        if let Some((conversation_number, request)) = turn.hold_until {
+            conversation = if turn.hold_reply_only {
+                conversation.hold_reply_until_conversation_request(conversation_number, request)
+            } else {
+                conversation.hold_until_conversation_request(conversation_number, request)
+            };
+        }
+        if let Some(token) = turn.park_token {
+            conversation = conversation.hold_for(token);
+        } else if turn.park {
+            conversation = conversation.hold();
+        }
+        if let Some(log) = turn.hold_until_lsp_log {
+            conversation = conversation.hold_until_request_log(log);
+        }
+        if let Some(reasoning) = turn.reasoning {
+            conversation = conversation.reasoning(reasoning);
+        }
+        if let Some(usage) = turn.usage {
+            conversation = conversation.usage(usage);
+        }
+        if let Some(nth) = turn.at_request {
+            conversation = conversation.at_request(nth);
+        }
+        if let Some(text) = turn.body_contains {
+            conversation = conversation.when_body_contains(text);
+        }
+        if let Some(text) = turn.release_when_body_contains {
+            conversation = conversation.release_when_body_contains(text);
+        }
+        if let Some(index) = turn.reply_index {
+            conversation = conversation.turn_index(index);
+        }
+        if let Some(error) = turn.closing_stream_error {
+            conversation.end_with_stream_error(error)
+        } else if let Some(events) = turn.events {
+            conversation.scripted_events(events)
+        } else {
+            conversation.reply(turn.reply)
+        }
+    }
+
     pub(crate) fn into_script(mut self) -> (ScriptTarget, ScriptEntries) {
         assert!(
             !self.pending.is_open(),

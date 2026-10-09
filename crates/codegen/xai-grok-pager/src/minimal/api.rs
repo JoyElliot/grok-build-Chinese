@@ -25,7 +25,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use crate::acp::tracker::TurnActivity;
-// Only the test-only setters below reference `AgentSession`.
 #[cfg(any(test, feature = "test-support"))]
 use crate::app::agent::AgentSession;
 use crate::app::agent_view::AgentView;
@@ -34,6 +33,7 @@ use crate::appearance::LayoutConfig;
 use crate::scrollback::entry::{EntryId, ScrollbackEntry};
 use crate::scrollback::state::ScrollbackState;
 use crate::theme::Theme;
+use crate::views::elicitation_view::ElicitationViewState;
 use crate::views::extensions_modal::{ExtensionsModalState, StatusFilter};
 use crate::views::feedback_modal::FeedbackModalState;
 use crate::views::mcps_modal::{McpServerDisplayStatus, McpServerInfo};
@@ -99,9 +99,6 @@ pub(crate) struct SuspendedMinimalBtwLifecycle {
     revision: uuid::Uuid,
     focused: bool,
 }
-
-// Minimal's private per-session state, consolidated into a single field on the central `AppView` instead of several loose `pub` fields
-// It defaults to empty and does nothing outside `--minimal`
 
 /// In-progress incremental `/transcript` build (minimal mode). The block model is `!Send` (syntect's resumable
 /// highlighter state lives inside markdown blocks), so the work cannot move to a worker. Instead the minimal draw
@@ -177,8 +174,6 @@ pub fn requeue_minimal_pending_expand(app: &mut AppView, mut ids: Vec<EntryId>) 
     ids.extend(std::mem::take(&mut app.minimal_state.pending_expand));
     app.minimal_state.pending_expand = ids;
 }
-
-// ── Incremental /transcript build ────────────────────────────────────────────
 
 /// Start the incremental minimal `/transcript` build from the active agent's conversation. No-op when a build is
 /// already running; the in-flight one wins. Pushes the "nothing to show" system block when the conversation is
@@ -289,8 +284,6 @@ pub fn set_minimal_committed_plan_id(app: &mut AppView, id: Option<String>) {
     app.minimal_state.committed_plan_tool_call_id = id;
 }
 
-// ── AgentView field accessors ────────────────────────────────────────────────
-
 /// `AgentView::last_activity` (read).
 pub fn last_activity(v: &AgentView) -> Option<&TurnActivity> {
     v.last_activity.as_ref()
@@ -331,6 +324,21 @@ pub fn question_view(v: &AgentView) -> Option<&QuestionViewState> {
 /// `AgentView::question_view` (mutable: minimal clamps the scroll offset).
 pub fn question_view_mut(v: &mut AgentView) -> Option<&mut QuestionViewState> {
     v.question_view.as_mut()
+}
+
+/// `AgentView::elicitation_view`.
+pub fn elicitation_view(v: &AgentView) -> Option<&ElicitationViewState> {
+    v.elicitation_view.as_ref()
+}
+
+/// `AgentView::elicitation_view`, mutable because the renderer clamps the body scroll offset.
+pub fn elicitation_view_mut(v: &mut AgentView) -> Option<&mut ElicitationViewState> {
+    v.elicitation_view.as_mut()
+}
+
+/// [`AgentView::is_awaiting_user_answer`].
+pub fn is_awaiting_user_answer(v: &AgentView) -> bool {
+    v.is_awaiting_user_answer()
 }
 
 /// `AgentView::hovered_question_item`.
@@ -528,8 +536,6 @@ pub fn rewind_state(v: &AgentView) -> Option<&RewindState> {
     v.rewind_state.as_ref()
 }
 
-// ── AgentView method wrappers ────────────────────────────────────────────────
-
 /// [`AgentView::resolve_turn_activity`].
 pub fn resolve_turn_activity(v: &AgentView) -> Option<TurnActivity> {
     v.resolve_turn_activity()
@@ -588,14 +594,10 @@ pub fn drain_blocked(v: &AgentView) -> bool {
     v.drain_blocked()
 }
 
-// ── PromptWidget accessors ───────────────────────────────────────────────────
-
 /// `PromptWidget::suggestions`.
 pub fn prompt_suggestions(pw: &PromptWidget) -> &SuggestionController {
     &pw.suggestions
 }
-
-// ── Dropdown chrome ──────────────────────────────────────────────────────────
 
 /// Lay out the inline dropdown chrome and return the item area rect (`DropdownChrome::items`), or `None` when it doesn't fit.
 /// Wraps [`crate::app::agent_view::render_dropdown_chrome`]; the `DropdownChrome` DTO itself stays crate-internal.
@@ -626,8 +628,6 @@ pub fn dropdown_chrome_items(
     )
     .map(|chrome| chrome.items)
 }
-
-// ── MCP picker rows ──────────────────────────────────────────────────────────
 
 /// Build the MCP-servers picker rows, returning `(labels, group_keys, data_indices)`.
 /// Wraps [`crate::views::extensions_modal::build_mcp_servers_picker_rows`]; the `McpServersPickerRows` DTO stays crate-internal.
@@ -698,7 +698,6 @@ pub fn mcp_status_label_with_locale(
 }
 
 // ── Session picker builders ──────────────────────────────────────────────────
-
 /// Render a search bar from a [`PickerState`] using its grapheme-safe viewport.
 pub fn render_picker_search_bar(
     buf: &mut Buffer,
@@ -824,8 +823,6 @@ pub fn build_grouped_picker_entries<'a>(
     )
 }
 
-// ── Welcome logo ─────────────────────────────────────────────────────────────
-
 /// [`crate::views::welcome::logo::compact_logo_line_count`].
 pub fn compact_logo_line_count() -> u16 {
     crate::views::welcome::logo::compact_logo_line_count()
@@ -867,8 +864,6 @@ pub fn record_committed_for_expand(sb: &mut ScrollbackState, id: EntryId) {
     sb.record_committed_for_expand(id);
 }
 
-// ── Test-only surface (minimal's unit tests, via the test-only helpers) ──
-
 /// [`crate::app::agent_view::test_agent_view`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_agent_view(session_id: Option<&str>, cwd: std::path::PathBuf) -> AgentView {
@@ -891,6 +886,29 @@ pub fn set_feedback_modal(v: &mut AgentView, val: Option<FeedbackModalState>) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_question_view(v: &mut AgentView, val: Option<QuestionViewState>) {
     v.question_view = val;
+}
+
+/// Test-only: open a one-text-field form elicitation card from `server_name`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn open_test_elicitation(v: &mut AgentView, server_name: &str, message: &str) {
+    use xai_grok_tools::mcp_elicitation::{McpElicitExtRequest, McpElicitModeFields};
+    v.elicitation_view = Some(ElicitationViewState::from_request(
+        McpElicitExtRequest {
+            session_id: "s".to_owned(),
+            tool_call_id: "mcp-elicit-test".to_owned(),
+            server_name: server_name.to_owned(),
+            message: message.to_owned(),
+            mode: McpElicitModeFields::Form {
+                requested_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "title": { "type": "string", "title": "Ticket title" } },
+                    "required": ["title"]
+                })),
+            },
+        },
+        None,
+        None,
+    ));
 }
 
 /// Test-only setter for `AgentView::plan_mode_active`.

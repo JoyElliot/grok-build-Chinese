@@ -10,6 +10,24 @@ use std::path::{Path, PathBuf};
 const RG_VER: &str = "15.0.0";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let changelogs = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("changelogs");
+    let version = env::var("CARGO_PKG_VERSION")?;
+    println!("cargo:rerun-if-changed={}", changelogs.display());
+    let translated = changelogs
+        .join(format!("{version}.zh-CN.md"))
+        .try_exists()?
+        && changelogs
+            .join(format!("{version}.zh-CN.json"))
+            .try_exists()?;
+    let locale_suffix = if translated { ".zh-CN" } else { "" };
+    for (extension, variable) in [
+        ("md", "GROK_SHELL_CHANGELOG_MD_PATH"),
+        ("json", "GROK_SHELL_CHANGELOG_JSON_PATH"),
+    ] {
+        let path = changelogs.join(format!("{version}{locale_suffix}.{extension}"));
+        println!("cargo:rustc-env={variable}={}", path.display());
+    }
+
     // Only bundle in release builds to avoid slowing down cargo check.
     println!("cargo:rerun-if-env-changed=GROK_SHELL_BUNDLE_RG_PATH");
     println!("cargo:rerun-if-env-changed=GROK_SHELL_RG_DOWNLOAD_BASE");

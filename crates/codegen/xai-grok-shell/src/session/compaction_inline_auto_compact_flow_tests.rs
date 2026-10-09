@@ -7,6 +7,7 @@ fn at<T>(xs: &[T], i: usize) -> &T {
 }
 use super::super::*;
 use super::{AutoCompactTriggerInfo, SuppressReason};
+use crate::session::SwitchContextWindow;
 use crate::session::acp_session::McpReminderMode;
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
@@ -119,20 +120,7 @@ async fn create_test_actor(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
-        },
+        compaction: test_compaction_config(threshold_percent),
         long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
             enabled: false,
             tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
@@ -373,6 +361,62 @@ async fn suppression_gates_and_reset_is_reason_scoped() {
                 .auto_compact_suppressed
                 .store(SUPPRESS_NONE, Relaxed);
             assert!(actor.check_auto_compact_needed().await.is_some());
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn schema_rejection_suppresses_auto_compaction_on_later_turns() {
+    use crate::session::compaction_config::{SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor = create_test_actor(
+                    214_000,
+                    200_000,
+                    85,
+                    gateway_tx,
+                    persistence_tx,
+                )
+                .await;
+            let schema = r#"{"error":{"message":"the summary request does not match the schema","type":"invalid_request_error"}}"#;
+            assert_eq!(
+                SessionActor::classify_suppress_reason(schema),
+                SuppressReason::Schema
+            );
+            assert_eq!(
+                SessionActor::classify_suppress_reason("mock upstream failure 400"),
+                SuppressReason::Other
+            );
+            actor
+                .suppress_auto_compaction(SuppressReason::Schema, "", 1_000, 200_000)
+                .await;
+            assert_eq!(
+                actor.compaction.auto_compact_suppressed.load(Relaxed),
+                SUPPRESS_STICKY
+            );
+            assert!(actor.check_auto_compact_needed().await.is_none());
+            let _ = actor
+                .compaction
+                .auto_compact_suppressed
+                .compare_exchange(SUPPRESS_TURN, SUPPRESS_NONE, Relaxed, Relaxed);
+            assert!(
+                actor.check_auto_compact_needed().await.is_none(),
+                "a schema rejection must keep auto-compaction off after the turn resets"
+            );
+            actor.compaction.auto_compact_suppressed.store(SUPPRESS_NONE, Relaxed);
+            actor
+                .suppress_auto_compaction(SuppressReason::Other, "", 1_000, 200_000)
+                .await;
+            let _ = actor
+                .compaction
+                .auto_compact_suppressed
+                .compare_exchange(SUPPRESS_TURN, SUPPRESS_NONE, Relaxed, Relaxed);
+            assert!(
+                actor.check_auto_compact_needed().await.is_some(),
+                "a plain summary failure must let the next turn compact"
+            );
         })
         .await;
 }
@@ -871,6 +915,8 @@ async fn family_switch_compacts_lossy_with_new_model() {
                     skip_prompt_rewrite: true,
                     auto_compact_threshold_percent: 85,
                     system_prompt_label: xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+                    context_window_selection: SwitchContextWindow::Set(None),
+                    supported_context_windows: Vec::new(),
                 })
                 .await
                 .expect("compact failure is log-only; the switch must succeed");
@@ -1265,7 +1311,7 @@ async fn bare_manual_compact_failure_does_not_suppress_auto() {
                 ConversationItem::system("sys"),
                 ConversationItem::user("hello"),
             ]);
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             let err = result.expect_err("mock 400 must fail the compaction");
             assert_eq!(
                 crate::session::helpers::session_compact::compact_error_kind(&err),
@@ -1411,7 +1457,7 @@ async fn compaction_rearms_failed_server_announcements() {
             actor
                 .mcp_reminder_dirty
                 .store(false, std::sync::atomic::Ordering::Relaxed);
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
                 actor.mcp_announcements.lock().failed.is_empty(),
@@ -1481,7 +1527,7 @@ async fn compaction_keeps_last_user_turn_images_and_paths() {
                 ]),
             ],
                 );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             let conversation = actor.chat_state_handle.get_conversation().await;
             let carried = carried_image_item(&conversation)
@@ -1554,14 +1600,14 @@ async fn compaction_paths_note_survives_second_compaction_and_filters_missing_fi
                 ConversationItem::user("final query"),
             ],
                 );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "first compaction should succeed: {result:?}");
             let mut conversation = actor.chat_state_handle.get_conversation().await;
             conversation
                 .push(ConversationItem::user("<user_query>\nnext task\n</user_query>"));
             conversation.push(ConversationItem::assistant("on it"));
             actor.chat_state_handle.replace_conversation(conversation);
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "second compaction should succeed: {result:?}");
             let conversation = actor.chat_state_handle.get_conversation().await;
             std::fs::remove_file(&existing).unwrap();
@@ -1617,7 +1663,7 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
                 before > threshold_tokens,
                 "seed must exceed threshold: {before} <= {threshold_tokens}"
             );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
                 actor.compaction.prefix_released.load(Relaxed),
@@ -1637,7 +1683,7 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
                 SUPPRESS_NONE,
                 "a shrunk conversation must not suppress AUTO"
             );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(
                 result.is_ok(),
                 "second compaction should succeed: {result:?}"
@@ -1684,7 +1730,7 @@ async fn forked_release_still_over_threshold_suppresses_auto() {
                 before > threshold_tokens,
                 "seed must exceed threshold: {before}"
             );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
                 actor.compaction.prefix_released.load(Relaxed),

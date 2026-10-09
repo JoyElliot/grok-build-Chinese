@@ -180,6 +180,25 @@ fn points_loaded(id: AgentId) -> Action {
     })
 }
 
+#[test]
+fn cancel_offer_cancels_and_lists_in_one_ordered_effect() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().session.session_id =
+        Some(acp::SessionId::new("sess".to_string()));
+
+    let effects = dispatch(Action::RewindCancelOffer, &mut app);
+
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::CancelTurnThenFetchRewindPoints { agent_id, session_id }]
+                if *agent_id == id && session_id.0.as_ref() == "sess"
+        ),
+        "got {effects:?}"
+    );
+}
+
 /// Classic `/rewind` with a selected turn also lands on the confirm when confirm-before-rewind is on (default).
 #[test]
 fn classic_rewind_target_zero_opens_confirm() {

@@ -24,13 +24,12 @@
 
 它不同于管理智能体*定义*和 persona 的 `/config-agents`（别名 `/agents`）。精简模式下隐藏；可通过 `GROK_AGENT_DASHBOARD=0` 或 `[dashboard].enabled = false` 禁用。
 
-### `/compact [context]`
+### `/compact`
 
-压缩对话历史以回收上下文窗口空间。传入备注可告诉 Grok 要保留什么：
+压缩对话历史，释放上下文窗口空间。
 
 ```
 /compact
-/compact 保留身份验证实现细节
 ```
 
 当上下文窗口达到 85% 时，Grok 也会自动压缩（使用 `[session] auto_compact_threshold_percent` 调整）。
@@ -104,12 +103,13 @@
 
 ### `/model <name>`
 
-切换模型。接受模型 ID 或显示名称（不区分大小写）；对于推理模型，还可将工作量级别作为第二个参数。别名：`/m`。
+切换模型。接受模型 ID 或显示名称（不区分大小写）。模型提供多个上下文窗口大小时，可在模型名称后指定窗口大小；推理模型还可在最后指定推理强度。选择器也按模型、窗口、推理强度的顺序引导选择。别名：`/m`。
 
 ```
 /model grok-build
 /model Grok Build
 /model Reasoning X high
+/model Reasoning X 500k high
 ```
 
 ### `/effort <level>`
@@ -120,6 +120,15 @@
 /effort high
 ```
 
+### `/context-window <size>`
+
+设置当前模型的上下文窗口大小。仅当模型支持多种大小时，才会列出此命令。可输入简写或完整的 Token 数。选择在当前会话内生效；切换到支持相同大小的模型时，会保留该选择。如果所选大小小于当前上下文用量，会触发自动压缩。
+
+```
+/context-window 500k
+/context-window 256000
+```
+
 ### `/always-approve` 和 `/auto`
 
 两者都是权限模式的真实切换项：它们会留在菜单中，再次运行当前已经启用的模式会将其关闭。
@@ -127,9 +136,9 @@
 | 命令 | 关闭时 | 已启用时 |
 |---|---|---|
 | `/always-approve` | 跳过所有权限提示 | 返回 ask |
-| `/auto` | 分类器批准安全工具（危险工具仍可能提示） | 返回 ask |
+| `/auto` | 自动审查：由分类器批准安全工具（危险工具仍可能提示） | 返回 ask |
 
-另一个模式处于活动状态时运行其中一个会切换模式——例如始终批准已启用时运行 `/auto` 会切换到 auto。只有启用 auto 权限模式功能时才会显示 `/auto`。你还可以使用 `Shift+Tab`（循环 Normal / Plan / Auto（启用时）/ Always-approve）、`Ctrl+O` 或 `/settings` 更改模式。
+另一个模式处于活动状态时，运行其中一个命令会切换模式。例如，已启用始终批准时运行 `/auto`，会切换到自动审查。只有启用自动审查权限模式功能时，才会显示 `/auto`。也可使用 `Shift+Tab`（循环切换普通 / 计划 / 自动审查（启用时）/ 始终批准）、`Ctrl+O` 或 `/settings` 更改模式。
 
 ### `/multiline`
 

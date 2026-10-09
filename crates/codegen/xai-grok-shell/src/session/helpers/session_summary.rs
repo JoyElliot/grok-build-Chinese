@@ -196,7 +196,7 @@ pub fn title_fallback_from_user_text(user_message: &str) -> String {
     }
 }
 
-fn contains_han(text: &str) -> bool {
+pub(super) fn contains_han(text: &str) -> bool {
     text.chars().any(|character| {
         matches!(
             character,

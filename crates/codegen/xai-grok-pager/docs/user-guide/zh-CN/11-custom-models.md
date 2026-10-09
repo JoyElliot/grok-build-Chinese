@@ -191,6 +191,20 @@ Grok 会在为会话构建客户端时读取每个变量，并只将值放入请
 
 两个字段也可用于共享的 `[model_providers.<id>]` 区段。当模型通过 `model_provider = "<id>"` 指向某个提供商，并且自身没有设置这些字段时，会继承该提供商的 `query_params` 和 `env_http_headers`，这与 `extra_headers` 的继承方式相同。
 
+<a id="model-notice"></a>
+### 模型通知
+
+`notice` 会在选中该模型期间，于提示输入框上方显示一条通知。通知无法手动关闭；切换到不带通知的模型后，它会消失。
+
+```toml
+[model.legacy]
+model = "legacy-model"
+base_url = "https://gateway.example/v1"
+notice = { severity = "warning", text = "This model is deprecated on Oct 15. Switch to grok-4.6.", label = "deprecated" }
+```
+
+`severity` 控制通知颜色，可取 `info`、`warning` 或 `critical`，默认为 `info`。`text` 必填，较长的文本会自动换行。`label` 是可选的短标签，显示在正文之前。自定义模型端点也可通过模型条目的 `notice` 或 `_meta.notice` 返回相同对象。要移除内置或远程模型自带的通知，可设置 `notice = { text = "" }`。
+
 ---
 
 <a id="overriding-built-in-models"></a>
@@ -363,12 +377,12 @@ models_base_url = "https://api.acme.com/v1"
 api_key = "my-api-key"
 ```
 
-使用带有部分模型覆盖项的 `[endpoints]` 时，Grok 会从端点配置继承 `base_url`，因此无需在每个 `[model.*]` 区段中指定它。
+配合部分模型覆盖项使用 `[endpoints]` 时，Grok 会从端点配置继承 `base_url`，无需在每个 `[model.*]` 区段中重复指定。仍需设置 `XAI_API_KEY`。单模型的 `api_key` 或 `env_key` 用于该模型的推理请求认证；启动时获取模型列表仍使用 `XAI_API_KEY`。
 
 <a id="auth-behavior"></a>
 ### 身份验证行为
 
-设置 `models_base_url` 后，Grok 使用 API 密钥身份验证（`Authorization: Bearer`），而不是会话身份验证。不需要运行 `grok-zh login`——API 密钥就足够了。
+设置 `models_base_url` 后，Grok 获取模型列表时仅使用 `XAI_API_KEY` 进行认证（`Authorization: Bearer`），不会使用 `grok-zh login` 的登录会话。如果配置了外部认证提供方（`auth_provider_command`），且未设置 `XAI_API_KEY`，则改为发送该提供方的令牌。否则，未设置 `XAI_API_KEY` 会导致获取失败，并提示你设置该变量。向自定义主机发送推理请求时会单独认证；为模型配置 `api_key` 或 `env_key` 后，这些请求也会使用 API 密钥。
 
 ---
 

@@ -839,8 +839,6 @@ mod tests {
         assert!(hunks.is_empty(), "empty-to-empty must diff to nothing");
     }
 
-    // ── Overlap stitching (coalesced same-file edits) ──────────────────
-
     /// An edit detail with the surrounding context the real search_replace tool emits from its own file snapshot.
     fn edit_detail(
         old: &str,

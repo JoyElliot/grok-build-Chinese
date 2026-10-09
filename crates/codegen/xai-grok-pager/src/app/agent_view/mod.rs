@@ -143,6 +143,7 @@ use std::time::Instant;
 mod child_action_filter;
 mod cta;
 mod elicitation;
+pub(crate) use elicitation::UnansweredElicitation;
 mod input;
 pub(crate) use input::ExternalPromptEditorAccess;
 mod interactions;
@@ -176,6 +177,8 @@ pub use render::{AppRenderParams, OverlayHeader};
 mod dock_input_tests;
 #[cfg(test)]
 mod header_tests;
+#[cfg(test)]
+mod model_notice_tests;
 mod rewind;
 mod role;
 pub(crate) use role::{AgentRole, ChildLink, ComposerRoute, ViewSurface};
@@ -1434,10 +1437,6 @@ pub struct AgentView {
     pub active_subagent: Option<String>,
     /// Root of its session, or a child mirrored under a parent's takeover; every child-specific gate derives from it.
     role: AgentRole,
-    /// Whether shell/plugin hook annotations may be rendered in this view.
-    /// Kept recursive so child live updates and transcript replay honor the
-    /// same disable-plugins appearance setting as the root view.
-    pub(crate) hook_annotations_visible: bool,
     /// Hit area for the [✗] close button in the subagent frame title bar.
     pub hit_subagent_frame_close: HitArea,
     /// Whether the `/share` slash command is available (mirrors
@@ -1471,6 +1470,8 @@ pub struct AgentView {
     /// Set by `dispatch_fork_resolved`; stores the parent session id and worktree flag so the banner can be formatted with the child's session id (not known until `SessionLoaded`). `None` for non-fork sessions.
     /// Cleared on all failure paths: `SessionLoadFailed`, `WorktreeSessionFailed` (non-orphan branch), and `ForkSessionFailed`.
     pub(crate) pending_fork_banner: Option<PendingForkBanner>,
+    /// Set when `session/load` failed, so this tab has no session and a plain prompt is refused with a notice.
+    pub(crate) load_failed: bool,
     /// Entry ID of the "Loading session ..." placeholder block pushed by `dispatch_load_session_inner`. Cleared by the `SessionLoaded`
     /// handler so the placeholder doesn't linger on screen when the loaded session has no replay content.
     pub(crate) loading_placeholder_id: Option<EntryId>,

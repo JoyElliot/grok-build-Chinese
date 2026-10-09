@@ -16,6 +16,7 @@ use super::shell_access::{
     command_words_write_paths, command_write_paths_in_tree, is_safe_write_sink,
 };
 use super::types::AccessKind;
+pub(crate) use xai_grok_permission_rules::env_risk::{EnvRisk, env_key_risk};
 
 mod routine_git;
 mod security_findings;
@@ -577,24 +578,6 @@ pub(crate) fn rg_has_unsafe_flag(words: &[String]) -> bool {
     })
 }
 
-/// Env var KEYs safe to set for a routine command: cosmetic / logging only, with no effect on which binary runs or how it resolves code.
-/// Anything else (LD_PRELOAD, DYLD_*, PATH, NODE_OPTIONS, PYTHONPATH, GIT_SSH_COMMAND, FOO, ...) is treated as exec-affecting and blocks.
-/// Case-sensitive exact match.
-const SAFE_ENV_KEYS: &[&str] = &[
-    "CARGO_TERM_COLOR",
-    "CARGO_TERM_PROGRESS_WHEN",
-    "RUST_LOG",
-    "RUST_LOG_STYLE",
-    "RUST_BACKTRACE",
-    "RUST_TEST_THREADS",
-    "RUST_MIN_STACK",
-    "NO_COLOR",
-    "CLICOLOR",
-    "CLICOLOR_FORCE",
-    "FORCE_COLOR",
-    "COLORTERM",
-];
-
 /// Heuristic classification of a bash command (fail-closed).
 /// Parses ONCE with the canonical tree-sitter splitter and Blocks anything it can't prove is a chain of routine, side-effect-free dev commands.
 fn classify_bash(cmd: &str) -> ClassifierVerdict {
@@ -925,41 +908,6 @@ fn explicit_launch_target<'a>(head: &str, inner: &'a [String]) -> LaunchTarget<'
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum EnvRisk {
-    Safe,
-    Unvetted,
-    Injection,
-}
-
-const INJECTION_ENV_KEYS: &[&str] = &[
-    "LD_PRELOAD",
-    "LD_AUDIT",
-    "BASH_ENV",
-    "ENV",
-    "IFS",
-    "PATH",
-    "GIT_EXTERNAL_DIFF",
-    "GIT_PROXY_COMMAND",
-    "PROMPT_COMMAND",
-];
-
-const INJECTION_ENV_KEY_PREFIXES: &[&str] = &["DYLD_", "GIT_CONFIG"];
-
-pub(crate) fn env_key_risk(key: &str) -> EnvRisk {
-    if is_safe_env_key(key) {
-        EnvRisk::Safe
-    } else if INJECTION_ENV_KEYS.contains(&key)
-        || INJECTION_ENV_KEY_PREFIXES
-            .iter()
-            .any(|p| key.starts_with(p))
-    {
-        EnvRisk::Injection
-    } else {
-        EnvRisk::Unvetted
-    }
-}
-
 /// Highest [`EnvRisk`] across the script's env assignments (inline `KEY=val` and `env`-form).
 /// Reads the PARSED tree so quoting (`env "LD_PRELOAD=..."`) can't hide a key.
 pub(crate) fn script_env_risk(root: Node<'_>, src: &str, cmds: &[PlainCommand]) -> EnvRisk {
@@ -981,7 +929,7 @@ pub(crate) fn script_env_risk(root: Node<'_>, src: &str, cmds: &[PlainCommand]) 
 }
 
 /// Walk a command's wrapper chain.
-/// For each `env` invocation, any option flag (`-S`/`-i`/`-u`/`-C`/...) or an assignment KEY outside [`SAFE_ENV_KEYS`] is exec-affecting and unsafe.
+/// For each `env` invocation, any option flag (`-S`/`-i`/`-u`/`-C`/...) or an assignment KEY outside the safe env keys is exec-affecting and unsafe.
 /// Covers nested wrappers like `timeout 5 env ...`.
 fn command_env_risk(words: &[String]) -> EnvRisk {
     let mut risk = EnvRisk::Safe;
@@ -1025,10 +973,6 @@ fn assignment_key<'a>(node: Node<'_>, src: &'a str) -> &'a str {
         .ok()
         .and_then(|t| t.split('=').next())
         .unwrap_or("")
-}
-
-fn is_safe_env_key(key: &str) -> bool {
-    SAFE_ENV_KEYS.contains(&key)
 }
 
 /// A lone wrapper (e.g. bare `env` printing the environment) does nothing dangerous, and `unwrap_wrappers` leaves it intact, so treat it as routine.
@@ -1564,6 +1508,28 @@ pub fn default_auto_mode_classifier() -> SharedClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifier_prompt_sentences_reach_the_model() {
+        let sent = build_classifier_messages(
+            "run_terminal_command",
+            &AccessKind::Bash("git push --force".into()),
+            None,
+            &ClassifierContext::default(),
+            ClassifierPromptType::Full,
+        )
+        .into_iter()
+        .find(|message| message.role == ClassifierMessageRole::System)
+        .expect("classifier system message")
+        .text;
+        for sentence in [
+            "Hard-wait — no request or instruction of any kind clears it",
+            "Hard-wait always wins",
+            "A force push or history rewrite is allowed only against a branch the user named",
+        ] {
+            assert!(sent.contains(sentence), "{sentence}");
+        }
+    }
 
     #[test]
     fn allowlist_reads_and_greps() {

@@ -60,7 +60,7 @@ The parent receives the child's output -- usually a summary -- when the child fi
 
 ## Built-in Agent Types
 
-Built-in types still exist as host types. The model-facing spawn schema omits `subagent_type`. An omitted key is `general-purpose`.
+Built-in types still exist as host types. The model cannot pick them by name. An omitted `subagent_type` is `general-purpose`.
 
 | Type              | Description                                          |
 | ----------------- | ---------------------------------------------------- |
@@ -69,6 +69,8 @@ Built-in types still exist as host types. The model-facing spawn schema omits `s
 | `plan`            | Planning agent. Explores the codebase and produces a structured implementation plan; does not edit files. |
 
 Project- or user-defined agents can add new types or shadow these built-ins by name.
+
+`spawn_subagent` has an optional `subagent_type` enum when plugin, project, or user agents exist. Its values are those agents, for example `my-plugin:reviewer`. Built-in names and xAI-bundled agents are not listed. If a parent's `tools` list restricts spawning with `Agent(...)`, the enum shows only the allowed types. An unknown type fails the call with the list of valid types.
 
 ---
 

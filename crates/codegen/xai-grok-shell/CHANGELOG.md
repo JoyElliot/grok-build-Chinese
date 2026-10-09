@@ -2,6 +2,66 @@
 
 [1.0.35 简体中文更新说明](changelogs/1.0.35.zh-CN.md) · [1.0.24 简体中文更新说明](changelogs/1.0.24.zh-CN.md) · [1.0.16 简体中文更新说明](changelogs/1.0.16.zh-CN.md) · [1.0.15 简体中文更新说明](changelogs/1.0.15.zh-CN.md) · [1.0.14 简体中文更新说明](changelogs/1.0.14.zh-CN.md) · [1.0.13 简体中文更新说明](changelogs/1.0.13.zh-CN.md) · [1.0.12 简体中文更新说明](changelogs/1.0.12.zh-CN.md) · [1.0.11 简体中文更新说明](changelogs/1.0.11.zh-CN.md) · [1.0.10 简体中文更新说明](changelogs/1.0.10.zh-CN.md) · [1.0.9 简体中文更新说明](changelogs/1.0.9.zh-CN.md) · [1.0.8 简体中文更新说明](changelogs/1.0.8.zh-CN.md) · [1.0.7 简体中文更新说明](changelogs/1.0.7.zh-CN.md) · [1.0.6 简体中文更新说明](changelogs/1.0.6.zh-CN.md) · [1.0.5 简体中文更新说明](changelogs/1.0.5.zh-CN.md) · [1.0.3 简体中文更新说明](changelogs/1.0.3.zh-CN.md)
 
+# 1.0.45 — 2026-09-29
+
+## Features
+
+- **Custom agents** from plugins or your config can now be chosen directly with spawn_subagent.
+- **MCP servers** can now use a token file that is re-read on every request so rotating credentials stay fresh.
+- **Models can now show** a colored notice banner above the prompt while selected.
+
+## Bug Fixes
+
+- **Subagent wait status** now correctly shows "Waiting for N subagents…" when the parent turn is blocked.
+
+
+# 1.0.44 — 2026-09-28
+
+## Features
+
+- **Sandbox enforcement** on macOS now uses the system Seatbelt (`sandbox-exec`) backend.
+- **Models can now advertise multiple context window sizes**; the first listed value is the default.
+- **New `/context-window` slash command** lets you pick a context window size for the current session when the model offers choices.
+- **`/model` selection now offers context window choices** (when the model supports them) before the effort level.
+
+## Bug Fixes
+
+- **Plan comments** can now be deleted by clicking the [✗] button that appears on hover.
+- **Shortcuts panel search** now finds entries when you type any of the words in the label, keys, description or help text.
+- **Fixed crashes** when pasting on Windows caused by overlapping clipboard operations.
+
+## Performance
+
+- **Parallel tool calls** that edit the same file now run safely in sequence; unrelated tools stay concurrent.
+
+
+# 1.0.43 — 2026-09-27
+
+## Bug Fixes
+
+- **MCP tool prompts** now appear correctly in minimal mode and users are notified when a prompt goes unanswered.
+
+
+# 1.0.42 — 2026-09-26
+
+## Features
+
+- Footer and `/usage` now display the model actually served on smart-auto turns.
+- **New `grok worktree create` command** creates a managed worktree without launching an interactive session.
+- **Auto permission mode** now appears as Auto-review everywhere in the UI.
+
+## Bug Fixes
+
+- **Bracketed pastes** that did not come from the clipboard no longer attach leftover images (e.g. from IME commits).
+- `grok -p` now exits cleanly with the documented code when interrupted and performs session cleanup instead of being killed.
+- Pressing Ctrl+C twice while writing a plan comment now cancels the comment instead of getting stuck.
+- **`grok --minimal`** now reprints history correctly after terminal resize and keeps the prompt/status rows anchored.
+- **Restoring a stashed draft** now places the cursor at the end so continued typing appends correctly.
+- **`grok update`** on WinGet installs now prints the `winget upgrade` command and exits without writing files.
+- Inline images are re-uploaded after a full repaint so they no longer appear blank in terminals that drop image data on ESC[2J.
+- Plugin hooks now run on a fresh session without requiring an explicit reload.
+- **Fixed plugin auto-update detection** when marketplace URLs differ only by .git suffix or host case.
+
 # 1.0.41 — 2026-09-22
 
 ## Features

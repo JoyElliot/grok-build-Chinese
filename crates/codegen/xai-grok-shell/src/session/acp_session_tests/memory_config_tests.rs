@@ -187,20 +187,7 @@ pub(super) async fn create_test_actor_with_memory(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
-        },
+        compaction: test_compaction_config(threshold_percent),
         long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
             enabled: false,
             tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
@@ -436,7 +423,6 @@ async fn test_is_flushing_suppresses_auto_compact() {
         })
         .await;
 }
-/// Test that `force_compact` triggers auto-compact even below threshold, and is consumed (reset to false) after a single use.
 #[tokio::test(flavor = "current_thread")]
 async fn test_force_compact_triggers_below_threshold() {
     let local = tokio::task::LocalSet::new();
@@ -1009,9 +995,6 @@ async fn test_session_close_does_not_run_dream() {
         })
         .await;
 }
-/// Drives the real `run_session` loop and asserts the launch dream fires when gated (not a subagent,
-/// memory enabled, open gate). This guards the launch wiring itself: removing the launch
-/// `spawn_dream_check` leaves `dream_count` at 0, which calling `maybe_run_dream` directly would miss.
 #[tokio::test(flavor = "current_thread")]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_run_session_spawns_launch_dream() {
@@ -1084,8 +1067,6 @@ async fn test_run_session_spawns_launch_dream() {
         })
         .await;
 }
-/// Actor with injection enabled and an FTS index matching the test query, so `first_turn_memory_reminder()` would inject.
-/// Tests can then prove the idempotency guard alone is what suppresses re-injection.
 #[allow(clippy::field_reassign_with_default)]
 async fn create_injection_ready_actor(
     initial_conversation: Vec<xai_grok_sampling_types::ConversationItem>,
@@ -1142,7 +1123,6 @@ async fn create_injection_ready_actor(
         .replace_conversation(initial_conversation);
     actor
 }
-/// Control: proves the harness setup is sufficient for injection, so the companion test below isolates the idempotency guard.
 #[tokio::test(flavor = "current_thread")]
 async fn test_first_turn_reminder_injects_without_persisted_block() {
     let local = tokio::task::LocalSet::new();
@@ -1210,8 +1190,6 @@ async fn test_first_turn_reminder_skips_all_displayed_zero_results() {
         })
         .await;
 }
-/// A block persisted by an earlier `--resume` segment must suppress the re-search.
-/// A re-scored block would bust the prompt-prefix KV cache.
 #[tokio::test(flavor = "current_thread")]
 async fn test_first_turn_reminder_skips_when_block_persisted() {
     let local = tokio::task::LocalSet::new();
@@ -1260,6 +1238,48 @@ async fn test_first_turn_reminder_skips_when_block_persisted() {
                     .load(std::sync::atomic::Ordering::Relaxed),
                 "latch must still be set so later turns skip cheaply"
             );
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn second_inject_with_a_different_score_keeps_the_system_message_bytes() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let block = crate::session::helpers::memory_context::format_memory_reminder(&[
+                xai_grok_tools::types::memory_backend::MemorySearchResult {
+                    chunk_id: "prev:0".into(),
+                    path: "MEMORY.md".into(),
+                    start_line: 0,
+                    end_line: 5,
+                    score: 0.90,
+                    snippet: "Project uses Rust for backend services.".into(),
+                    source: "workspace".into(),
+                    created_at: None,
+                },
+            ])
+            .unwrap();
+            let expected = format!("You are a helpful assistant.\n\n{block}");
+            let actor = create_injection_ready_actor(vec![
+                xai_grok_sampling_types::ConversationItem::system(expected.clone()),
+                xai_grok_sampling_types::ConversationItem::user(
+                    "tell me about rust backend services conventions",
+                ),
+            ])
+            .await;
+            let reminder = actor.first_turn_memory_reminder().await;
+            let request = actor
+                .chat_state_handle
+                .build_request(Vec::new(), reminder, false, None, "c".into(), "r".into())
+                .await
+                .expect("chat state actor should be alive");
+            let system = match request.items.first() {
+                Some(xai_grok_sampling_types::ConversationItem::System(sys)) => {
+                    sys.content.to_string()
+                }
+                _ => panic!("expected a system message"),
+            };
+            assert!(system == expected, "system message bytes changed");
         })
         .await;
 }

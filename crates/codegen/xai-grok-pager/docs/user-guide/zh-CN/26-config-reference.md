@@ -54,7 +54,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
 | `auth` | `table` | `yes` | `user` | `[grok_com_config]` 的别名；所有 `grok_com_config.*` 键也可写成 `auth.*`。 |
-| `auth.auth_provider_command` | `string` | `yes` | `user` | 外部认证程序；标准输出作为令牌。也对应 `GROK_AUTH_PROVIDER_COMMAND`。 |
+| `auth.auth_provider_command` | `string` | `yes` | `user` | 外部认证程序；标准输出作为令牌。设置 `endpoints.models_base_url` 或 `models_list_url` 后，可用模型由该端点返回的列表决定。也对应 `GROK_AUTH_PROVIDER_COMMAND`，还可写成 `grok_com_config.auth_provider_command`。 |
 | `auth.auth_provider_label` | `string` | `yes` | `user` | 外部认证提供方的登录按钮标签。也对应 `GROK_AUTH_PROVIDER_LABEL`。 |
 | `auth.auth_token_ttl` | `number` | `yes` | `user` | 仅返回裸令牌的提供方所用令牌 TTL（秒）。也对应 `GROK_AUTH_TOKEN_TTL`。 |
 | `auth.disable_api_key_auth` | `boolean` | `pin` | `user` | 拒绝 API Key 认证，仅允许部署的 IdP 登录。也对应 `GROK_DISABLE_API_KEY_AUTH`。 |
@@ -86,7 +86,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
-| `auto_mode.enabled` | `boolean` | `yes` | `user` | 启用 Auto 权限模式。 |
+| `auto_mode.enabled` | `boolean` | `yes` | `user` | 启用自动审查权限模式。 |
 
 ### `campaigns`
 
@@ -183,8 +183,8 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `endpoints.deployment_key` | `string` | `pin` | `user` | 企业部署的管理密钥。也对应 `GROK_DEPLOYMENT_KEY`。 |
 | `endpoints.feedback_base_url` | `string` | `yes` | `user` | 反馈提交目标。也对应 `GROK_FEEDBACK_BASE_URL`。 |
 | `endpoints.managed_config_url` | `string` | `yes` | `user` | 覆盖托管配置端点。也对应 `GROK_MANAGED_CONFIG_URL`。 |
-| `endpoints.models_base_url` | `string` | `pin` | `user` | 自定义推理基础 URL。也对应 `GROK_MODELS_BASE_URL`。 |
-| `endpoints.models_list_url` | `string` | `pin` | `user` | 覆盖模型列表 URL。也对应 `GROK_MODELS_LIST_URL`；别名 `models_endpoint`。 |
+| `endpoints.models_base_url` | `string` | `pin` | `user` | 自定义推理基础 URL。设置 `auth_provider_command` 后，可用模型由 `{models_base_url}/models` 返回的列表决定。也对应 `GROK_MODELS_BASE_URL`。 |
+| `endpoints.models_list_url` | `string` | `pin` | `user` | 覆盖模型列表 URL。设置 `auth_provider_command` 后，可用模型由该列表决定。也对应 `GROK_MODELS_LIST_URL`；别名为 `models_endpoint`。 |
 | `endpoints.trace_upload_bucket` | `string` | `yes` | `user` | 跟踪数据直传的 `gs://` 或 `s3://` bucket，绕过代理。也对应 `GROK_TRACE_UPLOAD_BUCKET`。 |
 | `endpoints.trace_upload_credentials` | `string` | `yes` | `user` | bucket 的内联 GCS 服务账号 JSON 或 AWS 凭据；优先于凭据文件，且没有环境变量。 |
 | `endpoints.trace_upload_credentials_file` | `string (path)` | `yes` | `user` | bucket 所用 GCS 服务账号 JSON 或 AWS 凭据文件路径。也对应 `GROK_TRACE_UPLOAD_CREDENTIALS_FILE`。 |
@@ -211,6 +211,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `features.dock` | `boolean` | `pin` | `user` | 启用或禁用 `dock`；默认 false。也对应 `GROK_DOCK`。 |
 | `features.feedback` | `boolean` | `pin` | `user` | 启用或禁用反馈；默认 true。也对应 `GROK_FEEDBACK_ENABLED`。 |
 | `features.feedback_trace_card` | `boolean` | `pin` | `user` | `/feedback` 后显示跟踪上传同意问题；默认 false。也对应 `GROK_FEEDBACK_TRACE_CARD`。 |
+| `features.file_acceleration` | `boolean` | `pin` | `user` | 构建中安装了文件加速器时，将本地会话的文件系统交由它处理。默认 `false`。也对应 `GROK_FILE_ACCELERATION`。 |
 | `features.image_edit_model_override` | `string` | `yes` | `user` | `image_edit` 使用的 Imagine 模型 ID。 |
 | `features.image_gen` | `boolean` | `pin` | `user` | 启用 `image_gen` / `/imagine`。 |
 | `features.image_gen_model_override` | `string` | `yes` | `user` | `image_gen` 使用的 Imagine 模型 ID；空值回退到远程默认值。 |
@@ -247,6 +248,12 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `feedback.user.email` | `string[]` | `yes` | `user` | 反馈提交者邮箱来源（`git_email` 或字面值）。 |
 | `feedback.user.name` | `string[]` | `yes` | `user` | 反馈提交者姓名来源（`os_user` 或字面值）。 |
 
+### `file_acceleration`
+
+| 键 | 类型／取值 | Requirements | 托管 | 说明 |
+| --- | --- | --- | --- | --- |
+| `file_acceleration.routes` | `string` | `yes` | `user` | 原样传给已安装文件加速器的路由覆盖值，不作解析；空值视为未设置。也对应 `GROK_FILE_ACCELERATION_ROUTES`。 |
+
 ### `goal`
 
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
@@ -258,7 +265,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
 | `grok_com_config` | `table` | `yes` | `user` | Grok.com WebSocket 和 OAuth/OIDC 设置；`[auth]` 是别名。 |
-| `grok_com_config.auth_provider_command` | `string` | `yes` | `user` | 外部认证程序；标准输出作为令牌。也对应 `GROK_AUTH_PROVIDER_COMMAND`。 |
+| `grok_com_config.auth_provider_command` | `string` | `yes` | `user` | 外部认证程序；标准输出作为令牌。设置 `endpoints.models_base_url` 或 `models_list_url` 后，可用模型由该端点返回的列表决定。也对应 `GROK_AUTH_PROVIDER_COMMAND`。 |
 | `grok_com_config.auth_provider_label` | `string` | `yes` | `user` | 外部认证提供方的登录按钮标签。也对应 `GROK_AUTH_PROVIDER_LABEL`。 |
 | `grok_com_config.auth_token_ttl` | `number` | `yes` | `user` | 裸令牌提供方的令牌 TTL（秒）。也对应 `GROK_AUTH_TOKEN_TTL`。 |
 | `grok_com_config.disable_api_key_auth` | `boolean` | `pin` | `user` | 拒绝 API Key 认证，仅允许部署的 IdP 登录。也对应 `GROK_DISABLE_API_KEY_AUTH`。 |
@@ -337,6 +344,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | --- | --- | --- | --- | --- |
 | `mcp_servers.<name>.args` | `string[]` | `yes` | `user` | stdio 或 HTTP MCP 服务器的 `args`。 |
 | `mcp_servers.<name>.bearer_token_env_var` | `string` | `yes` | `user` | stdio 或 HTTP MCP 服务器的 `bearer_token_env_var`。 |
+| `mcp_servers.<name>.bearer_token_file` | `string` | `yes` | `user` | HTTP MCP 服务器 `[mcp_servers.<name>]` 中的 `bearer_token_file`：Bearer 令牌文件的绝对路径或 `~/` 路径，每次请求都会重新读取。 |
 | `mcp_servers.<name>.command` | `string` | `yes` | `user` | stdio 或 HTTP MCP 服务器的 `command`。 |
 | `mcp_servers.<name>.cwd` | `string` | `yes` | `user` | stdio 或 HTTP MCP 服务器的 `cwd`。 |
 | `mcp_servers.<name>.enabled` | `boolean` | `yes` | `user` | stdio 或 HTTP MCP 服务器的 `enabled`。 |
@@ -368,6 +376,11 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `memory_v2.file_writes_enabled` | `boolean` | — | `user` | 允许所有记忆 v2 文件修改，默认 true；false 会在创建基础目录前拒绝执行。 |
 | `memory_v2.archived_retention_days` | `number` | — | `user` | 记忆 v2 已归档观察文件的保留天数，默认 30。 |
 | `memory_v2.job_retention_days` | `number` | — | `user` | 记忆 v2 已终止采集任务元数据的保留天数，默认 14。 |
+| `memory_v2.batch_dream_enabled` | `boolean` | — | `user` | 在记忆 v2 的 `active` 模式下，以批量方式执行 Dream，结合完整主题目录，分批将笔记归入主题。本地值优先于远程 `memory_v2.batch_dream_enabled`；均未设置时默认为 `false`。 |
+| `memory_v2.batch_dream_max_run_secs` | `number` | — | `user` | 单次批量 Dream 的运行时长上限（秒），默认 `1800`，限制在 `60`–`3600`；未处理完的笔记留在收件箱。本地值优先于远程 `memory_v2.batch_dream_max_run_secs`。 |
+| `memory_v2.batch_dream_max_calls_per_batch` | `number` | — | `user` | 批量 Dream 每批的模型调用次数上限，默认 `6`，限制在 `2`–`16`。本地值优先于远程 `memory_v2.batch_dream_max_calls_per_batch`。 |
+| `memory_v2.batch_dream_max_batch_note_bytes` | `number` | — | `user` | 批量 Dream 每批笔记的字节数上限，默认 `98304`，限制在 `16384`–`262144`。本地值优先于远程 `memory_v2.batch_dream_max_batch_note_bytes`。 |
+| `memory_v2.compact_index_enabled` | `boolean` | — | `user` | 向系统提示注入仅含标题的记忆索引，不含主题描述和待处理的观察记录，让 8 KiB 的预算容纳更多主题。带标题的条目按智能体读取各主题的频率排序；磁盘上的 `MEMORY.md` 采用相同格式。本地值优先于远程 `memory_v2.compact_index_enabled`。默认 `false`。 |
 
 ### `model`
 
@@ -398,6 +411,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | `model.<id>.model_provider` | `string` | `yes` | `user` | 该模型使用的命名 `[model_providers.<name>]` 提供方 ID。 |
 | `model.<id>.mtls_cert_dir` | `string` | `yes` | `user` | 模型端点的 mTLS 身份目录，包含 client.crt/client.key 或 tls.crt/tls.key。同一模型必须只设置一个 HTTPS base_url 且不能设置 api_base_url，否则拒绝配置；请求不会跟随重定向。 |
 | `model.<id>.name` | `string` | `yes` | `user` | 模型选择器中显示的标签。 |
+| `model.<id>.notice` | `table` (`severity` = `info / warning / critical`, `text`, `label`) | `yes` | `user` | 选中该模型期间，在提示输入框上方显示的通知；将 `text` 设为空字符串可清除该模型的通知。 |
 | `model.<id>.query_params` | `map<string,string>` | `yes` | `user` | 该模型请求的额外查询参数。 |
 | `model.<id>.rate_limit_retry_threshold` | `number` | `yes` | `user` | 受速率限制请求的总尝试次数上限，不超过解析后的 max_retries。设置后关闭独立的子智能体 429 等待循环。 |
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | 已弃用的单模型推理强度；优先使用 `reasoning_efforts`。 |
@@ -425,7 +439,7 @@ Grok Build 还会按以下层级读取配置；后列层级优先，但 requirem
 | 键 | 类型／取值 | Requirements | 托管 | 说明 |
 | --- | --- | --- | --- | --- |
 | `models.agent_type` | `string` | `yes` | `user` | 未配置单模型覆盖时的 `agent_type` 回退值。 |
-| `models.allowed_models` | `string[]` | `pin` | `user` | 模型选择器、默认模型和 `-m` 的 glob 允许列表；空数组表示不限制。 |
+| `models.allowed_models` | `string[]` | `pin` | `user` | 模型选择器、默认模型和 `-m` 的 glob 允许列表。同时设置 `auth_provider_command` 和自定义模型端点时，只采用 `requirements.toml` 中的此项，忽略其他位置的值。空数组表示不限制。 |
 | `models.default` | `string` | `pin` | `user` | 新会话使用的模型。也对应 `GROK_DEFAULT_MODEL`、`--model`、`-m`。 |
 | `models.default_reasoning_effort` | `string` | `yes` | `user` | 默认模型支持推理强度时使用的默认值。 |
 | `models.disabled_models` | `string[]` | `yes` | `user` | 从目录移除这些模型 ID；优先于 `hidden_models`。 |

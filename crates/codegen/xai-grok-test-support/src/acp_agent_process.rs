@@ -2,7 +2,7 @@
 //! is applied on top of the sandbox's hermetic baseline, and the spawn that hands the sandbox back together
 //! with the child.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::env::grok_binary;
 use crate::mock_server::MockInferenceServer;
@@ -16,6 +16,8 @@ pub(crate) struct AgentProcessOptions {
     /// scenario can drop a variable the baseline sets (e.g. the mock's `XAI_API_KEY`).
     pub(crate) removed_env: Vec<String>,
     pub(crate) leading_args: Vec<String>,
+    pub(crate) agent_args: Vec<String>,
+    pub(crate) binary: Option<PathBuf>,
 }
 
 /// A running agent and the sandbox it runs in; the child is declared first so it drops before its sandbox.
@@ -33,6 +35,8 @@ impl AgentProcessOptions {
             extra_env: Vec::new(),
             removed_env: Vec::new(),
             leading_args: Vec::new(),
+            agent_args: Vec::new(),
+            binary: None,
         }
     }
 
@@ -44,6 +48,8 @@ impl AgentProcessOptions {
             extra_env,
             removed_env,
             leading_args,
+            agent_args,
+            binary,
         } = self;
         sandbox.set_mock_url(server.url());
         sandbox.extend_env(extra_env);
@@ -51,10 +57,12 @@ impl AgentProcessOptions {
             sandbox.remove_env(key);
         }
 
-        let binary = grok_binary();
+        let binary = binary.unwrap_or_else(grok_binary);
         let mut cmd = tokio::process::Command::new(&binary);
         cmd.args(&leading_args)
-            .args(["agent", "stdio"])
+            .arg("agent")
+            .args(&agent_args)
+            .arg("stdio")
             .current_dir(cwd);
 
         let process = TestProcess::spawn(
