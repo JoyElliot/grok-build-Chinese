@@ -11,7 +11,8 @@ macOS 复合 action 由预览和正式 Release 工作流共同调用，两者复
 
 ## 缓存与测量
 
-- `zh-dev` 的 push/手动预览、`sync/upstream-*` 的手动预览，以及同仓库非 Dependabot PR 成功后，可保存依赖、目标产物和宿主构建缓存。fork PR、其他事件/分支和正式 Release 不写入这些缓存。PR 缓存受 GitHub 的 merge ref 隔离，只供同一 PR 后续运行恢复。
+- 只有 `zh-dev` push、定时预热（schedule，仅默认分支 zh-dev）以及任意分支的手动预览（workflow_dispatch）可在成功后保存缓存；所有 PR（含同仓库分支 PR）、fork PR、其他事件/分支和正式 Release 只恢复不写入。PR 可恢复其 base 分支 zh-dev 的缓存。
+- 宿主（`<profile>` 目录，build script/proc-macro）与目标（`<target>/<profile>`）合并为同一份 `grok-zh-build-…` 缓存，避免两份来自不同轮次导致指纹不一致而整体重编；依赖缓存仍单独保存。
 - 编译缓存继续按工具链、目标、配置、构建输入和 Cargo.lock 区分。沿用现有 `preview-release-lto0-debug0-cgu16-shellopt1-shellcgu16-v1` 键，使正式构建能读取已验证的同配置缓存；键中的 preview 是历史命名。是否实际恢复缓存仍以当次日志为准。
 - ARM64 宿主使用 3 路 Cargo 并行；Intel 原生预览测试使用 4 路。保留 `CARGO_INCREMENTAL=0`，没有增加整个 debug/test 目录缓存。
 - `macos-build.py` 添加 `--timings`，以 10 秒为目标间隔记录 Cargo 及其子进程的 RSS 总和、rustc 数量和 runner swap 用量，CSV 保留实际采样时刻。采样 RSS 会重复计算共享页，也可能错过瞬时峰值；不能作为独占内存或精确峰值。

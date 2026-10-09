@@ -99,7 +99,7 @@ runs:
         retention-days: 7
 
     - name: 保存交叉编译缓存
-      if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.build.outputs.cache-hit != 'true' }}
+      if: ${{ success() && env.GROK_ZH_CACHE_WRITE == 'true' && steps.build.outputs.cache-hit != 'true' }}
       uses: ./.github/actions/save-cargo-cache
       with:
         path: |
@@ -108,7 +108,7 @@ runs:
         key: ${{ steps.build.outputs.cache-primary-key }}
 
     - name: 保存交叉依赖缓存
-      if: ${{ success() && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.home.outputs.cache-hit != 'true' }}
+      if: ${{ success() && env.GROK_ZH_CACHE_WRITE == 'true' && steps.home.outputs.cache-hit != 'true' }}
       uses: ./.github/actions/save-cargo-cache
       with:
         path: |

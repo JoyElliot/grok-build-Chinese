@@ -77,57 +77,36 @@ class MacosBuildTests(unittest.TestCase):
     def test_only_trusted_preview_events_can_save_cache(self):
         cases = [
             (False, "push", "refs/heads/zh-dev", True),
+            (False, "schedule", "refs/heads/zh-dev", True),
             (False, "workflow_dispatch", "refs/heads/zh-dev", True),
             (False, "workflow_dispatch", "refs/heads/sync/upstream-1.0.24", True),
+            (False, "workflow_dispatch", "refs/heads/six-platform-builds", True),
             (False, "push", "refs/heads/sync/upstream-1.0.24", False),
-            (False, "workflow_dispatch", "refs/heads/unrelated", False),
+            (False, "schedule", "refs/heads/other", False),
+            (False, "workflow_dispatch", "refs/tags/release-v1.0.24", False),
             (False, "pull_request", "refs/pull/1/merge", False),
+            (False, "pull_request", "refs/pull/8/merge", False),
             (False, "pull_request_target", "refs/heads/zh-dev", False),
             (False, "workflow_run", "refs/heads/zh-dev", False),
             (True, "workflow_dispatch", "refs/heads/zh-dev", False),
             (True, "workflow_dispatch", "refs/heads/sync/upstream-1.0.24", False),
             (True, "push", "refs/tags/release-v1.0.24", False),
+            (True, "schedule", "refs/heads/zh-dev", False),
         ]
         for release, event, ref, expected in cases:
             with self.subTest(release=release, event=event, ref=ref):
                 self.assertEqual(macos_build.cache_writable(release, event, ref), expected)
 
-    def test_configure_emits_matching_cache_package_and_build_profiles(self):
-        with tempfile.TemporaryDirectory() as folder:
-            env = os.environ | {
-                "MACOS_BUILD_VARIANT": "current",
-                "GITHUB_EVENT_NAME": "workflow_dispatch",
-                "GITHUB_REF": "refs/heads/sync/upstream-1.0.24",
-                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "RUNNER_TEMP": folder,
-            }
-            for mode, profile, writable in (("true", "release", "false"), ("false", "release", "true")):
-                with self.subTest(mode=mode):
-                    result = subprocess.run(
-                        [sys.executable, str(SCRIPT), "configure", "--release-build", mode],
-                        env=env, check=True, capture_output=True, text=True,
-                    )
-                    values = dict(line.split("=", 1) for line in result.stdout.splitlines())
-                    self.assertEqual(values["MACOS_CARGO_PROFILE"], profile)
-                    self.assertEqual(values["MACOS_CACHE_WRITABLE"], writable)
-                    self.assertEqual(
-                        Path(values["MACOS_BUILD_REPORT_DIR"]),
-                        Path(folder) / "grok-zh-macos-build-123-2",
-                    )
-                    self.assertFalse(Path(values["MACOS_BUILD_REPORT_DIR"]).exists())
-
-    def test_trusted_pr_cache_flag_cannot_enable_release_or_other_events(self):
-        for release, event, ref, trusted, expected in [
-            (False, "pull_request", "refs/pull/8/merge", True, True),
-            (False, "pull_request", "refs/pull/8/merge", False, False),
-            (True, "pull_request", "refs/pull/8/merge", True, False),
-            (False, "pull_request_target", "refs/heads/zh-dev", True, False),
-            (False, "workflow_run", "refs/heads/zh-dev", True, False),
-        ]:
-            with self.subTest(release=release, event=event, trusted=trusted):
-                self.assertEqual(macos_build.cache_writable(release, event, ref, trusted), expected)
-        action = (SCRIPT.parents[1] / "actions/build-macos-arm/action.yml").read_text(encoding="utf-8")
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", action)
-        self.assertIn("github.actor != 'dependabot[bot]'", action)
+    def test_pull_requests_only_restore_caches(self):
+        root = SCRIPT.parents[1]
+        workflow = (root / "workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8")
+        self.assertIn("GROK_ZH_CACHE_WRITE:", workflow)
+        for name in ("build-linux-x64", "build-macos-arm", "build-windows-arm",
+                     "build-windows-msvc-x64", "build-windows-msvc-cross", "build-windows-gnu-cross"):
+            action = (root / f"actions/{name}/action.yml").read_text(encoding="utf-8")
+            with self.subTest(action=name):
+                self.assertNotIn("github.event_name == 'pull_request'", action)
+                self.assertNotIn("cargo_host_cache", action)
 
     def test_configure_trial_from_environment_is_read_only_and_rejects_release(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -32,7 +32,7 @@ Windows Rust 分片、原生产物验收和正式编译作业调用 `.github/act
 
 `.github/actions/validate-windows-gnu` 为 core/ui 分别缓存 `target/debug`。键包含 ref、OS/架构、Rust 工具链、target、GNU 编译器和链接器文件指纹、debug/incremental 配置、测试清单、Cargo manifests/build.rs/config/toolchain 与 lockfile。不同分片不互相恢复；允许从可访问的 zh-dev 缓存回退。编译作业仍分别使用 target/host `release-dist` 缓存，不恢复旧低优化 release 缓存。
 
-zh-dev 和同仓库、非 Dependabot PR 的预览可以保存缓存；fork PR 和正式 Release 只读。同仓 PR 缓存实际属于 `refs/pull/<n>/merge`，供同一 PR 后续运行复用，不能供其他 PR 或主分支读取。Cargo registry/git 仍只由产物编译作业保存，避免同轮竞争。
+预览缓存只由 zh-dev push、每 5 天一次的定时预热（schedule，只在默认分支 zh-dev 运行）和维护者手动触发保存；所有 PR（含同仓库分支 PR）、fork PR 和正式 Release 只恢复不保存。PR 可读取其 base 分支 zh-dev 的缓存，因此不再为每个 PR 生成一份只属于 `refs/pull/<n>/merge` 的大缓存。Cargo registry/git 仍只由产物编译作业保存，避免同轮竞争。写入条件统一由工作流级 `GROK_ZH_CACHE_WRITE` 表达，正式 Release 工作流不设置该变量。详见文末“缓存整顿（2026-10-09）”。
 
 缓存使用稳定配置键，不在每次提交后新增整份大缓存；已有键不可覆盖，后续源码变化仍会由 Cargo 检查并重编译。命中缓存不会跳过 Cargo build/test、版本检查或产物校验。配置变化或缓存淘汰后重新保存。仓库默认缓存容量有限，实际占用以 GitHub 压缩后大小衡量，不能把未压缩 debug 目录体积直接视为配额用量；需通过冷、暖两次运行检查收益及其他平台缓存是否被挤出。
 
@@ -188,3 +188,12 @@ Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM
 同期还有 `zh-dev` 的 `36212029476`、`36213369927` 两轮 CI。所查仓库作业的运行并发峰值为 17，macOS 家族为 5；这些是观察值，不是账号配额。旧 PR 作业与同标签作业的等待区间部分重叠，但不足以解释全部等待或证明唯一原因。保留其他任务的正常作业，后续继续分别记录排队与实际执行时间。
 
 下一轮在同一预览工作流增加 Linux 全仓格式预检，使用固定 Rust 1.94.0 与 rustfmt，不编译依赖。八个重型根 job 必须等待预检成功，再并行启动原生测试和产物构建；原有各平台格式检查继续保留，最终汇总也显式要求预检成功。这样格式失败不会先启动整轮重型构建，避免本次格式修复前后两轮同时占用 runner 的情况。预检本身的准备与排队仍计入下一轮总耗时；这项改动不保证消除 GitHub 执行器供应或其他工作流造成的等待，不取消既有作业、不改变运行时优化或缓存策略。
+
+## 缓存整顿（2026-10-09）
+
+- **宿主与目标合一**：Linux x64/ARM64 与 macOS ARM64/Intel 交叉构建原先把 host `release-dist`（build script、proc-macro）和 target `release-dist` 分成两份缓存，两份可能来自不同轮次，build script 指纹不一致时即使“精确命中”仍会重编（Linux ARM64 曾命中后仍重编 621 个 crate）。现合并为一份 `grok-zh-build-…` 缓存，同时包含两个目录；Windows ARM64、MSVC 交叉与 GNU 交叉原本就是合一缓存，保持不变。
+- **键与退级**：`grok-zh-build-<schema>-<OS>-<arch>-<工具链>-<target>-<profile 配置>-<manifest/build.rs/config/toolchain/protoc 哈希>-<Cargo.lock 哈希>`；restore-keys 依次去掉 Cargo.lock 哈希、再去掉 manifest 哈希。Linux 的 profile 段为 `release-dist`。
+- **PR 只读**：PR 只用 `actions/cache/restore`；保存（`save-cargo-cache`，内部为 `actions/cache/save`）只在 `GROK_ZH_CACHE_WRITE == 'true'` 且构建成功、主键未精确命中时执行，沿用保存前复查精确键的策略，不保存失败或部分构建。
+- **定时预热**：`cron: '17 19 */5 * *'`（UTC 19:17，即 JST 04:17；每月 1/6/11/16/21/26/31 日），在默认分支 zh-dev 上运行整套预览，用于在 zh-dev 长时间无提交时防止缓存 7 天未访问被清除。精确命中时只恢复、不重复保存。
+- **Windows GNU 测试兜底**：core/ui 的 `target/debug` 缓存新增一层不含 manifest 哈希的 zh-dev restore-key，依赖或 manifest 变化后 PR 仍可从 zh-dev 最近一份测试缓存增量编译。
+- **容量估算**：按 2026-09-26/27 日志的压缩大小，zh-dev 单轮全部缓存约 17 GB（Linux x64 ≈2.6、Linux ARM64 ≈2.6、Windows GNU 测试 core+ui ≈3.7、GNU 交叉 ≈1.9、Windows ARM64 ≈1.6、MSVC 交叉 ≈1.5、macOS ARM64 ≈1.5、macOS Intel ≈1.5、Windows GNU home ≈0.3），合并只消除指纹错配、不减少体积，仍高于 10 GB 免费额度。PR 不再写入后，churn 只来自 zh-dev 自身；精确命中不重复保存，但总量超额时仍会按最后访问时间轮换淘汰。是否进一步停存体积大且不在关键路径上的缓存（如 Windows GNU 测试或 GNU 交叉），需以本轮暖缓存实测结果决定。

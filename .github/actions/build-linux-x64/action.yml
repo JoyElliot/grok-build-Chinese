@@ -129,27 +129,19 @@ runs:
             grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
             grok-zh-cargo-home-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-dotslash-${{ env.DOTSLASH_VERSION }}-
 
-      - name: 恢复 Cargo Linux release-dist 缓存
+      - name: 恢复 Cargo Linux release-dist 编译缓存（宿主与目标合一）
         if: inputs.phase != 'test'
-        id: cargo_target_cache
+        id: cargo_build_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
+          # 宿主 build script/proc-macro 与目标产物必须来自同一轮，否则指纹不一致会整体重编。
+          path: |
+            ${{ runner.temp }}/grok-zh-target/release-dist
+            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
+          key: grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-target-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
-
-      - name: 恢复 Cargo Linux 宿主构建缓存
-        if: inputs.phase != 'test'
-        id: cargo_host_cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release-dist
-          key: grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
-            grok-zh-host-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', 'bin/protoc') }}-
+            grok-zh-build-${{ env.CARGO_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-release-dist-
 
       - name: 安装并验证 DotSlash 与 protoc
         shell: bash
@@ -520,22 +512,17 @@ runs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 保存 Cargo Linux release-dist 缓存
-        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_target_cache.outputs.cache-hit != 'true' }}
+      - name: 保存 Cargo Linux release-dist 编译缓存（宿主与目标合一）
+        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_build_cache.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/save-cargo-cache
         with:
-          path: ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
-          key: ${{ steps.cargo_target_cache.outputs.cache-primary-key }}
-
-      - name: 保存 Cargo Linux 宿主构建缓存
-        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_host_cache.outputs.cache-hit != 'true' }}
-        uses: ./.github/actions/save-cargo-cache
-        with:
-          path: ${{ runner.temp }}/grok-zh-target/release-dist
-          key: ${{ steps.cargo_host_cache.outputs.cache-primary-key }}
+          path: |
+            ${{ runner.temp }}/grok-zh-target/release-dist
+            ${{ runner.temp }}/grok-zh-target/${{ env.TARGET }}/release-dist
+          key: ${{ steps.cargo_build_cache.outputs.cache-primary-key }}
 
       - name: 保存 Cargo 依赖与工具缓存
-        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
+        if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/save-cargo-cache
         with:
           path: |

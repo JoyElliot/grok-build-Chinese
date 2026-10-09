@@ -31,6 +31,7 @@ runs:
         restore-keys: |
           grok-zh-test-v1-${{ github.ref_name }}-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
           grok-zh-test-v1-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-${{ hashFiles('**/Cargo.toml', '**/build.rs', '.cargo/config.toml', 'rust-toolchain.toml', '.github/scripts/windows-validation-tests.json') }}-
+          grok-zh-test-v1-zh-dev-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.TARGET }}-${{ steps.native.outputs.fingerprint }}-debug0-incremental0-${{ inputs.suite }}-
 
     - name: 验证并记录逐命令耗时与资源
       shell: pwsh

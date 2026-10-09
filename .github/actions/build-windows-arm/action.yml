@@ -181,7 +181,7 @@ runs:
         "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
     - name: 保存 ARM64 release-dist 编译缓存
-      if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_build_cache.outputs.cache-hit != 'true' }}
+      if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_build_cache.outputs.cache-hit != 'true' }}
       uses: ./.github/actions/save-cargo-cache
       with:
         path: |
@@ -190,7 +190,7 @@ runs:
         key: ${{ steps.cargo_build_cache.outputs.cache-primary-key }}
 
     - name: 保存 ARM64 Cargo 依赖缓存
-      if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && (github.ref == 'refs/heads/zh-dev' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
+      if: ${{ success() && inputs.phase != 'test' && inputs.release_build != 'true' && env.GROK_ZH_CACHE_WRITE == 'true' && steps.cargo_home_cache.outputs.cache-hit != 'true' }}
       uses: ./.github/actions/save-cargo-cache
       with:
         path: |

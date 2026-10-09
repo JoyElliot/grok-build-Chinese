@@ -14,6 +14,11 @@ on:
     paths-ignore:
       - community/announcements/**
       - community/display-translations/**
+  schedule:
+    # 缓存预热：每 5 天（每月 1/6/11/16/21/26/31 日）UTC 19:17，即 JST 次日 04:17。
+    # schedule 只在默认分支 zh-dev 上运行，写入的缓存属于 zh-dev 作用域，所有以 zh-dev 为 base 的 PR 都能读取。
+    # GitHub 缓存 7 天未访问即被清除，5 天间隔保证即使 zh-dev 无提交也能保活。
+    - cron: '17 19 */5 * *'
   workflow_dispatch:
     inputs:
       version:
@@ -31,6 +36,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # 只有可信的 zh-dev push、定时预热和维护者手动触发才写缓存；PR（含本仓库分支 PR）只恢复不保存，
+  # 避免 PR 用一次性 key 挤出 zh-dev 共享缓存（免费额度 10GB）。正式 Release 工作流不设置此变量，永不写入。
+  GROK_ZH_CACHE_WRITE: ${{ (github.ref == 'refs/heads/zh-dev' && (github.event_name == 'push' || github.event_name == 'schedule')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')) }}
 
 concurrency:
   # 同一 PR 的新提交取消该 PR 的旧轮；同一分支的新推送取消该分支的旧推送轮。
@@ -178,7 +188,7 @@ jobs:
           mode: preview
           # Keep PR storage available for the slower production builds. Tests
           # still run after every restore; zh-dev refreshes the shared fallback.
-          save-cache: ${{ github.ref == 'refs/heads/zh-dev' }}
+          save-cache: ${{ env.GROK_ZH_CACHE_WRITE }}
 
   windows-gnu-validation:
     name: Windows x64 GNU 验证
