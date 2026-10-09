@@ -128,6 +128,6 @@ Windows GNU core/ui 的 home 命中，各自 target/debug 均 miss，288 + 260 =
 1. 先完成当前 PR 全部 CI 与性能验收。
 2. 经正式发布授权，发布专用 helper tag 并使其 immutable；核实实际附件字节与编译 pin 一致。helper 不能使用 `latest` 或可变链接。
 3. 正式工作流增加真实 x64 MSVC 产品，并把 GNU 附件改为兼容入口包；更新发布精确附件集合、证明和校验。每个需要让旧版直接升级到的版本均保留 GNU 入口附件，MSVC 与其同版本发布。
-4. 保留旧三平台 sidecar 和历史桥；新的 MSVC 附件可继续使用 GitHub digest，无需新增公开 sidecar。发布器需先完成 helper 可用性检查，才能分发引用它的启动器。
+4. 公开 `.sha256` 已自 `release-v1.0.45` 之后停发，永久保留 `v1.0.8` 与 `release-v1.0.45` 两个历史桥；新的 MSVC 附件使用 GitHub digest，不新增公开 sidecar。发布器需先完成 helper 可用性检查，才能分发引用它的启动器。
 
 当前提交没有执行以上正式发布步骤。

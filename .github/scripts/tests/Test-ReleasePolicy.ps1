@@ -36,6 +36,22 @@ Assert-Fails { & $scriptPath -Policy $policy -Releases @($bridge, $oldest) -Curr
 $policy.legacy_bridge_tag = 'release-v1.0.13'
 Assert-Fails { & $scriptPath -Policy $policy -Releases @() -CurrentTag release-v1.0.30 }
 
+# The repository policy must retire public sidecars only behind both permanent bridges.
+$repoPolicyPath = Join-Path $PSScriptRoot '../../release-policy.json'
+$repoPolicy = Get-Content -LiteralPath $repoPolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($repoPolicy.publish_legacy_sha256 -ne $false -or $repoPolicy.legacy_bridge_tag -cne 'release-v1.0.45') {
+    throw '仓库发布策略应停发独立校验文件，并以 release-v1.0.45 为永久过渡版。'
+}
+$realBridgeAssets = @('windows-x86_64-gnu.zip', 'macos-aarch64.tar.gz', 'linux-x86_64-gnu.tar.gz') | ForEach-Object {
+    $name = "grok-zh-1.0.45-$_"
+    foreach ($file in @($name, "$name.sha256")) { [pscustomobject]@{ name = $file; state = 'uploaded'; digest = 'sha256:' + ('cd' * 32) } }
+}
+$realBridge = [pscustomobject]@{ tag_name = 'release-v1.0.45'; draft = $false; prerelease = $false; immutable = $true; assets = @($realBridgeAssets) }
+if (& $scriptPath -Policy $repoPolicy -Releases @($realBridge, $oldest) -CurrentTag release-v1.0.46) { throw '仓库策略应对 1.0.46 停发独立校验文件。' }
+Assert-Fails { & $scriptPath -Policy $repoPolicy -Releases @($realBridge) -CurrentTag release-v1.0.46 }
+Assert-Fails { & $scriptPath -Policy $repoPolicy -Releases @($oldest) -CurrentTag release-v1.0.46 }
+Assert-Fails { & $scriptPath -Policy $repoPolicy -Releases @($realBridge, $oldest) -CurrentTag release-v1.0.45 }
+
 # Exercise the publisher's actual asset selection without downloading or publishing.
 $workflowPath = Join-Path $PSScriptRoot '../../workflows/zh-release-windows.yml'
 $workflow = Get-Content -LiteralPath $workflowPath -Raw -Encoding UTF8

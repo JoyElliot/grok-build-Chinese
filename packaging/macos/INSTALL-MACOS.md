@@ -16,7 +16,8 @@
 ## 校验并安装
 
 先运行 `shasum -a 256 <归档文件名>`，与 GitHub Release 对应附件旁显示的 SHA-256 核对一致。
-兼容期内，Apple Silicon 包也可以下载同名 `.sha256` 并运行 `shasum -a 256 -c <归档文件名>.sha256`；Intel 包不提供此附件，使用上述 GitHub digest 校验。
+也可以用 GitHub CLI 运行 `gh attestation verify <归档文件名> --repo JoyElliot/grok-build-Chinese` 核对构建来源证明。
+自 `release-v1.0.45` 之后的新 Release 不再公开独立 `.sha256` 附件，历史 Release 中已有的附件保持不变。
 把下面的版本替换为实际下载版本，完成外层校验后再解包。
 `release-v*` 归档只含一个与归档同名（去掉 `.tar.gz`）的顶层目录：
 
@@ -63,8 +64,9 @@ shasum -a 256 -c SHA256SUMS.txt
 - `release-v1.0.13` 起，macOS Apple Silicon 与 Windows x64、Linux x64 共用统一稳定版。
   Intel 包从六平台正式版开始提供；历史 Release 不会补加附件。`v1.0.8` 仍是旧 Windows 客户端专用的桥接版本。
 
-每个平台保持一个安装包。仅原三平台（Windows x64 GNU、macOS ARM64、Linux x64 GNU）的独立 `.sha256` 在约两个月兼容期内保留，新增三平台不公开此附件。兼容期后的新 Release
-只公开各平台归档；旧客户端先升级到永久保留的三平台六附件过渡版，再升级后续版本。
+每个平台保持一个安装包。`release-v1.0.45` 之后的新 Release 只公开各平台归档，不再附带独立 `.sha256`；
+旧客户端先升级到永久保留的三平台六附件过渡版 `release-v1.0.45`（最早的 Windows 客户端先经 `v1.0.8`），再升级后续版本。
+`v1.0.8` 与 `release-v1.0.45` 两个中转 Release 永久保留。
 维护约定见 [单包更新协议](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/docs/COMMUNITY-UPDATE-PROTOCOL.md)。
 
 Actions Artifact 只用于预览测试，不是正式更新源。正式自动更新只消费本仓库统一发布

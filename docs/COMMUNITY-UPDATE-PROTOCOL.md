@@ -39,9 +39,11 @@ Windows 在线入口会读取声明的归档内程序与安装器路径；包内
 
 `mode: executable-only` 保持现有自动更新行为：内置更新只替换主程序，旁载工具、许可证和安装文件由完整安装器管理。需要新版运行时旁载文件、新的安装动作或新的必需语义时，应增加协议版本/模式并先发布支持它的引擎；不能在旧模式下悄悄改变要求。附加说明字段可扩展，但不得用未知字段引入必需动作。更新器不执行包内自定义“校验程序”。
 
-## 约两个月的兼容期
+## 兼容期（已结束）
 
-从本次功能合入并正式发布后开始计时，维持：
+> 当前状态：兼容期已结束。`release-policy.json` 已设为 `publish_legacy_sha256: false`、`legacy_bridge_tag: release-v1.0.45`，`release-v1.0.45` 之后的新 Release 只公开各平台归档，不再附带独立 `.sha256`。`v1.0.8` 与 `release-v1.0.45` 两个中转 Release 永久保留，不得删除。核实依据：所有已发布更新器（`v1.0.5`～`release-v1.0.45`）都只检查 sidecar 附件的存在与元数据、从不下载其内容；要求 sidecar 的 `v1.0.8`～`release-v1.0.13` 本就因附件集合不同而跳过新 Release，经 `release-v1.0.45` 中转；`release-v1.0.16` 起的更新器与在线安装器只使用 GitHub digest。
+
+以下为兼容期内（自 `release-v1.0.16` 起）的约定，保留作历史记录：
 
 - 每个平台一份完整归档；历史三平台 Release 有三份归档和三个独立 `.sha256`。六平台正式版公开六份归档，仅为原 Windows x64 GNU、macOS ARM64、Linux x64 GNU 保留三个独立 `.sha256`；新增平台从首版起使用新更新器，不公开独立校验附件。
 - 包内现有物理布局、Windows 15 项/Unix 9 项清单保持不变，仅扩展已有 `BUILD-INFO.txt` 内容并重新生成其哈希。
@@ -53,15 +55,15 @@ Windows 在线入口会读取声明的归档内程序与安装器路径；包内
 
 ## 停止公开独立 sidecar
 
-发布策略位于 [release-policy.json](../.github/release-policy.json)。默认 `publish_legacy_sha256: true`，表示继续公开原三平台的兼容 sidecar；新增三平台的 sidecar 始终只用于 CI 内部验证。没有按日期自动切换，也不会删除任何历史 Release。
+发布策略位于 [release-policy.json](../.github/release-policy.json)。`publish_legacy_sha256: true` 表示继续公开原三平台的兼容 sidecar（兼容期内的设置；当前为 `false`，过渡版为 `release-v1.0.45`）；新增三平台的 sidecar 始终只用于 CI 内部验证。没有按日期自动切换，也不会删除任何历史 Release。
 
 过渡完成后，将 `publish_legacy_sha256` 改为 `false`，并把 `legacy_bridge_tag` 设为**已发布、包含新更新引擎、仍保留原有三平台六个附件的正式 Release**。现有策略验证器以历史三平台过渡包为目标；新增平台的首个客户端已经使用新引擎，无须经过该历史过渡包。版本号或已有 Git 标签不能证明其中包含新引擎；应选用正式构建并验证的 Release。
 
 停发前 CI 会核对过渡版比当前版更早、不可变正式状态、原有三平台完整六附件及其 digest，并确认 `v1.0.8` 仍是保留原始两个 Windows 资产的不可变正式 Release。随后下载所选过渡版的 Windows ZIP，核对 GitHub 摘要、归档安全边界、完整文件清单与哈希，并确认其中存在有效的新协议块；缺失或损坏时拒绝停发。此预检不运行下载包内的程序；正式版本的实际更新行为仍须通过发布 CI 与升级验收。
 
-停止公开后的新 Release 只上传各受支持平台的归档。CI 仍可在内部生成并核验 sidecar、为内部产物生成来源证明；用户的 Release 附件列表不再出现独立 `.sha256`。GitHub 自带的源码下载入口和 Release 证明仍由 GitHub 展示，不属于额外安装包。
+停止公开后的新 Release 只上传各受支持平台的归档。CI 仍可在内部生成并核验 sidecar、为内部产物生成来源证明；用户的 Release 附件列表不再出现独立 `.sha256`。用户手动校验时，核对 Release 页面附件旁显示的 SHA-256（即 API `digest`），或运行 `gh attestation verify <归档> --repo JoyElliot/grok-build-Chinese`。GitHub 自带的源码下载入口和 Release 证明仍由 GitHub 展示，不属于额外安装包。
 
-必须永久保留原 `v1.0.8` 和选定的三平台六附件过渡 Release。升级路径如下（`B` 是选定过渡版，`N` 是后续发布版）：
+必须永久保留原 `v1.0.8` 和选定的三平台六附件过渡 Release（当前为 `release-v1.0.45`）。升级路径如下（`B` 是选定过渡版，即 `release-v1.0.45`；`N` 是后续发布版）：
 
 | 用户现有版本 | 升级路径 |
 | --- | --- |

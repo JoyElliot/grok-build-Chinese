@@ -1,4 +1,4 @@
 {
-  "publish_legacy_sha256": true,
-  "legacy_bridge_tag": null
+  "publish_legacy_sha256": false,
+  "legacy_bridge_tag": "release-v1.0.45"
 }

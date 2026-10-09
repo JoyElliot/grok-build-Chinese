@@ -92,16 +92,17 @@ Grok 中文版/
 
 `Install-GrokZh.ps1` 会在写入任何安装目录前，自动核对 `SHA256SUMS.txt` 中的
 文件哈希。GitHub API 记录完整 ZIP 的 SHA-256 digest，新版更新器直接据此校验。
-Windows x64 GNU 的独立 `.sha256` 在约两个月兼容期内保留，之后的新 Release 停止公开发布；Windows ARM64 不公开此附件，直接使用 GitHub digest。两个平台的包内清单继续保留。
+`release-v1.0.45` 之后的新 Release 不再公开独立 `.sha256` 附件；手动校验时请核对 Release 附件旁显示的 SHA-256，
+或用下文的 `gh attestation verify`。两个平台的包内清单继续保留。
 
 `v1.0.8` 桥接包的内层清单只列旧更新器认识的 7 个执行与安装入口；ZIP 仍物理包含上述
-许可证和构建信息，完整 ZIP 继续受 GitHub digest 与外层 `.sha256` 保护。从
+许可证和构建信息，完整 ZIP 继续受 GitHub digest 与该版本外层 `.sha256` 保护。从
 首个 `release-v*` 版本起，内层清单覆盖全部 15 个受管文件。
 
 两个双击入口、安装脚本和本说明只在上述包目录中使用，不会复制到程序运行目录；
 需要升级或调整安装方式时，请使用新下载并解压后的完整包。
 
-正式 Tag 工作流会为 ZIP 自动生成 GitHub Actions 构建来源证明，兼容期内公开的 x64 GNU `.sha256` 也有证明。下载后可用
+正式 Tag 工作流会为 ZIP 自动生成 GitHub Actions 构建来源证明。下载后可用
 GitHub CLI 核对不可变 Release、资产和构建工作流；以下命令已使用当前仓库
 `JoyElliot/grok-build-Chinese`；以下命令以现代稳定版 `1.0.13` 为例，发布后执行。
 旧桥接版 `1.0.8` 使用 `v1.0.8` Tag，其余命令结构相同：
@@ -122,7 +123,8 @@ foreach ($asset in $assets) {
 }
 ```
 
-兼容期 Release 的 x64 GNU 包还提供独立 `.sha256`；若同时下载了它，也可将 `$assets` 改为 `@($zip, "$zip.sha256")` 一并验证。ARM64 包以及停发后的版本使用上述仅验证 ZIP 的命令，并将 `$zip` 改为实际下载文件名。
+也可以直接核对 Release 页面附件旁显示的 SHA-256：运行 `(Get-FileHash $zip -Algorithm SHA256).Hash` 后比对。
+各版本与架构都使用上述仅验证 ZIP 的命令，并将 `$zip` 改为实际下载文件名；`release-v1.0.45` 之后的新 Release 不再附带独立 `.sha256`。
 
 Artifact Attestation 不是 Windows Authenticode；未签名 EXE 仍可能触发 SmartScreen 提示。
 
@@ -319,8 +321,8 @@ npm install -g @xai-official/grok
   `v1.0.8`。从首个 `release-v*` 版本起，Windows、macOS、Linux 共用六资产 Release；旧客户端
   无法识别 `release-v*`，因此不会跳过桥接版本。
 
-停止公开独立 `.sha256` 后，旧现代客户端会先升级到永久保留的三平台六附件过渡版，
-再由其新更新器升级到三资产 Release。包内声明协议与维护步骤见
+自 `release-v1.0.45` 之后停止公开独立 `.sha256`。`v1.0.8`～`release-v1.0.13` 的旧更新器会先升级到永久保留的
+三平台六附件过渡版 `release-v1.0.45`，再由其新更新器升级到只含平台归档的新 Release；`v1.0.8` 与 `release-v1.0.45` 两个中转 Release 永久保留。包内声明协议与维护步骤见
 [单包更新协议](https://github.com/JoyElliot/grok-build-Chinese/blob/zh-dev/docs/COMMUNITY-UPDATE-PROTOCOL.md)。
 
 自动激活仍沿用原版的单 EXE 替换语义，但传输与验证只使用完整 ZIP；不会在运行中的安装

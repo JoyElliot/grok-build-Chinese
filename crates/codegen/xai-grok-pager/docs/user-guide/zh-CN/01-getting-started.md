@@ -36,12 +36,14 @@ macOS ARM64 与 Linux x86_64 GNU 的 `release-v*` 归档同样只含一个与归
 grok-zh --version
 ```
 
-带更新器的版本只读取本仓库的 Immutable GitHub Releases，只接受当前平台的完整归档及其
-`.sha256` sidecar 元数据，并核对 GitHub SHA-256、安全归档布局和包内
+带更新器的版本只读取本仓库的 Immutable GitHub Releases，只接受当前平台的完整归档，
+并核对 GitHub 记录的 SHA-256 digest、安全归档布局和包内
 `SHA256SUMS.txt`；绝不会回退到 xAI 官方发布渠道。所有 `release-v*` 包均使用单一
 顶层目录；单独的 `v1.0.8` 是 Windows-only 扁平 ZIP 桥接版。Windows `v1.0.3`、
 `v1.0.5` 会自动经过该桥接版再选择现代 `release-v*`；写死旧仓库地址的
-`v1.0.0-zh.preview.3` 仍需手工安装一次现代完整包。
+`v1.0.0-zh.preview.3` 仍需手工安装一次现代完整包。手动下载时请核对 Release 附件旁显示的
+SHA-256，或运行 `gh attestation verify <文件名> --repo JoyElliot/grok-build-Chinese`；`release-v1.0.45`
+之后的新 Release 不再附带独立 `.sha256`，`v1.0.8` 与 `release-v1.0.45` 作为旧客户端中转版本永久保留。
 
 社区版默认关闭后台自动更新：程序启动时只检查版本并显示提示，不下载文件。欢迎页按
 `Ctrl+U` 才会退出旧 TUI、下载并安装；显式开启设置中的“自动更新”后才允许后台预下载。
