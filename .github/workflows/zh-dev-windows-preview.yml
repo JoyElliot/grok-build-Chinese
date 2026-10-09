@@ -33,13 +33,99 @@ permissions:
   contents: read
 
 concurrency:
-  # Every push, PR update and manual run can finish independently.
-  group: zh-dev-multiplatform-${{ github.run_id }}
-  cancel-in-progress: false
+  # 同一 PR 的新提交取消该 PR 的旧轮；同一分支的新推送取消该分支的旧推送轮。
+  # PR 与 push 分属不同并发组，PR 永远不会取消 zh-dev；不同 PR 之间互不取消。
+  # 手动触发等其他事件按 run_id 独立，不取消。
+  group: zh-dev-multiplatform-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && format('push-{0}', github.ref) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
+  zh-dev-priority-gate:
+    name: 等待 zh-dev 运行让出 runner
+    # PR 在重型构建前等待 zh-dev push 运行结束；只能推迟 PR 开始构建，不能抢占已开始的 PR 运行。
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      SELF_RUN_ID: ${{ github.run_id }}
+      MAX_WAIT_MINUTES: '120'
+      POLL_SECONDS: '45'
+    steps:
+      - name: 检查 zh-dev 是否有排队或运行中的 push 运行
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [[ "${EVENT_NAME}" != pull_request ]]; then
+            echo "事件为 ${EVENT_NAME}，不需要让行，直接通过。"
+            exit 0
+          fi
+          start=$(date +%s)
+          deadline=$(( start + MAX_WAIT_MINUTES * 60 ))
+          failures=0
+          checks=0
+          waited_for=""
+          while true; do
+            checks=$(( checks + 1 ))
+            active=""
+            query_ok=true
+            for status in queued in_progress waiting requested pending; do
+              if ! out=$(gh api -X GET "repos/${GH_REPO}/actions/runs" \
+                  -f branch=zh-dev -f event=push -f status="${status}" -f per_page=100 \
+                  --jq ".workflow_runs[] | select(.id != ${SELF_RUN_ID}) | \"\(.id)\t\(.status)\t\(.name)\t\(.head_sha[0:8])\t\(.html_url)\""); then
+                query_ok=false
+                break
+              fi
+              [[ -n "${out}" ]] && active+="${out}"$'\n'
+            done
+            elapsed=$(( $(date +%s) - start ))
+            if [[ "${query_ok}" != true ]]; then
+              failures=$(( failures + 1 ))
+              echo "::warning::第 ${checks} 次查询 zh-dev 运行失败（连续 ${failures} 次）。"
+              if (( failures >= 5 )); then
+                echo "::warning::连续 5 次无法查询 zh-dev 运行，放行 PR 构建，不让门禁导致失败。"
+                break
+              fi
+            else
+              failures=0
+              active=$(printf '%s' "${active}" | sort -u)
+              if [[ -z "${active}" ]]; then
+                echo "第 ${checks} 次检查（已等待 ${elapsed} 秒）：zh-dev 没有 queued/in_progress/waiting/requested/pending 的 push 运行。"
+                break
+              fi
+              echo "第 ${checks} 次检查（已等待 ${elapsed} 秒）：zh-dev 仍有以下 push 运行，${POLL_SECONDS} 秒后重查："
+              printf '%s\n' "${active}" | sed 's/^/  /'
+              waited_for=$(printf '%s\n%s' "${waited_for}" "$(printf '%s\n' "${active}" | cut -f1,3,5)" | sed '/^$/d' | sort -u)
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::warning::已等待 ${MAX_WAIT_MINUTES} 分钟，zh-dev 仍未空闲；按上限放行 PR 构建。"
+              break
+            fi
+            sleep "${POLL_SECONDS}"
+          done
+          elapsed=$(( $(date +%s) - start ))
+          {
+            echo '## zh-dev 让行门禁'
+            echo
+            echo "- 检查次数：${checks}"
+            echo "- 等待时长：${elapsed} 秒"
+            if [[ -n "${waited_for}" ]]; then
+              echo '- 曾等待的 zh-dev 运行：'
+              printf '%s\n' "${waited_for}" | sed 's/^/  - /'
+            else
+              echo '- 未遇到需要等待的 zh-dev 运行'
+            fi
+            echo
+            echo '门禁只保证 PR 开始重型构建时 zh-dev 已空闲，不会抢占已开始的 PR 运行。'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "门禁结束：共检查 ${checks} 次，等待 ${elapsed} 秒。"
+
   rust-format-preflight:
     name: Rust 格式预检
+    needs: zh-dev-priority-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -1000,6 +1086,7 @@ jobs:
     name: 六目标构建汇总
     if: ${{ always() }}
     needs:
+      - zh-dev-priority-gate
       - rust-format-preflight
       - native-rust-validation
       - macos-intel-native-smoke
@@ -1015,6 +1102,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
+      PRIORITY_GATE_RESULT: ${{ needs.zh-dev-priority-gate.result }}
       FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}
       NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}
       MACOS_INTEL_NATIVE_RESULT: ${{ needs.macos-intel-native-smoke.result }}
@@ -1041,6 +1129,7 @@ jobs:
             "${WINDOWS_RESULT}" "${WINDOWS_ARM_RESULT}" "${LINUX_RESULT}" "${LINUX_ARM_RESULT}" "${MACOS_RESULT}" "${MACOS_INTEL_RESULT}"
           if [[ "${NATIVE_TEST_RESULT}" != success || "${WINDOWS_RESULT}" != success \
             || "${FORMAT_RESULT}" != success \
+            || "${PRIORITY_GATE_RESULT}" != success \
             || "${MACOS_INTEL_NATIVE_RESULT}" != success \
             || "${WINDOWS_ARM_RESULT}" != success \
             || "${MIGRATION_TEST_RESULT}" != success \
@@ -1050,7 +1139,7 @@ jobs:
             || "${LINUX_ARM_RESULT}" != success \
             || "${MACOS_RESULT}" != success \
             || "${MACOS_INTEL_RESULT}" != success ]]; then
-            echo '::error::格式预检、原生测试或平台构建未成功。'
+            echo '::error::让行门禁、格式预检、原生测试或平台构建未成功。'
             exit 1
           fi
           if [[ -z "${WINDOWS_ARM_ARTIFACT}" || -z "${LINUX_ARTIFACT}" || -z "${LINUX_ARM_ARTIFACT}" \
@@ -1061,6 +1150,7 @@ jobs:
           {
             echo '## 六目标预览构建通过'
             echo
+            echo "- zh-dev 让行门禁：${PRIORITY_GATE_RESULT}"
             echo "- Rust 全仓格式预检：${FORMAT_RESULT}"
             echo "- 五平台原生测试（与构建并行）：${NATIVE_TEST_RESULT}"
             echo "- macOS Intel 原生产物验证：${MACOS_INTEL_NATIVE_RESULT}"

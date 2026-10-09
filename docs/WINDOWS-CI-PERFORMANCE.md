@@ -42,7 +42,16 @@ zh-dev 和同仓库、非 Dependabot PR 的预览可以保存缓存；fork PR �
 
 Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target 和 host 缓存。额外的 256 MiB sccache 试验在同版本复测及后续新版本构建中均为 97 次 miss、0 次 hit，未显示可保留的收益，因此已撤回启动器、工具下载、归档恢复和诊断步骤。原有 Cargo 缓存、测试及包保护不受影响，共享缓存未删除。最新观测的归档只保留 19 个对象；这不能单独证明未命中的原因，也不把不同托管 runner 的编译时间差归因于缓存读写。
 
-推送、PR 更新和手动触发的 CI 默认并行运行：每轮以 `github.run_id` 使用独立并发组，并设置 `cancel-in-progress: false`。新一轮不会自动取消同分支旧轮，也无需 `parallel_run` 开关。GitHub runner 配额不足时仍可能排队；验收需核对制品运行 ID 与源码提交。
+免费账号的并发 job 上限（20 个，其中 macOS 5 个）由整个账号的所有仓库、分支和事件共享，叠轮会让 macOS 关键路径排队，因此 CI 按以下规则取消旧轮：
+
+- 同一 PR 有新提交时，取消该 PR 自己的旧轮：并发组为 `zh-dev-multiplatform-pr-<PR 号>`，`cancel-in-progress: true`。不同 PR 使用不同的组，互不取消。
+- 同一分支（zh-dev 等）有新推送时，取消该分支更旧的推送轮：并发组为 `zh-dev-multiplatform-push-<ref>`，`cancel-in-progress: true`。PR 与 push 分属不同的组，任何 PR 运行都不会取消 zh-dev 运行。
+- 手动触发等其他事件按 `github.run_id` 独立，不取消。正式 Release 仍使用 `zh-release-publisher` 组且 `cancel-in-progress: false`，不会被取消。
+- 同步资料完整性和动态翻译这两个轻量检查只对同一 PR 取消旧轮，push 和手动运行按 `run_id` 独立，不设让行门禁。
+
+PR 构建排在 zh-dev 之后：GitHub 没有原生优先级，因此 PR 运行先执行轻量门禁 `zh-dev-priority-gate`（ubuntu，`actions: read`），再执行格式预检和全部重型作业。门禁查询本仓库所有工作流中 `head_branch=zh-dev`、`event=push`、状态为 queued、in_progress、waiting、requested 或 pending 的运行；zh-dev 空闲时第一次查询即放行（通常几秒），有运行时每 45 秒重查，并在日志和作业摘要中记录等待了哪些运行、共等待多久。最多等待 120 分钟，超时或连续 5 次查询失败只记 warning 并放行，不让门禁导致失败。push 和手动运行直接通过。六目标汇总同时检查门禁结果，门禁被取消或失败时格式预检被跳过，汇总会失败，不会让必需检查缺失。
+
+局限：门禁只保证 PR 开始重型构建时 zh-dev 已空闲，不会抢占已经开始的 PR 运行；PR 已在构建时再推 zh-dev，两者仍会争用 runner。门禁本身占用一个 ubuntu job，PR 等待期间不计入 macOS 并发。被取消的旧轮不会产生制品，验收需核对制品运行 ID 与源码提交。
 
 ## Windows 产物体积与运行性能
 
