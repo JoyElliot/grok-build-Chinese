@@ -84,6 +84,12 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertNotIn('if:', execute)
         self.assertIn('run-windows-validation.ps1', execute)
         self.assertIn('debug0-incremental0-${{ inputs.suite }}-', action)
+        # v2 keeps the key and every restore-key away from unpruned v1 zh-dev entries.
+        restore = action.split('- name: 恢复测试编译缓存', 1)[1].split('- name: 验证并记录', 1)[0]
+        prefixes = re.findall(r'grok-zh-test-v\d+-', restore)
+        self.assertEqual(len(prefixes), 4)  # key + three restore-keys
+        self.assertEqual(set(prefixes), {'grok-zh-test-v2-'})
+        self.assertNotIn('grok-zh-test-v1', action)
         self.assertIn("inputs.save-cache == 'true'", action)
         self.assertIn('key: ${{ steps.cache.outputs.cache-primary-key }}', action)
         self.assertNotIn('github.sha', action)  # Bound immutable cache count per configuration.

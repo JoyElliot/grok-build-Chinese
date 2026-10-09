@@ -30,7 +30,7 @@ Windows Rust 分片、原生产物验收和正式编译作业调用 `.github/act
 
 `.github/scripts/windows-validation-tests.json` 保存原有预览 12 条、发布 15 条 Cargo 命令的 package、feature 和过滤条件。各分片内部保留相对顺序；跨分片并行运行。不将多个 package 合成一条 Cargo 命令，避免 feature union 改变覆盖。
 
-`.github/actions/validate-windows-gnu` 为 core/ui 分别缓存 `target/debug`。键包含 ref、OS/架构、Rust 工具链、target、GNU 编译器和链接器文件指纹、debug/incremental 配置、测试清单、Cargo manifests/build.rs/config/toolchain 与 lockfile。不同分片不互相恢复；允许从可访问的 zh-dev 缓存回退。编译作业仍分别使用 target/host `release-dist` 缓存，不恢复旧低优化 release 缓存。
+`.github/actions/validate-windows-gnu` 为 core/ui 分别缓存 `target/debug`，键前缀为 `grok-zh-test-v2`（版本号变更原因见文末“测试缓存键升级到 v2”）。键包含 ref、OS/架构、Rust 工具链、target、GNU 编译器和链接器文件指纹、debug/incremental 配置、测试清单、Cargo manifests/build.rs/config/toolchain 与 lockfile。不同分片不互相恢复；允许从可访问的 zh-dev 缓存回退。编译作业仍分别使用 target/host `release-dist` 缓存，不恢复旧低优化 release 缓存。
 
 预览缓存只由 zh-dev push、每 5 天一次的定时预热（schedule，只在默认分支 zh-dev 运行）和维护者手动触发保存；所有 PR（含同仓库分支 PR）、fork PR 和正式 Release 只恢复不保存。PR 可读取其 base 分支 zh-dev 的缓存，因此不再为每个 PR 生成一份只属于 `refs/pull/<n>/merge` 的大缓存。Cargo registry/git 仍只由产物编译作业保存，避免同轮竞争。写入条件统一由工作流级 `GROK_ZH_CACHE_WRITE` 表达，正式 Release 工作流不设置该变量。详见文末“缓存整顿（2026-10-09）”。
 
@@ -215,3 +215,10 @@ Intel 编译缓存为 home miss、target/host hit，110 Dirty / 1301 Fresh；ARM
 - **代价**：每个 Linux 预览 job 每轮冷编，约多 3–4 分钟，整轮时长基本不变。Linux 原生测试 job 原本借用预览 job 写入的依赖缓存，现在改为每轮重新下载 crate，Linux 上约 10 秒。
 - **恢复步骤**：没有写入方就不会再有新格式 Linux 缓存。合并后读到的只可能是 zh-dev 旧工作流遗留的同名条目，7 天内会自然消失，而且最多省下约 10 秒下载。保留恢复只会让每轮多一次必然落空的查询，日志里的 miss 还会让人误以为缓存出了问题，因此预览和原生测试都去掉恢复。正式 Release 路径保持原有恢复步骤（Release 本来只读不写），版本、编译参数和产物都不变。
 - **不变**：LTO、codegen-units、opt-level、`debug=0`、`-j4` 和产物内容都不变。其他平台的编译与依赖缓存照旧保存。
+
+## 测试缓存键升级到 v2（2026-10-09）
+
+- **原因**：Windows GNU core/ui 测试缓存最宽的兜底 restore-key 是 `grok-zh-test-v1-zh-dev-<OS>-<arch>-<工具链>-<target>-<编译器指纹>-debug0-incremental0-<suite>-`，不含 manifest 和 Cargo.lock 哈希，只按前缀匹配。zh-dev 旧工作流保存的测试缓存同样以这个前缀开头，但没有经过“保存前清理本仓 crate 产物”，单条约 2.2 GB（清理后约 1 GB）。只要旧条目还在缓存池里，PR 和 zh-dev 就可能恢复到它；主键未精确命中时还会把这份未清理的大目录在清理后另存一份，同时旧条目被访问后不会按 7 天自然过期，持续挤占 10 GB 缓存池。
+- **改动**：`.github/actions/validate-windows-gnu/action.yml` 的主键和全部 3 条 restore-keys 前缀统一从 `grok-zh-test-v1` 改为 `grok-zh-test-v2`，其余键段不变。v2 的任何 restore-key 都不是 v1 键的前缀，因此不会再命中旧条目；旧 v1 条目不再被访问，7 天后由 GitHub 自动清除，无需手动删除缓存。`.github/scripts/tests/test_windows_validation.py` 断言主键与 3 条 restore-keys 都使用 v2，且文件中不再出现 v1。
+- **代价**：合并后 zh-dev 第一轮 Windows GNU 测试 core/ui 冷编一次并保存 v2 缓存，之后恢复正常命中。
+- **不变**：其他缓存（编译 `grok-zh-build-*`、依赖 `grok-zh-cargo-home-*`）的键与保存策略、编译配置都不变。正式 Release 的测试分片仍以 `save-cache: 'false'` 只读调用同一 action，只是读取的前缀变为 v2；在 zh-dev 保存 v2 之前，Release 测试分片会冷编，不影响产物与版本。
