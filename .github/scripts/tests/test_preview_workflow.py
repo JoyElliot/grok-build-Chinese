@@ -14,6 +14,12 @@ from test_release_workflow import dependencies, job_blocks
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/zh-dev-windows-preview.yml"
+PREFLIGHT_JOBS = {"zh-dev-priority-gate", "localization", "rust-format-preflight"}
+HEAVY_ROOT_JOBS = {
+    "windows-gnu-rust-validation", "windows-gnu-cross-build", "native-rust-validation",
+    "windows-arm64-msvc-preview", "windows-msvc-migration-test", "windows-msvc-cross-build",
+    "linux-x64-gnu-preview", "linux-arm64-gnu-preview", "macos-arm-preview", "macos-intel-preview",
+}
 PACKAGE_JOBS = {
     "windows-arm64-msvc-preview": "build-windows-arm",
     "linux-x64-gnu-preview": "build-linux-x64",
@@ -199,8 +205,48 @@ class PreviewWorkflowTests(unittest.TestCase):
                           if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")}
                 self.assertTrue(set(expected).issubset(actual), set(expected) - actual)
         self.assertIn("python3 .github/scripts/tests/test_preview_workflow.py", localization)
-        self.assertIn("python3 .github/scripts/tests/test_preview_retention.py", localization)
         self.assertFalse((ROOT / ".github/workflows/upstream-localization.yml").exists())
+
+    def test_custom_artifact_cleanup_is_removed_without_dangling_references(self):
+        retired = (
+            ".github/workflows/preview-retention.yml",
+            ".github/scripts/preview-retention.py",
+            ".github/scripts/tests/test_preview_retention.py",
+        )
+        for path in retired:
+            with self.subTest(path=path):
+                self.assertFalse((ROOT / path).exists())
+
+        # Guard live automation and docs; tests may name retired files to assert absence.
+        paths = list((ROOT / ".github/workflows").glob("*.yml"))
+        paths += list((ROOT / ".github/actions").rglob("action.yml"))
+        paths += [path for path in (ROOT / ".github/scripts").rglob("*")
+                  if path.is_file() and "tests" not in path.parts
+                  and "__pycache__" not in path.parts]
+        paths += list((ROOT / "docs").glob("*.md"))
+        paths += list(ROOT.glob("README*"))
+        obsolete = (
+            "preview-retention", "test_preview_retention.py", "retention-plan",
+            "first_superseded_at", "--state-artifact-id", "首次替换时间",
+            "完整性证明", "替换后 7 天", "替换后 14 天", "十四天宽限期",
+        )
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.relative_to(ROOT)):
+                for marker in obsolete:
+                    self.assertNotIn(marker, text)
+        self.assertNotIn("actions: write", self.text)
+
+    def test_docs_describe_fixed_native_expiry_without_custom_cleanup(self):
+        doc = (ROOT / "docs/CI-PREVIEW-RETENTION.md").read_text(encoding="utf-8")
+        self.assertIn("不再运行自定义制品清理", doc)
+        self.assertIn("六平台预览包上传时设置 90 天", doc)
+        self.assertIn("上传时设置 30 天", doc)
+        self.assertIn("交叉编译中间包保留 7 天", doc)
+        self.assertIn("独立 Windows MSVC 迁移实验产品仍为 14 天", doc)
+        self.assertIn("原有到期时间", doc)
+        self.assertNotIn("不受限制", doc)
+        self.assertNotIn("无限", doc)
 
     def test_localization_is_early_read_only_and_does_not_wait_for_priority_gate(self):
         block = self.jobs["localization"]
@@ -227,15 +273,43 @@ class PreviewWorkflowTests(unittest.TestCase):
         self.assertIn("format('push-{0}', github.ref)", self.text)
         self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}", self.text)
 
-    def test_format_requires_priority_and_localization_success(self):
-        block = self.jobs["rust-format-preflight"]
-        self.assertEqual(dependencies(block), {"zh-dev-priority-gate", "localization"})
-        results = {"zh-dev-priority-gate": "success", "localization": "success"}
-        self.assertTrue(job_runs(block, results, "push", "refs/heads/zh-dev"))
-        for dep in results:
-            for outcome in ("failure", "cancelled", "skipped"):
-                with self.subTest(dep=dep, outcome=outcome):
-                    self.assertFalse(job_runs(block, results | {dep: outcome}, "push", "refs/heads/zh-dev"))
+    def test_all_three_preflights_are_independent(self):
+        self.assertIn("name: 等待闲置 runner\n", self.jobs["zh-dev-priority-gate"])
+        for name in PREFLIGHT_JOBS:
+            block = self.jobs[name]
+            with self.subTest(job=name):
+                self.assertNotRegex(block, r"(?m)^    needs:")
+                self.assertNotIn("continue-on-error", block)
+                for event, ref in (("push", "refs/heads/zh-dev"),
+                                   ("pull_request", "refs/pull/123/merge")):
+                    self.assertTrue(job_runs(block, {}, event, ref))
+
+    def test_all_heavy_roots_require_every_preflight_to_succeed(self):
+        results = dict.fromkeys(PREFLIGHT_JOBS, "success")
+        for name in HEAVY_ROOT_JOBS:
+            block = self.jobs[name]
+            with self.subTest(job=name):
+                self.assertEqual(dependencies(block), PREFLIGHT_JOBS)
+                self.assertTrue(job_runs(block, results, "push", "refs/heads/zh-dev"))
+            for dep in PREFLIGHT_JOBS:
+                for outcome in ("failure", "cancelled", "skipped"):
+                    with self.subTest(job=name, preflight=dep, outcome=outcome):
+                        self.assertFalse(job_runs(block, results | {dep: outcome}, "push", "refs/heads/zh-dev"))
+
+    def test_heavy_preflight_failures_do_not_start_downstream_artifact_consumers(self):
+        aggregates = {"windows-gnu-validation", "windows-gnu-preview", "multiplatform-result"}
+        for event, ref in (("push", "refs/heads/zh-dev"),
+                           ("pull_request", "refs/pull/123/merge")):
+            for failed_preflight in PREFLIGHT_JOBS:
+                for outcome in ("failure", "cancelled", "skipped"):
+                    results = dict.fromkeys(PREFLIGHT_JOBS, "success") | {failed_preflight: outcome}
+                    for name, block in self.jobs.items():
+                        if name in PREFLIGHT_JOBS:
+                            continue
+                        with self.subTest(event=event, job=name, preflight=failed_preflight, outcome=outcome):
+                            runs = job_runs(block, results, event, ref)
+                            self.assertEqual(runs, name in aggregates)
+                            results[name] = "failure" if runs else "skipped"
 
     def test_sync_push_runs_only_localization_and_never_failing_aggregates(self):
         for outcome in ("success", "failure", "cancelled"):
@@ -261,20 +335,20 @@ class PreviewWorkflowTests(unittest.TestCase):
                 with self.subTest(event=event, ref=ref, job=name):
                     self.assertTrue(job_runs(block, results, event, ref))
 
-    def test_every_build_and_test_is_downstream_of_localization(self):
+    def test_every_build_and_test_is_downstream_of_all_three_preflights(self):
         def ancestors(job):
             block = self.jobs[job]
             required = dependencies(block) if re.search(r"^    needs:", block, re.M) else set()
             return required | {ancestor for dep in required for ancestor in ancestors(dep)}
 
         for name in self.jobs:
-            if name not in ("localization", "zh-dev-priority-gate"):
+            if name not in PREFLIGHT_JOBS:
                 with self.subTest(job=name):
-                    self.assertIn("localization", ancestors(name))
+                    self.assertTrue(PREFLIGHT_JOBS.issubset(ancestors(name)))
 
-    def test_aggregate_explicitly_checks_localization_and_rejects_every_non_success(self):
+    def test_aggregate_explicitly_checks_all_preflights_and_rejects_every_non_success(self):
         aggregate = self.jobs["multiplatform-result"]
-        self.assertIn("localization", dependencies(aggregate))
+        self.assertTrue(PREFLIGHT_JOBS.issubset(dependencies(aggregate)))
         result_vars = dict(re.findall(r"^      (\w+): \$\{\{ needs\.([\w-]+)\.result \}\}$", aggregate, re.M))
         self.assertEqual(set(result_vars.values()), dependencies(aggregate))
         artifact_vars = re.findall(r"^      (\w+_ARTIFACT):", aggregate, re.M)

@@ -47,9 +47,9 @@ Windows 继续直接调用 Rust 编译器，使用上述 Cargo 依赖、target �
 - 同一 PR 有新提交时，取消该 PR 自己的旧轮：并发组为 `zh-dev-multiplatform-pr-<PR 号>`，`cancel-in-progress: true`。不同 PR 使用不同的组，互不取消。
 - 同一分支（zh-dev 等）有新推送时，取消该分支更旧的推送轮：并发组为 `zh-dev-multiplatform-push-<ref>`，`cancel-in-progress: true`。PR 与 push 分属不同的组，任何 PR 运行都不会取消 zh-dev 运行。
 - 手动触发等其他事件按 `github.run_id` 独立，不取消。正式 Release 仍使用 `zh-release-publisher` 组且 `cancel-in-progress: false`，不会被取消。
-- 同步资料完整性和动态翻译这两个轻量检查只对同一 PR 取消旧轮，push 和手动运行按 `run_id` 独立，不设让行门禁。
+- 同步资料完整性已并入 CI，与等待闲置 runner、Rust 格式预检并行，使用同一 CI 的并发组；独立的动态翻译检查保留原有并发规则。
 
-PR 构建排在 zh-dev 之后：GitHub 没有原生优先级，因此 PR 运行先执行轻量门禁 `zh-dev-priority-gate`（ubuntu，`actions: read`），再执行格式预检和全部重型作业。门禁查询本仓库所有工作流中 `head_branch=zh-dev`、`event=push`、状态为 queued、in_progress、waiting、requested 或 pending 的运行；zh-dev 空闲时第一次查询即放行（通常几秒），有运行时每 45 秒重查，并在日志和作业摘要中记录等待了哪些运行、共等待多久。最多等待 120 分钟，超时或连续 5 次查询失败只记 warning 并放行，不让门禁导致失败。push 和手动运行直接通过。六目标汇总同时检查门禁结果，门禁被取消或失败时格式预检被跳过，汇总会失败，不会让必需检查缺失。
+PR 构建排在 zh-dev 之后：GitHub 没有原生优先级，因此 PR 运行将“等待闲置 runner”门禁 `zh-dev-priority-gate`（ubuntu，`actions: read`）与同步资料完整性、Rust 格式预检并行执行，全部重型入口等待这三项成功后才开始。门禁查询本仓库所有工作流中 `head_branch=zh-dev`、`event=push`、状态为 queued、in_progress、waiting、requested 或 pending 的运行；zh-dev 空闲时第一次查询即放行（通常几秒），有运行时每 45 秒重查，并在日志和作业摘要中记录等待了哪些运行、共等待多久。最多等待 120 分钟，超时或连续 5 次查询失败只记 warning 并放行，不让门禁导致失败。push 和手动运行直接通过。六目标汇总同时检查门禁结果，任一预检被取消、失败或跳过时重型入口均不启动，汇总会失败，不会让必需检查缺失。
 
 局限：门禁只保证 PR 开始重型构建时 zh-dev 已空闲，不会抢占已经开始的 PR 运行；PR 已在构建时再推 zh-dev，两者仍会争用 runner。门禁本身占用一个 ubuntu job，PR 等待期间不计入 macOS 并发。被取消的旧轮不会产生制品，验收需核对制品运行 ID 与源码提交。
 

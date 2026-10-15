@@ -146,9 +146,9 @@ class PreviewNativeValidationTests(unittest.TestCase):
         for job, result in (("windows-msvc-migration-test", "MIGRATION_TEST_RESULT"),
                             ("windows-msvc-cross-build", "MIGRATION_BUILD_RESULT"),
                             ("windows-msvc-migration-experiment", "MIGRATION_PRODUCT_RESULT")):
-            expected = {"rust-format-preflight"}
+            expected = {"zh-dev-priority-gate", "localization", "rust-format-preflight"}
             if job == "windows-msvc-migration-experiment":
-                expected.add("windows-msvc-cross-build")
+                expected = {"rust-format-preflight", "windows-msvc-cross-build"}
             self.assertEqual(dependencies(jobs[job]), expected)
             self.assertIn(job, dependencies(gate))
             self.assertIn(f'"${{{result}}}" != success', gate)
@@ -178,8 +178,8 @@ class PreviewNativeValidationTests(unittest.TestCase):
     def test_all_native_test_jobs_gate_the_six_artifacts(self):
         jobs = job_blocks((ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8"))
         tests = jobs["native-rust-validation"]
-        # Tests and builds start together after the same lightweight format gate.
-        self.assertEqual(dependencies(tests), {"rust-format-preflight"})
+        # Tests and builds start together after all three parallel preflights.
+        self.assertEqual(dependencies(tests), {"zh-dev-priority-gate", "localization", "rust-format-preflight"})
         preflight = jobs["rust-format-preflight"]
         self.assertIn("RUSTUP_TOOLCHAIN: 1.94.0-x86_64-unknown-linux-gnu", preflight)
         self.assertIn("run: cargo fmt --all -- --check", preflight)
@@ -207,7 +207,7 @@ class PreviewNativeValidationTests(unittest.TestCase):
         for job in ("windows-arm64-msvc-preview", "linux-x64-gnu-preview",
                     "linux-arm64-gnu-preview", "macos-arm-preview", "macos-intel-preview"):
             with self.subTest(job=job):
-                self.assertEqual(dependencies(jobs[job]), {"rust-format-preflight"})
+                self.assertEqual(dependencies(jobs[job]), {"zh-dev-priority-gate", "localization", "rust-format-preflight"})
                 self.assertIn("phase: build", jobs[job])
                 self.assertIn(job, dependencies(gate))
 

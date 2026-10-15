@@ -51,6 +51,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
+  # 三项轻量预检并行；重型入口必须等待三项全部成功。
   localization:
     name: 同步资料完整性
     runs-on: ubuntu-24.04
@@ -69,12 +70,10 @@ jobs:
           python3 .github/scripts/tests/test_cargo_cache_prune.py
           python3 packaging/macos/tests/test_install_lock.py
       - name: 检查 CI 门禁、覆盖范围和制品保留约定
-        run: |
-          python3 .github/scripts/tests/test_preview_workflow.py
-          python3 .github/scripts/tests/test_preview_retention.py
+        run: python3 .github/scripts/tests/test_preview_workflow.py
 
   zh-dev-priority-gate:
-    name: 等待 zh-dev 运行让出 runner
+    name: 等待闲置 runner
     # sync/** push 只运行轻量本地化检查；PR、手动和定时运行保持原有构建语义。
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
     # PR 在重型构建前等待 zh-dev push 运行结束；只能推迟 PR 开始构建，不能抢占已开始的 PR 运行。
@@ -161,9 +160,6 @@ jobs:
   rust-format-preflight:
     name: Rust 格式预检
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
-    needs:
-      - zh-dev-priority-gate
-      - localization
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -179,7 +175,10 @@ jobs:
 
   windows-gnu-rust-validation:
     name: Windows GNU 测试 (${{ matrix.suite }})
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: windows-2022
     timeout-minutes: 180
     strategy:
@@ -235,7 +234,10 @@ jobs:
 
   windows-gnu-cross-build:
     name: Windows x64 GNU 交叉编译
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     outputs:
@@ -534,7 +536,10 @@ jobs:
 
   native-rust-validation:
     name: 原生测试 (${{ matrix.label }})
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -614,7 +619,10 @@ jobs:
 
   windows-arm64-msvc-preview:
     name: Windows ARM64 MSVC 预览版
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 240
     outputs:
@@ -646,7 +654,10 @@ jobs:
 
   windows-msvc-migration-test:
     name: Windows x64 MSVC 更新器原生测试
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: windows-2022
     timeout-minutes: 90
     env:
@@ -681,7 +692,10 @@ jobs:
 
   windows-msvc-cross-build:
     name: Windows x64 MSVC ARM64 宿主交叉编译
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 120
     outputs:
@@ -777,7 +791,10 @@ jobs:
 
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     # glibc 2.35 基线：必须与正式 Release 的 linux-x64-gnu-release 使用同一镜像。
     runs-on: ubuntu-22.04
     timeout-minutes: 180
@@ -814,7 +831,10 @@ jobs:
 
   linux-arm64-gnu-preview:
     name: Linux ARM64 GNU 预览版
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     # glibc 2.35 基线：必须与正式 Release 的 linux-arm64-gnu-release 使用同一镜像。
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 180
@@ -851,7 +871,10 @@ jobs:
 
   macos-arm-preview:
     name: macOS ARM64 预览版
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: macos-15
     timeout-minutes: 240
     outputs:
@@ -884,7 +907,10 @@ jobs:
 
   macos-intel-preview:
     name: macOS Intel 预览版
-    needs: rust-format-preflight
+    needs:
+      - zh-dev-priority-gate
+      - localization
+      - rust-format-preflight
     runs-on: macos-15
     timeout-minutes: 240
     outputs:
