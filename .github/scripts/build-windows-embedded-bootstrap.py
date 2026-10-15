@@ -41,6 +41,23 @@ def function_source(text, name):
     raise ValueError(f"required offline function missing: {name}")
 
 
+def assert_offline_dependencies(library, entrypoint):
+    """Fail closed if the offline scripts reference an omitted shared helper.
+
+    The checked-in Online/Migration helpers use direct, namespaced calls. Scan
+    all of their references conservatively, including quoted names/comments;
+    this is not a general PowerShell parser. Never auto-include dependencies:
+    a new helper still requires explicit review of the offline allowlist.
+    """
+    scripts = library + "\n" + entrypoint
+    defined = {name.casefold() for name in re.findall(r"(?im)^function ([A-Za-z0-9-]+) \{", scripts)}
+    referenced = set(re.findall(
+        r"(?i)(?<![A-Za-z0-9_-])[A-Za-z]+-(?:Online|Migration)[A-Za-z0-9-]+(?![A-Za-z0-9_-])", scripts))
+    missing = sorted(name for name in referenced if name.casefold() not in defined)
+    if missing:
+        raise ValueError("offline validation has undefined helpers: " + ", ".join(missing))
+
+
 def offline_validation_bytes():
     # Intentionally omit all HTTP/release/download functions. This reuses the
     # established verifier and transactional recovery without a second trust path.
@@ -48,12 +65,14 @@ def offline_validation_bytes():
     migration = (MIGRATION / "Invoke-Bootstrap.ps1").read_text(encoding="utf-8-sig")
     names = ("Get-OnlineProperty", "ConvertFrom-OnlineUtf8", "ConvertTo-OnlineVersion", "Compare-OnlineVersion",
              "Assert-OnlinePathChain", "Resolve-OnlinePath", "Remove-OnlineOwnedTree", "Assert-OnlinePackageRelativePath",
-             "Read-OnlinePackageProtocol", "Get-OnlineExecutableVersion", "Get-OnlineInstallMarker", "Invoke-OnlinePackageInstaller")
+             "Assert-OnlineJsonUniqueKeys", "Read-OnlinePackageProtocol", "Get-OnlineExecutableVersion",
+             "Get-OnlineInstallMarker", "Invoke-OnlinePackageInstaller")
     text = "# Generated offline-only validation/recovery library.\n"
     text += "$script:OnlineTargetTriple = 'x86_64-pc-windows-msvc'\n"
     text += "$script:OnlineUtf8 = [Text.UTF8Encoding]::new($false, $true)\n"
     text += "\n".join(function_source(online, name) for name in names)
     text += "\n".join(function_source(migration, name) for name in ("Invoke-MigrationFileReplace", "Update-MigrationRuntime"))
+    assert_offline_dependencies(text, (MIGRATION / "Invoke-EmbeddedMigration.ps1").read_text(encoding="utf-8-sig"))
     return b"\xef\xbb\xbf" + text.encode("utf-8")
 
 

@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import random
+import re
 from pathlib import Path
 import struct
 import tempfile
@@ -263,6 +264,43 @@ class EmbeddedMsvcBundleTests(unittest.TestCase):
         original = (builder.MIGRATION / "Invoke-Bootstrap.ps1").read_text(encoding="utf-8-sig")
         self.assertIn(builder.function_source(original, "Update-MigrationRuntime"), script)
         self.assertIn("$preserveRecovery = $true", script)
+
+    def test_emitted_offline_library_and_entrypoint_have_complete_helper_closure(self):
+        script = builder.offline_validation_bytes().decode("utf-8-sig")
+        entrypoint = (builder.MIGRATION / "Invoke-EmbeddedMigration.ps1").read_text(encoding="utf-8-sig")
+        online = (builder.ROOT / "packaging/windows/Install-GrokZhOnline.ps1").read_text(encoding="utf-8-sig")
+        migration = (builder.MIGRATION / "Invoke-Bootstrap.ps1").read_text(encoding="utf-8-sig")
+        definitions = lambda text: set(re.findall(r"(?m)^function ([A-Za-z0-9-]+) \{", text))
+        # Inspect the actual emitted function bodies and their caller rather
+        # than asserting that a helper name merely occurs in the generated text.
+        available = definitions(script) | definitions(entrypoint)
+        known = definitions(online) | definitions(migration) | definitions(entrypoint)
+        referenced = set(re.findall(r"\b[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+\b", script + "\n" + entrypoint)) & known
+        self.assertEqual(referenced - available, set())
+        self.assertIn(builder.function_source(online, "Assert-OnlineJsonUniqueKeys"), script)
+        self.assertIn("Assert-OnlineJsonUniqueKeys", definitions(script))
+
+    def test_offline_build_rejects_an_omitted_transitive_helper(self):
+        original = builder.function_source
+        for missing in ("Assert-OnlineJsonUniqueKeys", "Get-OnlineProperty", "Invoke-MigrationFileReplace"):
+            def omit_helper(text, name):
+                return "" if name == missing else original(text, name)
+            with self.subTest(helper=missing), patch.object(builder, "function_source", side_effect=omit_helper):
+                with self.assertRaisesRegex(ValueError, "undefined helpers:.*" + missing):
+                    builder.offline_validation_bytes()
+
+    def test_offline_build_rejects_new_dependencies_without_adding_network_helpers(self):
+        original = builder.function_source
+        for dependency in ("Assert-OnlineFutureValidation", "Receive-OnlineFile"):
+            def add_dependency(text, name):
+                source = original(text, name)
+                if name == "Read-OnlinePackageProtocol":
+                    source = source.replace("    Assert-OnlineJsonUniqueKeys $json",
+                                            "    " + dependency + "\n    Assert-OnlineJsonUniqueKeys $json", 1)
+                return source
+            with self.subTest(helper=dependency), patch.object(builder, "function_source", side_effect=add_dependency):
+                with self.assertRaisesRegex(ValueError, "undefined helpers:.*" + dependency):
+                    builder.offline_validation_bytes()
 
     def test_launcher_fast_path_and_stderr_do_not_extract_or_read_footer(self):
         text = (builder.MIGRATION / "embedded-bootstrap.c").read_text()

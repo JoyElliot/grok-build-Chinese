@@ -743,11 +743,13 @@ jobs:
       ARCHIVE_NAME: ${{ needs.release-plan.outputs.msvc_archive_name }}
       GNU_ARCHIVE_NAME: ${{ needs.release-plan.outputs.zip_name }}
       WINDOWS_X64_DISTRIBUTION: ${{ needs.release-plan.outputs.windows_x64_distribution }}
-      CARGO_TARGET_DIR: ${{ runner.temp }}/grok-msvc-native-acceptance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.release-plan.outputs.source_commit }}
+      - name: 设置原生验收暂存目录
+        shell: pwsh
+        run: '"CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP ''grok-msvc-native-acceptance'')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8'
       - name: 下载同轮 x64 MSVC 输入
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:

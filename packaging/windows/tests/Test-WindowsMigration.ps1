@@ -435,10 +435,10 @@ int main(void) {
             try { [IO.File]::Replace($futureExe,$runtimeExe,[NullString]::Value) } finally { $updateLock.Dispose() }
             foreach ($versionArgument in @('--version','-V')) {
                 $result=Invoke-Launcher $context.launcher $versionArgument
-                Assert-True ($result.Code -eq 0 -and $result.Out.Trim() -ceq "grok-zh $futureVersion (fixture)") "固定旧入口$versionArgument显示连续更新后的真实子程序$futureVersion"
+                Assert-True ($result.Code -eq 0 -and $result.Out.Trim() -ceq "grok-zh $futureVersion (fixture)") "固定旧入口${versionArgument}显示连续更新后的真实子程序$futureVersion"
             }
             $result=Invoke-Launcher $context.launcher 'after-self-update'
-            Assert-True ($result.Code -eq 23 -and $result.Out.Contains('arg=YWZ0ZXItc2VsZi11cGRhdGU=')) "连续更新到$futureVersion后正常启动不依赖TEMP、PowerShell或迁移下载"
+            Assert-True ($result.Code -eq 23 -and $result.Out.Contains('arg=YWZ0ZXItc2VsZi11cGRhdGU=')) "连续更新到${futureVersion}后正常启动不依赖TEMP、PowerShell或迁移下载"
             Assert-True ((Get-FileHash -LiteralPath $context.launcher).Hash -ceq $originalHash) '两次常规MSVC升级都不替换原GNU入口'
             foreach ($path in $unchanged.Keys) {
                 Assert-True ((Get-FileHash -LiteralPath $path).Hash -ceq $unchanged[$path]) '常规更新保留ready、安装归属、初始元数据及旁载文件'

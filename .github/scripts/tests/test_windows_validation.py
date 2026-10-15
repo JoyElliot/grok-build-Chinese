@@ -82,6 +82,37 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn('target = $env:TARGET', runner)
         self.assertIn('format_scope = $FormatScope', runner)
 
+    def test_runner_fixture_uses_native_cargo_and_checks_literal_format_separator(self):
+        fixture = (ROOT / '.github/scripts/tests/Test-WindowsValidation.ps1').read_text(encoding='utf-8')
+        self.assertNotRegex(fixture, r'(?im)^\s*function\s+cargo\b')
+        self.assertIn("$fixture = Join-Path $temp 'cargo.exe'", fixture)
+        self.assertIn('Microsoft.NET/Framework64/v4.0.30319/csc.exe', fixture)
+        self.assertIn("$resolvedCargo.CommandType -ne 'Application'", fixture)
+        self.assertIn('$resolvedCargo.Source -ne $fixture', fixture)
+        self.assertIn('File.AppendAllLines(log, new[] { string.Join(" ", args) }', fixture)
+        self.assertIn('return File.ReadAllLines(log).Length == failAt ? 17 : 0;', fixture)
+        self.assertIn('& cargo fmt --all -- --check', fixture)
+        self.assertIn('& cargo fmt -p fixture-package -- --check', fixture)
+        self.assertIn("@('fmt --all -- --check', 'fmt -p fixture-package -- --check')", fixture)
+        self.assertIn('$calls[$index] -cne $formatCommands[$index]', fixture)
+        self.assertIn('Expected: [$($formatCommands[$index])]; actual: [$($calls[$index])]', fixture)
+        self.assertIn('Reset-CargoFixture -FailAt 1', fixture)
+        self.assertIn('Reset-CargoFixture -FailAt 2', fixture)
+        self.assertIn('Reset-CargoFixture -FailAt ($formatCount + 2)', fixture)
+        self.assertIn('foreach ($name in $variables) { [Environment]::SetEnvironmentVariable($name, $previous[$name]) }', fixture)
+
+    def test_migration_fixture_delimits_variables_before_chinese_diagnostics(self):
+        fixture = (ROOT / 'packaging/windows/tests/Test-WindowsMigration.ps1').read_text(encoding='utf-8-sig')
+        # Han letters are part of an unbraced PowerShell variable name, so
+        # StrictMode fails while evaluating an assertion's diagnostic message.
+        unsafe = [(number, line.strip()) for number, line in enumerate(fixture.splitlines(), 1)
+                  if re.search(r'\$[A-Za-z_][A-Za-z0-9_]*[\u3400-\u9fff]', line)]
+        self.assertEqual(unsafe, [], f'Unbraced variables adjacent to Chinese text: {unsafe}')
+        self.assertIn('${versionArgument}显示连续更新后的真实子程序', fixture)
+        self.assertIn('${futureVersion}后正常启动不依赖TEMP', fixture)
+        self.assertIn("foreach ($versionArgument in @('--version','-V'))", fixture)
+        self.assertIn("foreach ($futureVersion in @('1.0.100','1.0.101'))", fixture)
+
     def test_existing_test_contracts_remain_separate(self):
         suites = json.loads((ROOT / '.github/scripts/windows-validation-tests.json').read_text())
         common = {

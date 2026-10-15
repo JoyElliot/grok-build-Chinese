@@ -57,6 +57,31 @@ class ReleaseWorkflowTests(unittest.TestCase):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         cls.jobs = job_blocks(cls.text)
 
+    def test_job_environment_does_not_reference_runner_context(self):
+        # GitHub validates job env before a runner exists. runner is allowed in
+        # step env/run/with, but not jobs.<job_id>.env; a YAML parse misses this.
+        for job, block in self.jobs.items():
+            environment = re.search(r"^    env:\n((?:      .*\n)*)", block, re.M)
+            if environment is None:
+                continue
+            for expression in re.findall(r"\$\{\{(.*?)\}\}", environment[1], re.S):
+                with self.subTest(job=job, expression=expression):
+                    self.assertNotRegex(expression, r"\brunner\s*(?:\.|\[)")
+
+    def test_msvc_acceptance_target_directory_is_initialized_before_consumers(self):
+        block = self.jobs["windows-x64-msvc-release"]
+        steps = re.split(r"^      - ", block, flags=re.M)[1:]
+        initializers = [index for index, step in enumerate(steps) if "CARGO_TARGET_DIR=" in step]
+        self.assertEqual(len(initializers), 1)
+        initializer = initializers[0]
+        self.assertIn("shell: pwsh", steps[initializer])
+        self.assertIn("Join-Path $env:RUNNER_TEMP ''grok-msvc-native-acceptance''", steps[initializer])
+        self.assertIn("Out-File $env:GITHUB_ENV -Append -Encoding utf8", steps[initializer])
+        for consumer in ("msvc-build-input.py verify", "package-windows-msvc-x64.ps1"):
+            matches = [index for index, step in enumerate(steps) if consumer in step]
+            self.assertEqual(len(matches), 1)
+            self.assertLess(initializer, matches[0], consumer)
+
     def test_new_platform_release_floor_matches_the_first_six_asset_version(self):
         plan = self.jobs["release-plan"]
         self.assertIn("$patch -ge 36", plan)
