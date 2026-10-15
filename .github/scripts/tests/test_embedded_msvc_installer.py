@@ -106,6 +106,49 @@ class EmbeddedInstallerContractTests(unittest.TestCase):
         self.assertIn("ConvertTo-EmbeddedHistoricalInstaller ($oldInstallerSource.Replace(\"`n\", \"`r`n\"))", FIXTURE)
         self.assertIn("$oldInstaller -ceq $oldInstallerCrlf.Replace(\"`r`n\", \"`n\")", FIXTURE)
 
+    def test_fixture_archive_writer_is_shared_and_ps51_compatible(self):
+        body = function(FIXTURE, "New-EmbeddedTestArchive")
+        self.assertNotIn("CreateFromDirectory", FIXTURE)
+        self.assertNotIn("GetRelativePath", body)
+        self.assertEqual(FIXTURE.count("New-EmbeddedTestArchive -Root "), 4)
+        self.assertEqual(FIXTURE.count("New-EmbeddedTestArchive -Root $root -Archive $archive"), 2)
+        for root in ("native3", "gnuOld"):
+            self.assertIn(f"New-EmbeddedTestArchive -Root ${root}.Root -Archive ${root}.Archive", FIXTURE)
+        for required in (
+            "Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force",
+            "$prefix = (Split-Path -Leaf $rootPath) + '/'",
+            "$file.FullName.Substring($rootPath.Length + 1).Replace('\\', '/')",
+            "$member = $prefix + $relative",
+            "$zip.CreateEntry($member, [IO.Compression.CompressionLevel]::Optimal)",
+            "[IO.File]::OpenRead($file.FullName)",
+            "$inputStream.CopyTo($outputStream)",
+            "$outputStream.Dispose()",
+            "$inputStream.Dispose()",
+        ):
+            self.assertIn(required, body)
+        self.assertEqual(body.count("finally { $zip.Dispose() }"), 2)
+
+    def test_fixture_reads_back_exact_archive_members_and_bytes(self):
+        body = function(FIXTURE, "New-EmbeddedTestArchive")
+        readback = body[body.index("[IO.Compression.ZipFile]::OpenRead($Archive)"):]
+        for required in (
+            "Assert-Embedded ($zip.Entries.Count -eq $files.Count)",
+            "foreach ($entry in $zip.Entries)",
+            "!$name.Contains('\\')",
+            "!$name.Contains('//')",
+            "$name.StartsWith($prefix, [StringComparison]::Ordinal)",
+            "Assert-Embedded ($expected.ContainsKey($name) -and $seen.Add($name))",
+            "Assert-Embedded ($entry.Length -eq $file.Length)",
+            "$inputStream.CopyTo($memory)",
+            "Assert-Embedded ((Get-EmbeddedTestDigest ($memory.ToArray())) -ceq (Get-EmbeddedTestDigest ([IO.File]::ReadAllBytes($file.FullName))))",
+            "$memory.Dispose()",
+        ):
+            self.assertIn(required, readback)
+        # Keep the strict production rejection: the fixture writer must adapt,
+        # rather than allowing Windows separators in received archives.
+        for source, name in ((FULL, "Expand-VerifiedGrokBundlePackage"), (ONLINE, "Expand-VerifiedOnlinePackage")):
+            self.assertIn("$name.Contains('\\')", function(source, name))
+
     def test_native_schema1_accepts_manifest_resources_outer_stays_exact(self):
         body = function(FULL, "Read-AndVerifyManifest")
         self.assertIn("$nativeProtocol -and $hashes.Count -ge $completeRequired.Count", body)

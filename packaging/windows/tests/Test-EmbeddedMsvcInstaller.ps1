@@ -42,6 +42,50 @@ function Get-EmbeddedTestDigest([byte[]]$Bytes) {
     try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
+function New-EmbeddedTestArchive {
+    param([string]$Root, [string]$Archive)
+    # .NET Framework's directory ZIP helper uses backslashes on PS5.1.
+    # Write names explicitly so both PowerShell versions exercise real ZIP paths.
+    $rootPath = (Get-Item -LiteralPath $Root).FullName.TrimEnd('\', '/')
+    $prefix = (Split-Path -Leaf $rootPath) + '/'
+    $files = @(Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force | Sort-Object FullName)
+    $expected = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $zip = [IO.Compression.ZipFile]::Open($Archive, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in $files) {
+            $relative = $file.FullName.Substring($rootPath.Length + 1).Replace('\', '/')
+            $member = $prefix + $relative
+            $expected.Add($member, $file)
+            $entry = $zip.CreateEntry($member, [IO.Compression.CompressionLevel]::Optimal)
+            $inputStream = [IO.File]::OpenRead($file.FullName)
+            try {
+                $outputStream = $entry.Open()
+                try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose() }
+            } finally { $inputStream.Dispose() }
+        }
+    } finally { $zip.Dispose() }
+
+    # Read the actual ZIP, including nested licenses, Unicode names, manifest,
+    # binary executables and future resources, before any installer consumes it.
+    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        Assert-Embedded ($zip.Entries.Count -eq $files.Count) 'fixture ZIP 保留全部文件且无额外成员'
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName
+            Assert-Embedded (!$name.Contains('\') -and !$name.Contains('//') -and $name.StartsWith($prefix, [StringComparison]::Ordinal)) "fixture ZIP 使用斜杠和单一包根目录：$name"
+            Assert-Embedded ($expected.ContainsKey($name) -and $seen.Add($name)) "fixture ZIP 成员精确匹配且不重复：$name"
+            $file = $expected[$name]
+            Assert-Embedded ($entry.Length -eq $file.Length) "fixture ZIP 保留文件长度：$name"
+            $inputStream = $entry.Open()
+            $memory = [IO.MemoryStream]::new()
+            try {
+                $inputStream.CopyTo($memory)
+                Assert-Embedded ((Get-EmbeddedTestDigest ($memory.ToArray())) -ceq (Get-EmbeddedTestDigest ([IO.File]::ReadAllBytes($file.FullName)))) "fixture ZIP 保留文件内容：$name"
+            } finally { $memory.Dispose(); $inputStream.Dispose() }
+        }
+    } finally { $zip.Dispose() }
+}
 function Update-EmbeddedTestManifest([string]$Root) {
     $lines = foreach ($name in $script:OnlinePackageFiles) {
         "$(Get-EmbeddedTestDigest ([IO.File]::ReadAllBytes((Join-Path $Root $name))))  $name"
@@ -72,7 +116,7 @@ function New-EmbeddedTestPackage([string]$Version, [string]$Runtime) {
     [IO.File]::WriteAllText((Join-Path $root 'BUILD-INFO.txt'), (New-EmbeddedTestInfo $Version "x86_64-pc-windows-$Runtime"), $utf8)
     Update-EmbeddedTestManifest $root
     $archive = Join-Path $work "$name.zip"
-    [IO.Compression.ZipFile]::CreateFromDirectory($root, $archive, [IO.Compression.CompressionLevel]::Optimal, $true)
+    New-EmbeddedTestArchive -Root $root -Archive $archive
     return [pscustomobject]@{ Root = $root; Archive = $archive; Version = $Version; Runtime = $Runtime }
 }
 function New-EmbeddedTestWrapper($Native) {
@@ -103,7 +147,7 @@ function New-EmbeddedTestWrapper($Native) {
     [IO.File]::WriteAllText((Join-Path $root 'BUILD-INFO.txt'), (New-EmbeddedTestInfo $Native.Version 'x86_64-pc-windows-gnu' $descriptor), $utf8)
     Update-EmbeddedTestManifest $root
     $archive = Join-Path $work "$name.zip"
-    [IO.Compression.ZipFile]::CreateFromDirectory($root, $archive, [IO.Compression.CompressionLevel]::Optimal, $true)
+    New-EmbeddedTestArchive -Root $root -Archive $archive
     return [pscustomobject]@{ Root = $root; Archive = $archive; Version = $Native.Version; Runtime = 'gnu'; Descriptor = $descriptor }
 }
 function New-EmbeddedTestRelease([string]$Version, [object[]]$Packages) {
@@ -179,7 +223,7 @@ try {
     [IO.File]::WriteAllText($resource, 'future-native-resource', $utf8)
     [IO.File]::AppendAllText((Join-Path $native3.Root 'SHA256SUMS.txt'), "$(Get-EmbeddedTestDigest ([IO.File]::ReadAllBytes($resource)))  future-resource.dat`n", $utf8)
     [IO.File]::Delete($native3.Archive)
-    [IO.Compression.ZipFile]::CreateFromDirectory($native3.Root, $native3.Archive, [IO.Compression.CompressionLevel]::Optimal, $true)
+    New-EmbeddedTestArchive -Root $native3.Root -Archive $native3.Archive
 
     # Simulate an authentic historical installer with no new downgrade switch.
     $oldInstallerPath = Join-Path $gnuOld.Root 'Install-GrokZh.ps1'
@@ -190,7 +234,7 @@ try {
     [IO.File]::WriteAllText($oldInstallerPath, $oldInstaller, [Text.UTF8Encoding]::new($true))
     Update-EmbeddedTestManifest $gnuOld.Root
     [IO.File]::Delete($gnuOld.Archive)
-    [IO.Compression.ZipFile]::CreateFromDirectory($gnuOld.Root, $gnuOld.Archive, [IO.Compression.CompressionLevel]::Optimal, $true)
+    New-EmbeddedTestArchive -Root $gnuOld.Root -Archive $gnuOld.Archive
 
     $extract = & $installer -PackageDir $wrapper1.Root -ExtractOnly -ExtractionDirectory (Join-Path $work 'extract-only')
     Assert-Embedded ((Get-FileHash (Join-Path $extract 'grok-zh.exe')).Hash -ceq (Get-FileHash (Join-Path $native1.Root 'grok-zh.exe')).Hash) '提取的是原生完整包'
