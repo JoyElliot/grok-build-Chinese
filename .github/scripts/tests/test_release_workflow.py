@@ -194,7 +194,10 @@ class PreviewNativeValidationTests(unittest.TestCase):
         self.assertEqual(tests.count("phase: test"), 3)
         gate = jobs["multiplatform-result"]
         self.assertIn("rust-format-preflight", dependencies(gate))
-        self.assertIn("if: ${{ always() }}", gate)
+        self.assertIn(
+            "if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
+            gate,
+        )
         self.assertIn("FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}", gate)
         self.assertIn('"${FORMAT_RESULT}" != success', gate)
         self.assertIn("native-rust-validation", dependencies(gate))

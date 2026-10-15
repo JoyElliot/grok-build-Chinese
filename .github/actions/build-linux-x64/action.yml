@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 标记是否由正式发布流程调用
     required: true
+  artifact-retention-days:
+    description: 成品制品保留天数；CI 预览可覆盖，正式 Release 保持原有默认值
+    required: false
+    default: '14'
   phase:
     description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
     required: false
@@ -226,7 +230,7 @@ runs:
             --features release-dist --timings "${extra[@]}"
 
       - name: 上传 Linux Cargo timings
-        if: ${{ !cancelled() && inputs.phase != 'test' }}
+        if: ${{ !cancelled() && inputs.release_build == 'true' && inputs.phase != 'test' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: grok-zh-linux-${{ env.LINUX_ARCH }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
@@ -515,10 +519,10 @@ runs:
           path: |
             dist/${{ steps.package_meta.outputs.archive_name }}
             dist/${{ steps.package_meta.outputs.archive_name }}.sha256
-            dist/diagnostics/linux/
+            ${{ inputs.release_build == 'true' && 'dist/diagnostics/linux/' || '' }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
+          retention-days: ${{ inputs.artifact-retention-days }}
 
       - name: 在摘要中发布制品详情
         if: inputs.phase != 'test'
@@ -546,3 +550,15 @@ runs:
               echo "- Actions 预览制品本身不是自动更新目标；正式不可变 Release 才会被更新器接受。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Preview evidence is uploaded last, only after a failure; cancellation alone is not a problem report.
+      - name: 上传 Linux Cargo timings（预览失败时）
+        if: ${{ failure() && !cancelled() && inputs.release_build != 'true' && inputs.phase != 'test' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: grok-zh-linux-${{ env.LINUX_ARCH }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/grok-zh-target/cargo-timings
+            dist/diagnostics/linux/
+          if-no-files-found: warn
+          retention-days: 7

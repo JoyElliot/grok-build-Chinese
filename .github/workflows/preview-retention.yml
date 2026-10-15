@@ -1,0 +1,80 @@
+name: 预览制品保留维护
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches:
+      - zh-dev
+      - codex/free-account-localization-macos-smoke
+  schedule:
+    # 清理不触发六平台构建；GitHub cron 延迟只会延后清理。
+    - cron: '43 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 仅生成计划，不删除制品、不更新替换时间记录
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # 所有事件及重跑共用一个组；先保存替换时间，再删除，禁止中途取消旧维护。
+  group: preview-retention-v2
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    # workflow_run 只运行默认分支的维护代码，绝不检出或执行触发构建的代码。
+    # PR（包含同仓库 PR）既不能触发写入，也不参与替换判断。
+    if: >-
+      github.repository == 'JoyElliot/grok-build-Chinese' &&
+      github.ref == 'refs/heads/zh-dev' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event.workflow_run.event) &&
+        github.event.workflow_run.head_repository.id == github.event.repository.id))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 检出可信维护代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: 运行无网络保留策略测试
+        run: python3 -B .github/scripts/tests/test_preview_retention.py
+      - name: 读取历史并生成清理计划
+        run: python3 -B .github/scripts/preview-retention.py --output retention-plan
+      - name: 先持久化首次替换时间与完整性证明
+        id: state
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preview-retention-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: retention-plan/state.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+      - name: 复核新旧制品后清理已过十四天宽限期的预览
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        env:
+          STATE_ARTIFACT_ID: ${{ steps.state.outputs.artifact-id }}
+        run: python3 -B .github/scripts/preview-retention.py --apply --state-artifact-id "$STATE_ARTIFACT_ID"
+      - name: 保存本次清理计划
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preview-retention-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: retention-plan/report.json
+          if-no-files-found: ignore
+          retention-days: 7

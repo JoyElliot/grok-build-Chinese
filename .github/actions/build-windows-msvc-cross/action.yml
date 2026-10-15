@@ -78,17 +78,6 @@ runs:
         python -B .github/scripts/msvc-build-input.py write --directory "$env:RUNNER_TEMP/grok-msvc-cross-input" --executable "$env:CARGO_TARGET_DIR/$env:TARGET/release-dist/grok-zh.exe"
         if ($LASTEXITCODE -ne 0) { throw '交叉产物身份清单生成失败。' }
 
-    - name: 上传计时及工具链信息
-      if: ${{ !cancelled() }}
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: grok-zh-windows-msvc-cross-timings-${{ github.run_id }}-${{ github.run_attempt }}
-        path: |
-          ${{ runner.temp }}/grok-msvc-cross-report
-          ${{ runner.temp }}/grok-msvc-cross-target/cargo-timings
-        if-no-files-found: warn
-        retention-days: 7
-
     - name: 上传供 x64 原生验收的同轮输入
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
@@ -119,3 +108,15 @@ runs:
           ${{ runner.temp }}/grok-msvc-cross-cargo/registry/index
           ${{ runner.temp }}/grok-msvc-cross-cargo/git/db
         key: ${{ steps.home.outputs.cache-primary-key }}
+
+    # Final failure-only evidence also covers input-upload and cache-save failures.
+    - name: 上传计时及工具链信息
+      if: ${{ failure() && !cancelled() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-msvc-cross-timings-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/grok-msvc-cross-report
+          ${{ runner.temp }}/grok-msvc-cross-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7

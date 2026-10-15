@@ -140,7 +140,7 @@ runs:
         if ($LASTEXITCODE -ne 0) { throw "x64 MSVC 构建失败：$LASTEXITCODE" }
 
     - name: 上传 x64 Cargo timings
-      if: ${{ !cancelled() }}
+      if: ${{ !cancelled() && inputs.release_build == 'true' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: grok-zh-windows-x64-msvc-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
@@ -202,3 +202,13 @@ runs:
           ${{ runner.temp }}/grok-zh-cargo/registry
           ${{ runner.temp }}/grok-zh-cargo/git
         key: ${{ steps.cargo_home_cache.outputs.cache-primary-key }}
+
+    # Preview evidence is uploaded last, only after a failure; cancellation alone is not a problem report.
+    - name: 上传 x64 Cargo timings（预览失败时）
+      if: ${{ failure() && !cancelled() && inputs.release_build != 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-x64-msvc-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7

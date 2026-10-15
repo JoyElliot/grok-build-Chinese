@@ -118,13 +118,19 @@ class UpstreamLocalizationTests(unittest.TestCase):
 
 
     def test_literal_key_guard_runs_for_source_only_changes(self):
-        workflow = (ROOT / ".github/workflows/upstream-localization.yml").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/zh-dev-windows-preview.yml").read_text(encoding="utf-8")
         for event in ("pull_request", "push"):
             match = re.search(rf"^  {event}:\n(.*?)(?=^  [a-z_]+:|^permissions:)",
                               workflow, re.MULTILINE | re.DOTALL)
             self.assertIsNotNone(match, f"Missing {event} trigger")
-            self.assertIn("'crates/codegen/*/src/**'", match.group(1),
-                          "Literal-key checks must not depend on a simultaneous catalog edit")
+            # The merged CI has a broad trigger. Only community display content
+            # may be ignored; source-only edits must still run localization.
+            self.assertNotRegex(match.group(1), r"(?m)^    paths:")
+            ignored = re.search(r"(?m)^    paths-ignore:\n((?:      - .*\n)*)", match.group(1))
+            if ignored:
+                self.assertEqual(set(re.findall(r"^      - (.+)$", ignored[1], re.M)), {
+                    "community/announcements/**", "community/display-translations/**",
+                })
 
 
     def test_shell_test_support_forwards_workspace_fixture_feature(self):

@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 是否为正式 Release
     required: true
+  artifact-retention-days:
+    description: 成品制品保留天数；CI 预览可覆盖，正式 Release 保持原有默认值
+    required: false
+    default: '14'
   phase:
     description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
     required: false
@@ -138,7 +142,7 @@ runs:
         if ($LASTEXITCODE -ne 0) { throw "ARM64 MSVC 构建失败：$LASTEXITCODE" }
 
     - name: 上传 ARM64 Cargo timings
-      if: ${{ !cancelled() }}
+      if: ${{ !cancelled() && inputs.release_build == 'true' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: grok-zh-windows-arm64-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
@@ -164,7 +168,7 @@ runs:
           dist/${{ steps.meta.outputs.archive_name }}.sha256
         if-no-files-found: error
         compression-level: 0
-        retention-days: 14
+        retention-days: ${{ inputs.artifact-retention-days }}
 
     - name: 记录 ARM64 构建摘要
       if: inputs.phase != 'test'
@@ -200,3 +204,13 @@ runs:
           ${{ runner.temp }}/grok-zh-cargo/registry
           ${{ runner.temp }}/grok-zh-cargo/git
         key: ${{ steps.cargo_home_cache.outputs.cache-primary-key }}
+
+    # Preview evidence is uploaded last, only after a failure; cancellation alone is not a problem report.
+    - name: 上传 ARM64 Cargo timings（预览失败时）
+      if: ${{ failure() && !cancelled() && inputs.release_build != 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-arm64-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7

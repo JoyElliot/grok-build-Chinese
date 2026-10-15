@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - zh-dev
+      - 'sync/**'
       - codex/free-account-localization-macos-smoke
     paths-ignore:
       - community/announcements/**
@@ -50,8 +51,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
+  localization:
+    name: 同步资料完整性
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: 检查上游更新日志、配置表和本地化元数据
+        run: python3 .github/scripts/tests/test_upstream_localization.py
+      - name: 检查公告、包协议和 macOS 打包约定
+        run: |
+          python3 .github/scripts/tests/test_announcement_translations.py
+          python3 .github/scripts/tests/test_package_protocol.py
+          python3 .github/scripts/tests/test_macos_build.py
+          python3 .github/scripts/tests/test_cargo_cache_prune.py
+          python3 packaging/macos/tests/test_install_lock.py
+      - name: 检查 CI 门禁、覆盖范围和制品保留约定
+        run: |
+          python3 .github/scripts/tests/test_preview_workflow.py
+          python3 .github/scripts/tests/test_preview_retention.py
+
   zh-dev-priority-gate:
     name: 等待 zh-dev 运行让出 runner
+    # sync/** push 只运行轻量本地化检查；PR、手动和定时运行保持原有构建语义。
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
     # PR 在重型构建前等待 zh-dev push 运行结束；只能推迟 PR 开始构建，不能抢占已开始的 PR 运行。
     runs-on: ubuntu-24.04
     timeout-minutes: 130
@@ -135,7 +160,10 @@ jobs:
 
   rust-format-preflight:
     name: Rust 格式预检
-    needs: zh-dev-priority-gate
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
+    needs:
+      - zh-dev-priority-gate
+      - localization
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -192,7 +220,7 @@ jobs:
 
   windows-gnu-validation:
     name: Windows x64 GNU 验证
-    if: always()
+    if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
     needs:
       - windows-gnu-rust-validation
     runs-on: ubuntu-latest
@@ -433,7 +461,7 @@ jobs:
           }
           "已准备解压后的软件包目录：$package"
 
-      - name: 上传独立 Windows 符号诊断
+      - name: 上传独立 Windows 调试符号
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -441,7 +469,7 @@ jobs:
           path: ${{ runner.temp }}/grok-zh-windows-symbols
           if-no-files-found: warn
           compression-level: 9
-          retention-days: 14
+          retention-days: 30
 
       - name: 上传绿色预览版
         id: preview_artifact
@@ -451,14 +479,13 @@ jobs:
           path: dist/${{ steps.windows_setup.outputs.package_name }}
           if-no-files-found: error
           compression-level: 9
-          retention-days: 7
+          retention-days: 90
 
       - name: 在摘要中发布制品详情
         shell: pwsh
         env:
           PREVIEW_URL: ${{ steps.preview_artifact.outputs.artifact-url }}
           PREVIEW_DIGEST: ${{ steps.preview_artifact.outputs.artifact-digest }}
-          MONITOR_URL: ${{ needs.windows-gnu-cross-build.outputs.monitor_url }}
         run: |
           @"
           ## Windows GNU 原生产物验收
@@ -469,7 +496,7 @@ jobs:
           - 制品 SHA-256：``$env:PREVIEW_DIGEST``
           - 编译宿主：Linux x64；目标：``$env:TARGET``
           - Cargo 构建耗时：``$env:BUILD_DURATION_SECONDS`` 秒
-          - [Cargo timings、工具链及宿主资源记录]($env:MONITOR_URL)
+          - Cargo timings、工具链及宿主资源记录仅在交叉编译作业失败时上传，保留 7 天。
           - Windows 原生 PE 运行节保护、符号处理及隔离 CLI 冒烟通过。
           - 安装包布局、哈希与更新协议保持原约定。
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
@@ -477,7 +504,7 @@ jobs:
   # Keep the existing Windows check as the acceptance gate for both runners.
   windows-gnu-preview:
     name: Windows x64 GNU 预览版
-    if: ${{ always() }}
+    if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
     needs:
       - windows-gnu-validation
       - windows-gnu-build
@@ -615,6 +642,7 @@ jobs:
           version: ${{ inputs.version }}
           release_build: 'false'
           phase: build
+          artifact-retention-days: '90'
 
   windows-msvc-migration-test:
     name: Windows x64 MSVC 更新器原生测试
@@ -782,6 +810,7 @@ jobs:
           version: ${{ inputs.version }}
           release_build: 'false'
           phase: build
+          artifact-retention-days: '90'
 
   linux-arm64-gnu-preview:
     name: Linux ARM64 GNU 预览版
@@ -818,6 +847,7 @@ jobs:
           version: ${{ inputs.version }}
           release_build: 'false'
           phase: build
+          artifact-retention-days: '90'
 
   macos-arm-preview:
     name: macOS ARM64 预览版
@@ -849,6 +879,7 @@ jobs:
           version: ${{ inputs.version }}
           release_build: 'false'
           phase: build
+          artifact-retention-days: '90'
           build_variant: ${{ inputs.macos_build_variant || 'current' }}
 
   macos-intel-preview:
@@ -882,6 +913,7 @@ jobs:
           version: ${{ inputs.version }}
           release_build: 'false'
           phase: build
+          artifact-retention-days: '90'
           cross_compile: 'true'
 
   macos-intel-native-smoke:
@@ -1101,9 +1133,10 @@ jobs:
 
   multiplatform-result:
     name: 六目标构建汇总
-    if: ${{ always() }}
+    if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}
     needs:
       - zh-dev-priority-gate
+      - localization
       - rust-format-preflight
       - native-rust-validation
       - macos-intel-native-smoke
@@ -1120,6 +1153,7 @@ jobs:
     timeout-minutes: 5
     env:
       PRIORITY_GATE_RESULT: ${{ needs.zh-dev-priority-gate.result }}
+      LOCALIZATION_RESULT: ${{ needs.localization.result }}
       FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}
       NATIVE_TEST_RESULT: ${{ needs.native-rust-validation.result }}
       MACOS_INTEL_NATIVE_RESULT: ${{ needs.macos-intel-native-smoke.result }}
@@ -1145,6 +1179,7 @@ jobs:
           printf 'Windows x64: %s\nWindows ARM64: %s\nLinux x64: %s\nLinux ARM64: %s\nmacOS ARM64: %s\nmacOS Intel: %s\n' \
             "${WINDOWS_RESULT}" "${WINDOWS_ARM_RESULT}" "${LINUX_RESULT}" "${LINUX_ARM_RESULT}" "${MACOS_RESULT}" "${MACOS_INTEL_RESULT}"
           if [[ "${NATIVE_TEST_RESULT}" != success || "${WINDOWS_RESULT}" != success \
+            || "${LOCALIZATION_RESULT}" != success \
             || "${FORMAT_RESULT}" != success \
             || "${PRIORITY_GATE_RESULT}" != success \
             || "${MACOS_INTEL_NATIVE_RESULT}" != success \
@@ -1156,7 +1191,7 @@ jobs:
             || "${LINUX_ARM_RESULT}" != success \
             || "${MACOS_RESULT}" != success \
             || "${MACOS_INTEL_RESULT}" != success ]]; then
-            echo '::error::让行门禁、格式预检、原生测试或平台构建未成功。'
+            echo '::error::让行门禁、本地化检查、格式预检、原生测试或平台构建未成功。'
             exit 1
           fi
           if [[ -z "${WINDOWS_ARM_ARTIFACT}" || -z "${LINUX_ARTIFACT}" || -z "${LINUX_ARM_ARTIFACT}" \
@@ -1168,6 +1203,7 @@ jobs:
             echo '## 六目标预览构建通过'
             echo
             echo "- zh-dev 让行门禁：${PRIORITY_GATE_RESULT}"
+            echo "- 同步资料完整性：${LOCALIZATION_RESULT}"
             echo "- Rust 全仓格式预检：${FORMAT_RESULT}"
             echo "- 五平台原生测试（与构建并行）：${NATIVE_TEST_RESULT}"
             echo "- macOS Intel 原生产物验证：${MACOS_INTEL_NATIVE_RESULT}"

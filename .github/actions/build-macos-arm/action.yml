@@ -8,6 +8,10 @@ inputs:
   release_build:
     description: 标记这是统一 Release 工作流调用的正式构建
     required: true
+  artifact-retention-days:
+    description: 成品制品保留天数；CI 预览可覆盖，正式 Release 保持原有默认值
+    required: false
+    default: '14'
   phase:
     description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
     required: false
@@ -381,7 +385,7 @@ runs:
           bash .github/scripts/verify-macos-package.sh "${archive}"
 
       - name: 上传 macOS 构建监控与 Cargo timings
-        if: ${{ always() && inputs.phase != 'test' && env.MACOS_BUILD_REPORT_DIR != '' }}
+        if: ${{ always() && inputs.release_build == 'true' && inputs.phase != 'test' && env.MACOS_BUILD_REPORT_DIR != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: grok-zh-macos-${{ env.MACOS_ARCH }}-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
@@ -402,7 +406,7 @@ runs:
             dist/${{ steps.preview.outputs.archive_name }}.sha256
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
+          retention-days: ${{ inputs.artifact-retention-days }}
 
       - name: 在摘要中发布制品详情
         if: inputs.phase != 'test'
@@ -453,3 +457,15 @@ runs:
             ${{ runner.temp }}/grok-zh-cargo/git
             ${{ runner.temp }}/grok-zh-dotslash
           key: ${{ steps.cargo_home_cache.outputs.cache-primary-key }}
+
+      # Preview evidence is uploaded last, only after a failure; cancellation alone is not a problem report.
+      - name: 上传 macOS 构建监控与 Cargo timings（预览失败时）
+        if: ${{ failure() && !cancelled() && inputs.release_build != 'true' && inputs.phase != 'test' && env.MACOS_BUILD_REPORT_DIR != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grok-zh-macos-${{ env.MACOS_ARCH }}-build-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MACOS_BUILD_REPORT_DIR }}
+            ${{ runner.temp }}/grok-zh-target/cargo-timings
+          if-no-files-found: warn
+          retention-days: 7

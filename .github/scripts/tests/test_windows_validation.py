@@ -56,7 +56,13 @@ class WindowsValidationTests(unittest.TestCase):
             if filename.startswith('zh-release'):
                 required.add('release-plan')
             self.assertEqual(dependencies(gate), required)
-            self.assertIn('if: always()', gate)
+            if filename.startswith('zh-release'):
+                self.assertIn('if: always()', gate)
+            else:
+                self.assertIn(
+                    "if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
+                    gate,
+                )
             self.assertIn('${{ toJSON(needs.*.result) }}', gate)
             self.assertIn('all(. == "success")', gate)
             rust = jobs[prefix + '-rust-validation']

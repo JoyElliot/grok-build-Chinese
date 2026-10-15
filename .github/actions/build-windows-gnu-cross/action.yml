@@ -142,18 +142,6 @@ runs:
         (root / 'build-input.json').write_text(json.dumps(metadata, indent=2) + '\n')
         PY
 
-    - name: 上传编译计时及宿主信息
-      id: monitor
-      if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: grok-zh-windows-gnu-cross-monitor-${{ github.run_id }}-${{ github.run_attempt }}
-        path: |
-          ${{ runner.temp }}/grok-gnu-cross-monitor
-          ${{ runner.temp }}/grok-gnu-cross-target/cargo-timings
-        if-no-files-found: warn
-        retention-days: 7
-
     - name: 上传 Windows 原生验收输入
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
@@ -183,3 +171,16 @@ runs:
           ${{ runner.temp }}/grok-gnu-cross-cargo/registry
           ${{ runner.temp }}/grok-gnu-cross-cargo/git
         key: ${{ steps.home.outputs.cache-primary-key }}
+
+    # Final failure-only evidence also covers input-upload and cache-save failures.
+    - name: 上传编译计时及宿主信息
+      id: monitor
+      if: ${{ failure() && !cancelled() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: grok-zh-windows-gnu-cross-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ${{ runner.temp }}/grok-gnu-cross-monitor
+          ${{ runner.temp }}/grok-gnu-cross-target/cargo-timings
+        if-no-files-found: warn
+        retention-days: 7

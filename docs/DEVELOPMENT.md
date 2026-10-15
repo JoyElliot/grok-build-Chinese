@@ -83,7 +83,7 @@ Windows 完整包还携带 `rg.exe`，搜索入口优先使用旁载工具，缺
 - 稳定版不另建长期 `zh-stable` 分支，只从审核并通过 CI 的 `zh-dev` 精确提交创建受保护的 `release-vA.B.C` Tag；程序版本保持严格三段 SemVer。`v1.0.8` 是旧通道的最后一个桥接 Tag。
 - 仓库 Ruleset 必须同时限制 `v*` 与 `release-v*` Tag 的创建、更新和删除权限，仅允许维护者给已审核提交打 Tag；工作流内的 SHA 复核不能替代服务端 Tag 保护。
 - 上游 `main` 更新只触发审查和测试，不能直接进入用户更新源。社区更新器仅消费本仓库的 Immutable Releases，禁用官方 npm、GitHub、x.ai 和 GCS 更新源。
-- [CI 预览产物](https://github.com/JoyElliot/grok-build-Chinese/actions/workflows/zh-dev-windows-preview.yml)用于构建和设备验收，不独立创建 Release；正式 Tag 工作流汇总并核验各平台资产。
+- [CI 预览产物](https://github.com/JoyElliot/grok-build-Chinese/actions/workflows/zh-dev-windows-preview.yml)用于构建和设备验收，不独立创建 Release；正式 Tag 工作流汇总并核验各平台资产。轻量门禁、同步分支覆盖和 90 天/替换后 7 天保留规则见 [CI 预览维护](CI-PREVIEW-RETENTION.md)。
 - 正式更新日志、协议兼容检查、平台构建与测试、Immutable Releases 开关和精确资产摘要共同构成发布门槛。SHA-256 与 GitHub Artifact Attestation 用于核验完整性和构建来源，不等同于操作系统代码签名。
 
 发布说明按用户可见的功能与修复归并，分别说明社区版和上游变化。每版在 `.github/release-notes/versions/<Tag>.json` 整理中文重点及来源；缺少说明时停止发布，不回退为提交列表。版本基线、来源校验、跨版本汇总及排版规则见 [Release 说明维护](../.github/release-notes/README.md)。
