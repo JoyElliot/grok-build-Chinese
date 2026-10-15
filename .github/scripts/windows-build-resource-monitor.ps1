@@ -74,7 +74,8 @@ function Invoke-Monitor {
   )
   @(
     'cargo', 'rustc', 'cc', 'gcc', 'g++', 'ld', 'lld', 'rust-lld',
-    'collect2', 'cc1', 'cc1plus', 'ar', 'cmake', 'ninja', 'make'
+    'collect2', 'cc1', 'cc1plus', 'ar', 'cmake', 'ninja', 'make',
+    'cl', 'link', 'lib'
   ) | ForEach-Object { [void]$toolNames.Add($_) }
 
   $targetRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($TargetPath))

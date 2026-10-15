@@ -70,7 +70,9 @@ jobs:
           python3 .github/scripts/tests/test_cargo_cache_prune.py
           python3 packaging/macos/tests/test_install_lock.py
       - name: 检查 CI 门禁、覆盖范围和制品保留约定
-        run: python3 .github/scripts/tests/test_preview_workflow.py
+        run: |
+          python3 .github/scripts/tests/test_preview_workflow.py
+          python3 .github/scripts/tests/test_windows_validation.py
 
   zh-dev-priority-gate:
     name: 等待闲置 runner
@@ -653,15 +655,18 @@ jobs:
           artifact-retention-days: '90'
 
   windows-msvc-migration-test:
-    name: Windows x64 MSVC 更新器原生测试
+    name: Windows x64 MSVC core/ui 原生测试与迁移契约
     needs:
       - zh-dev-priority-gate
       - localization
       - rust-format-preflight
     runs-on: windows-2022
-    timeout-minutes: 90
+    # Both suites share one native target directory; elapsed time must still be
+    # measured on Windows before claiming parity meets the previous CI budget.
+    timeout-minutes: 180
     env:
       CARGO_BUILD_JOBS: "4"
+      CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_CACHE_SCHEMA: windows-x64-msvc-v1
       CARGO_INCREMENTAL: "0"
       CARGO_NET_RETRY: "10"
@@ -684,6 +689,10 @@ jobs:
           if (!$?) { throw 'PowerShell 7 迁移契约失败。' }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-dist" -Gcc $gcc
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 迁移契约失败。' }
+          & ./packaging/windows/tests/Test-EmbeddedMigration.ps1 -Gcc $gcc
+          if (!$?) { throw 'PowerShell 7 内嵌迁移契约失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-EmbeddedMigration.ps1 -Gcc $gcc
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 内嵌迁移契约失败。' }
       - uses: ./.github/actions/build-windows-msvc-x64
         with:
           version: '1.0.99'
@@ -774,19 +783,19 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $gcc = 'C:\mingw64\bin\gcc.exe'
-          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-dist --version $env:GROK_VERSION --migration-tag migration-windows-x64-v1 --cc $gcc --payload-package "dist/$env:PAYLOAD_PACKAGE"
+          python -B .github/scripts/build-windows-embedded-bootstrap.py --output migration-dist --version $env:GROK_VERSION --cc $gcc --payload-package "dist/$env:PAYLOAD_PACKAGE" --payload-archive "dist/$env:ARCHIVE_NAME"
           if ($LASTEXITCODE -ne 0) { throw 'GNU 兼容 ZIP 构建失败。' }
-          & ./packaging/windows/tests/Test-MigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE" -Gcc $gcc
+          & ./packaging/windows/tests/Test-EmbeddedMigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE"
           if (!$?) { throw 'PowerShell 7 实际产品迁移失败。' }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-MigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE" -Gcc $gcc
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-EmbeddedMigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PAYLOAD_PACKAGE"
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 实际产品迁移失败。' }
           @'
           ## Windows GNU → MSVC 迁移试验通过
 
           - 使用本轮真实 MSVC release-dist 产物；原 GNU 六平台产物和测试保留。
-          - 已验证旧版只安装 EXE、纯版本检查、首次按需迁移和四类 CLI；后续启动不重复下载。
-          - GitHub 请求使用测试内嵌传输，不需要创建正式 Release；生产入口没有 URL/信任绕过开关。
-          - 本轮版本仅用于隔离迁移协议测试。固定 helper 尚未发布，禁止分发此兼容入口给用户。
+          - 已验证旧版只安装 EXE、纯版本检查、首次离线解包和四类 CLI；后续启动直接运行现有 MSVC。
+          - 完整 MSVC ZIP 仅内嵌一次；首次解包不需要网络，也没有版本检查副作用。
+          - 本轮版本仅用于隔离迁移协议测试；正式发布仍由默认关闭的仓库策略控制。
           '@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
   linux-x64-gnu-preview:
@@ -1235,7 +1244,7 @@ jobs:
             echo "- macOS Intel 原生产物验证：${MACOS_INTEL_NATIVE_RESULT}"
             echo "- Windows x64 GNU：${WINDOWS_RESULT}"
             echo "- Windows ARM64 MSVC：${WINDOWS_ARM_RESULT}（${WINDOWS_ARM_ARTIFACT}）"
-            echo "- Windows x64 MSVC 更新器原生测试：${MIGRATION_TEST_RESULT}"
+            echo "- Windows x64 MSVC core/ui 原生测试与迁移契约：${MIGRATION_TEST_RESULT}"
             echo "- Windows x64 MSVC ARM64 宿主编译：${MIGRATION_BUILD_RESULT}"
             echo "- GNU 到 MSVC 实际产品迁移试验：${MIGRATION_PRODUCT_RESULT}"
             echo "- Linux x86_64 GNU：${LINUX_RESULT}（${LINUX_ARTIFACT}）"

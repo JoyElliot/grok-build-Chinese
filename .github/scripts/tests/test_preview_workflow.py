@@ -507,7 +507,7 @@ class PreviewWorkflowTests(unittest.TestCase):
         self.assertEqual(len(migration), 1)
         self.assertIn("retention-days: 14", migration[0])
         self.assertIn("name: migration-experiment-grok-zh-", migration[0])
-        self.assertEqual(self.jobs["windows-msvc-migration-experiment"].count("Test-MigrationProduct.ps1"), 2)
+        self.assertEqual(self.jobs["windows-msvc-migration-experiment"].count("Test-EmbeddedMigrationProduct.ps1"), 2)
         self.assertEqual(self.jobs["windows-msvc-migration-test"].count("Test-WindowsMigration.ps1"), 2)
         self.assertIn("phase: test", self.jobs["windows-msvc-migration-test"])
         self.assertIn("msvc-build-input.py verify", self.jobs["windows-msvc-migration-experiment"])

@@ -1,4 +1,9 @@
 {
   "publish_legacy_sha256": false,
-  "legacy_bridge_tag": "release-v1.0.45"
+  "legacy_bridge_tag": "release-v1.0.45",
+  "windows_x64_msvc": {
+    "enabled": false,
+    "distribution": "embedded",
+    "final_legacy_wrapper": null
+  }
 }

@@ -32,6 +32,11 @@ jobs:
       windows_artifact_name: ${{ steps.release_meta.outputs.windows_artifact_name }}
       notes_artifact_name: ${{ steps.release_meta.outputs.notes_artifact_name }}
       publish_legacy_sha256: ${{ steps.release_meta.outputs.publish_legacy_sha256 }}
+      windows_msvc_enabled: ${{ steps.release_meta.outputs.windows_msvc_enabled }}
+      windows_x64_distribution: ${{ steps.release_meta.outputs.windows_x64_distribution }}
+      windows_public_archive_name: ${{ steps.release_meta.outputs.windows_public_archive_name }}
+      msvc_package_name: ${{ steps.release_meta.outputs.msvc_package_name }}
+      msvc_archive_name: ${{ steps.release_meta.outputs.msvc_archive_name }}
     env:
       GH_TOKEN: ${{ github.token }}
 
@@ -137,6 +142,10 @@ jobs:
             $bridge = @($allReleases | Where-Object { $_.tag_name -ceq $policy.legacy_bridge_tag })[0]
             & ./.github/scripts/verify-protocol-bridge.ps1 -Release $bridge
           }
+          # Disabled by default. An enabled release cannot even finish planning
+          # until the immutable helper exists and its exact pinned bytes match.
+          $msvcPlan = python -B .github/scripts/windows-msvc-release.py preflight --version $version --tag $tag --repository $env:GITHUB_REPOSITORY | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC 迁移发布预检失败。' }
           $packageName = "grok-zh-$version-windows-x86_64-gnu"
           $zipName = "$packageName.zip"
           $isPrerelease = $version.Contains('-').ToString().ToLowerInvariant()
@@ -174,6 +183,11 @@ jobs:
             windows_artifact_name = $windowsArtifactName
             notes_artifact_name = $notesArtifactName
             publish_legacy_sha256 = $publishLegacySha256.ToString().ToLowerInvariant()
+            windows_msvc_enabled = $msvcPlan.windows_msvc_enabled
+            windows_x64_distribution = $msvcPlan.windows_x64_distribution
+            windows_public_archive_name = $msvcPlan.windows_public_archive_name
+            msvc_package_name = $msvcPlan.msvc_package_name
+            msvc_archive_name = $msvcPlan.msvc_archive_name
           }.GetEnumerator() | ForEach-Object {
             "$($_.Key)=$($_.Value)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
@@ -266,6 +280,7 @@ jobs:
 
   windows-x64-gnu:
     name: Windows x64 GNU 构建
+    if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'false' }}
     needs: release-plan
     runs-on: windows-2022
     timeout-minutes: 180
@@ -638,6 +653,146 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  # This complete path is inactive until the reviewed repository policy enables
+  # it. Embedded releases carry one GNU container; native-only releases must
+  # authenticate and permanently retain the final immutable GNU container.
+  windows-x64-msvc-validation:
+    name: Windows x64 MSVC 正式 core/ui 与迁移验证
+    if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}
+    needs: release-plan
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_CACHE_SCHEMA: windows-x64-msvc-v1
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-x86_64-pc-windows-msvc
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+      - name: 验证发布策略及两种 PowerShell 迁移契约
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B .github/scripts/tests/test_windows_msvc_release.py
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC 发布策略回归失败。' }
+          $gcc = 'C:\mingw64\bin\gcc.exe'
+          python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-fixture --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc
+          if ($LASTEXITCODE -ne 0) { throw '迁移 fixture 启动器构建失败。' }
+          & ./packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-fixture" -Gcc $gcc
+          if (!$?) { throw 'PowerShell 7 迁移契约失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-WindowsMigration.ps1 -ArtifactsDirectory "$PWD/migration-fixture" -Gcc $gcc
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 迁移契约失败。' }
+          & ./packaging/windows/tests/Test-EmbeddedMigration.ps1 -Gcc $gcc
+          if (!$?) { throw 'PowerShell 7 内嵌迁移契约失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-EmbeddedMigration.ps1 -Gcc $gcc
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 内嵌迁移契约失败。' }
+      - uses: ./.github/actions/build-windows-msvc-x64
+        with:
+          version: ${{ needs.release-plan.outputs.grok_version }}
+          release_build: 'false'
+          phase: test
+          validation-mode: release
+
+  windows-x64-msvc-cross-build:
+    name: Windows x64 MSVC 正式交叉构建
+    if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}
+    needs: release-plan
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 180
+    outputs:
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_RETRY: "10"
+      CARGO_HTTP_TIMEOUT: "120"
+      RUSTUP_TOOLCHAIN: 1.94.0-aarch64-pc-windows-msvc
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+      - name: 在 ARM64 宿主编译正式 x64 MSVC 输入
+        id: build
+        uses: ./.github/actions/build-windows-msvc-cross
+        with:
+          version: ${{ needs.release-plan.outputs.grok_version }}
+          release_build: 'true'
+
+  windows-x64-msvc-release:
+    name: Windows x64 MSVC 原生验收及 GNU 兼容入口
+    if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}
+    needs:
+      - release-plan
+      - windows-x64-msvc-cross-build
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GROK_VERSION: ${{ needs.release-plan.outputs.grok_version }}
+      RELEASE_TAG: ${{ needs.release-plan.outputs.release_tag }}
+      GROK_RELEASE_BUILD: 'true'
+      TARGET: x86_64-pc-windows-msvc
+      PACKAGE_NAME: ${{ needs.release-plan.outputs.msvc_package_name }}
+      ARCHIVE_NAME: ${{ needs.release-plan.outputs.msvc_archive_name }}
+      GNU_ARCHIVE_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      WINDOWS_X64_DISTRIBUTION: ${{ needs.release-plan.outputs.windows_x64_distribution }}
+      CARGO_TARGET_DIR: ${{ runner.temp }}/grok-msvc-native-acceptance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+      - name: 下载同轮 x64 MSVC 输入
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ needs.windows-x64-msvc-cross-build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/grok-msvc-cross-input
+      - name: 原生核验输入并生成真实 MSVC 完整安装包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -cne 'X64') { throw '迁移验收必须使用原生 x64 Windows。' }
+          python -B .github/scripts/msvc-build-input.py verify --directory "$env:RUNNER_TEMP/grok-msvc-cross-input" --executable "$env:CARGO_TARGET_DIR/$env:TARGET/release-dist/grok-zh.exe"
+          if ($LASTEXITCODE -ne 0) { throw '同轮交叉输入身份或 SHA-256 不一致。' }
+          & ./.github/scripts/package-windows-msvc-x64.ps1
+          if (!$?) { throw 'x64 MSVC 原生打包验证失败。' }
+      - name: 构建单一公开 GNU 容器并验证离线迁移
+        if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'embedded' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gcc = 'C:\mingw64\bin\gcc.exe'
+          python -B .github/scripts/windows-msvc-release.py build-bridge --version $env:GROK_VERSION --tag $env:RELEASE_TAG --repository $env:GITHUB_REPOSITORY --output migration-dist --payload-package "dist/$env:PACKAGE_NAME" --payload-archive "dist/$env:ARCHIVE_NAME" --cc $gcc
+          if ($LASTEXITCODE -ne 0) { throw '内嵌 MSVC 的 GNU 兼容包构建失败。' }
+          $versionOutput = (& ./migration-dist/grok-zh.exe --version | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $versionOutput -cne "grok-zh $env:GROK_VERSION (GNU migration launcher)") {
+            throw '正式 GNU 入口版本检查失败。'
+          }
+          & ./packaging/windows/tests/Test-EmbeddedMigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PACKAGE_NAME"
+          if (!$?) { throw 'PowerShell 7 实际产品迁移失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-EmbeddedMigrationProduct.ps1 -ArtifactsDirectory "$PWD/migration-dist" -PackageDirectory "$PWD/dist/$env:PACKAGE_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 实际产品迁移失败。' }
+          Copy-Item -LiteralPath "migration-dist/$env:GNU_ARCHIVE_NAME" -Destination dist
+          Copy-Item -LiteralPath "migration-dist/$env:GNU_ARCHIVE_NAME.sha256" -Destination dist
+      - name: 上传原生来源输入和唯一公开 Windows x64 安装包
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ needs.release-plan.outputs.windows_artifact_name }}
+          path: |
+            dist/${{ env.ARCHIVE_NAME }}
+            dist/${{ env.ARCHIVE_NAME }}.sha256
+            dist/${{ env.GNU_ARCHIVE_NAME }}
+            dist/${{ env.GNU_ARCHIVE_NAME }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   windows-arm64-msvc-release:
     name: Windows ARM64 MSVC 构建
     needs: release-plan
@@ -810,6 +965,9 @@ jobs:
       - release-plan
       - windows-x64-gnu-validation
       - windows-x64-gnu
+      - windows-x64-msvc-validation
+      - windows-x64-msvc-cross-build
+      - windows-x64-msvc-release
       - windows-arm64-msvc-release
       - macos-arm-release
       - macos-intel-release
@@ -820,7 +978,16 @@ jobs:
         !cancelled() &&
         needs.release-plan.result == 'success' &&
         needs.windows-x64-gnu-validation.result == 'success' &&
-        needs.windows-x64-gnu.result == 'success' &&
+        ((needs.release-plan.outputs.windows_msvc_enabled == 'false' &&
+          needs.windows-x64-gnu.result == 'success' &&
+          needs.windows-x64-msvc-validation.result == 'skipped' &&
+          needs.windows-x64-msvc-cross-build.result == 'skipped' &&
+          needs.windows-x64-msvc-release.result == 'skipped') ||
+         (needs.release-plan.outputs.windows_msvc_enabled == 'true' &&
+          needs.windows-x64-gnu.result == 'skipped' &&
+          needs.windows-x64-msvc-validation.result == 'success' &&
+          needs.windows-x64-msvc-cross-build.result == 'success' &&
+          needs.windows-x64-msvc-release.result == 'success')) &&
         (needs.windows-arm64-msvc-release.result == 'success' ||
           (needs.windows-arm64-msvc-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false')) &&
         (
@@ -850,6 +1017,10 @@ jobs:
       attestations: write
     env:
       ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      MSVC_ARCHIVE_NAME: ${{ needs.release-plan.outputs.msvc_archive_name }}
+      WINDOWS_MSVC_ENABLED: ${{ needs.release-plan.outputs.windows_msvc_enabled }}
+      WINDOWS_X64_DISTRIBUTION: ${{ needs.release-plan.outputs.windows_x64_distribution }}
+      WINDOWS_PUBLIC_ARCHIVE_NAME: ${{ needs.release-plan.outputs.windows_public_archive_name }}
       WINDOWS_ARM_ARCHIVE_NAME: ${{ needs.windows-arm64-msvc-release.outputs.archive_name }}
       MAC_ARCHIVE_NAME: ${{ needs.macos-arm-release.outputs.archive_name }}
       MAC_INTEL_ARCHIVE_NAME: ${{ needs.macos-intel-release.outputs.archive_name }}
@@ -898,11 +1069,20 @@ jobs:
           path: dist
 
       - name: 为 Windows Release 资产生成构建来源证明
+        if: ${{ needs.release-plan.outputs.windows_x64_distribution != 'native' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             ${{ github.workspace }}/dist/${{ env.ZIP_NAME }}
             ${{ github.workspace }}/dist/${{ env.ZIP_NAME }}.sha256
+
+      - name: 为 Windows x64 MSVC Release 资产生成构建来源证明
+        if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/${{ env.MSVC_ARCHIVE_NAME }}
+            ${{ github.workspace }}/dist/${{ env.MSVC_ARCHIVE_NAME }}.sha256
 
       - name: 为 Windows ARM64 Release 资产生成构建来源证明
         if: ${{ needs.release-plan.outputs.include_new_platforms == 'true' }}
@@ -950,6 +1130,9 @@ jobs:
       - release-plan
       - windows-x64-gnu-validation
       - windows-x64-gnu
+      - windows-x64-msvc-validation
+      - windows-x64-msvc-cross-build
+      - windows-x64-msvc-release
       - windows-arm64-msvc-release
       - macos-arm-release
       - macos-intel-release
@@ -961,7 +1144,16 @@ jobs:
         !cancelled() &&
         needs.release-plan.result == 'success' &&
         needs.windows-x64-gnu-validation.result == 'success' &&
-        needs.windows-x64-gnu.result == 'success' &&
+        ((needs.release-plan.outputs.windows_msvc_enabled == 'false' &&
+          needs.windows-x64-gnu.result == 'success' &&
+          needs.windows-x64-msvc-validation.result == 'skipped' &&
+          needs.windows-x64-msvc-cross-build.result == 'skipped' &&
+          needs.windows-x64-msvc-release.result == 'skipped') ||
+         (needs.release-plan.outputs.windows_msvc_enabled == 'true' &&
+          needs.windows-x64-gnu.result == 'skipped' &&
+          needs.windows-x64-msvc-validation.result == 'success' &&
+          needs.windows-x64-msvc-cross-build.result == 'success' &&
+          needs.windows-x64-msvc-release.result == 'success')) &&
         needs.release-attestations.result == 'success' &&
         (needs.windows-arm64-msvc-release.result == 'success' ||
           (needs.windows-arm64-msvc-release.result == 'skipped' && needs.release-plan.outputs.include_new_platforms == 'false')) &&
@@ -994,6 +1186,10 @@ jobs:
       RELEASE_TAG: ${{ needs.release-plan.outputs.release_tag }}
       GROK_VERSION: ${{ needs.release-plan.outputs.grok_version }}
       ZIP_NAME: ${{ needs.release-plan.outputs.zip_name }}
+      MSVC_ARCHIVE_NAME: ${{ needs.release-plan.outputs.msvc_archive_name }}
+      WINDOWS_MSVC_ENABLED: ${{ needs.release-plan.outputs.windows_msvc_enabled }}
+      WINDOWS_X64_DISTRIBUTION: ${{ needs.release-plan.outputs.windows_x64_distribution }}
+      WINDOWS_PUBLIC_ARCHIVE_NAME: ${{ needs.release-plan.outputs.windows_public_archive_name }}
       WINDOWS_ARM_ARCHIVE_NAME: ${{ needs.windows-arm64-msvc-release.outputs.archive_name }}
       MAC_ARCHIVE_NAME: ${{ needs.macos-arm-release.outputs.archive_name }}
       MAC_INTEL_ARCHIVE_NAME: ${{ needs.macos-intel-release.outputs.archive_name }}
@@ -1054,6 +1250,19 @@ jobs:
           name: ${{ needs.linux-arm64-gnu-release.outputs.artifact_name }}
           path: dist
 
+      - name: 检出已验证发布策略
+        if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.release-plan.outputs.source_commit }}
+          path: release-source
+      - name: 发布前再次核验分发策略及保留的历史桥接包
+        if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}
+        shell: pwsh
+        run: |
+          python -B release-source/.github/scripts/windows-msvc-release.py preflight --version $env:GROK_VERSION --tag $env:RELEASE_TAG --repository $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw '发布前分发策略或历史桥接包核验失败。' }
+
       - name: 创建 Draft、核验资产并发布
         id: publish
         shell: pwsh
@@ -1061,10 +1270,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
           $dist = $env:DIST_DIR
-          $assets = @(
-            (Join-Path $dist $env:ZIP_NAME),
-            (Join-Path $dist "$env:ZIP_NAME.sha256")
-          )
+          $assets = @()
+          if ($env:WINDOWS_X64_DISTRIBUTION -ne 'native') {
+            $assets += @((Join-Path $dist $env:ZIP_NAME), (Join-Path $dist "$env:ZIP_NAME.sha256"))
+          }
           if ($env:INCLUDE_MACOS -eq 'true') {
             $assets += @(
               (Join-Path $dist $env:MAC_ARCHIVE_NAME),
@@ -1079,6 +1288,9 @@ jobs:
           }
           # Only the original platforms have clients that need public sidecars.
           $legacySidecars = @($assets | Where-Object { $_.EndsWith('.sha256', [StringComparison]::Ordinal) })
+          if ($env:WINDOWS_MSVC_ENABLED -eq 'true') {
+            $assets += @((Join-Path $dist $env:MSVC_ARCHIVE_NAME), (Join-Path $dist "$env:MSVC_ARCHIVE_NAME.sha256"))
+          }
           if ($env:INCLUDE_NEW_PLATFORMS -eq 'true') {
             foreach ($name in @($env:WINDOWS_ARM_ARCHIVE_NAME, $env:MAC_INTEL_ARCHIVE_NAME, $env:LINUX_ARM_ARCHIVE_NAME)) {
               $assets += @((Join-Path $dist $name), (Join-Path $dist "$name.sha256"))
@@ -1107,7 +1319,12 @@ jobs:
               throw "校验文件内容与资产 SHA-256 不一致：$sidecarPath"
             }
           }
-          Assert-ChecksumSidecar (Join-Path $dist $env:ZIP_NAME)
+          if ($env:WINDOWS_X64_DISTRIBUTION -ne 'native') {
+            Assert-ChecksumSidecar (Join-Path $dist $env:ZIP_NAME)
+          }
+          if ($env:WINDOWS_MSVC_ENABLED -eq 'true') {
+            Assert-ChecksumSidecar (Join-Path $dist $env:MSVC_ARCHIVE_NAME)
+          }
           if ($env:INCLUDE_MACOS -eq 'true') {
             Assert-ChecksumSidecar (Join-Path $dist $env:MAC_ARCHIVE_NAME)
           }
@@ -1127,6 +1344,18 @@ jobs:
           [Array]::Sort($actualLocalNames, [StringComparer]::Ordinal)
           if (($expectedLocalNames -join "`n") -cne ($actualLocalNames -join "`n")) {
             throw "发布目录不是精确资产集合：$($actualLocalNames -join ', ')"
+          }
+          # Preserve provenance coverage for the native payload, even when it
+          # is an internal input embedded in the single public GNU container.
+          $attestationAssets = @($assets)
+          if ($env:WINDOWS_X64_DISTRIBUTION -eq 'embedded') {
+            $assets = @($assets | Where-Object {
+              (Split-Path $_ -Leaf) -cne $env:MSVC_ARCHIVE_NAME -and
+              (Split-Path $_ -Leaf) -cne "$env:MSVC_ARCHIVE_NAME.sha256"
+            })
+          }
+          if (@($assets | Where-Object { (Split-Path $_ -Leaf) -ceq $env:WINDOWS_PUBLIC_ARCHIVE_NAME }).Count -ne 1) {
+            throw 'Windows x64 公开安装包必须精确为一个。'
           }
           # Select public Release assets after all local hashes have been checked.
           # All sidecars remain internal build/attestation inputs. New platforms
@@ -1357,7 +1586,7 @@ jobs:
               throw "Release 发布后 $($asset.name) 的 digest 与本地资产不一致。"
             }
           }
-          foreach ($assetPath in $assets) {
+          foreach ($assetPath in $attestationAssets) {
             $verified = $false
             for ($attempt = 1; $attempt -le 5; $attempt++) {
               & gh attestation verify $assetPath `

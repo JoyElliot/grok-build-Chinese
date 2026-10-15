@@ -16,14 +16,16 @@ Menu 显示中文菜单；Install 共存安装；Commands 打开包内命令设�
 不修改用户 Path。便携版始终不修改 Path。
 .PARAMETER Repair
 允许重新安装相同版本；任何模式都不自动降级。
+.PARAMETER AllowDowngrade
+配合显式 -Version 允许明确降级；请先自行备份共享 GROK_HOME，旧版本数据兼容性无法保证。
 .PARAMETER NonInteractive
 使用参数完成共存或便携安装，不显示菜单。相同版本需另加 -Repair。
 .PARAMETER VerifyOnly
 只下载、校验完整包并检查候选程序版本，不安装。
 .PARAMETER WindowsX64Runtime
-Windows x64 工具链。默认保留 GNU；MSVC 用于显式安装和迁移入口。
+Windows x64 工具链。Auto 优先同版本原生 MSVC，否则验证 GNU 外包；内嵌 MSVC 会直接安装。Msvc 不接受历史完整 GNU。
 .PARAMETER Version
-安装指定的正式版本。迁移入口用它固定到启动器对应版本，避免下载途中跳到另一版本。
+安装指定正式版本，绝不悄悄替换成其他版本。较低版本另需 -AllowDowngrade。
 .EXAMPLE
 & .\Install-GrokZhOnline.ps1
 .EXAMPLE
@@ -39,14 +41,16 @@ param(
     [string]$GrokHome,
     [switch]$NoPathUpdate,
     [switch]$Repair,
+    [switch]$AllowDowngrade,
     [switch]$NonInteractive,
     [switch]$VerifyOnly,
-    [ValidateSet('Gnu', 'Msvc')][string]$WindowsX64Runtime = 'Gnu',
+    [ValidateSet('Auto', 'Gnu', 'Msvc')][string]$WindowsX64Runtime = 'Auto',
     [string]$Version
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:OnlineRuntimePolicy = 'Auto'
 $script:OnlineRepo = 'JoyElliot/grok-build-Chinese'
 $script:OnlinePlatformSuffix = 'windows-x86_64-gnu'
 $script:OnlineTargetTriple = 'x86_64-pc-windows-gnu'
@@ -130,7 +134,7 @@ public static class GrokOnlineNativeMachine {
     }
 }
 
-function Get-OnlineReleaseContract {
+function Get-OnlineReleaseIdentity {
     param($Release)
     foreach ($flag in @('draft', 'prerelease', 'immutable')) {
         if ((Get-OnlineProperty $Release $flag) -isnot [bool]) { throw "发布标志无效：$flag" }
@@ -143,9 +147,26 @@ function Get-OnlineReleaseContract {
     $version = ConvertTo-OnlineVersion $versionText -StableOnly
     $legacy = (Compare-OnlineVersion $version (ConvertTo-OnlineVersion '1.0.8')) -le 0
     if ($modern -eq $legacy) { throw "发布标签与版本不匹配：$tag" }
-    $name = "grok-zh-$versionText-$script:OnlinePlatformSuffix.zip"
-    $assets = @(Get-OnlineProperty $Release 'assets')
-    $assets = @($assets | Where-Object { (Get-OnlineProperty $_ 'name') -ceq $name })
+    return [pscustomobject]@{ Version = $version; Tag = $tag; Legacy = $legacy }
+}
+
+function Get-OnlineReleaseContract {
+    param($Release)
+    $identity = Get-OnlineReleaseIdentity $Release
+    $version = $identity.Version; $versionText = $version.Text; $tag = $identity.Tag; $legacy = $identity.Legacy
+    $allAssets = @(Get-OnlineProperty $Release 'assets')
+    $suffixes = if ($script:OnlinePlatformSuffix -like 'windows-x86_64-*' -and $script:OnlineRuntimePolicy -ne 'Gnu') {
+        @('windows-x86_64-msvc', 'windows-x86_64-gnu')
+    } else { @($script:OnlinePlatformSuffix) }
+    $name = $null; $chosenSuffix = $null
+    foreach ($suffix in $suffixes) {
+        $candidateName = "grok-zh-$versionText-$suffix.zip"
+        if (@($allAssets | Where-Object { (Get-OnlineProperty $_ 'name') -ceq $candidateName }).Count -gt 0) {
+            $name = $candidateName; $chosenSuffix = $suffix; break
+        }
+    }
+    if (!$name) { throw 'Release 缺少当前平台安装包。' }
+    $assets = @($allAssets | Where-Object { (Get-OnlineProperty $_ 'name') -ceq $name })
     if ($assets.Count -ne 1) { throw 'Release 缺少当前平台安装包，或存在同名重复附件。' }
     $verified = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
     foreach ($asset in $assets) {
@@ -170,6 +191,13 @@ function Get-OnlineReleaseContract {
     return [pscustomobject]@{
         Version = $version; Tag = $tag; Legacy = $legacy; Archive = $verified[$name]
         PackageRoot = $name.Substring(0, $name.Length - 4)
+        TargetTriple = switch ($chosenSuffix) {
+            'windows-x86_64-msvc' { 'x86_64-pc-windows-msvc' }
+            'windows-x86_64-gnu' { 'x86_64-pc-windows-gnu' }
+            'windows-aarch64-msvc' { 'aarch64-pc-windows-msvc' }
+            default { throw '未知 Windows 平台。' }
+        }
+        RequireEmbedded = $script:OnlineRuntimePolicy -eq 'Msvc' -and $chosenSuffix -eq 'windows-x86_64-gnu'
         ReleaseNotes = [string](Get-OnlineProperty $Release 'body')
     }
 }
@@ -317,13 +345,17 @@ function Get-LatestOnlineRelease {
         $releases = @()
         if ($null -ne $parsed) { $releases = @($parsed) }
         foreach ($release in $releases) {
-            try { $candidate = Get-OnlineReleaseContract $release }
-            catch { Write-Verbose "忽略无法校验的 Release：$($_.Exception.Message)"; continue }
-            if ($null -eq $best -or (Compare-OnlineVersion $candidate.Version $best.Version) -gt 0) { $best = $candidate }
+            try { $identity = Get-OnlineReleaseIdentity $release }
+            catch { Write-Verbose "忽略非正式或不可变版本：$($_.Exception.Message)"; continue }
+            if ($null -eq $best -or (Compare-OnlineVersion $identity.Version $best.Version) -gt 0) {
+                $best = $identity; $bestRelease = $release
+            }
         }
         if ($releases.Count -lt 100) {
             if ($null -eq $best) { throw '未找到可验证的 Windows 正式 Release。' }
-            return $best
+            # Resolve assets only after choosing the version. A damaged newest
+            # release is an error, never permission to install an older version.
+            return Get-OnlineReleaseContract $bestRelease
         }
     }
     throw 'Release 列表超过查询上限，未执行安装。'
@@ -410,8 +442,33 @@ function Read-OnlineZipText {
     } finally { $stream.Dispose(); $memory.Dispose() }
 }
 
+function Assert-OnlineJsonUniqueKeys {
+    param([string]$Json)
+    $stack = [Collections.Generic.Stack[object]]::new()
+    $tokens = [regex]::Matches($Json, '"(?:\\.|[^"\\])*"|[{}\[\]:,]|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')
+    foreach ($match in $tokens) {
+        $token = $match.Value
+        if ($token -eq '{' -or $token -eq '[') {
+            $stack.Push([pscustomobject]@{ Object = $token -eq '{'; Key = $token -eq '{'; Names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) })
+        } elseif ($token -eq '}' -or $token -eq ']') {
+            if ($stack.Count -eq 0) { throw '更新协议 JSON 结构无效。' }
+            $null = $stack.Pop()
+        } elseif ($stack.Count -gt 0) {
+            $frame = $stack.Peek()
+            if ($token -eq ',') { $frame.Key = $frame.Object }
+            elseif ($token -eq ':') { $frame.Key = $false }
+            elseif ($frame.Object -and $frame.Key -and $token.StartsWith('"')) {
+                $name = (ConvertFrom-Json ('{"value":' + $token + '}')).value
+                if (!$frame.Names.Add($name)) { throw "更新协议字段重复：$name" }
+                $frame.Key = $false
+            }
+        }
+    }
+}
+
+
 function Read-OnlinePackageProtocol {
-    param([string]$Text, [string]$Version)
+    param([string]$Text, [string]$Version, [string]$Platform = $script:OnlineTargetTriple)
     $begin = 'GROK-UPDATE-PROTOCOL-BEGIN'; $end = 'GROK-UPDATE-PROTOCOL-END'
     if (!$Text.Contains($begin) -and !$Text.Contains($end)) { return $null }
     $lines = @($Text -split '\r?\n')
@@ -419,16 +476,16 @@ function Read-OnlinePackageProtocol {
     $ends = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -ceq $end) { $i } })
     if ($starts.Count -ne 1 -or $ends.Count -ne 1 -or $starts[0] + 1 -ge $ends[0]) { throw '包内更新协议块不完整或重复。' }
     $json = $lines[($starts[0] + 1)..($ends[0] - 1)] -join "`n"
+    Assert-OnlineJsonUniqueKeys $json
     $protocol = ConvertFrom-Json -InputObject $json
     foreach ($field in @('schema', 'version', 'platform', 'mode', 'manifest', 'executable', 'installer')) {
         $value = Get-OnlineProperty $protocol $field
-        if ([regex]::Matches($json, '"' + $field + '"\s*:').Count -ne 1) { throw "更新协议字段重复或无效：$field" }
         if ($field -eq 'schema') {
             if (($value -isnot [int] -and $value -isnot [long]) -or $value -ne 1) { throw '不支持此更新协议，请更新在线安装入口。' }
         } elseif ($value -isnot [string]) { throw "更新协议字段类型无效：$field" }
     }
     if ($protocol.mode -cne 'executable-only' -or $protocol.manifest -cne 'SHA256SUMS.txt') { throw '不支持此更新协议，请更新在线安装入口。' }
-    if ($protocol.version -cne $Version -or $protocol.platform -cne $script:OnlineTargetTriple) { throw '包内更新协议与发布版本或平台不一致。' }
+    if ($protocol.version -cne $Version -or $protocol.platform -cne $Platform) { throw '包内更新协议与发布版本或平台不一致。' }
     Assert-OnlinePackageRelativePath $protocol.executable
     Assert-OnlinePackageRelativePath $protocol.installer
     if ($protocol.executable -in @('BUILD-INFO.txt', 'SHA256SUMS.txt') -or
@@ -484,7 +541,7 @@ function Expand-VerifiedOnlinePackage {
         foreach ($name in @('BUILD-INFO.txt', 'SHA256SUMS.txt')) {
             if (!$entries.ContainsKey($name)) { throw "ZIP 缺少文件：$name" }
         }
-        $protocol = Read-OnlinePackageProtocol (Read-OnlineZipText $entries['BUILD-INFO.txt']) $Contract.Version.Text
+        $protocol = Read-OnlinePackageProtocol (Read-OnlineZipText $entries['BUILD-INFO.txt']) $Contract.Version.Text $Contract.TargetTriple
         if ($entries['SHA256SUMS.txt'].Length -gt 65536) { throw '包内校验清单超过大小限制。' }
         $manifestStream = $entries['SHA256SUMS.txt'].Open()
         try {
@@ -605,7 +662,7 @@ function Get-OnlineInstallMarker {
 
 function Invoke-OnlinePackageInstaller {
     param([string]$Package, [string]$Directory, [string]$SharedHome, [Parameter(Mandatory = $true)][string]$Version,
-        [switch]$Commands, [switch]$NoPathUpdate)
+        [switch]$Commands, [switch]$NoPathUpdate, [switch]$AllowDowngrade)
     $buildInfo = ConvertFrom-OnlineUtf8 ([IO.File]::ReadAllBytes((Join-Path $Package 'BUILD-INFO.txt')))
     $protocol = Read-OnlinePackageProtocol $buildInfo $Version
     $installer = if ($protocol) { $protocol.installer } else { 'Install-GrokZh.ps1' }
@@ -615,6 +672,20 @@ function Invoke-OnlinePackageInstaller {
     if ($SharedHome) { $arguments += @('-GrokHome', $SharedHome) }
     if ($Commands) { $arguments += '-InteractiveCommandSetup' }
     if ($NoPathUpdate) { $arguments += '-NoPathUpdate' }
+    if (Test-Path -LiteralPath (Join-Path $Directory '.grok-zh-install.json')) {
+        $existing = Get-OnlineInstallMarker $Directory
+        if ($null -ne $existing.PSObject.Properties['commands'] -and
+            @($existing.commands | Where-Object { $_ -in @('grok', 'agent') }).Count -gt 0) { $arguments += '-OverrideOfficialCommands' }
+    }
+    if ($AllowDowngrade) {
+        # Historical installers predate this guard. The online entry has already
+        # obtained an exact -Version plus explicit downgrade approval; never send
+        # an unsupported parameter to the authentic historical installer.
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Package $installer), [ref]$tokens, [ref]$errors)
+        if (@($errors).Count -gt 0) { throw '包内安装器语法无效。' }
+        if ($ast.ParamBlock -and @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'AllowDowngrade' }).Count -eq 1) { $arguments += '-AllowDowngrade' }
+    }
     $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
     & $hostExe @arguments | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "包内安装器返回错误（退出码 $LASTEXITCODE），请按上方中文提示处理。" }
@@ -812,8 +883,10 @@ function Install-OnlinePortable {
 function Invoke-GrokZhOnline {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([string]$Mode = 'Menu', [string]$InstallDir, [string]$PortableDir, [string]$GrokHome,
-        [switch]$NoPathUpdate, [switch]$Repair, [switch]$NonInteractive, [switch]$VerifyOnly,
-        [ValidateSet('Gnu', 'Msvc')][string]$WindowsX64Runtime = 'Gnu', [string]$Version)
+        [switch]$NoPathUpdate, [switch]$Repair, [switch]$AllowDowngrade, [switch]$NonInteractive, [switch]$VerifyOnly,
+        [ValidateSet('Auto', 'Gnu', 'Msvc')][string]$WindowsX64Runtime = 'Auto', [string]$Version)
+    if ($AllowDowngrade -and !$Version) { throw '-AllowDowngrade 必须与明确的 -Version 一起使用，不能自动选择较低版本。' }
+    $script:OnlineRuntimePolicy = $WindowsX64Runtime
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or ![Environment]::Is64BitOperatingSystem) {
         throw '此在线安装入口只支持 Windows x64 或 ARM64。'
     }
@@ -823,7 +896,7 @@ function Invoke-GrokZhOnline {
         $script:OnlineTargetTriple = 'aarch64-pc-windows-msvc'
         $architecture = 'ARM64'
     } elseif ($nativeMachine -eq 0x8664) {
-        $runtime = $WindowsX64Runtime.ToLowerInvariant()
+        $runtime = if ($WindowsX64Runtime -eq 'Auto') { 'gnu' } else { $WindowsX64Runtime.ToLowerInvariant() }
         $script:OnlinePlatformSuffix = "windows-x86_64-$runtime"
         $script:OnlineTargetTriple = "x86_64-pc-windows-$runtime"
         $architecture = 'x64'
@@ -849,7 +922,8 @@ function Invoke-GrokZhOnline {
         Write-Host '正在检查最新正式版本...'
         $client = New-OnlineHttpClient
         $release = if ($Version) { Get-ExactOnlineRelease -Client $client -Version $Version -WorkDirectory $work } else { Get-LatestOnlineRelease -Client $client -WorkDirectory $work }
-        Write-Host "系统：Windows $architecture`n最新正式版：$($release.Version.Text)`n默认安装位置：$InstallDir`n"
+        $script:OnlineTargetTriple = $release.TargetTriple
+        Write-Host "系统：Windows $architecture`n所选正式版：$($release.Version.Text)`n默认安装位置：$InstallDir`n"
         if ($Mode -eq 'Menu' -and !$NonInteractive -and !$VerifyOnly) {
             Write-Host "1. 安装或更新（推荐，与官方版共存）`n2. 安装并设置 grok / agent 启动命令`n3. 自定义安装目录`n4. 创建或更新便携版（不修改 PATH）`n0. 退出"
             do { $choice = Read-Host '请选择 [0-4]' } while ($choice -notmatch '^[0-4]$')
@@ -879,8 +953,19 @@ function Invoke-GrokZhOnline {
                 $installed = Get-OnlineExecutableVersion (Join-Path $programDirectory 'grok-zh.exe')
                 Write-Host "当前安装版本：$($installed.Text)"
                 $comparison = Compare-OnlineVersion $installed $release.Version
-                if ($comparison -gt 0) { throw "当前版本 $($installed.Text) 高于最新正式版 $($release.Version.Text)，不会自动降级。" }
-                if ($comparison -eq 0 -and !$Repair) {
+                if ($comparison -gt 0) {
+                    if (!$AllowDowngrade -or !$Version) { throw "当前版本 $($installed.Text) 高于所选正式版 $($release.Version.Text)，不会自动降级；明确选择 -Version 后还需 -AllowDowngrade。" }
+                    Write-Warning "正在明确降级到 $Version。请先自行备份共享 GROK_HOME：$shared。旧版本数据格式兼容性未知；安装器不会回滚或修改共享账号、配置和会话。"
+                }
+                $installedBuildInfo = Join-Path $programDirectory 'BUILD-INFO.txt'
+                $installedProtocol = if (Test-Path -LiteralPath $installedBuildInfo) {
+                    $text = [IO.File]::ReadAllText($installedBuildInfo)
+                    # GNU wrapper retirement is allowed even at the same version.
+                    $text.Contains('embedded_runtime') -or $installed.DisplayText.Contains('(GNU migration launcher)')
+                } else { $false }
+                $runtimeChange = $installedProtocol -or $release.RequireEmbedded -or ($release.TargetTriple -eq 'x86_64-pc-windows-msvc' -and
+                    (Test-Path -LiteralPath $installedBuildInfo) -and [IO.File]::ReadAllText($installedBuildInfo).Contains('x86_64-pc-windows-gnu'))
+                if ($comparison -eq 0 -and !$Repair -and !$runtimeChange) {
                     if ($NonInteractive) { Write-Host '已经是最新正式版；需要修复安装时请加 -Repair。'; return }
                     if ((Read-Host '版本相同。输入 1 修复安装，其他输入退出') -cne '1') { Write-Host '已取消。'; return }
                 }
@@ -894,6 +979,17 @@ function Invoke-GrokZhOnline {
         Write-Host '正在校验 ZIP 路径、包内文件与 SHA-256...'
         $package = Expand-VerifiedOnlinePackage -ArchivePath $zipPath -Destination (Join-Path $work 'package') -Contract $release
         $protocol = Read-OnlinePackageProtocol (ConvertFrom-OnlineUtf8 ([IO.File]::ReadAllBytes((Join-Path $package 'BUILD-INFO.txt')))) $release.Version.Text
+        $embedded = $protocol -and $null -ne $protocol.PSObject.Properties['embedded_runtime']
+        if ($embedded) {
+            if ($protocol.platform -cne 'x86_64-pc-windows-gnu' -or $protocol.installer -cne 'Install-GrokZh.ps1') { throw '内嵌运行时外包入口无效。' }
+            # The complete outer manifest and Release digest are verified above.
+            # Execute only the authenticated extraction mode, never the wrapper.
+            $package = & (Join-Path $package $protocol.installer) -PackageDir $package -ExtractOnly -ExtractionDirectory (Join-Path $work 'embedded-msvc')
+            if ($package -isnot [string] -or !(Test-Path -LiteralPath $package -PathType Container)) { throw '内嵌运行时没有返回唯一有效目录。' }
+            $script:OnlineTargetTriple = 'x86_64-pc-windows-msvc'
+            $protocol = Read-OnlinePackageProtocol (ConvertFrom-OnlineUtf8 ([IO.File]::ReadAllBytes((Join-Path $package 'BUILD-INFO.txt')))) $release.Version.Text
+            if (!$protocol -or $protocol.platform -cne 'x86_64-pc-windows-msvc' -or $null -ne $protocol.PSObject.Properties['embedded_runtime']) { throw '内嵌运行时不是所选版本的原生 MSVC 包。' }
+        } elseif ($release.RequireEmbedded) { throw '所选版本没有原生或可验证的内嵌 MSVC 包；不会改装 GNU 或其他版本。' }
         $executable = if ($protocol) { $protocol.executable } else { 'grok-zh.exe' }
         $candidate = Get-OnlineExecutableVersion (Join-Path $package $executable)
         if ($candidate.Text -cne $release.Version.Text) { throw '候选程序版本与 Release 不一致。' }
@@ -903,7 +999,7 @@ function Invoke-GrokZhOnline {
             Install-OnlinePortable -Package $package -Root $target -SharedHome $shared -Version $candidate.Text
         } else {
             Invoke-OnlinePackageInstaller -Package $package -Directory $target -SharedHome $explicitHome -Version $candidate.Text `
-                -Commands:($Mode -eq 'Commands') -NoPathUpdate:$NoPathUpdate
+                -Commands:($Mode -eq 'Commands') -NoPathUpdate:$NoPathUpdate -AllowDowngrade:$AllowDowngrade
             $markerPath = Join-Path $programDirectory '.grok-zh-install.json'
             if (!(Test-Path -LiteralPath $markerPath) -or ($beforeMarker -and
                 (Get-FileHash -LiteralPath $markerPath -Algorithm SHA256).Hash -ceq $beforeMarker)) {

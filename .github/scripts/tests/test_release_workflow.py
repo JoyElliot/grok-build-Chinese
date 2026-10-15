@@ -28,7 +28,7 @@ def dependencies(block):
     return {scalar.strip()} if scalar.strip() else set(re.findall(r"- ([\w-]+)", sequence))
 
 
-def gate_allows(block, results, include_unix=True, include_new_platforms=True, cancelled=False):
+def gate_allows(block, results, include_unix=True, include_new_platforms=True, cancelled=False, msvc_enabled=False):
     field = re.search(r"^    if: >-\n((?:      .*\n)+)", block, re.M)
     if field is None:
         raise AssertionError("missing explicit publication condition")
@@ -41,6 +41,7 @@ def gate_allows(block, results, include_unix=True, include_new_platforms=True, c
         lambda match: repr(str(include_new_platforms if match[1] == "new_platforms" else include_unix).lower()),
         expression,
     )
+    expression = expression.replace("needs.release-plan.outputs.windows_msvc_enabled", repr(str(msvc_enabled).lower()))
     expression = expression.replace("!cancelled()", str(not cancelled))
     expression = expression.replace("&&", " and ").replace("||", " or ")
     tree = ast.parse(expression, mode="eval")
@@ -82,26 +83,32 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("cargo test ", self.jobs[BUILD])
 
     def test_publication_requires_every_enabled_platform_and_validation(self):
-        for job in ("release-attestations", "release-publisher"):
+        msvc = {"windows-x64-msvc-validation", "windows-x64-msvc-cross-build", "windows-x64-msvc-release"}
+        for job, enabled in product(("release-attestations", "release-publisher"), (False, True)):
             block = self.jobs[job]
             required = dependencies(block)
             self.assertTrue({
                 "release-plan", VALIDATION, BUILD, "windows-arm64-msvc-release",
                 "macos-arm-release", "macos-intel-release", "linux-x64-gnu-release",
-                "linux-arm64-gnu-release",
+                "linux-arm64-gnu-release", *msvc,
             }.issubset(required))
-            baseline = dict.fromkeys(required, "success")
-            self.assertTrue(gate_allows(block, baseline))
-            self.assertFalse(gate_allows(block, baseline, cancelled=True))
-            for failed_job, outcome in product(required, ("failure", "cancelled", "skipped")):
-                with self.subTest(gate=job, failed_job=failed_job, outcome=outcome):
-                    self.assertFalse(gate_allows(block, baseline | {failed_job: outcome}))
+            inactive = {BUILD} if enabled else msvc
+            baseline = {name: "skipped" if name in inactive else "success" for name in required}
+            self.assertTrue(gate_allows(block, baseline, msvc_enabled=enabled))
+            self.assertFalse(gate_allows(block, baseline, cancelled=True, msvc_enabled=enabled))
+            for failed_job, outcome in product(required, ("success", "failure", "cancelled", "skipped")):
+                if outcome == baseline[failed_job]:
+                    continue
+                with self.subTest(gate=job, msvc=enabled, failed_job=failed_job, outcome=outcome):
+                    self.assertFalse(gate_allows(block, baseline | {failed_job: outcome}, msvc_enabled=enabled))
 
     def test_legacy_bridge_only_allows_the_explicitly_disabled_platform_jobs_to_skip(self):
         for job in ("release-attestations", "release-publisher"):
             block = self.jobs[job]
             results = dict.fromkeys(dependencies(block), "success")
             results.update({
+                "windows-x64-msvc-validation": "skipped", "windows-x64-msvc-cross-build": "skipped",
+                "windows-x64-msvc-release": "skipped",
                 "macos-arm-release": "skipped", "linux-x64-gnu-release": "skipped",
                 "windows-arm64-msvc-release": "skipped", "macos-intel-release": "skipped",
                 "linux-arm64-gnu-release": "skipped",
@@ -156,20 +163,21 @@ class PreviewNativeValidationTests(unittest.TestCase):
             self.assertIn(f"runs-on: {runner}", jobs[job])
             self.assertNotIn("continue-on-error", jobs[job])
         experiment = jobs["windows-msvc-migration-experiment"]
-        self.assertEqual(experiment.count("Test-MigrationProduct.ps1"), 2)
+        self.assertEqual(experiment.count("Test-EmbeddedMigrationProduct.ps1"), 2)
         self.assertEqual(experiment.count("Test-WindowsMigration.ps1"), 0)
         self.assertEqual(jobs["windows-msvc-migration-test"].count("Test-WindowsMigration.ps1"), 2)
         self.assertIn("--payload-package", experiment)
         self.assertIn("phase: test", jobs["windows-msvc-migration-test"])
-        self.assertNotIn("build-windows-msvc-x64", WORKFLOW.read_text(encoding="utf-8"))
-        self.assertNotIn("build-windows-msvc-cross", WORKFLOW.read_text(encoding="utf-8"))
+        release_jobs = job_blocks(WORKFLOW.read_text(encoding="utf-8"))
+        for job in ("windows-x64-msvc-validation", "windows-x64-msvc-cross-build", "windows-x64-msvc-release"):
+            self.assertIn("if: ${{ needs.release-plan.outputs.windows_msvc_enabled == 'true' }}", release_jobs[job])
         cross = jobs["windows-msvc-cross-build"]
         self.assertIn("RUSTUP_TOOLCHAIN: 1.94.0-aarch64-pc-windows-msvc", cross)
         self.assertIn("TARGET: x86_64-pc-windows-msvc", cross)
         self.assertIn("needs.windows-msvc-cross-build.outputs.artifact_name", experiment)
         self.assertIn("version: ${{ steps.build.outputs.version }}", cross)
         self.assertIn("GROK_VERSION: ${{ needs.windows-msvc-cross-build.outputs.version }}", experiment)
-        self.assertIn("--version $env:GROK_VERSION --migration-tag", experiment)
+        self.assertIn("build-windows-embedded-bootstrap.py --output migration-dist --version $env:GROK_VERSION", experiment)
         self.assertNotIn("grok-zh-1.0.99-windows", experiment)
         self.assertIn("msvc-build-input.py verify", experiment)
         self.assertIn("package-windows-msvc-x64.ps1", experiment)

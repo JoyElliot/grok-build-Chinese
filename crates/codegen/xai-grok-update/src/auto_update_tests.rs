@@ -2642,6 +2642,232 @@ fn test_community_version_output_must_match_release_version() {
     ));
 }
 
+#[test]
+fn test_install_intent_requires_explicit_version_or_channel_selection() {
+    // Automatic/leader callers resolve Some(target), but do not have either
+    // explicit CLI option. A normal manual update and --force are also upgrade-only.
+    assert_eq!(
+        InstallIntent::from_request(None, None),
+        InstallIntent::UpgradeOnly
+    );
+    assert_eq!(
+        InstallIntent::from_request(Some("1.2.3"), None),
+        InstallIntent::ExplicitVersion
+    );
+    assert_eq!(
+        InstallIntent::from_request(None, Some("stable")),
+        InstallIntent::ExplicitChannelSwitch
+    );
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_windows_community_activation_retains_the_actual_newer_version() {
+    for (installed, candidate, retained) in [
+        ("1.2.4", "1.2.3", Some("1.2.4")),
+        ("1.2.3", "1.2.3", None),
+        ("1.2.2", "1.2.3", None),
+        ("1.2.4-zh.ci.59", "1.2.3", Some("1.2.4-zh.ci.59")),
+        ("1.2.3", "1.2.3-alpha.1", Some("1.2.3")),
+        ("1.2.3-alpha.1", "1.2.3", None),
+    ] {
+        let output = format!("grok-zh {installed} (abcdef0) [stable]\n");
+        assert_eq!(
+            community_windows_version_to_retain(
+                Ok(output),
+                &Version::parse(candidate).unwrap(),
+                InstallIntent::UpgradeOnly,
+            )
+            .unwrap()
+            .as_deref(),
+            retained,
+        );
+    }
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_windows_community_activation_allows_explicit_downgrades() {
+    for intent in [
+        InstallIntent::ExplicitVersion,
+        InstallIntent::ExplicitChannelSwitch,
+    ] {
+        assert_eq!(
+            community_windows_version_to_retain(
+                Ok("grok-zh 2.0.0-alpha.1 (abcdef0)\n".to_string()),
+                &Version::parse("1.2.3").unwrap(),
+                intent,
+            )
+            .unwrap(),
+            None,
+        );
+    }
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_windows_community_activation_requires_exact_product_and_canonical_version() {
+    for output in [
+        "",
+        "grok 1.2.4 (abcdef0)\n",
+        "agent-zh 1.2.4 (abcdef0)\n",
+        "grok-zh-extra 1.2.4 (abcdef0)\n",
+        "grok-zh 1.2 (abcdef0)\n",
+        "grok-zh v1.2.4 (abcdef0)\n",
+        "grok-zh 01.2.4 (abcdef0)\n",
+        "grok-zh 1.2.4+build.1 (abcdef0)\n",
+        "grok-zh 1.2.4garbage (abcdef0)\n",
+        "grok-zh 1.2.4\n",
+        "grok-zh 1.2.4 ()\n",
+        "grok-zh 1.2.4 (unfinished\n",
+        "unexpected output\ngrok-zh 1.2.4 (abcdef0)\n",
+    ] {
+        for intent in [
+            InstallIntent::UpgradeOnly,
+            InstallIntent::ExplicitVersion,
+            InstallIntent::ExplicitChannelSwitch,
+        ] {
+            assert!(
+                community_windows_version_to_retain(
+                    Ok(output.to_string()),
+                    &Version::parse("1.2.3").unwrap(),
+                    intent,
+                )
+                .is_err(),
+                "must fail closed for {output:?} ({intent:?})",
+            );
+        }
+    }
+}
+
+#[cfg(feature = "community-build")]
+#[test]
+fn test_windows_community_activation_probe_failures_fail_closed() {
+    for intent in [
+        InstallIntent::UpgradeOnly,
+        InstallIntent::ExplicitVersion,
+        InstallIntent::ExplicitChannelSwitch,
+    ] {
+        for error in [
+            SmokeTestFailure::Timeout,
+            SmokeTestFailure::Spawn("cannot execute destination".to_string()),
+            SmokeTestFailure::NonZero {
+                status: "1".to_string(),
+                stderr: "destination failed".to_string(),
+            },
+        ] {
+            let error = community_windows_version_to_retain(
+                Err(error),
+                &Version::parse("1.2.3").unwrap(),
+                intent,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("rechecking the installed community binary")
+            );
+        }
+    }
+}
+
+#[cfg(all(windows, feature = "community-build"))]
+#[tokio::test]
+async fn test_windows_delayed_older_candidate_cannot_replace_newer_installation() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("grok-zh.exe");
+    let delayed = dir.path().join("delayed.exe");
+    let newer = dir.path().join("newer.exe");
+    std::fs::write(&destination, "1.2.1").unwrap();
+    // Both downloads started against 1.2.1; the older candidate finishes last.
+    std::fs::write(&delayed, "1.2.2").unwrap();
+    std::fs::write(&newer, "1.2.3").unwrap();
+    {
+        let _lock = acquire_windows_update_lock(&destination).unwrap();
+        let retained = activate_community_windows_candidate_locked(
+            &newer,
+            &destination,
+            &Version::parse("1.2.3").unwrap(),
+            InstallIntent::UpgradeOnly,
+            async {
+                assert!(acquire_windows_update_lock(&destination).is_err());
+                Ok("grok-zh 1.2.1 (abcdef0)\n".to_string())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(retained, None);
+    }
+    let _lock = acquire_windows_update_lock(&destination).unwrap();
+    let retained = activate_community_windows_candidate_locked(
+        &delayed,
+        &destination,
+        &Version::parse("1.2.2").unwrap(),
+        InstallIntent::UpgradeOnly,
+        async {
+            assert!(acquire_windows_update_lock(&destination).is_err());
+            let installed = std::fs::read_to_string(&destination).unwrap();
+            Ok(format!("grok-zh {installed} (abcdef0)\n"))
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(retained.as_deref(), Some("1.2.3"));
+    assert_eq!(std::fs::read_to_string(&destination).unwrap(), "1.2.3");
+    assert!(!destination.with_extension("exe.old").exists());
+}
+
+#[cfg(all(windows, feature = "community-build"))]
+#[tokio::test]
+async fn test_windows_explicit_version_and_channel_can_replace_newer_installation() {
+    for intent in [
+        InstallIntent::ExplicitVersion,
+        InstallIntent::ExplicitChannelSwitch,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("grok-zh.exe");
+        let candidate = dir.path().join("candidate.exe");
+        std::fs::write(&destination, "2.0.0-alpha.1").unwrap();
+        std::fs::write(&candidate, "1.2.3").unwrap();
+        let _lock = acquire_windows_update_lock(&destination).unwrap();
+        let retained = activate_community_windows_candidate_locked(
+            &candidate,
+            &destination,
+            &Version::parse("1.2.3").unwrap(),
+            intent,
+            std::future::ready(Ok("grok-zh 2.0.0-alpha.1 (abcdef0)\n".to_string())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retained, None);
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "1.2.3");
+    }
+}
+
+#[cfg(all(windows, feature = "community-build"))]
+#[tokio::test]
+async fn test_windows_failed_destination_probe_preserves_installed_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("grok-zh.exe");
+    let candidate = dir.path().join("candidate.exe");
+    std::fs::write(&destination, "invalid executable").unwrap();
+    std::fs::write(&candidate, "candidate").unwrap();
+    let _lock = acquire_windows_update_lock(&destination).unwrap();
+    let result = activate_community_windows_candidate_locked(
+        &candidate,
+        &destination,
+        &Version::parse("1.2.3").unwrap(),
+        InstallIntent::UpgradeOnly,
+        smoke_test_binary(&destination),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        "invalid executable"
+    );
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn test_windows_update_lock_protects_concurrent_activation_and_cleanup() {
