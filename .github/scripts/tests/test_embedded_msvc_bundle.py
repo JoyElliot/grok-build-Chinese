@@ -250,7 +250,7 @@ class EmbeddedMsvcBundleTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(fake_pe_prefix())
             with patch.object(builder.subprocess, "run", side_effect=fake_compile) as compile_call:
                 result = builder.build_launcher(output, VERSION, native, "fixture-gcc")
-            header = (output / "embedded_bootstrap_payload.h").read_text()
+            header = (output / "embedded_bootstrap_payload.h").read_text(encoding="utf-8")
             self.assertIn(f'#define EMBEDDED_ARCHIVE_SIZE {metadata["archive_size"]}ULL', header)
             self.assertIn(metadata["archive_sha256"], header)
             self.assertNotIn("native_payload[]", header)
@@ -303,7 +303,7 @@ class EmbeddedMsvcBundleTests(unittest.TestCase):
                     builder.offline_validation_bytes()
 
     def test_launcher_fast_path_and_stderr_do_not_extract_or_read_footer(self):
-        text = (builder.MIGRATION / "embedded-bootstrap.c").read_text()
+        text = (builder.MIGRATION / "embedded-bootstrap.c").read_text(encoding="utf-8")
         version_start = text.index('if (argc == 2')
         temp_start = text.index('wchar_t temp[CAP]')
         self.assertNotIn("CreateDirectoryW", text[version_start:temp_start])
@@ -315,6 +315,47 @@ class EmbeddedMsvcBundleTests(unittest.TestCase):
         self.assertIn('[int]$WaitMilliseconds = 120000', ps)
         self.assertIn('Ctrl+C', ps)
         self.assertLess(ps.rindex('Test-MigrationRuntime $runtime $version'), ps.rindex('Set-MigrationReady $runtime $version'))
+
+    def test_windows_fixture_limits_missing_temp_to_launcher_children(self):
+        fixture = (builder.ROOT / "packaging/windows/tests/Test-EmbeddedMigration.ps1").read_text(encoding="utf-8-sig")
+        launcher = fixture.split("function Invoke-Launcher(", 1)[1].split("\nfunction ", 1)[0]
+        setup = launcher.split("$process=[Diagnostics.Process]::new()", 1)[0]
+        self.assertIn("[switch]$MissingTemp", setup)
+        self.assertRegex(setup, r"(?s)if \(\$MissingTemp\) \{.*?EnvironmentVariables\['TEMP'\]=\$missingTemp.*?EnvironmentVariables\['TMP'\]=\$missingTemp")
+        self.assertIn("Assert-True (!(Test-Path -LiteralPath $missingTemp))", setup)
+        # A parent-process mutation would also reach New-FakeExe/CSC, which
+        # needs a real temp directory when compiling N+1 and N+2. This is a
+        # source-contract check; Windows CI executes the actual launcher.
+        self.assertNotRegex(fixture, r"(?i)\$env:(?:TEMP|TMP)\s*=")
+        self.assertIn("foreach ($next in @('1.0.100','1.0.101'))", fixture)
+        self.assertIn("New-FakeExe $nextExe $next", fixture)
+        for call in (
+            "$pure=Invoke-Launcher $launcher '--version' -MissingTemp",
+            "Invoke-Launcher $candidate '-V' -MissingTemp",
+            "Invoke-Launcher $candidate 'normal' -MissingTemp",
+            "$stdin=Invoke-Launcher $launcher '--stdin' $inputBytes -MissingTemp",
+            "$nextVersion=Invoke-Launcher $launcher '--version' -MissingTemp",
+            "Invoke-Launcher $launcher 'normal' -MissingTemp",
+            "Invoke-Launcher $candidate '--version' -MissingTemp",
+        ):
+            with self.subTest(call=call):
+                self.assertIn(call, fixture)
+
+
+class EmbeddedMsvcBundleEncodingTests(unittest.TestCase):
+    def test_source_reads_work_with_windows_legacy_default_encoding(self):
+        original_read_text = Path.read_text
+
+        def legacy_read_text(path, encoding=None, errors=None):
+            return original_read_text(path, encoding=encoding or "cp1252", errors=errors)
+
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(EmbeddedMsvcBundleTests)
+        expected = suite.countTestCases()
+        result = unittest.TestResult()
+        with patch.object(Path, "read_text", legacy_read_text):
+            suite.run(result)
+        self.assertEqual(result.testsRun, expected)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
 
 
 if __name__ == "__main__":

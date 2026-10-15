@@ -75,6 +75,36 @@ class EmbeddedInstallerContractTests(unittest.TestCase):
         self.assertIn("UserPath -ceq 'AllowDowngrade'", body)
         self.assertIn("$arguments += '-OverrideOfficialCommands'", body)
 
+    def test_historical_fixture_removes_one_parameter_with_either_line_ending(self):
+        start = FIXTURE.index("function ConvertTo-EmbeddedHistoricalInstaller(")
+        body = FIXTURE[start:FIXTURE.index("\nfunction ", start + 1)]
+        pattern = re.search(r"\$parameterPattern = '([^']+)'", body).group(1)
+        self.assertIn("[regex]::Matches($Source, $parameterPattern).Count -eq 1", body)
+        removal = body.index("[regex]::Replace($Source, $parameterPattern, '')")
+        absent = body.index("$_.Name.VariablePath.UserPath -ieq 'AllowDowngrade'")
+        references = body.index("$result.Replace('$AllowDowngrade', '$true')")
+        self.assertLess(removal, absent)
+        self.assertLess(absent, references)
+        self.assertIn(".Count -eq 0)", body[absent:references])
+        self.assertIn("Parser]::ParseInput", body[removal:absent])
+        self.assertIn("Parser]::ParseInput", body[references:])
+        self.assertEqual(body.count("Assert-Embedded ($parseErrors.Count -eq 0)"), 2)
+        transformed = []
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                source = FULL.replace("\n", newline)
+                self.assertEqual(len(re.findall(pattern, source)), 1)
+                historical, count = re.subn(pattern, "", source)
+                self.assertEqual(count, 1)
+                self.assertNotRegex(historical, r"\[switch\]\s*\$AllowDowngrade\b")
+                self.assertIn("$AllowDowngrade", historical)
+                historical = historical.replace("$AllowDowngrade", "$true")
+                self.assertNotIn("[switch]$true", historical)
+                transformed.append(historical.replace("\r\n", "\n"))
+        self.assertEqual(transformed[0], transformed[1])
+        self.assertIn("ConvertTo-EmbeddedHistoricalInstaller ($oldInstallerSource.Replace(\"`n\", \"`r`n\"))", FIXTURE)
+        self.assertIn("$oldInstaller -ceq $oldInstallerCrlf.Replace(\"`r`n\", \"`n\")", FIXTURE)
+
     def test_native_schema1_accepts_manifest_resources_outer_stays_exact(self):
         body = function(FULL, "Read-AndVerifyManifest")
         self.assertIn("$nativeProtocol -and $hashes.Count -ge $completeRequired.Count", body)

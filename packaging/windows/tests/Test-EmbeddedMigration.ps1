@@ -44,13 +44,21 @@ class Program {
     & (Join-Path $env:SystemRoot 'Microsoft.NET/Framework64/v4.0.30319/csc.exe') /nologo /target:exe /platform:x64 "/out:$Destination" $source
     if ($LASTEXITCODE -ne 0) { throw 'fixture 编译失败。' }
 }
-function Invoke-Launcher([string]$Executable, [string]$Arguments, [byte[]]$InputBytes = @()) {
+function Invoke-Launcher([string]$Executable, [string]$Arguments, [byte[]]$InputBytes = @(), [switch]$MissingTemp) {
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName=$Executable; $info.Arguments=$Arguments; $info.WorkingDirectory=$testRoot
     $info.UseShellExecute=$false; $info.CreateNoWindow=$true
     $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
     $info.RedirectStandardInput=($InputBytes.Length -gt 0)
     $info.StandardOutputEncoding=$utf8; $info.StandardErrorEncoding=$utf8
+    if ($MissingTemp) {
+        # Restrict the deliberately invalid TEMP/TMP to this launcher child.
+        # Later CSC fixture builds still need the parent's real temp directory.
+        $missingTemp=Join-Path $testRoot 'missing-temp'
+        Assert-True (!(Test-Path -LiteralPath $missingTemp)) '启动器测试使用不存在的 TEMP/TMP'
+        $info.EnvironmentVariables['TEMP']=$missingTemp
+        $info.EnvironmentVariables['TMP']=$missingTemp
+    }
     $process=[Diagnostics.Process]::new(); $process.StartInfo=$info
     try {
         # .NET Framework eagerly creates an AutoFlush StreamWriter at Start;
@@ -90,7 +98,7 @@ function Start-FixtureProcess([string]$Executable) {
     $null=$process.Start()
     return [pscustomobject]@{ Process=$process; Out=$process.StandardOutput.ReadToEndAsync(); Err=$process.StandardError.ReadToEndAsync() }
 }
-$oldHome=$env:GROK_HOME; $oldPath=$env:Path; $oldTemp=$env:TEMP; $oldTmp=$env:TMP
+$oldHome=$env:GROK_HOME; $oldPath=$env:Path
 $userPath=[Environment]::GetEnvironmentVariable('Path','User')
 try {
     $null=[IO.Directory]::CreateDirectory($testRoot)
@@ -122,16 +130,14 @@ try {
     $launcher=New-LaunchRoot 'first-launch' $source
     $root=Split-Path -Parent $launcher
     $runtime=Join-Path $root '.grok-zh-msvc'
-    $env:TEMP=Join-Path $testRoot 'missing-temp'; $env:TMP=$env:TEMP
     $clock=[Diagnostics.Stopwatch]::StartNew()
-    $pure=Invoke-Launcher $launcher '--version'
+    $pure=Invoke-Launcher $launcher '--version' -MissingTemp
     Assert-True ($pure.Code -eq 0 -and $pure.Out.Contains('1.0.99 (GNU migration launcher)')) '纯版本输出'
     Assert-True ($clock.Elapsed.TotalSeconds -lt 10 -and !(Test-Path -LiteralPath $runtime)) '版本检查不依赖 TEMP 或触发迁移'
     $candidate=Join-Path $root 'candidate.exe'
     Copy-Item -LiteralPath $source -Destination $candidate
-    Assert-True ((Invoke-Launcher $candidate '-V').Code -eq 0) '旧更新器候选文件可以检查版本'
-    Assert-True ((Invoke-Launcher $candidate 'normal').Code -ne 0) '非规范文件名不执行迁移'
-    $env:TEMP=$oldTemp; $env:TMP=$oldTmp
+    Assert-True ((Invoke-Launcher $candidate '-V' -MissingTemp).Code -eq 0) '旧更新器候选文件可以检查版本'
+    Assert-True ((Invoke-Launcher $candidate 'normal' -MissingTemp).Code -ne 0) '非规范文件名不执行迁移'
     $first=Invoke-Launcher $launcher 'one "中文 空格" ""'
     Assert-True ($first.Code -eq 23) '原应用退出码透传'
     Assert-True ($first.Out.Contains('arg=b25l') -and $first.Out.Contains('arg=')) '参数透传包含空参数'
@@ -141,19 +147,17 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $runtime 'future-resource.dat')) '完整内层包资源被安装'
     Assert-True ((Get-FileHash -LiteralPath (Join-Path $runtime 'grok-zh.exe')).Hash -ceq (Get-FileHash -LiteralPath (Join-Path $native 'grok-zh.exe')).Hash) '实际 MSVC 候选被安装'
     [byte[]]$inputBytes=@(0,1,2,10,13,127,128,255)
-    $env:TEMP=Join-Path $testRoot 'missing-temp'; $env:TMP=$env:TEMP
-    $stdin=Invoke-Launcher $launcher '--stdin' $inputBytes
+    $stdin=Invoke-Launcher $launcher '--stdin' $inputBytes -MissingTemp
     Assert-True ($stdin.Code -eq 0 -and $stdin.Out -ceq [Convert]::ToBase64String($inputBytes)) 'ready 快路径不依赖 TEMP 且保留 stdin 字节'
     foreach ($next in @('1.0.100','1.0.101')) {
         $nextExe=Join-Path $testRoot "next-$next.exe"
         New-FakeExe $nextExe $next
         Copy-Item -LiteralPath $nextExe -Destination (Join-Path $runtime 'grok-zh.exe') -Force
-        $nextVersion=Invoke-Launcher $launcher '--version'
+        $nextVersion=Invoke-Launcher $launcher '--version' -MissingTemp
         Assert-True ($nextVersion.Out.Contains("grok-zh $next ")) '保留原入口跨两次原生更新报告子程序版本'
-        Assert-True ((Invoke-Launcher $launcher 'normal').Code -eq 23) '原入口继续启动后续 MSVC 版本'
-        Assert-True ((Invoke-Launcher $candidate '--version').Out.Contains('1.0.99 (GNU migration launcher)')) '候选版本不误用邻近新运行时'
+        Assert-True ((Invoke-Launcher $launcher 'normal' -MissingTemp).Code -eq 23) '原入口继续启动后续 MSVC 版本'
+        Assert-True ((Invoke-Launcher $candidate '--version' -MissingTemp).Out.Contains('1.0.99 (GNU migration launcher)')) '候选版本不误用邻近新运行时'
     }
-    $env:TEMP=$oldTemp; $env:TMP=$oldTmp
     $broken=New-LaunchRoot 'damaged' $source
     $stream=[IO.File]::Open($broken,'Open','ReadWrite','None')
     try { $null=$stream.Seek(-64,[IO.SeekOrigin]::End); $stream.WriteByte(0) } finally { $stream.Dispose() }
@@ -211,6 +215,6 @@ Path(sys.argv[2]).write_bytes(b.offline_validation_bytes())
     Assert-True ([Environment]::GetEnvironmentVariable('Path','User') -ceq $userPath) '用户 Path 不变'
     Write-Host "Embedded offline migration fixture checks passed: $script:Checks"
 } finally {
-    $env:GROK_HOME=$oldHome; $env:Path=$oldPath; $env:TEMP=$oldTemp; $env:TMP=$oldTmp
+    $env:GROK_HOME=$oldHome; $env:Path=$oldPath
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
 }

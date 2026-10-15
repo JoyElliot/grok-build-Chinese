@@ -56,7 +56,7 @@ class WindowsMsvcReleaseTests(unittest.TestCase):
             fetch.assert_not_called()
 
     def test_checked_in_policy_is_valid_in_any_reviewed_state(self):
-        checked = json.loads((ROOT / ".github/release-policy.json").read_text())
+        checked = json.loads((ROOT / ".github/release-policy.json").read_text(encoding="utf-8"))
         pin = checked["windows_x64_msvc"].get("final_legacy_wrapper")
         version = VERSION
         if pin:
@@ -189,7 +189,7 @@ class WindowsMsvcReleaseTests(unittest.TestCase):
 class WindowsMsvcReleaseWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.text = (ROOT / ".github/workflows/zh-release-windows.yml").read_text()
+        cls.text = (ROOT / ".github/workflows/zh-release-windows.yml").read_text(encoding="utf-8")
         cls.jobs = job_blocks(cls.text)
 
     def test_guarded_path_and_native_acceptance_are_mandatory(self):
@@ -230,10 +230,30 @@ class WindowsMsvcReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("migration-pin.json", publish)
 
     def test_disabled_path_still_runs_policy_tests_without_toggle_override(self):
-        checks = (ROOT / ".github/scripts/check-windows-package.ps1").read_text()
+        checks = (ROOT / ".github/scripts/check-windows-package.ps1").read_text(encoding="utf-8-sig")
         self.assertIn("'test_windows_msvc_release.py'", checks)
         self.assertNotIn("workflow_dispatch", self.text)
         self.assertNotIn("vars.WINDOWS", self.text)
+
+
+class WindowsMsvcReleaseEncodingTests(unittest.TestCase):
+    def test_source_reads_work_with_windows_legacy_default_encoding(self):
+        original_read_text = Path.read_text
+
+        def legacy_read_text(path, encoding=None, errors=None):
+            return original_read_text(path, encoding=encoding or "cp1252", errors=errors)
+
+        # Exercise the real policy/workflow readers with Windows' legacy
+        # default, even on a UTF-8 Linux host. Explicit encodings pass through.
+        suite = unittest.TestSuite([
+            WindowsMsvcReleaseTests("test_checked_in_policy_is_valid_in_any_reviewed_state"),
+            unittest.defaultTestLoader.loadTestsFromTestCase(WindowsMsvcReleaseWorkflowTests),
+        ])
+        result = unittest.TestResult()
+        with patch.object(Path, "read_text", legacy_read_text):
+            suite.run(result)
+        self.assertEqual(result.testsRun, 4)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,19 @@ function Assert-EmbeddedThrows([scriptblock]$Action, [string]$Message) {
     try { & $Action | Out-Null } catch { $thrown = $true }
     Assert-Embedded $thrown $Message
 }
+function ConvertTo-EmbeddedHistoricalInstaller([string]$Source) {
+    $parameterPattern = '(?m)^[ \t]*\[switch\]\$AllowDowngrade,[ \t]*\r?\n'
+    Assert-Embedded ([regex]::Matches($Source, $parameterPattern).Count -eq 1) '历史安装器恰好移除一个降级参数'
+    $result = [regex]::Replace($Source, $parameterPattern, '')
+    $tokens = $null; $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($result, [ref]$tokens, [ref]$parseErrors)
+    Assert-Embedded ($parseErrors.Count -eq 0) '移除参数后历史安装器语法有效'
+    Assert-Embedded (@($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ieq 'AllowDowngrade' }).Count -eq 0) '替换引用前确认历史安装器无降级参数'
+    $result = $result.Replace('$AllowDowngrade', '$true')
+    $null = [Management.Automation.Language.Parser]::ParseInput($result, [ref]$tokens, [ref]$parseErrors)
+    Assert-Embedded ($parseErrors.Count -eq 0) '替换引用后历史安装器语法有效'
+    return $result
+}
 function Get-EmbeddedTestDigest([byte[]]$Bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
@@ -170,7 +183,10 @@ try {
 
     # Simulate an authentic historical installer with no new downgrade switch.
     $oldInstallerPath = Join-Path $gnuOld.Root 'Install-GrokZh.ps1'
-    $oldInstaller = [IO.File]::ReadAllText($oldInstallerPath).Replace("    [switch]`$AllowDowngrade,`n", '').Replace('$AllowDowngrade', '$true')
+    $oldInstallerSource = [IO.File]::ReadAllText($oldInstallerPath).Replace("`r`n", "`n")
+    $oldInstaller = ConvertTo-EmbeddedHistoricalInstaller $oldInstallerSource
+    $oldInstallerCrlf = ConvertTo-EmbeddedHistoricalInstaller ($oldInstallerSource.Replace("`n", "`r`n"))
+    Assert-Embedded ($oldInstaller -ceq $oldInstallerCrlf.Replace("`r`n", "`n")) 'LF 和 CRLF 均生成相同的历史安装器'
     [IO.File]::WriteAllText($oldInstallerPath, $oldInstaller, [Text.UTF8Encoding]::new($true))
     Update-EmbeddedTestManifest $gnuOld.Root
     [IO.File]::Delete($gnuOld.Archive)
