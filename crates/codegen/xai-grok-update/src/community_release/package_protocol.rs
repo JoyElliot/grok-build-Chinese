@@ -16,6 +16,41 @@ pub(super) struct PackageProtocol {
     manifest: String,
     pub executable: String,
     pub installer: String,
+    #[serde(default)]
+    pub embedded_runtime: Option<EmbeddedRuntime>,
+}
+
+/// An explicit, authenticated opt-in carried only by the GNU wrapper package.
+/// Unknown fields remain extensible, but every routing and integrity field is
+/// required and checked before reading the embedded archive.
+#[derive(Debug, Deserialize)]
+pub(super) struct EmbeddedRuntime {
+    pub schema: u32,
+    pub format: String,
+    pub version: String,
+    pub platform: String,
+    pub archive_size: u64,
+    pub archive_sha256: String,
+}
+
+impl EmbeddedRuntime {
+    pub fn validate(&self, version: &str) -> Result<()> {
+        if self.schema != 1
+            || self.format != "grok-msvc-bundle-v1"
+            || self.version != version
+            || self.platform != "x86_64-pc-windows-msvc"
+            || self.archive_size == 0
+            || self.archive_size > MAX_ASSET_BYTES
+            || self.archive_sha256.len() != 64
+            || !self
+                .archive_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("unsupported or invalid embedded MSVC runtime descriptor");
+        }
+        Ok(())
+    }
 }
 
 impl PackageProtocol {
@@ -68,6 +103,14 @@ impl PackageProtocol {
             || protocol.executable.to_lowercase() == protocol.installer.to_lowercase()
         {
             anyhow::bail!("community package protocol has invalid or overlapping entry points");
+        }
+        if let Some(runtime) = &protocol.embedded_runtime {
+            if platform != "x86_64-pc-windows-gnu" {
+                anyhow::bail!(
+                    "embedded MSVC runtime is only valid in a Windows x86_64 GNU container"
+                );
+            }
+            runtime.validate(version)?;
         }
         Ok(Some(protocol))
     }
@@ -184,8 +227,8 @@ pub(super) fn directories(files: &[&str]) -> HashSet<String> {
         .collect()
 }
 
-pub(super) fn read_zip_metadata(
-    archive: &mut zip::ZipArchive<File>,
+pub(super) fn read_zip_metadata<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
     root: Option<&str>,
     name: &str,
 ) -> Result<Vec<u8>> {

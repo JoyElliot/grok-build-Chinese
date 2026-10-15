@@ -482,7 +482,8 @@ pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'stati
 /// Outcome of [`ensure_latest_on_disk`].
 #[derive(Debug)]
 pub struct EnsureLatestOutcome {
-    /// Version this call downloaded and installed; `None` when the disk was already current (or there was no installer).
+    /// Version available after running the installer; `None` when no installation was attempted.
+    /// A concurrent Windows updater may have already installed a newer version, which is returned instead.
     pub installed: Option<String>,
     /// The running process differs from what is now on disk in the channel's update direction.
     /// The caller should relaunch onto the on-disk binary.
@@ -523,18 +524,19 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     )
     .unwrap_or(false)
     {
-        run_install_script(
+        let installed = run_install_script_with_intent(
             installer,
             Some(&target),
             update_config,
             CliUpdateTrigger::LeaderConverge,
+            InstallIntent::UpgradeOnly,
         )
         .await?;
         // The leader relaunches right after a successful converge and would die with the event still in flight
         // Failures keep it alive, so successes would under-report. The install is already done.
         xai_grok_telemetry::session_ctx::drain_pending(xai_grok_telemetry::session_ctx::CLI_DRAIN)
             .await;
-        outcome.installed = Some(target.clone());
+        outcome.installed = installed.or_else(|| Some(target.clone()));
     }
 
     // Relaunch when the running binary differs from what's on disk in the channel's update direction
@@ -1046,12 +1048,53 @@ pub fn restart_grok() -> Result<()> {
     }
 }
 
+/// A resolved target is also passed by automatic/leader callers. Only explicit
+/// command-line version or channel selection permits a community downgrade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallIntent {
+    UpgradeOnly,
+    ExplicitVersion,
+    ExplicitChannelSwitch,
+}
+
+impl InstallIntent {
+    fn from_request(pinned_version: Option<&str>, channel_switch: Option<&str>) -> Self {
+        if pinned_version.is_some() {
+            Self::ExplicitVersion
+        } else if channel_switch.is_some() {
+            Self::ExplicitChannelSwitch
+        } else {
+            Self::UpgradeOnly
+        }
+    }
+}
+
 pub async fn run_install_script(
     installer: &str,
     target: Option<&str>,
     update_config: &UpdateConfig,
     trigger: CliUpdateTrigger,
 ) -> Result<()> {
+    run_install_script_with_intent(
+        installer,
+        target,
+        update_config,
+        trigger,
+        InstallIntent::UpgradeOnly,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Windows community activation can retain a newer on-disk version. Return that
+/// version to cache/relaunch callers while preserving other platforms' targets.
+async fn run_install_script_with_intent(
+    installer: &str,
+    target: Option<&str>,
+    update_config: &UpdateConfig,
+    trigger: CliUpdateTrigger,
+    _intent: InstallIntent,
+) -> Result<Option<String>> {
     crate::ensure_selected_updates_enabled()?;
     let from_version =
         disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
@@ -1059,7 +1102,7 @@ pub async fn run_install_script(
     #[cfg(feature = "community-build")]
     let result: Result<Option<String>> =
         if installer == crate::community_release::COMMUNITY_INSTALLER {
-            install_community_release(target, update_config)
+            install_community_release(target, update_config, _intent)
                 .await
                 .map(Some)
         } else {
@@ -1108,25 +1151,37 @@ pub async fn run_install_script(
         duration_ms,
         error_kind,
     });
-    result.map(|_| ()).map_err(|e| {
-        #[cfg(feature = "community-build")]
-        if e.is::<crate::community_update_cancel::UpdateCancelled>() {
-            return e;
-        }
-        if cfg!(feature = "community-build") {
-            anyhow::anyhow!(
-                "自动更新失败：{:#}\n\n{}",
-                e,
-                reinstall_hint(installer, &update_config.channel)
-            )
-        } else {
-            anyhow::anyhow!(
-                "Auto-update failed: {:#}\n\n{}",
-                e,
-                reinstall_hint(installer, &update_config.channel)
-            )
-        }
-    })
+    result
+        .map(|installed| {
+            #[cfg(all(windows, feature = "community-build"))]
+            {
+                installed
+            }
+            #[cfg(not(all(windows, feature = "community-build")))]
+            {
+                let _ = installed;
+                target.map(str::to_string)
+            }
+        })
+        .map_err(|e| {
+            #[cfg(feature = "community-build")]
+            if e.is::<crate::community_update_cancel::UpdateCancelled>() {
+                return e;
+            }
+            if cfg!(feature = "community-build") {
+                anyhow::anyhow!(
+                    "自动更新失败：{:#}\n\n{}",
+                    e,
+                    reinstall_hint(installer, &update_config.channel)
+                )
+            } else {
+                anyhow::anyhow!(
+                    "Auto-update failed: {:#}\n\n{}",
+                    e,
+                    reinstall_hint(installer, &update_config.channel)
+                )
+            }
+        })
 }
 
 /// Install from the exact complete platform package recorded by an immutable
@@ -1138,6 +1193,7 @@ pub async fn run_install_script(
 async fn install_community_release(
     target: Option<&str>,
     update_config: &UpdateConfig,
+    _intent: InstallIntent,
 ) -> Result<String> {
     crate::ensure_community_updates_enabled()?;
 
@@ -1223,12 +1279,24 @@ async fn install_community_release(
             return Err(error);
         }
         let install_lock = acquire_windows_update_lock(&destination);
-        let replace_result = match &install_lock {
-            Ok(_) => windows_replace_exe_locked(&candidate, &destination).await,
+        let activation_result = match &install_lock {
+            Ok(_) => {
+                activate_community_windows_candidate_locked(
+                    &candidate,
+                    &destination,
+                    &parsed,
+                    _intent,
+                    smoke_test_binary(&destination),
+                )
+                .await
+            }
             Err(error) => Err(anyhow::anyhow!("{error:#}")),
         };
         let _ = tokio::fs::remove_file(&candidate).await;
-        replace_result?;
+        if let Some(installed) = activation_result? {
+            eprintln!("  已有较新版本 v{installed}，保留当前安装。");
+            return Ok(installed);
+        }
         crate::community_update_notes::record_success(&version, asset.release_notes.as_deref());
         eprintln!(
             "  已从 {}/releases 安装 {} v{}。",
@@ -1272,6 +1340,26 @@ async fn install_community_release(
             "community self-update supports Windows x86_64 GNU/MSVC or aarch64 MSVC, macOS x86_64 or aarch64, and Linux GNU x86_64 or aarch64"
         );
     }
+}
+
+/// The caller holds the per-destination lock through this check, replacement,
+/// and the completion receipt. Poll the destination probe only under that lock:
+/// the candidate may have been downloading while another updater installed.
+#[cfg(all(windows, feature = "community-build"))]
+async fn activate_community_windows_candidate_locked(
+    candidate: &std::path::Path,
+    destination: &std::path::Path,
+    candidate_version: &Version,
+    intent: InstallIntent,
+    probe: impl std::future::Future<Output = Result<String, SmokeTestFailure>>,
+) -> Result<Option<String>> {
+    if let Some(installed) =
+        community_windows_version_to_retain(probe.await, candidate_version, intent)?
+    {
+        return Ok(Some(installed));
+    }
+    windows_replace_exe_locked(candidate, destination).await?;
+    Ok(None)
 }
 
 #[cfg(all(
@@ -2351,6 +2439,46 @@ fn community_version_output_matches(output: &str, expected_version: &str) -> boo
         .lines()
         .next()
         .is_some_and(|line| line.trim().starts_with(&expected_prefix))
+}
+
+/// Parse the exact product/version fields, never a version-looking substring.
+/// Invalid/unknown destination output must not authorize an automatic overwrite.
+#[cfg(all(feature = "community-build", any(windows, test)))]
+fn installed_community_version(output: &str) -> Result<Version> {
+    let version = output
+        .lines()
+        .next()
+        .and_then(|line| line.trim().strip_prefix(xai_grok_product::CLI_NAME))
+        .and_then(|rest| rest.strip_prefix(' '))
+        .and_then(|rest| rest.split_once(" ("))
+        .filter(|(_, suffix)| {
+            suffix
+                .split_once(')')
+                .is_some_and(|(commit, _)| !commit.is_empty())
+        })
+        .map(|(version, _)| version)
+        .ok_or_else(|| {
+            anyhow::anyhow!("installed binary reported an invalid community product/version")
+        })?;
+    let parsed = Version::parse(version).context("parsing the installed community version")?;
+    if parsed.to_string() != version || !parsed.build.is_empty() {
+        anyhow::bail!("installed community version is not canonical: {version}");
+    }
+    Ok(parsed)
+}
+
+#[cfg(all(feature = "community-build", any(windows, test)))]
+fn community_windows_version_to_retain(
+    probe: Result<String, SmokeTestFailure>,
+    candidate_version: &Version,
+    intent: InstallIntent,
+) -> Result<Option<String>> {
+    let output = probe.context("rechecking the installed community binary before activation")?;
+    let installed = installed_community_version(&output)?;
+    Ok(
+        (intent == InstallIntent::UpgradeOnly && installed > *candidate_version)
+            .then(|| installed.to_string()),
+    )
 }
 
 /// Test-only entry point: same as [`install_internal`] but reads from
@@ -3593,6 +3721,7 @@ pub async fn run_update(
     trigger: CliUpdateTrigger,
 ) -> Result<Option<String>> {
     crate::ensure_selected_updates_enabled()?;
+    let install_intent = InstallIntent::from_request(pinned_version, channel_switch);
     apply_channel_switch(channel_switch, update_config).await;
     let installer = match get_installer().await {
         Some(i) => i,
@@ -3636,7 +3765,14 @@ pub async fn run_update(
             );
         }
         eprintln!();
-        run_install_script(installer, Some(version), update_config, trigger).await?;
+        run_install_script_with_intent(
+            installer,
+            Some(version),
+            update_config,
+            trigger,
+            install_intent,
+        )
+        .await?;
         refresh_deployment_config().await;
         if let Err(e) = config::update_config(|st| {
             st.cli.auto_update = Some(false);
@@ -3828,7 +3964,15 @@ pub async fn run_update(
     };
 
     eprintln!();
-    run_install_script(installer, Some(target_version), update_config, trigger).await?;
+    let installed = run_install_script_with_intent(
+        installer,
+        Some(target_version),
+        update_config,
+        trigger,
+        install_intent,
+    )
+    .await?;
+    let target_version = installed.as_deref().unwrap_or(target_version);
     // Fetch the stable pointer now so the new binary has it immediately for channel_label() display
     // Otherwise it would wait for the next TTL-gated update check (~30 min)
     let stable_ptr = try_fetch_stable_pointer().await;

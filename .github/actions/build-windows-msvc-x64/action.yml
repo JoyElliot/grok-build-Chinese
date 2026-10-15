@@ -12,6 +12,10 @@ inputs:
     description: all 执行完整流程；test/build 供预览工作流并行运行并统一门禁
     required: false
     default: all
+  validation-mode:
+    description: 可选 preview/release 测试清单；留空时根据 release_build 选择
+    required: false
+    default: ''
 outputs:
   package_name:
     value: ${{ steps.meta.outputs.package_name }}
@@ -113,20 +117,31 @@ runs:
         cargo fetch --locked
         if ($LASTEXITCODE -ne 0) { throw 'Cargo 依赖获取失败。' }
 
-    - name: 运行 x64 更新器测试
+    - name: 运行 x64 MSVC core/ui 原生测试
       if: inputs.phase != 'build'
       shell: pwsh
+      env:
+        VALIDATION_MODE: ${{ inputs.validation-mode || (inputs.release_build == 'true' && 'release' || 'preview') }}
       run: |
         $ErrorActionPreference = 'Stop'
         $PSNativeCommandUseErrorActionPreference = $false
-        # The required Linux preflight checks the whole workspace. Windows has
-        # a command-line length limit when rustfmt expands all generated crates.
-        cargo fmt -p xai-grok-update -- --check
-        if ($LASTEXITCODE -ne 0) { throw 'Rust 格式检查失败。' }
+        if ($env:VALIDATION_MODE -cnotin @('preview', 'release')) { throw '无效的原生测试清单。' }
+        if ($env:TARGET -cne 'x86_64-pc-windows-msvc') { throw '原生测试目标必须为 x64 MSVC。' }
+        $rustInfo = & rustc -vV
+        if ($LASTEXITCODE -ne 0 -or $rustInfo -cnotcontains 'host: x86_64-pc-windows-msvc') {
+          throw '必须使用 x64 MSVC Rust 宿主运行测试。'
+        }
         $dev = $env:VS_DEV_CMD
-        $command = "call `"$dev`" -arch=x64 -host_arch=x64 >nul && where cl && where link && cargo test --frozen --timings -j $env:CARGO_BUILD_JOBS -p xai-grok-update --features community-build --lib"
-        & $env:ComSpec /d /s /c $command
-        if ($LASTEXITCODE -ne 0) { throw "x64 MSVC 测试失败：$LASTEXITCODE" }
+        $pwsh = Join-Path $PSHOME 'pwsh.exe'
+        $runner = Join-Path $env:GITHUB_WORKSPACE '.github/scripts/run-windows-validation.ps1'
+        # Reuse GNU's exact selections, including the entire updater --lib.
+        # One native job shares its debug target across both suites, rather than
+        # cold-compiling their common dependencies on two separate runners.
+        foreach ($suite in @('core', 'ui')) {
+          $command = "call `"$dev`" -arch=x64 -host_arch=x64 >nul && where cl && where link && `"$pwsh`" -NoLogo -NoProfile -NonInteractive -File `"$runner`" -Mode $env:VALIDATION_MODE -Suite $suite -FormatScope suite"
+          & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw "x64 MSVC $suite 测试失败：$LASTEXITCODE" }
+        }
 
     - name: 构建 x64 MSVC
       if: inputs.phase != 'test'
@@ -144,7 +159,10 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: grok-zh-windows-x64-msvc-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+        path: |
+          ${{ runner.temp }}/grok-zh-target/cargo-timings
+          ${{ runner.temp }}/grok-zh-windows-validation-core
+          ${{ runner.temp }}/grok-zh-windows-validation-ui
         if-no-files-found: warn
         retention-days: 7
 
@@ -179,7 +197,7 @@ runs:
         - 目标：$env:TARGET
         - ZIP：$env:ARCHIVE_NAME
         - 制品：${{ steps.artifact.outputs.artifact-url }}
-        - 已在 x64 runner 上执行原生程序和 ZIP 冒烟；预览更新器测试由独立原生测试门禁检查。
+        - 已在 x64 runner 上执行原生程序和 ZIP 冒烟；预览 core/ui 测试由独立原生测试门禁检查。
         "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
     - name: 保存 x64 release-dist 编译缓存
@@ -209,6 +227,9 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: grok-zh-windows-x64-msvc-${{ inputs.phase }}-timings-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ runner.temp }}/grok-zh-target/cargo-timings
+        path: |
+          ${{ runner.temp }}/grok-zh-target/cargo-timings
+          ${{ runner.temp }}/grok-zh-windows-validation-core
+          ${{ runner.temp }}/grok-zh-windows-validation-ui
         if-no-files-found: warn
         retention-days: 7

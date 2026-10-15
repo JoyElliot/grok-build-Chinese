@@ -1,6 +1,6 @@
 # 社区单包更新协议与过渡发布
 
-每个平台始终只有一个安装归档。新旧客户端下载同一份包，不增加供用户选择的第二套安装包，也不增加 Release 标签命名空间。
+每个平台只有一个公开安装归档。Windows x64 GNU → MSVC 单包迁移启用后，旧 GNU 文件名的归档包含真实 GNU 启动器及内嵌完整 MSVC ZIP；旧客户端只复制 EXE 仍能在下次正常启动离线展开，新的安装器和 MSVC 更新器直接验证并提取内层产品。未来可审核切换为原生 MSVC 单包，永久保留最后 GNU 容器及历史桥接 Release。详见 [Windows x64 单包迁移](WINDOWS-MSVC-MIGRATION.md)。默认发布开关仍关闭。
 
 ## 两层校验
 
@@ -29,7 +29,7 @@ GROK-UPDATE-PROTOCOL-BEGIN
 GROK-UPDATE-PROTOCOL-END
 ```
 
-`platform` 使用构建目标的 Rust 三元组：`x86_64-pc-windows-gnu`、`aarch64-pc-windows-msvc`、`aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu` 或 `aarch64-unknown-linux-gnu`。macOS/Linux 的入口为 `grok-zh`、`Install-GrokZh.sh`。版本与平台必须和已验证的 Release 相符。协议块只有一份；存在但损坏、不支持或缺少字段时明确失败。仅没有协议标记的历史包进入原来的固定清单验证分支。
+`platform` 使用构建目标的 Rust 三元组：`x86_64-pc-windows-gnu`、`x86_64-pc-windows-msvc`、`aarch64-pc-windows-msvc`、`aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-unknown-linux-gnu` 或 `aarch64-unknown-linux-gnu`。macOS/Linux 的入口为 `grok-zh`、`Install-GrokZh.sh`。版本与平台必须和已验证的 Release 相符；GNU 与 MSVC 协议不能相互冒充。协议块只有一份；存在但损坏、不支持或缺少字段时明确失败。仅没有协议标记的历史包进入原来的固定清单验证分支。
 
 `manifest` 的文件名和 SHA-256 算法由协议 1 定义，语法沿用 `<64 位十六进制摘要><两个空格><相对路径>`。清单不能包含自己，必须覆盖构建信息、程序入口、安装器和其余全部普通文件；归档不得包含清单以外的文件。目录由清单路径推导，不再写死全部普通文件名。路径必须相对包根，不能含跳转、绝对路径、链接、重解析点、重复路径或文件/目录冲突；继续保留数量、大小和解压上限。
 
@@ -38,6 +38,12 @@ GROK-UPDATE-PROTOCOL-END
 Windows 在线入口会读取声明的归档内程序与安装器路径；包内安装器随当次包一起发布，负责部署。协议 1 只放开归档布局，完整安装后的程序目录仍使用 `grok-zh.exe`、`agent-zh.cmd`、`rg.exe` 等既有布局和安装归属记录，以供在线入口检查与便携启动器使用。后续重排归档时必须同步更新该包内安装器。
 
 `mode: executable-only` 保持现有自动更新行为：内置更新只替换主程序，旁载工具、许可证和安装文件由完整安装器管理。需要新版运行时旁载文件、新的安装动作或新的必需语义时，应增加协议版本/模式并先发布支持它的引擎；不能在旧模式下悄悄改变要求。附加说明字段可扩展，但不得用未知字段引入必需动作。更新器不执行包内自定义“校验程序”。
+
+### Windows x64 内嵌容器扩展
+
+GNU schema 1 可增加 `embedded_runtime` 描述：固定 `schema: 1`、`format: grok-msvc-bundle-v1`、同版本、`x86_64-pc-windows-msvc`、内层 ZIP 的大小和 SHA-256。GNU 外层仍是真正 GNU 可执行文件和旧文件集合，未知字段对旧更新器没有额外动作要求。新 MSVC 更新器才识别该明确的容器扩展：先认证外层，再核对 EXE EOF 的 64 字节定位 footer 和内层摘要，完整校验内层 MSVC schema 1，最终只提取内层 MSVC EXE。不能仅凭 GNU 附件名就将外层 EXE 激活为 MSVC。
+
+版本先于 ABI 偏好：最新版本有原生 MSVC 时优先原生，否则可下载 GNU 命名候选并严格验证它确实是容器。不能为了偏好原生而退到更旧版本；同版本原生资产存在但无效时失败，不能降级到另一包掩盖发布错误。首次已迁移之后仍可能下载装有 MSVC 的 GNU 命名容器，这是分发格式兼容，不会每次重新迁移运行目录。
 
 ## 兼容期（已结束）
 

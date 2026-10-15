@@ -25,7 +25,7 @@ using System;
 class Program {
     static int Main(string[] args) {
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
-        if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("grok-zh VERSION (fixture)"); return 0; }
+        if (args.Length == 1 && (args[0] == "--version" || args[0] == "-V")) { Console.WriteLine("grok-zh VERSION (fixture)"); return 0; }
         if (args.Length == 1 && args[0] == "--hold") { Console.WriteLine("ready"); System.Threading.Thread.Sleep(5000); return 0; }
         if (args.Length == 1 && args[0] == "--stdin") {
             using (var bytes = new System.IO.MemoryStream()) {
@@ -298,6 +298,38 @@ int main(void) {
             foreach ($file in Get-ChildItem -LiteralPath $upgradeRuntime -Filter '*.migration-candidate') { [IO.File]::Delete($file.FullName) }
         }
     } finally { Set-Item -LiteralPath function:Invoke-MigrationFileReplace -Value $realReplace }
+    try {
+        function Invoke-MigrationFileReplace([string]$Stage,[string]$Executable,[string]$Backup) {
+            [IO.File]::Replace($Stage,$Executable,$Backup)
+            [IO.File]::WriteAllText($Executable,'simulate corruption after successful replacement')
+        }
+        Assert-Throws { Update-MigrationRuntime $upgradeRuntime $candidateExe '1.0.99' -ExpectedSha256 $candidateDigest } '成功替换后校验失败仍必须回滚'
+        Assert-True ((Get-FileHash -LiteralPath $upgradeExe).Hash -ceq $oldRuntimeHash -and
+            @(Get-ChildItem -LiteralPath $upgradeRuntime -Filter '*.migration-rejected').Count -eq 0) '恢复原MSVC字节后清理失败候选，原程序仍可运行'
+        function Invoke-MigrationFileReplace([string]$Stage,[string]$Executable,[string]$Backup) {
+            [IO.File]::Replace($Stage,$Executable,$Backup)
+            [IO.File]::WriteAllText($Executable,'simulate corruption with blocked rollback')
+            $script:RecoveryBackup=$Backup
+            $script:RecoveryHandle=[IO.File]::Open($Backup,'Open','Read','None')
+        }
+        try {
+            Assert-Throws { Update-MigrationRuntime $upgradeRuntime $candidateExe '1.0.99' -ExpectedSha256 $candidateDigest } '升级后校验失败且回滚被阻挡时报告失败'
+            Assert-True ((Test-Path -LiteralPath $script:RecoveryBackup) -and (Test-Path -LiteralPath $upgradeExe)) '回滚被阻挡时保留旧备份及失败程序供恢复'
+        } finally {
+            $script:RecoveryHandle.Dispose()
+            [IO.File]::Replace($script:RecoveryBackup,$upgradeExe,[NullString]::Value)
+        }
+    } finally { Set-Item -LiteralPath function:Invoke-MigrationFileReplace -Value $realReplace }
+    $realGetVersion=${function:Get-OnlineExecutableVersion}
+    try {
+        function Get-OnlineExecutableVersion([string]$Path) {
+            $actual=& $realGetVersion $Path
+            if ($Path -ceq $upgradeExe -and $actual.Text -ceq '1.0.99') { throw 'simulated installed candidate startup failure' }
+            return $actual
+        }
+        Assert-Throws { Update-MigrationRuntime $upgradeRuntime $candidateExe '1.0.99' -ExpectedSha256 $candidateDigest } '替换后摘要正确但程序运行校验失败时回滚'
+        Assert-True ((Get-FileHash -LiteralPath $upgradeExe).Hash -ceq $oldRuntimeHash) '运行校验失败也恢复原MSVC字节'
+    } finally { Set-Item -LiteralPath function:Get-OnlineExecutableVersion -Value $realGetVersion }
     Assert-Throws { Update-MigrationRuntime $upgradeRuntime $candidateExe '1.0.99' -ExpectedSha256 ('0'*64) } '候选必须匹配验包阶段传入的摘要'
     Assert-True ((Get-FileHash -LiteralPath $upgradeExe).Hash -ceq $oldRuntimeHash) '候选摘要错误仍保留原程序'
     $oldSession=[Diagnostics.Process]::new()
@@ -381,11 +413,51 @@ int main(void) {
             Assert-True ($stdinResult.Code -eq 0 -and $stdinResult.Out -ceq $expectedInput) "标准输入逐字节转交MSVC（宿主BOM=$bom；退出码=$($stdinResult.Code)；实际base64=$($stdinResult.Out)）"
         }
     } finally { [Console]::InputEncoding=$inputEncoding }
-    New-FakeExe (Join-Path $runtime 'grok-zh.exe') '1.0.100'
+    # Model the Rust updater's EXE-only commit boundary twice, retaining the
+    # original GNU entry. This tests C dispatch, not the Rust download client.
+    $unchanged=@{}
+    foreach ($file in Get-ChildItem -LiteralPath $runtime -Recurse -File) {
+        if ($file.Name -notin @('grok-zh.exe','grok-zh.exe.update.lock')) { $unchanged[$file.FullName]=(Get-FileHash -LiteralPath $file.FullName).Hash }
+    }
+    $futureExecutables=@{}
+    foreach ($futureVersion in @('1.0.100','1.0.101')) {
+        $futureExecutables[$futureVersion]=Join-Path $testRoot "runtime-$futureVersion.exe"
+        New-FakeExe $futureExecutables[$futureVersion] $futureVersion
+    }
+    $oldTemp=$env:TEMP; $oldTmp=$env:TMP
+    try {
+        $env:TEMP=Join-Path $testRoot 'unavailable-after-migration'; $env:TMP=$env:TEMP
+        foreach ($futureVersion in @('1.0.100','1.0.101')) {
+            $futureExe=Join-Path $runtime 'future-candidate.exe'
+            $runtimeExe=Join-Path $runtime 'grok-zh.exe'
+            Copy-Item -LiteralPath $futureExecutables[$futureVersion] -Destination $futureExe
+            $updateLock=[IO.File]::Open("$runtimeExe.update.lock",'OpenOrCreate','ReadWrite','None')
+            try { [IO.File]::Replace($futureExe,$runtimeExe,[NullString]::Value) } finally { $updateLock.Dispose() }
+            foreach ($versionArgument in @('--version','-V')) {
+                $result=Invoke-Launcher $context.launcher $versionArgument
+                Assert-True ($result.Code -eq 0 -and $result.Out.Trim() -ceq "grok-zh $futureVersion (fixture)") "固定旧入口${versionArgument}显示连续更新后的真实子程序$futureVersion"
+            }
+            $result=Invoke-Launcher $context.launcher 'after-self-update'
+            Assert-True ($result.Code -eq 23 -and $result.Out.Contains('arg=YWZ0ZXItc2VsZi11cGRhdGU=')) "连续更新到${futureVersion}后正常启动不依赖TEMP、PowerShell或迁移下载"
+            Assert-True ((Get-FileHash -LiteralPath $context.launcher).Hash -ceq $originalHash) '两次常规MSVC升级都不替换原GNU入口'
+            foreach ($path in $unchanged.Keys) {
+                Assert-True ((Get-FileHash -LiteralPath $path).Hash -ceq $unchanged[$path]) '常规更新保留ready、安装归属、初始元数据及旁载文件'
+            }
+            Assert-True ((Get-Content -LiteralPath (Join-Path $env:GROK_HOME 'auth.json') -Raw) -ceq 'retain-auth' -and
+                $env:Path -ceq $oldPath -and [Environment]::GetEnvironmentVariable('Path','User') -ceq $userPath) '连续升级保留账号数据和PATH'
+        }
+    } finally { $env:TEMP=$oldTemp; $env:TMP=$oldTmp }
     Invoke-GrokBootstrap -Context $context -WorkDirectory (New-Work 'future-launch')
     Assert-True ($script:Handler.Requests.Count -eq $requestCount) 'MSVC自行更新到更高版本后不重新迁移或降级'
     $result=Invoke-Launcher $context.launcher '--version'
-    Assert-True ($result.Code -eq 0 -and $result.Out.Trim() -ceq 'grok-zh 1.0.100 (fixture)') '已安装入口的version显示实际MSVC版本且不联网'
+    Assert-True ($result.Code -eq 0 -and $result.Out.Trim() -ceq 'grok-zh 1.0.101 (fixture)') '已安装入口的version显示第二次更新后的MSVC版本且不联网'
+    $missingRuntimeExe=Join-Path $runtime 'grok-zh.exe'
+    $savedRuntimeExe=Join-Path $runtime 'grok-zh.exe.test-preserved'
+    [IO.File]::Move($missingRuntimeExe,$savedRuntimeExe)
+    try {
+        Assert-Throws { Invoke-GrokBootstrap -Context $context -WorkDirectory (New-Work 'missing-runtime') } '已迁移目录丢失EXE时拒绝按旧入口版本静默重装或降级'
+        Assert-True (!(Test-Path -LiteralPath $missingRuntimeExe) -and $script:Handler.Requests.Count -eq $requestCount) '缺失运行时失败不下载旧版本，保留其余安装文件'
+    } finally { [IO.File]::Move($savedRuntimeExe,$missingRuntimeExe) }
     $candidate=Join-Path (Split-Path -Parent $context.launcher) 'candidate.exe'
     Copy-Item -LiteralPath $context.launcher -Destination $candidate
     $result=Invoke-Launcher $candidate '--version'

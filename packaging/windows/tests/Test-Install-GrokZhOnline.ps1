@@ -252,7 +252,7 @@ class Program {
     $pageWork = Join-Path $testRoot 'paged'
     $null = [IO.Directory]::CreateDirectory($pageWork)
     $client = [Net.Http.HttpClient]::new($paged)
-    try { Assert-True ((Get-LatestOnlineRelease -Client $client -WorkDirectory $pageWork).Version.Text -ceq '1.0.13') '分页跳过不可验证的新版本并回退' }
+    try { Assert-Throws { Get-LatestOnlineRelease -Client $client -WorkDirectory $pageWork } '最新版本附件不可验证时停止，不退回较旧版本' }
     finally { $client.Dispose() }
     Assert-True ($paged.Requests.Count -eq 2) '完整分页直到最后一页'
 

@@ -1,6 +1,6 @@
 # Windows 自动安装说明
 
-本说明适用于本仓库 GitHub Releases 或 `zh-dev` Actions 生成的未签名 Windows x64 GNU、ARM64 MSVC 包。
+本说明适用于本仓库 GitHub Releases 或 `zh-dev` Actions 生成的未签名 Windows x64 GNU/MSVC、ARM64 MSVC 包，以及迁移期内嵌 MSVC 的 x64 单包。正式发布是否启用迁移由发布策略控制；本文描述安装器对这些格式的兼容行为。
 它不是 xAI 官方安装器，也不是 Authenticode 签名安装包。
 
 ## 推荐：中文在线安装
@@ -19,9 +19,11 @@ $p=Join-Path $env:TEMP ('grok-zh-install-'+[guid]::NewGuid().ToString('N')+'.ps1
 4. 创建或更新便携版：指定一个新目录，或选择此前由本入口创建的便携目录。
 0. 退出。
 
-脚本按 Windows 系统架构选择 x64 GNU 或 ARM64 MSVC 完整包，读取本仓库最新正式、不可变 Release，核对当前平台 ZIP 的固定下载地址、大小、GitHub SHA-256、包内协议、路径和全部文件哈希后，调用包内安装器。ARM64 包只有在相应 Release 发布后才能安装。新版不下载独立 `.sha256`，也不依赖其他平台附件。安装完成后核对实际程序版本，不自动启动完整界面。版本相同时可退出或修复安装；本地版本更高时停止，避免自动降级。
+脚本先选本仓库最新正式、不可变 Release 的版本，再在同一版本内选包。x64 默认 `-WindowsX64Runtime Auto`：优先独立原生 MSVC 包，否则校验该版本 GNU 包。迁移期的 GNU 文件名包必须有经过校验的 `embedded_runtime` 描述；安装器先验证外包，再从启动器尾部提取并验证完整原生 MSVC ZIP，直接安装真实 MSVC 程序，不先安装兼容启动器再等待首次启动联网。没有内嵌描述的历史完整 GNU 包仍按其真实格式安装。ARM64 始终选择原生 MSVC。
 
-下载显示进度和速度，网络故障最多尝试 3 次；支持系统代理及 `HTTPS_PROXY` / `HTTP_PROXY`。失败信息与退出码会保留，下载和解压的临时目录在结束或取消时清理。需要安装历史版本或预发布时，使用下方手动下载安装流程。
+安装前核对当前平台 ZIP 的固定下载地址、大小、GitHub SHA-256、包内协议、路径和全部文件哈希。所选版本附件缺失或校验失败时停止，不悄悄改装较旧版本。`-WindowsX64Runtime Msvc` 仅接受原生 MSVC 或可验证的内嵌 MSVC，`Gnu` 选择 GNU 文件名（其中的内嵌 MSVC 仍直接安装）。新版不下载独立 `.sha256`，也不依赖其他平台附件。安装完成后核对实际程序版本，不自动启动完整界面。版本相同时可退出或修复安装；同版本兼容启动器可直接退役成真实 MSVC。本地版本更高时默认停止，避免自动降级。
+
+下载显示进度和速度，网络故障最多尝试 3 次；支持系统代理及 `HTTPS_PROXY` / `HTTP_PROXY`。失败信息与退出码会保留，下载和解压的临时目录在结束或取消时清理。历史正式版可以通过 `-Version` 精确选择；预发布使用下方手动下载安装流程。
 
 ### 便携版目录
 
@@ -51,6 +53,13 @@ Grok 中文版/
 # 创建或更新便携版；同版本需要明确指定 -Repair
 & .\Install-GrokZhOnline.ps1 -Mode Portable -PortableDir 'D:\Apps\Grok 中文版' -Repair -NonInteractive
 
+# 精确选择历史正式版；只有明确接受降级时才添加 -AllowDowngrade
+# 先自行备份 ~/.grok 或 GROK_HOME：旧版本可能无法读取新版数据格式。
+& .\Install-GrokZhOnline.ps1 -Mode Install -Version '1.0.39' -AllowDowngrade -NonInteractive
+
+# 明确要求所选版本的 MSVC（独立包或单包内嵌运行时）
+& .\Install-GrokZhOnline.ps1 -Mode Install -WindowsX64Runtime Msvc -NonInteractive
+
 # 只下载并验证完整包，不安装
 & .\Install-GrokZhOnline.ps1 -VerifyOnly -NonInteractive
 
@@ -58,18 +67,23 @@ Grok 中文版/
 & .\Install-GrokZhOnline.ps1 -Mode Install -WhatIf -NonInteractive
 ```
 
+`-AllowDowngrade` 只能和显式 `-Version` 一起使用，不会自动寻找旧版本。同版本或升级不需要它。安装历史完整 GNU 后，运行的是所选的真实 GNU 版本；再安装新单包或原生包即可返回 MSVC。安装目录分阶段替换，不继承旧 `.grok-zh-msvc` 和 ready 标记；已有 `grok` / `agent` 兼容命令选择继续保留。安装器不会自动备份、降级或转换共享数据，旧版数据兼容性未知，请先自行备份。
+
+手动安装较低版本时，也需要向当前完整包安装器明确传入 `-AllowDowngrade`；历史旧版安装脚本可能没有此保护，推荐用当前在线入口的精确版本流程。失败时保留原程序，激活检查失败时恢复旧安装目录。若旧目录含个人文件或被进程占用，会保留备份，不能假定它已被删除。
+
 `-GrokHome` 用于指定共享数据目录的边界检查，不持久修改 `GROK_HOME`。命令设置需要交互选择，不能与 `-NonInteractive` 合用。在线脚本发布在源码中，不额外添加 Release 附件，也不改变现有更新包布局。
 
 ## 下载与解压
 
 1. 推荐从本仓库 [Releases](https://github.com/JoyElliot/grok-build-Chinese/releases)
-   按架构下载 `grok-zh-<version>-windows-x86_64-gnu.zip` 或
+   按架构下载当前 Release 提供的 `grok-zh-<version>-windows-x86_64-msvc.zip`、
+   迁移期/历史的 `grok-zh-<version>-windows-x86_64-gnu.zip` 或
    `grok-zh-<version>-windows-aarch64-msvc.zip`。开发测试也可从
    **Actions → CI** 下载短期 Artifact。
 2. 解压一次；后续 `release-v*` 版本（含预发布）只会得到一个
    对应的 `grok-zh-<version>-windows-<arch>-<abi>` 顶层目录。打开该目录后再运行安装入口。
    仅用于让 `v1.0.5` 升级的 `v1.0.8` 桥接包因旧更新器兼容要求仍是扁平结构。
-3. 确认包目录中恰好包含以下受管文件和目录（`SHA256SUMS.txt` 是包内清单，不列入它自身的哈希项）：
+3. GNU 兼容外包固定包含以下 15 个受管文件和校验清单；原生 MSVC 包可另外包含清单覆盖的运行资源（`SHA256SUMS.txt` 是包内清单，不列入它自身的哈希项）：
 
    ```text
    grok-zh.exe
