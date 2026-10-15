@@ -15,7 +15,7 @@
 共享 GROK_HOME 数据目录。默认读取 GROK_HOME 环境变量，否则使用当前用户目录下的 .grok。
 
 .PARAMETER OverrideOfficialCommands
-额外创建 grok 和 agent 兼容命令，但不移动已有官方可执行文件。
+额外创建 grok 和 agent 兼容命令，但不移动已有官方可执行文件。重新安装时默认保留先前选择；显式传入 -OverrideOfficialCommands:$false 可停用兼容命令。
 
 .PARAMETER UninstallOfficial
 删除已验证的官方 grok.exe/agent.exe，不创建备份，并创建对应兼容命令。默认路径安装还会卸载已识别的官方 npm 包。不会删除共享用户数据。
@@ -1450,8 +1450,11 @@ if (Test-Path -LiteralPath $installMarker -PathType Leaf) {
         Write-Warning "正在明确降级到 $packageVersion。请先自行备份共享 GROK_HOME：$GrokHome。旧版数据格式兼容性未知；安装器不会回滚或修改共享账号、配置和会话。"
     }
     # Preserve the user's command choice across reinstall, downgrade and return
-    # to MSVC, without carrying over migration sidecars or readiness markers.
-    if ($null -ne $existingMarker.PSObject.Properties['commands'] -and
+    # to MSVC unless this invocation explicitly chooses command setup. Do not
+    # carry over migration sidecars or readiness markers.
+    if (!$PSBoundParameters.ContainsKey('OverrideOfficialCommands') -and
+        !$InteractiveCommandSetup.IsPresent -and
+        $null -ne $existingMarker.PSObject.Properties['commands'] -and
         @($existingMarker.commands | Where-Object { $_ -in @('grok', 'agent') }).Count -gt 0) { $provideOfficialNames = $true }
 }
 

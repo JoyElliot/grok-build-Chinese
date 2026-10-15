@@ -11,6 +11,7 @@ WINDOWS = ROOT / "packaging/windows"
 FULL = (WINDOWS / "Install-GrokZh.ps1").read_text(encoding="utf-8-sig")
 ONLINE = (WINDOWS / "Install-GrokZhOnline.ps1").read_text(encoding="utf-8-sig")
 FIXTURE = (WINDOWS / "tests/Test-EmbeddedMsvcInstaller.ps1").read_text(encoding="utf-8-sig")
+INSTALL_FIXTURE = (WINDOWS / "tests/Test-Install-GrokZh.ps1").read_text(encoding="utf-8-sig")
 
 
 def function(source, name):
@@ -111,6 +112,32 @@ class EmbeddedInstallerContractTests(unittest.TestCase):
         self.assertIn("if (!$nativeProtocol -and $completeRequired -cnotcontains $name)", body)
         self.assertIn("if ($manifest.Count -ne 15)", function(FULL, "Expand-GrokEmbeddedPackage"))
         self.assertNotIn("$nativeManifest.Count -ne 15", function(FULL, "Expand-VerifiedGrokBundlePackage"))
+
+    def test_reinstall_preserves_commands_only_without_an_explicit_choice(self):
+        start = FULL.index("# Preserve the user's command choice across reinstall")
+        preserve = FULL[start:FULL.index("$operationParts =", start)]
+        self.assertRegex(preserve, r"if \(!\$PSBoundParameters\.ContainsKey\('OverrideOfficialCommands'\) -and\s+!\$InteractiveCommandSetup\.IsPresent -and")
+        self.assertIn("$existingMarker.PSObject.Properties['commands']", preserve)
+        self.assertIn("@('grok', 'agent')", preserve)
+        self.assertIn("$provideOfficialNames = $true", preserve)
+        self.assertLess(FULL.index("$requestedOverrideOfficialCommands = $interactiveChoice.OverrideOfficial"), start)
+        self.assertLess(FULL.index("$requestedUninstallOfficial = $interactiveChoice.RemoveOfficial"), start)
+
+    def test_windows_reinstall_fixture_covers_choice_precedence_and_invariants(self):
+        start = INSTALL_FIXTURE.index("# Omitting command setup preserves")
+        choices = INSTALL_FIXTURE[start:INSTALL_FIXTURE.index("$whatIfInstall =", start)]
+        self.assertRegex(choices, r"-NoPathUpdate -Confirm:\$false\s+& \$assertCommandChoice \$true")
+        self.assertRegex(choices, r"-OverrideOfficialCommands:\$false -NoPathUpdate -Confirm:\$false\s+& \$assertCommandChoice \$false")
+        self.assertRegex(choices, r"-NoPathUpdate -Confirm:\$false\s+& \$assertCommandChoice \$false")
+        self.assertIn("-OverrideOfficialCommands:$false -InteractiveCommandSetup -ScriptedCommandSetupAnswers '1'", choices)
+        self.assertIn("-OverrideOfficialCommands:$false -InteractiveCommandSetup -ScriptedCommandSetupAnswers '3'", choices)
+        self.assertIn("$beforeCancelMarkerHash", choices)
+        self.assertIn("$keptOfficialHash", choices)
+        invariant_start = INSTALL_FIXTURE.index("$assertCommandChoice = {")
+        invariants = INSTALL_FIXTURE[invariant_start:INSTALL_FIXTURE.index("$takeoverOutput =", invariant_start)]
+        for required in ("'grok.cmd', 'agent.cmd'", "$marker.commands", "$marker.product", "$marker.install_dir", "$marker.official_command_home", "$commandChoiceDataHashes", "$commandChoiceProcessPath", "$commandChoiceUserPath"):
+            self.assertIn(required, invariants)
+        self.assertIn("@('auth.json', 'config.toml', 'sessions/keep.json')", INSTALL_FIXTURE)
 
     def test_windows_matrix_exercises_round_trip_and_recovery(self):
         for scenario in ("/platform:x64", "future-resource.dat", "1.0.43-zh.ci.12345", "1.0.43-zh.ci.12344", "-AllowDowngrade", "-WindowsX64Runtime Msvc", ".grok-zh-msvc-ready.json", "模拟激活失败", "模拟磁盘空间不足", "'magic', 'offset', 'size', 'digest', 'content', 'trailing'", "keep-auth", "keep-config"):

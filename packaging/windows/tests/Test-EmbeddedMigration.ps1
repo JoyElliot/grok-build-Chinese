@@ -54,10 +54,10 @@ function Invoke-Launcher([string]$Executable, [string]$Arguments, [byte[]]$Input
     if ($MissingTemp) {
         # Restrict the deliberately invalid TEMP/TMP to this launcher child.
         # Later CSC fixture builds still need the parent's real temp directory.
-        $missingTemp=Join-Path $testRoot 'missing-temp'
-        Assert-True (!(Test-Path -LiteralPath $missingTemp)) '启动器测试使用不存在的 TEMP/TMP'
-        $info.EnvironmentVariables['TEMP']=$missingTemp
-        $info.EnvironmentVariables['TMP']=$missingTemp
+        $missingTempPath=Join-Path $testRoot 'missing-temp'
+        Assert-True (!(Test-Path -LiteralPath $missingTempPath)) '启动器测试使用不存在的 TEMP/TMP'
+        $info.EnvironmentVariables['TEMP']=$missingTempPath
+        $info.EnvironmentVariables['TMP']=$missingTempPath
     }
     $process=[Diagnostics.Process]::new(); $process.StartInfo=$info
     try {

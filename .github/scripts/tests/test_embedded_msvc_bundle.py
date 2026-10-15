@@ -316,13 +316,26 @@ class EmbeddedMsvcBundleTests(unittest.TestCase):
         self.assertIn('Ctrl+C', ps)
         self.assertLess(ps.rindex('Test-MigrationRuntime $runtime $version'), ps.rindex('Set-MigrationReady $runtime $version'))
 
+    def test_launcher_fixture_does_not_assign_to_typed_parameters_case_insensitively(self):
+        fixture = (builder.ROOT / "packaging/windows/tests/Test-EmbeddedMigration.ps1").read_text(encoding="utf-8-sig")
+        launcher = fixture.split("function Invoke-Launcher(", 1)[1].split("\nfunction ", 1)[0]
+        signature, body = launcher.split(") {", 1)
+        parameters = re.findall(r"\[[\w.\[\]]+\]\s*\$([A-Za-z_]\w*)", signature)
+        assignments = re.findall(r"\$([A-Za-z_]\w*)\s*=(?!=)", body)
+        self.assertIn("MissingTemp", parameters)
+        self.assertTrue(assignments)
+        # PowerShell names are case-insensitive and retain parameter type
+        # constraints: $missingTemp would overwrite [switch]$MissingTemp.
+        collisions = {name.casefold() for name in parameters} & {name.casefold() for name in assignments}
+        self.assertEqual(collisions, set(), "Launcher locals must not overwrite typed parameters")
+
     def test_windows_fixture_limits_missing_temp_to_launcher_children(self):
         fixture = (builder.ROOT / "packaging/windows/tests/Test-EmbeddedMigration.ps1").read_text(encoding="utf-8-sig")
         launcher = fixture.split("function Invoke-Launcher(", 1)[1].split("\nfunction ", 1)[0]
         setup = launcher.split("$process=[Diagnostics.Process]::new()", 1)[0]
         self.assertIn("[switch]$MissingTemp", setup)
-        self.assertRegex(setup, r"(?s)if \(\$MissingTemp\) \{.*?EnvironmentVariables\['TEMP'\]=\$missingTemp.*?EnvironmentVariables\['TMP'\]=\$missingTemp")
-        self.assertIn("Assert-True (!(Test-Path -LiteralPath $missingTemp))", setup)
+        self.assertRegex(setup, r"(?s)if \(\$MissingTemp\) \{.*?EnvironmentVariables\['TEMP'\]=\$missingTempPath\b.*?EnvironmentVariables\['TMP'\]=\$missingTempPath\b")
+        self.assertIn("Assert-True (!(Test-Path -LiteralPath $missingTempPath))", setup)
         # A parent-process mutation would also reach New-FakeExe/CSC, which
         # needs a real temp directory when compiling N+1 and N+2. This is a
         # source-contract check; Windows CI executes the actual launcher.
