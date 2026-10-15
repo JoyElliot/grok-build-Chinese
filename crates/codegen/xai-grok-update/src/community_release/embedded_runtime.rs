@@ -30,8 +30,8 @@ pub(super) fn extract_msvc_executable(
         )?
         .context("GNU package does not declare an embedded MSVC runtime")?;
         let inner = open_verified(&launcher_path, &descriptor, version)?;
-        let mut archive = zip::ZipArchive::new(inner)
-            .context("opening the authenticated embedded MSVC ZIP")?;
+        let mut archive =
+            zip::ZipArchive::new(inner).context("opening the authenticated embedded MSVC ZIP")?;
         extract_windows_package(
             version,
             CommunityPlatform::WindowsX86_64Msvc,
@@ -65,7 +65,8 @@ impl Read for ArchiveSlice {
         if count == 0 {
             return Ok(0);
         }
-        self.file.seek(SeekFrom::Start(self.offset + self.position))?;
+        self.file
+            .seek(SeekFrom::Start(self.offset + self.position))?;
         let read = self.file.read(&mut buffer[..count])?;
         self.position += read as u64;
         Ok(read)

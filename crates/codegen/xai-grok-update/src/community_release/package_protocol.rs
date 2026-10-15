@@ -42,7 +42,10 @@ impl EmbeddedRuntime {
             || self.archive_size == 0
             || self.archive_size > MAX_ASSET_BYTES
             || self.archive_sha256.len() != 64
-            || !self.archive_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !self
+                .archive_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
         {
             anyhow::bail!("unsupported or invalid embedded MSVC runtime descriptor");
         }
@@ -103,7 +106,9 @@ impl PackageProtocol {
         }
         if let Some(runtime) = &protocol.embedded_runtime {
             if platform != "x86_64-pc-windows-gnu" {
-                anyhow::bail!("embedded MSVC runtime is only valid in a Windows x86_64 GNU container");
+                anyhow::bail!(
+                    "embedded MSVC runtime is only valid in a Windows x86_64 GNU container"
+                );
             }
             runtime.validate(version)?;
         }

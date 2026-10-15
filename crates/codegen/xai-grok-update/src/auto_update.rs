@@ -2475,8 +2475,10 @@ fn community_windows_version_to_retain(
 ) -> Result<Option<String>> {
     let output = probe.context("rechecking the installed community binary before activation")?;
     let installed = installed_community_version(&output)?;
-    Ok((intent == InstallIntent::UpgradeOnly && installed > *candidate_version)
-        .then(|| installed.to_string()))
+    Ok(
+        (intent == InstallIntent::UpgradeOnly && installed > *candidate_version)
+            .then(|| installed.to_string()),
+    )
 }
 
 /// Test-only entry point: same as [`install_internal`] but reads from

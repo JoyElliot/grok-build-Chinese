@@ -1099,13 +1099,7 @@ fn extract_verified_windows_executable(
         if asset.target_platform != platform {
             anyhow::bail!("community Windows archive does not match the requested ABI");
         }
-        extract_windows_package(
-            &asset.version,
-            platform,
-            &mut archive,
-            destination,
-            false,
-        )?;
+        extract_windows_package(&asset.version, platform, &mut archive, destination, false)?;
         Ok(())
     })();
     if result.is_err() {
