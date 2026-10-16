@@ -118,35 +118,8 @@ function Update-MigrationRuntime {
             throw $replaceError
         }
         $stageCreated = $false
-        try {
-            if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $ExpectedSha256 -or
-                !(Test-MigrationRuntime $Directory $Version -LockHeld)) { throw '升级后程序校验失败。' }
-        } catch {
-            $validationError = $_
-            $rejected = "$exe.$([guid]::NewGuid().ToString('N')).migration-rejected"
-            try {
-                # A successful ReplaceFile is not the transaction commit:
-                # validate the installed image before discarding the backup.
-                # Restore atomically, retaining any rejected image separately.
-                Assert-OnlinePathChain $backup
-                Assert-OnlinePathChain $exe
-                Assert-OnlinePathChain $rejected
-                if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -cne $oldDigest) { throw '旧程序备份摘要不匹配。' }
-                if (Test-Path -LiteralPath $rejected) { throw '失败程序暂存路径已存在。' }
-                if (Test-Path -LiteralPath $exe) { [IO.File]::Replace($backup, $exe, $rejected) }
-                else { [IO.File]::Move($backup, $exe) }
-                if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -cne $oldDigest) { throw '回滚后的程序摘要不匹配。' }
-            } catch {
-                $preserveRecovery = $true
-                throw "升级后校验与回滚均未完成；请保留旧备份 $backup、失败程序 $rejected 和当前程序 $exe。$($_.Exception.Message)"
-            }
-            if (Test-Path -LiteralPath $rejected) {
-                try { [IO.File]::Delete($rejected) }
-                catch [IO.IOException] { [Console]::Error.WriteLine("失败程序仍被占用，保留：$rejected") }
-                catch [UnauthorizedAccessException] { [Console]::Error.WriteLine("失败程序保留：$rejected") }
-            }
-            throw "升级后校验失败，已恢复原 MSVC 程序，可重试。$($validationError.Exception.Message)"
-        }
+        if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $ExpectedSha256 -or
+            !(Test-MigrationRuntime $Directory $Version -LockHeld)) { throw "升级后校验失败；旧程序保留在 $backup。" }
         # Keep rollback files outside the Rust updater's .old cleanup pattern.
         # A running session may still hold the backup; never stop that session.
         try { [IO.File]::Delete($backup) }

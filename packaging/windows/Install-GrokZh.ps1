@@ -15,7 +15,7 @@
 共享 GROK_HOME 数据目录。默认读取 GROK_HOME 环境变量，否则使用当前用户目录下的 .grok。
 
 .PARAMETER OverrideOfficialCommands
-额外创建 grok 和 agent 兼容命令，但不移动已有官方可执行文件。重新安装时默认保留先前选择；显式传入 -OverrideOfficialCommands:$false 可停用兼容命令。
+额外创建 grok 和 agent 兼容命令，但不移动已有官方可执行文件。
 
 .PARAMETER UninstallOfficial
 删除已验证的官方 grok.exe/agent.exe，不创建备份，并创建对应兼容命令。默认路径安装还会卸载已识别的官方 npm 包。不会删除共享用户数据。
@@ -31,18 +31,6 @@
 
 .PARAMETER NoPathUpdate
 不修改当前用户 Path。
-
-.PARAMETER AllowDowngrade
-明确允许安装包版本低于现有受管版本。请先自行备份共享 GROK_HOME；旧版本的数据格式兼容性无法保证。
-
-.PARAMETER LibraryOnly
-仅加载离线验证函数，不执行安装、联网或环境修改。供经验证的内嵌迁移入口使用。
-
-.PARAMETER ExtractOnly
-只验证完整外包并解出内嵌 MSVC 完整包，返回包目录，不安装。
-
-.PARAMETER ExtractionDirectory
-ExtractOnly 使用的全新临时目录。
 
 .PARAMETER Force
 允许安装到缺少本安装器归属标记的现有目录。使用前请先检查目录内容。
@@ -68,11 +56,7 @@ param(
     [string]$ScriptedCommandSetupAnswers,
     [switch]$ShowProgress,
     [switch]$NoPathUpdate,
-    [switch]$Force,
-    [switch]$AllowDowngrade,
-    [switch]$LibraryOnly,
-    [switch]$ExtractOnly,
-    [string]$ExtractionDirectory
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -614,7 +598,7 @@ function Read-AndVerifyManifest {
         [StringComparer]::Ordinal
     )
     $normalizedNames = [Collections.Generic.HashSet[string]]::new(
-        [StringComparer]::OrdinalIgnoreCase
+        [StringComparer]::Ordinal
     )
     $legacyRequired = @(
         'grok-zh.exe',
@@ -637,18 +621,6 @@ function Read-AndVerifyManifest {
         'licenses/project/NOTICE'
     )
     $allowedUnicodeNames = @('一键安装.cmd', '[可选]替换原始启动方式.cmd')
-    $nativeProtocol = $null
-    $buildInfoPath = Join-Path $Root 'BUILD-INFO.txt'
-    if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
-        if ((Get-Item -LiteralPath $buildInfoPath).Length -gt 65536) { throw '包内元数据超过大小限制。' }
-        $candidateProtocol = Read-GrokBundleProtocol (Get-Content -LiteralPath $buildInfoPath -Raw -Encoding UTF8) '' ''
-        if ($candidateProtocol -and $candidateProtocol.platform -in @('x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc')) {
-            if ($candidateProtocol.executable -cne 'grok-zh.exe' -or $candidateProtocol.installer -cne 'Install-GrokZh.ps1' -or
-                $null -ne $candidateProtocol.PSObject.Properties['embedded_runtime']) { throw '原生完整包入口或内嵌描述无效。' }
-            $nativeProtocol = $candidateProtocol
-        }
-    }
-    if ((Get-Item -LiteralPath $manifestPath).Length -gt 65536) { throw '包内校验清单超过大小限制。' }
     foreach ($line in Get-Content -LiteralPath $manifestPath -Encoding UTF8) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             throw 'SHA256SUMS.txt 不能包含空行。'
@@ -670,12 +642,11 @@ function Read-AndVerifyManifest {
         if ($name -ieq 'SHA256SUMS.txt') {
             throw 'SHA256SUMS.txt 不能包含自身哈希条目。'
         }
-        Assert-GrokBundleRelativePath $name
-        if (!$nativeProtocol -and $completeRequired -cnotcontains $name) {
+        if ($completeRequired -cnotcontains $name) {
             throw "安装包校验清单包含未批准的文件：$name"
         }
         $isAscii = $name -cmatch '^[\x00-\x7F]+$'
-        if (!$nativeProtocol -and !$isAscii -and $allowedUnicodeNames -cnotcontains $name) {
+        if (!$isAscii -and $allowedUnicodeNames -cnotcontains $name) {
             throw "安装包校验清单包含未批准的 Unicode 文件名：$name"
         }
         $normalizedName = if ($isAscii) {
@@ -695,10 +666,10 @@ function Read-AndVerifyManifest {
     # to legacy versions and reject it for release-v* updates.
     $legacyManifest = $hashes.Count -eq $legacyRequired.Count -and
         @($legacyRequired | Where-Object { !$hashes.ContainsKey($_) }).Count -eq 0
-    $completeManifest = (($hashes.Count -eq $completeRequired.Count) -or ($nativeProtocol -and $hashes.Count -ge $completeRequired.Count -and $hashes.Count -le 127)) -and
+    $completeManifest = $hashes.Count -eq $completeRequired.Count -and
         @($completeRequired | Where-Object { !$hashes.ContainsKey($_) }).Count -eq 0
     if (!$legacyManifest -and !$completeManifest) {
-        throw '安装包校验清单不是受支持的桥接、15 项 GNU 或原生完整格式。'
+        throw '安装包校验清单不是受支持的 7 项桥接格式或 15 项完整格式。'
     }
 
     $totalBytes = [long]0
@@ -881,493 +852,10 @@ function Remove-OfficialInstallation {
     return $removed.ToArray()
 }
 
-# Canonical offline embedded-runtime validator, also embedded in the GNU launcher.
-# No downloader, network fallback, environment update or user-data access lives here.
-function Assert-GrokBundleJsonKeys {
-    param([string]$Json)
-    $stack = [Collections.Generic.Stack[object]]::new()
-    $tokens = [regex]::Matches($Json, '"(?:\\.|[^"\\])*"|[{}\[\]:,]|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')
-    foreach ($match in $tokens) {
-        $token = $match.Value
-        if ($token -eq '{' -or $token -eq '[') {
-            $stack.Push([pscustomobject]@{ Object = $token -eq '{'; Key = $token -eq '{'; Names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) })
-        } elseif ($token -eq '}' -or $token -eq ']') {
-            if ($stack.Count -eq 0) { throw '更新协议 JSON 结构无效。' }
-            $null = $stack.Pop()
-        } elseif ($stack.Count -gt 0) {
-            $frame = $stack.Peek()
-            if ($token -eq ',') { $frame.Key = $frame.Object }
-            elseif ($token -eq ':') { $frame.Key = $false }
-            elseif ($frame.Object -and $frame.Key -and $token.StartsWith('"')) {
-                $name = (ConvertFrom-Json ('{"value":' + $token + '}')).value
-                if (!$frame.Names.Add($name)) { throw "更新协议字段重复：$name" }
-                $frame.Key = $false
-            }
-        }
-    }
-}
-
-function Read-GrokBundleProtocol {
-    param([string]$Text, [string]$Version, [string]$Platform)
-    $begin = 'GROK-UPDATE-PROTOCOL-BEGIN'; $end = 'GROK-UPDATE-PROTOCOL-END'
-    if (!$Text.Contains($begin) -and !$Text.Contains($end)) { return $null }
-    $lines = @($Text -split '\r?\n')
-    $starts = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -ceq $begin) { $i } })
-    $ends = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -ceq $end) { $i } })
-    if ($starts.Count -ne 1 -or $ends.Count -ne 1 -or $starts[0] + 1 -ge $ends[0]) { throw '包内更新协议块不完整或重复。' }
-    $json = $lines[($starts[0] + 1)..($ends[0] - 1)] -join "`n"
-    Assert-GrokBundleJsonKeys $json
-    $protocol = ConvertFrom-Json -InputObject $json
-    foreach ($field in @('schema', 'version', 'platform', 'mode', 'manifest', 'executable', 'installer')) {
-        $value = Get-GrokBundleProperty $protocol $field
-        if ($field -eq 'schema') {
-            if (($value -isnot [int] -and $value -isnot [long]) -or $value -ne 1) { throw '内嵌包只支持 schema 1。' }
-        } elseif ($value -isnot [string]) { throw "更新协议字段类型无效：$field" }
-    }
-    if ($protocol.mode -cne 'executable-only' -or $protocol.manifest -cne 'SHA256SUMS.txt') { throw '内嵌包更新协议无效。' }
-    if ($Version -and $protocol.version -cne $Version) { throw '内嵌包版本与所选版本不一致。' }
-    if ($Platform -and $protocol.platform -cne $Platform) { throw '内嵌包平台不一致。' }
-    if ($protocol.version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { throw '包内版本格式无效。' }
-    foreach ($part in (($protocol.version -split '[-+]')[0]).Split('.')) { $null = [uint64]::Parse($part, [Globalization.CultureInfo]::InvariantCulture) }
-    $withoutBuild = $protocol.version.Split('+')[0]
-    if ($withoutBuild.Contains('-')) {
-        foreach ($identifier in $withoutBuild.Substring($withoutBuild.IndexOf('-') + 1).Split('.')) {
-            if ($identifier -cmatch '^0[0-9]+$') { throw '版本预发布数字标识符不能有前导零。' }
-        }
-    }
-    Assert-GrokBundleRelativePath $protocol.executable
-    Assert-GrokBundleRelativePath $protocol.installer
-    if ($protocol.executable -in @('BUILD-INFO.txt', 'SHA256SUMS.txt') -or
-        $protocol.installer -in @('BUILD-INFO.txt', 'SHA256SUMS.txt') -or
-        $protocol.executable -ieq $protocol.installer) { throw '更新协议入口无效或重叠。' }
-    return $protocol
-}
-
-function Get-GrokEmbeddedDescriptor {
-    param($Protocol)
-    $property = $Protocol.PSObject.Properties['embedded_runtime']
-    if ($null -eq $property) { return $null }
-    $descriptor = $property.Value
-    $fields = @('schema', 'format', 'version', 'platform', 'archive_size', 'archive_sha256')
-    if ($null -eq $descriptor -or @($descriptor.PSObject.Properties.Name).Count -ne $fields.Count) { throw '内嵌运行时描述字段无效。' }
-    foreach ($field in $fields) { $null = Get-GrokBundleProperty $descriptor $field }
-    if (($descriptor.schema -isnot [int] -and $descriptor.schema -isnot [long]) -or $descriptor.schema -ne 1 -or
-        $descriptor.format -isnot [string] -or $descriptor.format -cne 'grok-msvc-bundle-v1' -or
-        $descriptor.version -isnot [string] -or $descriptor.version -cne $Protocol.version -or
-        $descriptor.platform -isnot [string] -or $descriptor.platform -cne 'x86_64-pc-windows-msvc' -or
-        ($descriptor.archive_size -isnot [int] -and $descriptor.archive_size -isnot [long]) -or
-        $descriptor.archive_size -le 0 -or $descriptor.archive_size -gt 536870912 -or
-        $descriptor.archive_sha256 -isnot [string] -or $descriptor.archive_sha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
-        $Protocol.platform -cne 'x86_64-pc-windows-gnu' -or $Protocol.executable -cne 'grok-zh.exe' -or
-        $Protocol.installer -cne 'Install-GrokZh.ps1') { throw '内嵌运行时描述与外包版本、平台或摘要不一致。' }
-    return $descriptor
-}
-
-function Assert-GrokFreeSpace {
-    param([Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][long]$RequiredBytes)
-    if ($RequiredBytes -lt 0) { throw '空间需求不能为负数。' }
-    $root = [IO.Path]::GetPathRoot((Resolve-FullPath $Path))
-    $drive = [IO.DriveInfo]::new($root)
-    if (!$drive.IsReady -or $drive.AvailableFreeSpace -lt $RequiredBytes) { throw "磁盘剩余空间不足，至少需要 $RequiredBytes 字节：$root" }
-}
-
-function Assert-GrokPe64Prefix {
-    param([Parameter(Mandatory = $true)][string]$Path, [long]$PrefixLength = -1)
-    Assert-NoReparsePointInPath -Path $Path -Label 'PE 程序'
-    $stream = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
-    $reader = [IO.BinaryReader]::new($stream)
-    try {
-        if ($PrefixLength -lt 0) { $PrefixLength = $stream.Length }
-        if ($PrefixLength -lt 256 -or $PrefixLength -gt $stream.Length -or $reader.ReadUInt16() -ne 0x5a4d) { throw '程序不是完整 x64 PE 文件。' }
-        $null = $stream.Seek(0x3c, [IO.SeekOrigin]::Begin)
-        $peOffset = [uint64]$reader.ReadUInt32()
-        if ($peOffset -lt 64 -or $peOffset -gt [uint64]($PrefixLength - 26)) { throw 'PE 头超出程序前缀边界。' }
-        $null = $stream.Seek([long]$peOffset, [IO.SeekOrigin]::Begin)
-        if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne 0x8664) { throw '程序必须是 x64 PE。' }
-        $sections = $reader.ReadUInt16()
-        $null = $stream.Seek([long]$peOffset + 20, [IO.SeekOrigin]::Begin)
-        $optionalSize = $reader.ReadUInt16(); $null = $reader.ReadUInt16()
-        if ($sections -lt 1 -or $optionalSize -lt 112 -or $peOffset + 24 + $optionalSize + 40L * $sections -gt [uint64]$PrefixLength -or
-            $reader.ReadUInt16() -ne 0x20b) { throw 'PE32+ 可选头或区段表不完整。' }
-    } finally { $reader.Dispose(); $stream.Dispose() }
-}
-
-function Expand-GrokEmbeddedArchive {
-    param([Parameter(Mandatory = $true)][string]$Launcher,
-        [Parameter(Mandatory = $true)][string]$Destination,
-        [Parameter(Mandatory = $true)][string]$Version,
-        [Parameter(Mandatory = $true)][long]$ExpectedSize,
-        [Parameter(Mandatory = $true)][string]$ExpectedSha256)
-    if ($ExpectedSize -le 0 -or $ExpectedSize -gt 536870912 -or $ExpectedSha256 -cnotmatch '^[0-9a-fA-F]{64}$' -or
-        $Version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw '内嵌运行时固定版本、大小或摘要无效。' }
-    foreach ($part in $Version.Split('.')) { $null = [uint64]::Parse($part, [Globalization.CultureInfo]::InvariantCulture) }
-    $Launcher = Resolve-FullPath $Launcher
-    $Destination = Resolve-FullPath $Destination
-    Assert-NoReparsePointInPath -Path $Launcher -Label '内嵌启动器'
-    Assert-NoReparsePointInPath -Path $Destination -Label '内嵌临时目录'
-    if (Test-Path -LiteralPath $Destination) { throw '内嵌运行时目标必须是新的临时目录。' }
-    $input = $null; $reader = $null; $output = $null; $sha = $null; $created = $false
-    try {
-        # Hold the authenticated source against writes/replacement while extracting.
-        $input = [IO.File]::Open($Launcher, 'Open', 'Read', 'Read')
-        if ($input.Length -lt 66 -or $input.Length -gt 536870912) { throw '内嵌启动器大小无效或缺少完整尾部。' }
-        if ($input.ReadByte() -ne 0x4d -or $input.ReadByte() -ne 0x5a) { throw '内嵌启动器不是 Windows PE 文件。' }
-        $null = $input.Seek(-64, [IO.SeekOrigin]::End)
-        $reader = [IO.BinaryReader]::new($input, [Text.Encoding]::ASCII, $true)
-        $magic = [Text.Encoding]::ASCII.GetString($reader.ReadBytes(16))
-        $offset = $reader.ReadUInt64(); $size = $reader.ReadUInt64()
-        $digest = ([BitConverter]::ToString($reader.ReadBytes(32))).Replace('-', '').ToLowerInvariant()
-        # Subtraction and range checks avoid UInt64 overflow on hostile footer values.
-        if ($magic -cne 'GROKMSVCBUNDLE01' -or $size -ne $ExpectedSize -or $size -gt 536870912 -or
-            $offset -lt 256 -or $offset -gt [uint64]($input.Length - 64) -or
-            $size -ne [uint64]($input.Length - 64) - $offset -or $digest -ine $ExpectedSha256) { throw '内嵌运行时尾部边界或摘要与固定信息不一致。' }
-        Assert-GrokPe64Prefix -Path $Launcher -PrefixLength ([long]$offset)
-        Assert-GrokFreeSpace -Path $Destination -RequiredBytes ($ExpectedSize + 16777216L)
-        $null = New-Item -ItemType Directory -Path $Destination -ErrorAction Stop -WhatIf:$false -Confirm:$false
-        $created = $true
-        $archive = Join-Path $Destination 'native-msvc.zip'
-        $output = [IO.File]::Open($archive, 'CreateNew', 'Write', 'None')
-        $sha = [Security.Cryptography.SHA256]::Create()
-        $null = $input.Seek([long]$offset, [IO.SeekOrigin]::Begin)
-        $remaining = [long]$size; $buffer = [byte[]]::new(65536)
-        while ($remaining -gt 0) {
-            $count = $input.Read($buffer, 0, [int][Math]::Min($remaining, $buffer.Length))
-            if ($count -le 0) { throw '内嵌运行时未完整读取。' }
-            $output.Write($buffer, 0, $count)
-            $null = $sha.TransformBlock($buffer, 0, $count, $buffer, 0)
-            $remaining -= $count
-        }
-        $null = $sha.TransformFinalBlock([byte[]]::new(0), 0, 0)
-        $actual = ([BitConverter]::ToString($sha.Hash)).Replace('-', '').ToLowerInvariant()
-        if ($actual -ine $ExpectedSha256) { throw '内嵌运行时 SHA-256 不匹配。' }
-        $output.Dispose(); $output = $null
-        $contract = [pscustomobject]@{ Legacy = $false; Version = [pscustomobject]@{ Text = $Version }; PackageRoot = "grok-zh-$Version-windows-x86_64-msvc" }
-        return Expand-VerifiedGrokBundlePackage -ArchivePath $archive -Destination (Join-Path $Destination 'package') -Contract $contract
-    } catch {
-        if ($output) { $output.Dispose(); $output = $null }
-        if ($created -and (Test-Path -LiteralPath $Destination)) {
-            Assert-NoReparsePointTree -Path $Destination -Label '内嵌临时目录'
-            Remove-Item -LiteralPath $Destination -Recurse -Force -WhatIf:$false -Confirm:$false
-        }
-        throw
-    } finally {
-        if ($output) { $output.Dispose() }
-        if ($reader) { $reader.Dispose() }
-        if ($input) { $input.Dispose() }
-        if ($sha) { $sha.Dispose() }
-    }
-}
-
-function Expand-GrokEmbeddedPackage {
-    param([Parameter(Mandatory = $true)][string]$Package,
-        [Parameter(Mandatory = $true)][string]$Destination)
-    $manifest = Read-AndVerifyManifest $Package
-    if ($manifest.Count -ne 15) { throw '内嵌运行时外包必须使用完整清单。' }
-    $infoPath = Join-Path $Package 'BUILD-INFO.txt'; $launcherPath = Join-Path $Package 'grok-zh.exe'
-    $infoHandle = $null; $launcherHandle = $null
-    try {
-        $infoHandle = [IO.File]::Open($infoPath, 'Open', 'Read', 'Read')
-        $launcherHandle = [IO.File]::Open($launcherPath, 'Open', 'Read', 'Read')
-        if ((Get-FileHash -LiteralPath $infoPath -Algorithm SHA256).Hash -ine $manifest['BUILD-INFO.txt'] -or
-            (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash -ine $manifest['grok-zh.exe']) { throw '外包在完整校验后发生变化。' }
-        $protocol = Read-GrokBundleProtocol (Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8) '' 'x86_64-pc-windows-gnu'
-        if (!$protocol) { throw '安装包没有内嵌运行时协议。' }
-        $descriptor = Get-GrokEmbeddedDescriptor $protocol
-        if (!$descriptor) { throw '安装包没有内嵌运行时描述。' }
-        return Expand-GrokEmbeddedArchive -Launcher $launcherPath -Destination $Destination `
-            -Version $protocol.version -ExpectedSize $descriptor.archive_size -ExpectedSha256 $descriptor.archive_sha256
-    } finally {
-        if ($launcherHandle) { $launcherHandle.Dispose() }
-        if ($infoHandle) { $infoHandle.Dispose() }
-    }
-}
-
-function Get-GrokPackageVersion {
-    param([string]$Root)
-    $path = Join-Path $Root 'BUILD-INFO.txt'
-    if (!(Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    $protocol = Read-GrokBundleProtocol ([IO.File]::ReadAllText($path)) '' ''
-    $matches = @([IO.File]::ReadAllLines($path) | Where-Object { $_ -cmatch '^Version:\s*(\S+)\s*$' })
-    if ($protocol) {
-        if ($matches.Count -gt 1 -or ($matches.Count -eq 1 -and ($matches[0] -replace '^Version:\s*', '').Trim() -cne $protocol.version)) { throw '版本说明与包内协议不一致。' }
-        return $protocol.version
-    }
-    if ($matches.Count -ne 1) { return $null }
-    $text = ($matches[0] -replace '^Version:\s*', '').Trim()
-    if ($text -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') { return $null }
-    return $text
-}
-
-function Get-GrokExecutableVersion {
-    param([string]$Executable)
-    Assert-NoReparsePointInPath -Path $Executable -Label '版本检查程序'
-    $info = [Diagnostics.ProcessStartInfo]::new()
-    $info.FileName = $Executable; $info.Arguments = '--version'
-    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
-    $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::new(); $process.StartInfo = $info
-    try {
-        if (!$process.Start()) { throw '无法启动版本检查。' }
-        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
-        if (!$process.WaitForExit(10000)) { $process.Kill(); $process.WaitForExit(); throw '程序版本检查超时。' }
-        $text = $stdout.GetAwaiter().GetResult().Trim(); $null = $stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0 -or $text.Length -gt 4096 -or
-            $text -cnotmatch '^grok-zh ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?: \([^()\r\n]{1,128}\))?(?: \[[^\[\]\r\n]{1,32}\])?$') { throw '程序没有返回有效的 grok-zh 版本。' }
-        return $matches[1]
-    } finally { $process.Dispose() }
-}
-
-function Compare-GrokInstallerVersion {
-    param([string]$Left, [string]$Right)
-    $leftBase = $Left.Split('+')[0]; $rightBase = $Right.Split('+')[0]
-    $leftParts = $leftBase.Split('-')[0].Split('.'); $rightParts = $rightBase.Split('-')[0].Split('.')
-    for ($i = 0; $i -lt 3; $i++) {
-        if ([uint64]$leftParts[$i] -gt [uint64]$rightParts[$i]) { return 1 }
-        if ([uint64]$leftParts[$i] -lt [uint64]$rightParts[$i]) { return -1 }
-    }
-    $leftPre = if ($leftBase.Contains('-')) { $leftBase.Substring($leftBase.IndexOf('-') + 1) } else { '' }
-    $rightPre = if ($rightBase.Contains('-')) { $rightBase.Substring($rightBase.IndexOf('-') + 1) } else { '' }
-    if ($leftPre -and !$rightPre) { return -1 }
-    if (!$leftPre -and $rightPre) { return 1 }
-    if (!$leftPre -and !$rightPre) { return 0 }
-    $leftIds = $leftPre.Split('.'); $rightIds = $rightPre.Split('.')
-    for ($i = 0; $i -lt [Math]::Min($leftIds.Length, $rightIds.Length); $i++) {
-        $a = $leftIds[$i]; $b = $rightIds[$i]
-        $aNumeric = $a -cmatch '^[0-9]+$'; $bNumeric = $b -cmatch '^[0-9]+$'
-        if ($aNumeric -and !$bNumeric) { return -1 }
-        if (!$aNumeric -and $bNumeric) { return 1 }
-        if ($aNumeric -and $bNumeric -and $a.Length -ne $b.Length) {
-            if ($a.Length -lt $b.Length) { return -1 } else { return 1 }
-        }
-        $comparison = [StringComparer]::Ordinal.Compare($a, $b)
-        if ($comparison -lt 0) { return -1 }
-        if ($comparison -gt 0) { return 1 }
-    }
-    if ($leftIds.Length -lt $rightIds.Length) { return -1 }
-    if ($leftIds.Length -gt $rightIds.Length) { return 1 }
-    return 0
-}
-
-function Get-GrokBundleProperty {
-    param($Object, [string]$Name)
-    if ($null -eq $Object -or $null -eq $Object.PSObject.Properties[$Name]) {
-        throw "发布信息缺少字段：$Name"
-    }
-    return $Object.$Name
-}
-
-
-function ConvertFrom-GrokBundleUtf8 {
-    param([byte[]]$Bytes)
-    $text = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
-    if ($text.Length -gt 0 -and $text[0] -eq [char]0xfeff) { $text = $text.Substring(1) }
-    return $text
-}
-
-
-function Assert-GrokBundleRelativePath {
-    param([string]$Path)
-    if (!$Path -or $Path.Trim() -cne $Path -or $Path -match '[\\:<>"|?*\x00-\x1f\x7f]') { throw "包内路径无效：$Path" }
-    foreach ($part in $Path.Split('/')) {
-        if (!$part -or $part -in @('.', '..') -or $part.EndsWith('.') -or $part.EndsWith(' ') -or
-            $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])(?:\.|$)') { throw "包内路径无效：$Path" }
-    }
-}
-
-
-function Read-GrokBundleZipText {
-    param($Entry)
-    if ($Entry.Length -gt 65536) { throw '包内元数据超过大小限制。' }
-    $stream = $Entry.Open()
-    $memory = [IO.MemoryStream]::new()
-    try {
-        $chunk = [byte[]]::new(4096)
-        while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
-            if ($memory.Length + $read -gt $Entry.Length) { throw '包内元数据实际大小超过声明。' }
-            $memory.Write($chunk, 0, $read)
-        }
-        if ($memory.Length -ne $Entry.Length) { throw '包内元数据未完整解压。' }
-        return ConvertFrom-GrokBundleUtf8 ($memory.ToArray())
-    } finally { $stream.Dispose(); $memory.Dispose() }
-}
-
-
-function Expand-VerifiedGrokBundlePackage {
-    param([string]$ArchivePath, [string]$Destination, $Contract)
-    if ($Contract.Legacy) { throw '内嵌包不支持旧版平铺格式。' }
-    Add-Type -AssemblyName System.IO.Compression
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    if (Test-Path -LiteralPath $Destination) { throw '解压目标必须是新的临时目录。' }
-    $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
-    try {
-        if ($archive.Entries.Count -eq 0 -or $archive.Entries.Count -gt 128) { throw 'ZIP 文件数量超出限制。' }
-        $entries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
-        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        $total = 0L
-        $directories = @()
-        foreach ($entry in $archive.Entries) {
-            $name = $entry.FullName
-            $directory = $name.EndsWith('/')
-            $unixType = ([uint32]([long]$entry.ExternalAttributes -band 0xffffffffL) -shr 16) -band 0xf000
-            if ($name.Contains('\') -or $name.Contains('//') -or $name.Contains(':') -or $name.StartsWith('/') -or
-                ($unixType -ne 0 -and $unixType -ne 0x8000 -and $unixType -ne 0x4000) -or
-                ($entry.ExternalAttributes -band 0x400) -ne 0 -or
-                ($unixType -eq 0x4000 -and !$directory) -or ($unixType -eq 0x8000 -and $directory)) { throw "ZIP 包含不安全的成员：$name" }
-            $parts = $name.TrimEnd('/').Split('/')
-            if (@($parts | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) { throw "ZIP 路径无效：$name" }
-            if (!$Contract.Legacy) {
-                if ($name -ceq "$($Contract.PackageRoot)/") {
-                    if (!$seen.Add($name) -or $entry.Length -ne 0) { throw 'ZIP 顶层目录重复或不为空。' }
-                    continue
-                }
-                $prefix = "$($Contract.PackageRoot)/"
-                if (!$name.StartsWith($prefix, [StringComparison]::Ordinal)) { throw "ZIP 必须只有指定顶层目录：$($Contract.PackageRoot)" }
-                $name = $name.Substring($prefix.Length)
-            }
-            $logical = $name.TrimEnd('/')
-            Assert-GrokBundleRelativePath $logical
-            if (!$seen.Add($logical)) { throw "ZIP 包含重复路径：$logical" }
-            if ($directory) {
-                if ($entry.Length -ne 0) { throw "ZIP 目录包含文件内容：$logical" }
-                $directories += $logical
-            } else {
-                if ($entry.Length -gt 536870912 -or $entry.Length -lt 0) { throw 'ZIP 单文件超过大小限制。' }
-                $total += $entry.Length
-                if ($total -gt 805306368) { throw 'ZIP 解压后总大小超过限制。' }
-                $entries.Add($logical, $entry)
-            }
-        }
-        foreach ($name in @('BUILD-INFO.txt', 'SHA256SUMS.txt')) {
-            if (!$entries.ContainsKey($name)) { throw "ZIP 缺少文件：$name" }
-        }
-        $protocol = Read-GrokBundleProtocol (Read-GrokBundleZipText $entries['BUILD-INFO.txt']) $Contract.Version.Text 'x86_64-pc-windows-msvc'
-        if (!$protocol -or $protocol.executable -cne 'grok-zh.exe' -or $protocol.installer -cne 'Install-GrokZh.ps1' -or
-            $null -ne $protocol.PSObject.Properties['embedded_runtime']) { throw '内嵌包必须是原生 MSVC 完整包，不能再次包含兼容启动器。' }
-        if ($entries['SHA256SUMS.txt'].Length -gt 65536) { throw '包内校验清单超过大小限制。' }
-        $manifestStream = $entries['SHA256SUMS.txt'].Open()
-        try {
-            $memory = [IO.MemoryStream]::new()
-            try {
-                $chunk = [byte[]]::new(4096)
-                while (($read = $manifestStream.Read($chunk, 0, $chunk.Length)) -gt 0) {
-                    if ($memory.Length + $read -gt $entries['SHA256SUMS.txt'].Length) { throw '包内清单实际大小超过声明。' }
-                    $memory.Write($chunk, 0, $read)
-                }
-                if ($memory.Length -ne $entries['SHA256SUMS.txt'].Length) { throw '包内清单未完整解压。' }
-                $manifestText = ConvertFrom-GrokBundleUtf8 ($memory.ToArray())
-            } finally { $memory.Dispose() }
-        } finally { $manifestStream.Dispose() }
-        $manifestNames = @()
-        $hashes = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
-        if ($manifestText.EndsWith("`n")) {
-            $manifestText = $manifestText.Substring(0, $manifestText.Length - 1)
-            if ($manifestText.EndsWith("`r")) { $manifestText = $manifestText.Substring(0, $manifestText.Length - 1) }
-        }
-        $lines = $manifestText -split '\r?\n'
-        foreach ($line in $lines) {
-            if ($line -cnotmatch '^([0-9A-Fa-f]{64})  (.+)$') { throw '包内 SHA256SUMS.txt 格式无效。' }
-            $expected = $matches[1]; $name = $matches[2]
-            Assert-GrokBundleRelativePath $name
-            if ((!$protocol -and $manifestNames -cnotcontains $name) -or $name -ieq 'SHA256SUMS.txt' -or $hashes.ContainsKey($name)) { throw "包内清单包含额外或重复文件：$name" }
-            $hashes.Add($name, $expected)
-        }
-        if ($protocol) {
-            foreach ($required in @('BUILD-INFO.txt', $protocol.executable, $protocol.installer)) {
-                if (!$hashes.ContainsKey($required)) { throw "新协议清单缺少必要文件：$required" }
-            }
-            $packageFiles = @($hashes.Keys)
-        } else {
-            if ($hashes.Count -ne $manifestNames.Count) { throw '包内 SHA256SUMS.txt 未覆盖完整文件集合。' }
-            $packageFiles = @()
-        }
-        $fileNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($name in $entries.Keys) { $null = $fileNames.Add($name) }
-        $allowedDirs = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($name in $packageFiles) {
-            if (!$entries.ContainsKey($name)) { throw "ZIP 缺少清单文件：$name" }
-            $parent = $name
-            while ($parent.Contains('/')) {
-                $parent = $parent.Substring(0, $parent.LastIndexOf('/'))
-                if ($fileNames.Contains($parent)) { throw "ZIP 文件和目录冲突：$parent" }
-                $null = $allowedDirs.Add($parent)
-            }
-        }
-        if ($entries.Count -ne $packageFiles.Count + 1) { throw 'ZIP 包含清单之外的文件。' }
-        foreach ($directory in $directories) {
-            if (!$allowedDirs.Contains($directory)) { throw "ZIP 包含额外目录：$directory" }
-        }
-        Assert-GrokFreeSpace -Path $Destination -RequiredBytes ($total + 16777216L)
-        $null = [IO.Directory]::CreateDirectory($Destination)
-        $package = if ($Contract.Legacy) { $Destination } else { Join-Path $Destination $Contract.PackageRoot }
-        foreach ($name in $entries.Keys) {
-            $target = Join-Path $package $name
-            $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $target))
-            $inputStream = $entries[$name].Open()
-            $output = [IO.File]::Open($target, [IO.FileMode]::CreateNew)
-            try {
-                $buffer = [byte[]]::new(65536); $written = 0L
-                while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $written += $count
-                    if ($written -gt $entries[$name].Length) { throw "ZIP 文件实际大小与声明不符：$name" }
-                    $output.Write($buffer, 0, $count)
-                }
-                if ($written -ne $entries[$name].Length) { throw "ZIP 文件尚未完整解压：$name" }
-            } finally { $inputStream.Dispose(); $output.Dispose() }
-            if ($hashes.ContainsKey($name) -and (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ine $hashes[$name]) {
-                throw "包内文件 SHA-256 不匹配：$name"
-            }
-        }
-        $null = Read-AndVerifyManifest $package
-        Assert-GrokPe64Prefix -Path (Join-Path $package 'grok-zh.exe')
-        return $package
-    } finally { $archive.Dispose() }
-}
-
-
-# The compiler embeds this same complete script; library loading must stay above
-# all path defaults, prompts, installation and environment changes.
-if ($LibraryOnly) { return }
-if ($ExtractOnly) {
-    if (!$ExtractionDirectory) { throw '-ExtractOnly 需要 -ExtractionDirectory。' }
-    if (!$PackageDir) { $PackageDir = $PSScriptRoot }
-    Expand-GrokEmbeddedPackage -Package (Resolve-FullPath $PackageDir) -Destination $ExtractionDirectory
-    return
-}
-
 if ([string]::IsNullOrWhiteSpace($PackageDir)) {
     $PackageDir = $PSScriptRoot
 }
 $PackageDir = Resolve-FullPath $PackageDir
-$packageBuildInfo = Join-Path $PackageDir 'BUILD-INFO.txt'
-if (Test-Path -LiteralPath $packageBuildInfo -PathType Leaf) {
-    $packageProtocol = Read-GrokBundleProtocol (Get-Content -LiteralPath $packageBuildInfo -Raw -Encoding UTF8) '' ''
-    if ($packageProtocol -and $null -ne $packageProtocol.PSObject.Properties['embedded_runtime']) {
-        # Validate all outer hashes before reading authenticated embedded bytes.
-        $null = Read-AndVerifyManifest $PackageDir
-        $bundleHome = if ($GrokHome) { $GrokHome } else { Get-DefaultGrokHome }
-        $bundleHome = Resolve-FullPath ([Environment]::ExpandEnvironmentVariables($bundleHome))
-        $bundleWork = Join-Path ([IO.Path]::GetTempPath()) ('grok-zh-embedded-install-' + [guid]::NewGuid().ToString('N'))
-        if (Test-PathsOverlap $bundleWork $bundleHome) { throw '内嵌临时目录不能与共享 GROK_HOME 重叠。' }
-        $bundleCreated = $false
-        try {
-            $nativePackage = Expand-GrokEmbeddedPackage -Package $PackageDir -Destination $bundleWork
-            $bundleCreated = $true
-            $forward = @{}
-            foreach ($key in $PSBoundParameters.Keys) {
-                if ($key -notin @('PackageDir', 'LibraryOnly', 'ExtractOnly', 'ExtractionDirectory')) { $forward[$key] = $PSBoundParameters[$key] }
-            }
-            $forward.PackageDir = $nativePackage
-            & (Join-Path $nativePackage 'Install-GrokZh.ps1') @forward
-        } finally {
-            if ($bundleCreated -and (Test-Path -LiteralPath $bundleWork)) {
-                Assert-NoReparsePointTree -Path $bundleWork -Label '内嵌临时目录'
-                Remove-Item -LiteralPath $bundleWork -Recurse -Force -WhatIf:$false -Confirm:$false
-            }
-        }
-        return
-    }
-}
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Get-DefaultInstallDir
 }
@@ -1438,26 +926,6 @@ if ((Test-Path -LiteralPath $InstallDir) -and
     throw "InstallDir 已存在，但不归本安装器管理：$InstallDir。请先检查目录内容，确认安全后再使用 -Force。"
 }
 
-$packageVersion = Get-GrokPackageVersion $PackageDir
-if (Test-Path -LiteralPath $installMarker -PathType Leaf) {
-    $existingMarker = Get-Content -LiteralPath $installMarker -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($existingMarker.product -cne 'grok-build-zh' -or !(Test-SamePath $existingMarker.install_dir $InstallDir)) {
-        throw '现有安装的归属记录与目标目录不一致。'
-    }
-    $existingVersion = if ($packageVersion) { Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe') } else { $null }
-    if ($packageVersion -and $existingVersion -and (Compare-GrokInstallerVersion $existingVersion $packageVersion) -gt 0) {
-        if (!$AllowDowngrade) { throw "当前版本 $existingVersion 高于安装包 $packageVersion；如需明确降级，请先备份共享数据，再加 -AllowDowngrade。" }
-        Write-Warning "正在明确降级到 $packageVersion。请先自行备份共享 GROK_HOME：$GrokHome。旧版数据格式兼容性未知；安装器不会回滚或修改共享账号、配置和会话。"
-    }
-    # Preserve the user's command choice across reinstall, downgrade and return
-    # to MSVC unless this invocation explicitly chooses command setup. Do not
-    # carry over migration sidecars or readiness markers.
-    if (!$PSBoundParameters.ContainsKey('OverrideOfficialCommands') -and
-        !$InteractiveCommandSetup.IsPresent -and
-        $null -ne $existingMarker.PSObject.Properties['commands'] -and
-        @($existingMarker.commands | Where-Object { $_ -in @('grok', 'agent') }).Count -gt 0) { $provideOfficialNames = $true }
-}
-
 $operationParts = [Collections.Generic.List[string]]::new()
 $operationParts.Add('安装 grok-zh 和 agent-zh')
 if ($provideOfficialNames) {
@@ -1497,7 +965,6 @@ try {
     foreach ($name in $installNames) {
         $copyTotalBytes += (Get-Item -LiteralPath (Join-Path $PackageDir $name)).Length
     }
-    Assert-GrokFreeSpace -Path $stage -RequiredBytes ($copyTotalBytes + 16777216L)
     $copiedBytes = [long]0
     foreach ($name in $installNames) {
         $source = Join-Path $PackageDir $name
@@ -1566,10 +1033,6 @@ try {
         }
     }
 
-    if ($packageVersion -and (Get-GrokExecutableVersion (Join-Path $stage 'grok-zh.exe')) -cne $packageVersion) {
-        throw '暂存程序版本与完整包版本不一致，未修改现有安装。'
-    }
-
     if ($requestedUninstallOfficial) {
         Assert-OfficialInstallationRemovable -OfficialInstallation $officialInstallation
     }
@@ -1598,14 +1061,7 @@ try {
 
         Move-Item -LiteralPath $stage -Destination $InstallDir
         $stageCreated = $false
-        if ($packageVersion -and (Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')) -cne $packageVersion) {
-            throw '安装后版本检查失败，正在恢复原安装。'
-        }
     } catch {
-        if (!$stageCreated -and (Test-Path -LiteralPath $InstallDir)) {
-            Move-Item -LiteralPath $InstallDir -Destination $stage
-            $stageCreated = $true
-        }
         if ($previous -and !(Test-Path -LiteralPath $InstallDir) -and (Test-Path -LiteralPath $previous)) {
             Move-Item -LiteralPath $previous -Destination $InstallDir
         }

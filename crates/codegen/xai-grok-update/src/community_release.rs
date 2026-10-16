@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Seek, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -22,7 +22,6 @@ use tokio::io::AsyncWriteExt;
 
 use crate::community_update_cancel;
 
-mod embedded_runtime;
 mod package_protocol;
 use package_protocol::{BUILD_INFO, PackageProtocol};
 
@@ -155,9 +154,6 @@ pub(crate) struct VerifiedAsset {
     size: u64,
     sha256: String,
     archive_kind: CommunityArchiveKind,
-    // The named archive may be a GNU migration container, but the installed
-    // executable must always match the requesting client ABI.
-    target_platform: CommunityPlatform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,16 +456,7 @@ fn select_asset_for_platform(
     if parsed.to_string() != version || release.tag_name != expected_tag {
         anyhow::bail!("release tag and requested version do not match");
     }
-    let native_name = release_asset_name_for(platform, version)?;
-    // A same-version native asset wins. If it exists but is invalid, fail
-    // closed rather than silently selecting another asset or older release.
-    let name = if platform == CommunityPlatform::WindowsX86_64Msvc
-        && !release.assets.iter().any(|asset| asset.name == native_name)
-    {
-        release_asset_name_for(CommunityPlatform::WindowsX86_64Gnu, version)?
-    } else {
-        native_name
-    };
+    let name = release_asset_name_for(platform, version)?;
     if matches!(
         platform,
         CommunityPlatform::MacosAarch64 | CommunityPlatform::MacosX86_64
@@ -515,7 +502,6 @@ fn select_asset_for_platform(
         download_url: expected_url,
         size: asset.size,
         sha256: parse_sha256_digest(digest)?,
-        target_platform: platform,
         archive_kind: match platform {
             CommunityPlatform::WindowsX86_64Gnu
             | CommunityPlatform::WindowsX86_64Msvc
@@ -539,41 +525,6 @@ fn select_latest_compatible_release<'a>(
     channel: &str,
     platform: CommunityPlatform,
 ) -> Result<(&'a ApiRelease, Version)> {
-    if !matches!(channel, "stable" | "alpha") {
-        anyhow::bail!("unsupported community release channel: {channel}");
-    }
-    if platform == CommunityPlatform::WindowsX86_64Msvc {
-        // GitHub metadata cannot prove that a GNU-named ZIP embeds MSVC.
-        // Discover the newest potential container first; installation then
-        // requires its authenticated embedded_runtime protocol and inner ZIP.
-        // Never prefer an older native release over a newer wrapper, or hide
-        // invalid metadata on the newest release by falling back a version.
-        let selected = releases
-            .iter()
-            .filter_map(|release| {
-                let version = parse_release_version(release)?;
-                if channel == "stable" && !version.pre.is_empty() {
-                    return None;
-                }
-                let native = release_asset_name_for(platform, &version.to_string()).ok()?;
-                let wrapper = release_asset_name_for(
-                    CommunityPlatform::WindowsX86_64Gnu,
-                    &version.to_string(),
-                )
-                .ok()?;
-                release
-                    .assets
-                    .iter()
-                    .any(|asset| asset.name == native || asset.name == wrapper)
-                    .then_some((release, version))
-            })
-            .max_by(|(_, a), (_, b)| a.cmp(b))
-            .ok_or_else(|| {
-                anyhow::anyhow!("no immutable {channel} Windows release is available")
-            })?;
-        select_asset_for_platform(selected.0, &selected.1.to_string(), platform)?;
-        return Ok(selected);
-    }
     let mut compatible = releases
         .iter()
         .filter_map(|release| {
@@ -586,6 +537,9 @@ fn select_latest_compatible_release<'a>(
                 .map(|_| (release, version))
         })
         .collect::<Vec<_>>();
+    if !matches!(channel, "stable" | "alpha") {
+        anyhow::bail!("unsupported community release channel: {channel}");
+    }
     compatible.sort_by(|(_, a), (_, b)| a.cmp(b));
     compatible.pop().ok_or_else(|| {
         anyhow::anyhow!(
@@ -776,16 +730,16 @@ fn expected_archive_names(required_files: &[&str]) -> HashSet<String> {
         .collect()
 }
 
-fn validate_archive_layout<R: Read + Seek>(
-    archive: &mut zip::ZipArchive<R>,
+fn validate_archive_layout(
+    archive: &mut zip::ZipArchive<File>,
     required_files: &[&str],
     package_root: Option<&str>,
 ) -> Result<()> {
     validate_zip_layout(archive, required_files, package_root, false)
 }
 
-fn validate_zip_layout<R: Read + Seek>(
-    archive: &mut zip::ZipArchive<R>,
+fn validate_zip_layout(
+    archive: &mut zip::ZipArchive<File>,
     required_files: &[&str],
     package_root: Option<&str>,
     declared: bool,
@@ -967,8 +921,8 @@ fn parse_inner_manifest(bytes: &[u8], required_files: &[&str]) -> Result<HashMap
     Ok(hashes)
 }
 
-fn read_inner_manifest<R: Read + Seek>(
-    archive: &mut zip::ZipArchive<R>,
+fn read_inner_manifest(
+    archive: &mut zip::ZipArchive<File>,
     required_files: &[&str],
     package_root: Option<&str>,
 ) -> Result<HashMap<String, String>> {
@@ -992,8 +946,8 @@ fn read_inner_manifest<R: Read + Seek>(
     parse_inner_manifest(&bytes, required_files)
 }
 
-fn hash_manifest_entry<R: Read + Seek>(
-    archive: &mut zip::ZipArchive<R>,
+fn hash_manifest_entry(
+    archive: &mut zip::ZipArchive<File>,
     name: &str,
     package_root: Option<&str>,
     destination: Option<&Path>,
@@ -1072,6 +1026,11 @@ fn extract_verified_windows_executable(
         );
     }
     let result = (|| {
+        let archive_file = File::open(archive_path)
+            .with_context(|| format!("opening community release ZIP {}", archive_path.display()))?;
+        let mut archive = zip::ZipArchive::new(archive_file)
+            .context("opening the downloaded community release as ZIP")?;
+        let parsed_version = canonical_release_version(&asset.version)?;
         let platform = [
             CommunityPlatform::WindowsX86_64Gnu,
             CommunityPlatform::WindowsX86_64Msvc,
@@ -1083,94 +1042,61 @@ fn extract_verified_windows_executable(
                 .is_ok_and(|expected| asset.name == expected)
         })
         .ok_or_else(|| anyhow::anyhow!("Windows release asset name does not match its version"))?;
-        let archive_file = File::open(archive_path)
-            .with_context(|| format!("opening community release ZIP {}", archive_path.display()))?;
-        let mut archive = zip::ZipArchive::new(archive_file)
-            .context("opening the downloaded community release as ZIP")?;
-        if asset.target_platform == CommunityPlatform::WindowsX86_64Msvc
-            && platform == CommunityPlatform::WindowsX86_64Gnu
-        {
-            return embedded_runtime::extract_msvc_executable(
-                &asset.version,
-                &mut archive,
-                destination,
-            );
+        let package_root = if is_legacy_release_version(&parsed_version) {
+            None
+        } else {
+            Some(
+                asset
+                    .name
+                    .strip_suffix(".zip")
+                    .ok_or_else(|| anyhow::anyhow!("Windows release asset is not a ZIP"))?,
+            )
+        };
+        let build_info =
+            package_protocol::read_zip_metadata(&mut archive, package_root, BUILD_INFO)?;
+        let protocol =
+            PackageProtocol::parse(&build_info, &asset.version, platform.target_triple())?;
+        if let Some(protocol) = protocol {
+            let manifest =
+                package_protocol::read_zip_metadata(&mut archive, package_root, INNER_MANIFEST)?;
+            let hashes = package_protocol::parse_manifest(&manifest)?;
+            protocol.check_manifest(&hashes)?;
+            let files: Vec<_> = hashes.keys().map(String::as_str).collect();
+            validate_zip_layout(&mut archive, &files, package_root, true)?;
+            for (name, expected) in hashes {
+                let extracted = (name == protocol.executable).then_some(destination);
+                if hash_manifest_entry(&mut archive, &name, package_root, extracted)? != expected {
+                    anyhow::bail!("community release inner SHA-256 mismatch for {name}");
+                }
+            }
+            if !destination.is_file() {
+                anyhow::bail!("community release did not produce its declared executable");
+            }
+            return Ok(());
         }
-        if asset.target_platform != platform {
-            anyhow::bail!("community Windows archive does not match the requested ABI");
+        validate_archive_layout(&mut archive, &WINDOWS_REQUIRED_PACKAGE_FILES, package_root)?;
+        let manifest_files: &[&str] = if is_legacy_release_version(&parsed_version) {
+            &WINDOWS_LEGACY_MANIFEST_FILES
+        } else {
+            &WINDOWS_REQUIRED_PACKAGE_FILES
+        };
+        let hashes = read_inner_manifest(&mut archive, manifest_files, package_root)?;
+        for (name, expected) in hashes {
+            let extracted = (name == "grok-zh.exe").then_some(destination);
+            let actual = hash_manifest_entry(&mut archive, &name, package_root, extracted)?;
+            if actual != expected {
+                anyhow::bail!("community release inner SHA-256 mismatch for {name}");
+            }
         }
-        extract_windows_package(&asset.version, platform, &mut archive, destination, false)?;
+        if !destination.is_file() {
+            anyhow::bail!("community release did not produce grok-zh.exe");
+        }
         Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(destination);
     }
     result
-}
-
-/// Verify a complete package before returning its declared runtime descriptor.
-/// For migration containers the output is a private temporary launcher; it is
-/// never the activation candidate of an MSVC client.
-fn extract_windows_package<R: Read + Seek>(
-    version: &str,
-    platform: CommunityPlatform,
-    archive: &mut zip::ZipArchive<R>,
-    destination: &Path,
-    require_embedded: bool,
-) -> Result<Option<package_protocol::EmbeddedRuntime>> {
-    let parsed_version = canonical_release_version(version)?;
-    let name = release_asset_name_for(platform, version)?;
-    let package_root = if is_legacy_release_version(&parsed_version) {
-        None
-    } else {
-        name.strip_suffix(".zip")
-    };
-    let build_info = package_protocol::read_zip_metadata(archive, package_root, BUILD_INFO)?;
-    let protocol = PackageProtocol::parse(&build_info, version, platform.target_triple())?;
-    if let Some(protocol) = protocol {
-        if require_embedded && protocol.embedded_runtime.is_none() {
-            anyhow::bail!(
-                "GNU release is not a recognized embedded MSVC package; use its full installer for a GNU downgrade"
-            );
-        }
-        let manifest = package_protocol::read_zip_metadata(archive, package_root, INNER_MANIFEST)?;
-        let hashes = package_protocol::parse_manifest(&manifest)?;
-        protocol.check_manifest(&hashes)?;
-        let files: Vec<_> = hashes.keys().map(String::as_str).collect();
-        validate_zip_layout(archive, &files, package_root, true)?;
-        for (name, expected) in hashes {
-            let extracted = (name == protocol.executable).then_some(destination);
-            if hash_manifest_entry(archive, &name, package_root, extracted)? != expected {
-                anyhow::bail!("community release inner SHA-256 mismatch for {name}");
-            }
-        }
-        if !destination.is_file() {
-            anyhow::bail!("community release did not produce its declared executable");
-        }
-        return Ok(protocol.embedded_runtime);
-    }
-    if require_embedded || platform != CommunityPlatform::WindowsX86_64Gnu {
-        anyhow::bail!(
-            "release lacks the required MSVC package protocol; use the full GNU installer for a GNU downgrade"
-        );
-    }
-    validate_archive_layout(archive, &WINDOWS_REQUIRED_PACKAGE_FILES, package_root)?;
-    let manifest_files: &[&str] = if is_legacy_release_version(&parsed_version) {
-        &WINDOWS_LEGACY_MANIFEST_FILES
-    } else {
-        &WINDOWS_REQUIRED_PACKAGE_FILES
-    };
-    let hashes = read_inner_manifest(archive, manifest_files, package_root)?;
-    for (name, expected) in hashes {
-        let extracted = (name == "grok-zh.exe").then_some(destination);
-        if hash_manifest_entry(archive, &name, package_root, extracted)? != expected {
-            anyhow::bail!("community release inner SHA-256 mismatch for {name}");
-        }
-    }
-    if !destination.is_file() {
-        anyhow::bail!("community release did not produce grok-zh.exe");
-    }
-    Ok(None)
 }
 
 fn normalized_unix_tar_name(raw: &[u8], package_root: &str) -> Result<Option<String>> {
@@ -1680,8 +1606,6 @@ mod tests {
         entries.push((INNER_MANIFEST.into(), manifest.into_bytes()));
     }
 
-    include!("community_release/embedded_runtime_tests.rs");
-
     #[test]
     fn sidecar_retirement_preserves_the_last_legacy_bridge() {
         let mut bridge = release("release-v1.0.16", false, true);
@@ -2130,7 +2054,6 @@ mod tests {
             name,
             size: 1,
             sha256: "ab".repeat(32),
-            target_platform: platform,
             archive_kind: match platform {
                 CommunityPlatform::WindowsX86_64Gnu
                 | CommunityPlatform::WindowsX86_64Msvc
@@ -2654,14 +2577,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_x64_msvc_prefers_its_own_asset_and_requires_its_protocol() {
+    fn windows_x64_msvc_requires_its_own_asset_and_protocol() {
         let version = "1.0.99";
         let platform = CommunityPlatform::WindowsX86_64Msvc;
         let mut candidate = release("release-v1.0.99", false, true);
         candidate.assets = uploaded_package_assets(version);
-        let potential_wrapper = select_asset_for_platform(&candidate, version, platform).unwrap();
-        assert_eq!(potential_wrapper.target_platform, platform);
-        assert!(potential_wrapper.name.ends_with("-gnu.zip"));
+        assert!(select_asset_for_platform(&candidate, version, platform).is_err());
         candidate.assets.push(uploaded_asset(
             version,
             release_asset_name_for(platform, version).unwrap(),
@@ -2698,85 +2619,6 @@ mod tests {
                 assert!(!destination.exists());
             }
         }
-    }
-
-    #[test]
-    fn migrated_windows_client_stays_on_msvc_across_successive_releases() {
-        let gnu = CommunityPlatform::WindowsX86_64Gnu;
-        let msvc = CommunityPlatform::WindowsX86_64Msvc;
-        let mut old_gnu = release("release-v1.0.98", false, true);
-        old_gnu.assets = uploaded_package_assets("1.0.98");
-        let mut releases = vec![old_gnu];
-        // N and N+1 publish only the GNU-named embedded container. Discovery
-        // preserves the requested ABI even though the public asset name is GNU.
-        for version in ["1.0.99", "1.0.100"] {
-            let mut candidate = release(&format!("release-v{version}"), false, true);
-            candidate.assets = uploaded_package_assets(version);
-            releases.push(candidate);
-            for platform in [gnu, msvc] {
-                let (selected, latest) =
-                    select_latest_compatible_release(&releases, "stable", platform).unwrap();
-                assert_eq!(latest.to_string(), version);
-                let asset = select_asset_for_platform(selected, version, platform).unwrap();
-                assert_eq!(asset.target_platform, platform);
-                assert_eq!(asset.name, release_asset_name_for(gnu, version).unwrap());
-            }
-        }
-        // After wrapper retirement, historical GNU clients still discover the
-        // final preserved wrapper; its migrated child discovers native N+2.
-        let mut native = release("release-v1.0.101", false, true);
-        native.assets.push(uploaded_asset(
-            "1.0.101",
-            release_asset_name_for(msvc, "1.0.101").unwrap(),
-            123,
-        ));
-        releases.push(native);
-        let (selected, version) =
-            select_latest_compatible_release(&releases, "stable", msvc).unwrap();
-        assert_eq!(version.to_string(), "1.0.101");
-        assert!(
-            select_asset_for_platform(selected, "1.0.101", msvc)
-                .unwrap()
-                .name
-                .ends_with("-msvc.zip")
-        );
-        let (_, version) = select_latest_compatible_release(&releases, "stable", gnu).unwrap();
-        assert_eq!(version.to_string(), "1.0.100");
-    }
-
-    #[test]
-    fn newest_wrapper_beats_older_native_and_invalid_native_fails_closed() {
-        let platform = CommunityPlatform::WindowsX86_64Msvc;
-        let mut older = release("release-v1.0.99", false, true);
-        older.assets.push(uploaded_asset(
-            "1.0.99",
-            release_asset_name_for(platform, "1.0.99").unwrap(),
-            123,
-        ));
-        let mut newer = release("release-v1.0.100", false, true);
-        newer.assets = uploaded_package_assets("1.0.100");
-        let mut releases = vec![older, newer];
-        let (selected, version) =
-            select_latest_compatible_release(&releases, "stable", platform).unwrap();
-        assert_eq!(version.to_string(), "1.0.100");
-        assert!(
-            select_asset_for_platform(selected, "1.0.100", platform)
-                .unwrap()
-                .name
-                .ends_with("-gnu.zip")
-        );
-        assert!(select_asset_for_platform(selected, "1.0.99", platform).is_err());
-        // Presence of a broken native asset cannot be disguised by either a
-        // valid same-version wrapper or a valid older native archive.
-        let mut invalid = uploaded_asset(
-            "1.0.100",
-            release_asset_name_for(platform, "1.0.100").unwrap(),
-            123,
-        );
-        invalid.digest = None;
-        releases[1].assets.push(invalid);
-        assert!(select_latest_compatible_release(&releases, "stable", platform).is_err());
-        assert!(select_asset_for_platform(&releases[1], "1.0.100", platform).is_err());
     }
 
     #[test]
