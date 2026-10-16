@@ -73,7 +73,14 @@ class TestArchiveSafety(unittest.TestCase):
     def make(self, name, data=b'content'):
         archive = self.root / 'test.zip'
         with zipfile.ZipFile(archive, 'w') as z:
-            z.writestr(name, data)
+            if isinstance(name, str):
+                # Preserve deliberately malformed names on every platform;
+                # ZipInfo's constructor normalizes Windows backslashes.
+                entry = zipfile.ZipInfo(name)
+                entry.filename = name
+            else:
+                entry = name
+            z.writestr(entry, data)
         return archive
     def test_extract_regular_file(self):
         direct.extract_zip(self.make('package/file'), self.root/'out')
@@ -86,6 +93,14 @@ class TestArchiveSafety(unittest.TestCase):
         with self.assertRaises(ValueError): direct.extract_zip(self.make('C:/bad'), self.root/'out')
     def test_reject_backslash(self):
         with self.assertRaises(ValueError): direct.extract_zip(self.make('x\\bad'), self.root/'out')
+    def test_reject_original_name_after_windows_normalization(self):
+        archive = self.make('x\\bad')
+        with patch.object(zipfile.os, 'sep', '\\'):
+            with self.assertRaisesRegex(ValueError, 'Normalized ZIP path'):
+                direct.extract_zip(archive, self.root/'out')
+    def test_reject_original_name_with_nul(self):
+        with self.assertRaisesRegex(ValueError, 'Normalized ZIP path'):
+            direct.extract_zip(self.make('x\0bad'), self.root/'out')
     def test_reject_trailing_windows_dot(self):
         with self.assertRaises(ValueError): direct.extract_zip(self.make('x./bad'), self.root/'out')
     def test_reject_symlink(self):

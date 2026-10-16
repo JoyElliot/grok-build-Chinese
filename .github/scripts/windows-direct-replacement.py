@@ -124,6 +124,9 @@ def extract_zip(archive, destination):
         names = set()
         total = 0
         for item in z.infolist():
+            # ZipInfo normalizes backslashes on Windows and truncates NULs.
+            # Reject raw names that changed before applying our path policy.
+            require(item.orig_filename == item.filename, 'Normalized ZIP path forbidden')
             p = PurePosixPath(item.filename)
             require(not p.is_absolute() and all(part not in ('', '.', '..') for part in p.parts) and '\\' not in item.filename and ':' not in item.filename, 'Unsafe ZIP path')
             require(not any(part.rstrip(' .') != part for part in p.parts), 'Unsafe Windows ZIP path')
