@@ -2,15 +2,11 @@
 param(
   [Parameter(Mandatory)][ValidateSet('core', 'ui')][string]$Suite,
   [ValidateSet('preview', 'release')][string]$Mode = 'preview',
-  # MSVC runs under cmd.exe after VsDevCmd; format one selected package at a
-  # time to avoid Windows' command-line limit on the generated workspace.
-  [ValidateSet('workspace', 'suite')][string]$FormatScope = 'workspace',
   [switch]$SkipResourceMonitor
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $false
 $manifest = Get-Content "$PSScriptRoot/windows-validation-tests.json" -Raw | ConvertFrom-Json
 $commands = @($manifest.$Mode.$Suite)
 if ($commands.Count -eq 0) { throw 'Empty validation suite.' }
@@ -45,13 +41,7 @@ try {
     if (!(Test-Path -LiteralPath $ready)) { throw 'Resource monitor did not become ready.' }
   }
   $clock.Start()
-  if ($FormatScope -eq 'suite') {
-    $packages = @($commands | ForEach-Object { $_[1] } | Select-Object -Unique)
-    foreach ($package in $packages) {
-      & cargo fmt -p $package -- --check
-      if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed for ${package}: $LASTEXITCODE" }
-    }
-  } elseif ($Suite -eq 'core') {
+  if ($Suite -eq 'core') {
     & cargo fmt --all -- --check
     if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed: $LASTEXITCODE" }
   }
@@ -78,9 +68,9 @@ try {
     $monitor.Dispose()
   }
   $summary = [ordered]@{
-    suite = $Suite; mode = $Mode; outcome = $outcome; format_scope = $FormatScope
+    suite = $Suite; mode = $Mode; outcome = $outcome
     run_id = $env:GITHUB_RUN_ID; run_attempt = $env:GITHUB_RUN_ATTEMPT; commit = $env:GITHUB_SHA
-    version = $env:GROK_VERSION; toolchain = $env:RUSTUP_TOOLCHAIN; target = $env:TARGET
+    version = $env:GROK_VERSION; toolchain = $env:RUSTUP_TOOLCHAIN
     profile_debug = $env:CARGO_PROFILE_TEST_DEBUG; cargo_incremental = $env:CARGO_INCREMENTAL
     build_jobs = $env:CARGO_BUILD_JOBS; elapsed_seconds = $clock.Elapsed.TotalSeconds
     cache_hit = $env:VALIDATION_CACHE_HIT; cache_key = $env:VALIDATION_CACHE_KEY
