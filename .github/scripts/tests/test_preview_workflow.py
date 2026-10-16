@@ -387,6 +387,8 @@ class PreviewWorkflowTests(unittest.TestCase):
         self.assertEqual(set(result_vars.values()), dependencies(aggregate))
         artifact_vars = re.findall(r"^      (\w+_ARTIFACT):", aggregate, re.M)
         script = textwrap.dedent(aggregate.split("        run: |\n", 1)[1])
+        if os.name == "nt":
+            self.skipTest("Linux aggregate shell execution belongs to the Ubuntu preflight; pure-Python job gates still run on Windows")
         with tempfile.TemporaryDirectory() as directory:
             env = os.environ | dict.fromkeys(result_vars, "success") | dict.fromkeys(artifact_vars, "artifact")
             env["GITHUB_STEP_SUMMARY"] = str(Path(directory) / "summary")
