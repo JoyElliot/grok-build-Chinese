@@ -438,33 +438,8 @@ try {
     New-OfficialFixture $fakeHome @('grok.exe', 'agent.exe', 'grok-1.0.12.exe')
     Set-Content -LiteralPath (Join-Path $fakeHome 'auth.json') -Value '{"token":"must-survive"}' -Encoding Ascii
     Set-Content -LiteralPath (Join-Path $fakeHome 'config.toml') -Value '# must survive' -Encoding Ascii
-    New-Item -ItemType Directory -Path (Join-Path $fakeHome 'sessions') | Out-Null
-    Set-Content -LiteralPath (Join-Path $fakeHome 'sessions/keep.json') -Value '{"session":"must-survive"}' -Encoding Ascii
-    $commandChoiceDataHashes = @{}
-    foreach ($relativePath in @('auth.json', 'config.toml', 'sessions/keep.json')) {
-        $commandChoiceDataHashes[$relativePath] = (Get-FileHash -LiteralPath (Join-Path $fakeHome $relativePath)).Hash
-    }
-    $commandChoiceProcessPath = $env:Path
-    $commandChoiceUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
     $takeoverInstall = Join-Path $testRoot 'takeover-install'
-    $assertCommandChoice = {
-        param([bool]$Enabled)
-        foreach ($name in @('grok.cmd', 'agent.cmd')) {
-            Assert-True ((Test-Path -LiteralPath (Join-Path $takeoverInstall $name) -PathType Leaf) -eq $Enabled) "兼容命令状态与当前选择不符：$name"
-        }
-        $marker = Get-Content -LiteralPath (Join-Path $takeoverInstall '.grok-zh-install.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-        $expectedCommands = if ($Enabled) { 'grok-zh,agent-zh,grok,agent' } else { 'grok-zh,agent-zh' }
-        Assert-True (($marker.commands -join ',') -ceq $expectedCommands) '安装标记未记录当前命令选择'
-        Assert-True ($marker.product -ceq 'grok-build-zh' -and $marker.install_dir -eq $takeoverInstall) '命令选择更改后安装归属记录异常'
-        Assert-True ($marker.official_command_home -eq $fakeHome) '命令选择更改后共享数据目录记录异常'
-        foreach ($relativePath in $commandChoiceDataHashes.Keys) {
-            Assert-True ((Get-FileHash -LiteralPath (Join-Path $fakeHome $relativePath)).Hash -ceq $commandChoiceDataHashes[$relativePath]) "命令选择更改时修改了共享数据：$relativePath"
-        }
-        Assert-True ($env:Path -ceq $commandChoiceProcessPath) '-NoPathUpdate 修改了进程 Path'
-        Assert-True ([Environment]::GetEnvironmentVariable('Path', 'User') -ceq $commandChoiceUserPath) '-NoPathUpdate 修改了用户 Path'
-        Assert-True (!(Test-Path -LiteralPath (Join-Path $takeoverInstall 'official-backup'))) '命令选择更改时错误地创建了官方版备份'
-    }
     $takeoverOutput = @(& $installer -PackageDir $package -InstallDir $takeoverInstall -GrokHome $fakeHome `
         -UninstallOfficial -NoPathUpdate -Confirm:$false 6>&1)
     $takeoverOutputText = $takeoverOutput -join "`n"
@@ -480,39 +455,12 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $fakeHome 'auth.json')) '修改了共享 auth.json'
     Assert-True (Test-Path -LiteralPath (Join-Path $fakeHome 'config.toml')) '修改了共享 config.toml'
     Assert-True (!(Test-Path -LiteralPath (Join-Path $takeoverInstall 'official-backup'))) '卸载官方版仍创建了备份'
-    & $assertCommandChoice $true
 
-    # Omitting command setup preserves the previous choice during reinstall.
     & $installer -PackageDir $package -InstallDir $takeoverInstall -GrokHome $fakeHome `
         -NoPathUpdate -Confirm:$false
-    & $assertCommandChoice $true
-
-    # An explicitly bound false switch must override the prior marker.
-    & $installer -PackageDir $package -InstallDir $takeoverInstall -GrokHome $fakeHome `
-        -OverrideOfficialCommands:$false -NoPathUpdate -Confirm:$false
-    & $assertCommandChoice $false
-    & $installer -PackageDir $package -InstallDir $takeoverInstall -GrokHome $fakeHome `
-        -NoPathUpdate -Confirm:$false
-    & $assertCommandChoice $false
-
-    # Interactive option 1 retains the official binary and enables shims, even
-    # when the previous choice and the supplied override switch were disabled.
-    New-OfficialFixture $fakeHome
-    $keptOfficialHash = (Get-FileHash -LiteralPath (Join-Path $fakeOfficialBin 'grok.exe')).Hash
-    & $installer -PackageDir $package -InstallDir $takeoverInstall -GrokHome $fakeHome `
-        -OverrideOfficialCommands:$false -InteractiveCommandSetup -ScriptedCommandSetupAnswers '1' `
-        -NoPathUpdate -Confirm:$false
-    & $assertCommandChoice $true
-    Assert-True ((Get-FileHash -LiteralPath (Join-Path $fakeOfficialBin 'grok.exe')).Hash -ceq $keptOfficialHash) '交互保留官方版时修改了官方程序'
-
-    # Cancelling interactive setup leaves the existing installation unchanged.
-    $beforeCancelMarkerHash = (Get-FileHash -LiteralPath (Join-Path $takeoverInstall '.grok-zh-install.json')).Hash
-    & $installer -PackageDir $package -InstallDir $takeoverInstall -GrokHome $fakeHome `
-        -OverrideOfficialCommands:$false -InteractiveCommandSetup -ScriptedCommandSetupAnswers '3' `
-        -NoPathUpdate -Confirm:$false
-    & $assertCommandChoice $true
-    Assert-True ((Get-FileHash -LiteralPath (Join-Path $takeoverInstall '.grok-zh-install.json')).Hash -ceq $beforeCancelMarkerHash) '取消交互设置后仍改写安装标记'
-    Assert-True ((Get-FileHash -LiteralPath (Join-Path $fakeOfficialBin 'grok.exe')).Hash -ceq $keptOfficialHash) '取消交互设置后仍修改官方程序'
+    Assert-True (!(Test-Path -LiteralPath (Join-Path $takeoverInstall 'grok.cmd'))) '未启用接管的重新安装仍保留 grok.cmd'
+    Assert-True (!(Test-Path -LiteralPath (Join-Path $takeoverInstall 'agent.cmd'))) '未启用接管的重新安装仍保留 agent.cmd'
+    Assert-True (!(Test-Path -LiteralPath (Join-Path $takeoverInstall 'official-backup'))) '重新安装错误地创建了官方版备份'
 
     $whatIfInstall = Join-Path $testRoot 'whatif-install'
     $whatIfHome = Join-Path $testRoot 'whatif-home'

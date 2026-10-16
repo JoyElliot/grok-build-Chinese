@@ -76,7 +76,7 @@ def build_launcher(output: Path, version: str, pin: dict, cc: str) -> Path:
     return exe
 
 
-def build_compat_package(output: Path, payload: Path, version: str, *, release: bool = False) -> Path:
+def build_compat_package(output: Path, payload: Path, version: str) -> Path:
     """Keep the old GNU filename/protocol truthful: its entry is the GNU shim.
 
     Reuse only authenticated package support files, never rename an MSVC EXE
@@ -121,10 +121,9 @@ def build_compat_package(output: Path, payload: Path, version: str, *, release: 
     block["platform"] = "x86_64-pc-windows-gnu"
     before = info.split("GROK-UPDATE-PROTOCOL-BEGIN", 1)[0].rstrip()
     before = re.sub(r"^Target:.*$", "Target: x86_64-pc-windows-gnu", before, flags=re.M)
-    before = re.sub(r"^Grok Build.*$", "Grok Build Windows GNU migration launcher" + ("" if release else " (experimental)"), before, flags=re.M)
+    before = re.sub(r"^Grok Build.*$", "Grok Build Windows GNU migration launcher (experimental)", before, flags=re.M)
     before = re.sub(r"^Profile:.*$", "Profile: GNU C launcher (-O2, static runtime); application remains MSVC release-dist", before, flags=re.M)
-    before = re.sub(r"^Executable smoke-tested by CI:.*$", ("Executable validation: native product migration gates required" if release else
-                     "Executable validation: see this run's migration experiment result"), before, flags=re.M)
+    before = re.sub(r"^Executable smoke-tested by CI:.*$", "Executable validation: see this run's migration experiment result", before, flags=re.M)
     before += "\nRole: GNU compatibility launcher; MSVC payload is downloaded once on first normal launch\n"
     (package / "BUILD-INFO.txt").write_text(before + "GROK-UPDATE-PROTOCOL-BEGIN\n" + json.dumps(block, indent=2) +
                                            "\nGROK-UPDATE-PROTOCOL-END\n", encoding="utf-8", newline="\n")

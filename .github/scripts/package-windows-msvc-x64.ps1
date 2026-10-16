@@ -82,14 +82,9 @@ Copy-Item -LiteralPath 'crates\codegen\xai-grok-tools\THIRD_PARTY_NOTICES.md' -D
 Copy-Item -LiteralPath 'third_party\NOTICE' -Destination $projectNotices
 
 $sourceRev = (Get-Content -LiteralPath 'SOURCE_REV' -Raw).Trim()
-$distribution = if ($env:GROK_RELEASE_BUILD -eq 'true') {
-    'GitHub immutable Release; native payload embedded in the sole x64 compatibility archive or published in reviewed native-only mode'
-} else {
-    'migration CI experiment only; not a published Release'
-}
 $buildInfo = @"
 Grok Build 简体中文 Windows x64 MSVC
-Distribution: $distribution
+Distribution: migration CI experiment only; not a published Release
 Product: grok-build-zh
 Version: $env:GROK_VERSION
 Commit: $env:GITHUB_SHA
