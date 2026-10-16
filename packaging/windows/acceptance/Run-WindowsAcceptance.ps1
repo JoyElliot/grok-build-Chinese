@@ -45,6 +45,49 @@ function Assert-AcceptanceRelative([string]$Name) {
 function Get-AcceptanceHash([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+function Get-AcceptancePersistentPath([ValidateSet('User','Machine')][string]$Scope) {
+    # Environment.GetEnvironmentVariable(User/Machine) expands REG_EXPAND_SZ
+    # using this process's temporary USERPROFILE/LOCALAPPDATA. Compare the
+    # persisted value, its type and its existence instead; never write registry.
+    $baseKey = if ($Scope -eq 'User') { [Microsoft.Win32.Registry]::CurrentUser } else { [Microsoft.Win32.Registry]::LocalMachine }
+    $keyName = if ($Scope -eq 'User') { 'Environment' } else { 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment' }
+    $environmentKey = $baseKey.OpenSubKey($keyName, $false)
+    try {
+        $state = [pscustomobject]@{ KeyExists=($null -ne $environmentKey); ValueExists=$false; Kind=$null; RawValue=$null }
+        if ($null -eq $environmentKey -or $environmentKey.GetValueNames() -notcontains 'Path') { return $state }
+        $state.ValueExists = $true
+        $kind = $environmentKey.GetValueKind('Path')
+        Assert-Acceptance ($kind -in @([Microsoft.Win32.RegistryValueKind]::String, [Microsoft.Win32.RegistryValueKind]::ExpandString)) "不支持的永久 PATH 类型：$Scope"
+        $state.Kind = $kind.ToString()
+        $state.RawValue = $environmentKey.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        Assert-Acceptance ($state.RawValue -is [string]) "无法读取永久 PATH：$Scope"
+        return $state
+    } finally { if ($null -ne $environmentKey) { $environmentKey.Dispose() } }
+}
+function Test-AcceptancePersistentPath($Before, $After) {
+    return ($Before.KeyExists -eq $After.KeyExists -and $Before.ValueExists -eq $After.ValueExists -and
+        [StringComparer]::Ordinal.Equals($Before.Kind, $After.Kind) -and
+        [StringComparer]::Ordinal.Equals($Before.RawValue, $After.RawValue))
+}
+function Assert-AcceptancePathComparator {
+    # Pure regression cases only. Never create or modify a registry fixture.
+    $baseline = [pscustomobject]@{ KeyExists=$true; ValueExists=$true; Kind='ExpandString'; RawValue='%USERPROFILE%\bin' }
+    Assert-Acceptance (Test-AcceptancePersistentPath $baseline ($baseline.PSObject.Copy())) 'PATH 比较器不能识别相同状态。'
+    foreach ($field in @('KeyExists','ValueExists','Kind','RawValue')) {
+        $changed = $baseline.PSObject.Copy()
+        switch ($field) {
+            'KeyExists' { $changed.KeyExists = $false }
+            'ValueExists' { $changed.ValueExists = $false }
+            'Kind' { $changed.Kind = 'String' }
+            'RawValue' { $changed.RawValue = '%USERPROFILE%\Bin' }
+        }
+        Assert-Acceptance (!(Test-AcceptancePersistentPath $baseline $changed)) "PATH 比较器漏检状态变化：$field"
+    }
+    $missing = [pscustomobject]@{ KeyExists=$true; ValueExists=$false; Kind=$null; RawValue=$null }
+    Assert-Acceptance (Test-AcceptancePersistentPath $missing ($missing.PSObject.Copy())) 'PATH 比较器不能识别相同的缺失状态。'
+    $empty = [pscustomobject]@{ KeyExists=$true; ValueExists=$true; Kind='String'; RawValue='' }
+    Assert-Acceptance (!(Test-AcceptancePersistentPath $missing $empty)) 'PATH 比较器混淆了空值与缺失。'
+}
 function Read-AcceptanceBundle([string]$Directory) {
     Assert-AcceptancePath $Directory
     $manifestPath = Join-Path $Directory 'SHA256SUMS.txt'
@@ -216,9 +259,7 @@ $script:AcceptanceEnvironment = @{
 foreach ($name in @('APPDATA','LOCALAPPDATA')) { $null = [IO.Directory]::CreateDirectory($script:AcceptanceEnvironment[$name]) }
 $priorEnvironment = @{}
 foreach ($name in $script:AcceptanceEnvironment.Keys) { $priorEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
-$userPathBefore = [Environment]::GetEnvironmentVariable('Path','User')
-$machinePathBefore = [Environment]::GetEnvironmentVariable('Path','Machine')
-$result = [ordered]@{ schema=1; status='failed'; sandbox=$sandbox; powershell=$PSVersionTable.PSVersion.ToString(); version=$null; commit=$null; checks=@(); excluded_checks=@(); error=$null; interactive_tui='not-run' }
+$result = [ordered]@{ schema=1; status='failed'; sandbox=$sandbox; powershell=$PSVersionTable.PSVersion.ToString(); version=$null; commit=$null; checks=@(); excluded_checks=@(); error=$null; interactive_tui='not-run'; path_checks=@{} }
 try {
     Write-AcceptanceStep "结果与日志保留在：$sandbox"
     Write-AcceptanceStep '1/6 验证两个真实 ZIP、脚本依赖、SHA-256 和构建来源'
@@ -226,7 +267,19 @@ try {
     $testVersion = $record.version; $result.version=$testVersion; $result.commit=$record.commit; $result.excluded_checks=@($record.scope.excluded_checks)
     Write-AcceptanceStep "版本 $testVersion；提交 $($record.commit)；CI $($record.run_url)"
     $script:AcceptanceChecks.Add('bundle-integrity')
+    Assert-AcceptancePathComparator
+    $persistentPathBefore = @{}
+    foreach ($scope in @('User','Machine')) { $persistentPathBefore[$scope] = Get-AcceptancePersistentPath $scope }
+    $expandedUserPathBefore = [Environment]::GetEnvironmentVariable('Path','User')
     foreach ($name in $script:AcceptanceEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $script:AcceptanceEnvironment[$name], 'Process') }
+    # Regression guard: changing only the process profile must not look like a
+    # persistent PATH mutation. Do not include private path values in reports.
+    $result.path_checks.expanded_user_read_changed_by_sandbox = ![StringComparer]::Ordinal.Equals(
+        $expandedUserPathBefore, [Environment]::GetEnvironmentVariable('Path','User'))
+    foreach ($scope in @('User','Machine')) {
+        Assert-Acceptance (Test-AcceptancePersistentPath $persistentPathBefore[$scope] (Get-AcceptancePersistentPath $scope)) "隔离环境初始化时永久 PATH 已改变：$scope"
+    }
+
     $nativeRoot = Expand-AcceptanceZip (Join-Path $bundlePath $record.archives.native.file) (Join-Path $sandbox 'native-package') "grok-zh-$testVersion-windows-x86_64-msvc"
     $gnuRoot = Expand-AcceptanceZip (Join-Path $bundlePath $record.archives.embedded_gnu.file) (Join-Path $sandbox 'gnu-package') "grok-zh-$testVersion-windows-x86_64-gnu"
     # Reuse the checked-in production verifier from the authenticated package.
@@ -304,8 +357,13 @@ try {
     Write-AcceptanceStep '6/6 检查合成账号/配置/会话、个人文件和 PATH 保留'
     foreach ($relative in $sentinelHashes.Keys) { Assert-Acceptance ((Get-AcceptanceHash (Join-Path $dataDirectory $relative)) -ceq $sentinelHashes[$relative]) "合成数据发生改变：$relative" }
     Assert-Acceptance ([IO.File]::ReadAllText($personalPath) -ceq 'synthetic-personal-file') '个人哨兵文件发生改变。'
-    Assert-Acceptance ($env:Path -ceq $script:AcceptanceEnvironment.PATH -and [Environment]::GetEnvironmentVariable('Path','User') -ceq $userPathBefore -and
-        [Environment]::GetEnvironmentVariable('Path','Machine') -ceq $machinePathBefore) '测试意外修改了 PATH。'
+    $result.path_checks.process_unchanged = $env:Path -ceq $script:AcceptanceEnvironment.PATH
+    $result.path_checks.user_registry_unchanged = Test-AcceptancePersistentPath $persistentPathBefore.User (Get-AcceptancePersistentPath 'User')
+    $result.path_checks.machine_registry_unchanged = Test-AcceptancePersistentPath $persistentPathBefore.Machine (Get-AcceptancePersistentPath 'Machine')
+    Write-AcceptanceStep "PATH 保留：Process=$($result.path_checks.process_unchanged)；UserRegistry=$($result.path_checks.user_registry_unchanged)；MachineRegistry=$($result.path_checks.machine_registry_unchanged)；隔离目录改变展开后的读取值=$($result.path_checks.expanded_user_read_changed_by_sandbox)"
+    Assert-Acceptance $result.path_checks.process_unchanged '测试意外修改了进程 PATH。'
+    Assert-Acceptance $result.path_checks.user_registry_unchanged '测试意外修改了用户永久 PATH。'
+    Assert-Acceptance $result.path_checks.machine_registry_unchanged '测试意外修改了系统永久 PATH。'
     $script:AcceptanceChecks.Add('synthetic-data-and-path-preservation')
     $result.status='passed'
     Write-AcceptanceStep '自动验收通过。只覆盖本版本离线迁移/CLI/隔离安装；真实历史客户端、联网连续更新、降级和账号/TUI 尚未验收。'

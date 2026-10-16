@@ -313,7 +313,7 @@ class AcceptanceScriptPackagingTests(unittest.TestCase):
         cls.readme = (cls.kit / "README.zh-CN.md").read_text(encoding="utf-8")
 
     def function(self, name):
-        match = re.search(r"(?ms)^function " + re.escape(name) + r"\([^\n]*\) \{\n.*?^\}", self.runner)
+        match = re.search(r"(?ms)^function " + re.escape(name) + r"(?:\([^\n]*\))? \{\n.*?^\}", self.runner)
         self.assertIsNotNone(match, "missing acceptance helper: " + name)
         return match[0]
 
@@ -389,6 +389,48 @@ class AcceptanceScriptPackagingTests(unittest.TestCase):
         self.assertRegex(self.runner, r"\$interactiveHome\s*=\s*Join-Path \$sandbox 'interactive-home'")
         self.assertIn("$script:AcceptanceEnvironment.GROK_HOME=$interactiveHome", self.runner)
         self.assertIn("if ($InteractiveTui)", self.runner)
+
+    def test_persistent_path_guard_compares_raw_registry_state_without_exposing_values(self):
+        reader = self.function("Get-AcceptancePersistentPath")
+        self.assertIn("OpenSubKey($keyName, $false)", reader)
+        self.assertIn("[Microsoft.Win32.Registry]::CurrentUser", reader)
+        self.assertIn("[Microsoft.Win32.Registry]::LocalMachine", reader)
+        self.assertIn("GetValueKind('Path')", reader)
+        self.assertIn("GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)", reader)
+        self.assertNotRegex(reader, r"\.(?:SetValue|CreateSubKey|DeleteValue|DeleteSubKey)\s*\(")
+        self.assertNotIn("[Environment]::GetEnvironmentVariable", reader)
+        comparator = self.function("Test-AcceptancePersistentPath")
+        for field in ("KeyExists", "ValueExists"):
+            self.assertIn(f"$Before.{field} -eq $After.{field}", comparator)
+        for field in ("Kind", "RawValue"):
+            self.assertIn(f"[StringComparer]::Ordinal.Equals($Before.{field}, $After.{field})", comparator)
+        selftest = self.function("Assert-AcceptancePathComparator")
+        self.assertNotRegex(selftest, r"Registry\]|\.(?:SetValue|OpenSubKey|CreateSubKey)\s*\(")
+        self.assertIn("@('KeyExists','ValueExists','Kind','RawValue')", selftest)
+        self.assertIn("!(Test-AcceptancePersistentPath $baseline $changed)", selftest)
+        self.assertIn("!(Test-AcceptancePersistentPath $missing $empty)", selftest)
+        self.assertRegex(self.runner, r"(?m)^\s+Assert-AcceptancePathComparator\r?\n\s+\$persistentPathBefore = @\{\}")
+
+        main = self.runner.split("$persistentPathBefore = @{}", 1)[1]
+        snapshot = main.index("$persistentPathBefore[$scope] = Get-AcceptancePersistentPath $scope")
+        isolate = main.index("[Environment]::SetEnvironmentVariable")
+        raw_guard = main.index("Assert-Acceptance (Test-AcceptancePersistentPath $persistentPathBefore[$scope]")
+        self.assertLess(snapshot, isolate)
+        self.assertLess(isolate, raw_guard)
+        self.assertLess(raw_guard, main.index("Expand-AcceptanceZip"))
+        self.assertIn("$result.path_checks.process_unchanged = $env:Path -ceq $script:AcceptanceEnvironment.PATH", main)
+        for scope, field in (("User", "user_registry_unchanged"), ("Machine", "machine_registry_unchanged")):
+            self.assertIn(f"$result.path_checks.{field} = Test-AcceptancePersistentPath "
+                          f"$persistentPathBefore.{scope} (Get-AcceptancePersistentPath '{scope}')", main)
+        for field in ("process_unchanged", "user_registry_unchanged", "machine_registry_unchanged"):
+            self.assertIn("Assert-Acceptance $result.path_checks." + field, main)
+        # Expanded reads are diagnostic booleans only: changing isolated profile
+        # variables must neither fail the guard nor disclose either private PATH.
+        self.assertIn("$result.path_checks.expanded_user_read_changed_by_sandbox = ![StringComparer]::Ordinal.Equals(", main)
+        self.assertNotRegex(main, r"Assert-Acceptance[^\n]*(?:expandedUserPathBefore|expanded_user_read_changed_by_sandbox)")
+        reports = "\n".join(line for line in main.splitlines()
+                            if "Write-AcceptanceStep" in line or re.search(r"\$result(?:\.|\[)", line))
+        self.assertNotRegex(reports, r"\$(?:persistentPathBefore|expandedUserPathBefore)\b(?!\.)|\.RawValue\b")
 
     def test_readme_explains_scope_credentials_and_uncovered_upgrade_cases(self):
         section = self.readme.split("## 仍然未覆盖", 1)[1]
