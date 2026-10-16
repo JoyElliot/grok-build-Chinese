@@ -1,0 +1,30 @@
+{
+  "tag": {
+    "node_id": "TA_kwDOTtGt9doAKGNjMzA3YTljMjJmMmFlMTllMWU0OGQxNTY4ZGQ2ZmY4YjkzOTRiNDU",
+    "sha": "cc307a9c22f2ae19e1e48d1568dd6ff8b9394b45",
+    "url": "https://api.github.com/repos/JoyElliot/grok-build-Chinese/git/tags/cc307a9c22f2ae19e1e48d1568dd6ff8b9394b45",
+    "tagger": {
+      "name": "JoyLin（JoyElliot）",
+      "email": "A18150814957@outlook.com",
+      "date": "2026-08-29T17:11:16Z"
+    },
+    "object": {
+      "sha": "dfcf92b37854f5b2c0dacc66a9e4195f3881dcae",
+      "type": "commit",
+      "url": "https://api.github.com/repos/JoyElliot/grok-build-Chinese/git/commits/dfcf92b37854f5b2c0dacc66a9e4195f3881dcae"
+    },
+    "tag": "v1.0.8",
+    "message": "Grok Build 简体中文 1.0.8 Windows 桥接版\n",
+    "verification": {
+      "verified": false,
+      "reason": "unsigned",
+      "signature": null,
+      "payload": null,
+      "verified_at": null
+    }
+  },
+  "source": {
+    "git_blob_sha1": "d914fae2c4475322197dafa8da85f989741d801b",
+    "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/dfcf92b37854f5b2c0dacc66a9e4195f3881dcae/crates/codegen/xai-grok-update/src/community_release.rs"
+  }
+}

@@ -1,0 +1,6 @@
+/target/
+/fixtures/*
+!/fixtures/.gitkeep
+/results/*
+!/results/.gitkeep
+/__pycache__/

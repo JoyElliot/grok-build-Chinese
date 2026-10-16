@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "repository": "JoyElliot/grok-build-Chinese",
+  "repository_id": 1322364405,
+  "base_commit": "74c5269942d9a47bf09a9268db0bb5c145967e27",
+  "historical": {
+    "tag": "release-v1.0.45",
+    "release_id": 407819157,
+    "source_commit": "3f5d07f8cb2e9be395131296a3efc4635713db7f",
+    "asset_id": 624680447,
+    "asset_name": "grok-zh-1.0.45-windows-x86_64-gnu.zip",
+    "archive_bytes": 65719142,
+    "archive_sha256": "f074aea7d5de99d469e4beb821407926a46076225f2bf986d789ce1b118159d8",
+    "executable_sha256": "474918134a312ab5b2200e03092c5f34a99b5f2d3847057fe827e3ff193404ca",
+    "version": "1.0.45",
+    "target": "x86_64-pc-windows-gnu"
+  },
+  "native": {
+    "run_id": 38842814822,
+    "run_attempt": 1,
+    "source_commit": "ddede0f98fbbef6349b5040b8390afb9f4d3a5cd",
+    "source_branch": "test/windows-msvc-acceptance-bundle",
+    "workflow_path": ".github/workflows/zh-dev-windows-preview.yml",
+    "artifact_id": 12022879975,
+    "artifact_name": "migration-experiment-grok-zh-1.0.103-windows-x86_64-msvc-38842814822-1",
+    "artifact_bytes": 59513887,
+    "artifact_sha256": "4a3d80bac40ba3c63bfeb00f4b97976f6727842463a67c10d7d4b15749278f33",
+    "archive_name": "grok-zh-1.0.103-windows-x86_64-msvc.zip",
+    "archive_bytes": 59513406,
+    "archive_sha256": "802fbd20fee858fc90521438c23d5d9934370c5a97815680c208305e19a2b41d",
+    "executable_sha256": "8626e60c908f44848190adc9f3547241c651ed8179601d93e33b91469dc76f20",
+    "version": "1.0.103",
+    "target": "x86_64-pc-windows-msvc"
+  }
+}

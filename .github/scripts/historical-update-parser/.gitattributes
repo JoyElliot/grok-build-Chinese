@@ -1,0 +1,2 @@
+# The provenance verifier compares exact historical Git blob bytes on Windows.
+* text eol=lf

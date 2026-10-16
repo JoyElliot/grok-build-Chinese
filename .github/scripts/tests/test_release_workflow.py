@@ -228,7 +228,7 @@ class PreviewNativeValidationTests(unittest.TestCase):
         gate = jobs["multiplatform-result"]
         self.assertIn("rust-format-preflight", dependencies(gate))
         self.assertIn(
-            "if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
+            "if: ${{ !(inputs.direct_replacement_only || (github.event_name == 'push' && github.ref == 'refs/heads/test/windows-msvc-direct-replacement')) && (always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) ) }}",
             gate,
         )
         self.assertIn("FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}", gate)

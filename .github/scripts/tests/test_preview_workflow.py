@@ -95,7 +95,8 @@ def condition(block):
     return field[1]
 
 
-def job_runs(block, results, event, ref):
+def job_runs(block, results, event, ref, direct_replacement_only=False,
+             repository="JoyElliot/grok-build-Chinese"):
     """Evaluate this workflow's restricted expressions, including implicit success()."""
     required = dependencies(block) if re.search(r"^    needs:", block, re.M) else set()
     expression = condition(block).replace("${{", "").replace("}}", "").strip()
@@ -103,9 +104,10 @@ def job_runs(block, results, event, ref):
         if any(results[dep] != "success" for dep in required):
             return False
     context = {
+        "inputs.direct_replacement_only": direct_replacement_only,
         "github.event_name": event,
         "github.ref": ref,
-        "github.repository": "JoyElliot/grok-build-Chinese",
+        "github.repository": repository,
     }
     for key, value in context.items():
         expression = expression.replace(key, repr(value))
@@ -250,7 +252,8 @@ class PreviewWorkflowTests(unittest.TestCase):
 
     def test_localization_is_early_read_only_and_does_not_wait_for_priority_gate(self):
         block = self.jobs["localization"]
-        self.assertNotRegex(block, r"(?m)^    (?:if|needs):")
+        self.assertNotRegex(block, r"(?m)^    needs:")
+        self.assertEqual(condition(block), "${{ !(inputs.direct_replacement_only || (github.event_name == 'push' && github.ref == 'refs/heads/test/windows-msvc-direct-replacement')) }}")
         self.assertIn("persist-credentials: false", block)
         self.assertIn("runs-on: ubuntu-24.04", block)
         self.assertIn("timeout-minutes: 10", block)
@@ -330,10 +333,41 @@ class PreviewWorkflowTests(unittest.TestCase):
                  ("workflow_dispatch", "refs/heads/sync/upstream-1.0.104"))
         for event, ref in cases:
             for name, block in self.jobs.items():
-                if name == "macos-consumer-smoke":
+                if name in {"macos-consumer-smoke", "windows-direct-replacement"}:
                     continue  # This intentionally has its existing special-branch condition.
                 with self.subTest(event=event, ref=ref, job=name):
                     self.assertTrue(job_runs(block, results, event, ref))
+
+    def test_direct_replacement_dispatch_is_isolated_from_every_existing_job(self):
+        results = dict.fromkeys(self.jobs, "success")
+        ref = "refs/heads/test/windows-msvc-direct-replacement"
+        for name, block in self.jobs.items():
+            with self.subTest(job=name):
+                self.assertEqual(job_runs(block, results, "workflow_dispatch", ref, True),
+                                 name == "windows-direct-replacement")
+        direct = self.jobs["windows-direct-replacement"]
+        self.assertNotRegex(direct, r"(?m)^    needs:")
+        skipped = dict.fromkeys(self.jobs, "skipped")
+        self.assertTrue(job_runs(direct, skipped, "workflow_dispatch", ref, True))
+        self.assertFalse(job_runs(direct, skipped, "workflow_dispatch", ref, True, "someone/fork"))
+        for event, target, enabled in (("pull_request", ref, True),
+                                       ("workflow_dispatch", "refs/heads/zh-dev", True),
+                                       ("workflow_dispatch", ref, False)):
+            self.assertFalse(job_runs(direct, results, event, target, enabled))
+
+    def test_exact_direct_branch_push_skips_every_existing_job(self):
+        ref = "refs/heads/test/windows-msvc-direct-replacement"
+        results = dict.fromkeys(self.jobs, "skipped")
+        for name, block in self.jobs.items():
+            with self.subTest(job=name):
+                self.assertEqual(job_runs(block, results, "push", ref),
+                                 name == "windows-direct-replacement")
+        direct = self.jobs["windows-direct-replacement"]
+        for other in (ref + "-other", "refs/heads/zh-dev", "refs/heads/sync/new"):
+            self.assertFalse(job_runs(direct, results, "push", other))
+        self.assertFalse(job_runs(direct, results, "push", ref, repository="someone/fork"))
+        push = self.text.split("  push:\n", 1)[1].split("  pull_request:\n", 1)[0]
+        self.assertIn("      - test/windows-msvc-direct-replacement\n", push)
 
     def test_every_build_and_test_is_downstream_of_all_three_preflights(self):
         def ancestors(job):
@@ -342,7 +376,7 @@ class PreviewWorkflowTests(unittest.TestCase):
             return required | {ancestor for dep in required for ancestor in ancestors(dep)}
 
         for name in self.jobs:
-            if name not in PREFLIGHT_JOBS:
+            if name not in PREFLIGHT_JOBS | {"windows-direct-replacement"}:
                 with self.subTest(job=name):
                     self.assertTrue(PREFLIGHT_JOBS.issubset(ancestors(name)))
 

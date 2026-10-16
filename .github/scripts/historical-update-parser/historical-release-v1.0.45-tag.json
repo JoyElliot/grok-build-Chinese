@@ -1,0 +1,24 @@
+{
+  "node_id": "TA_kwDOTtGt9doAKDdhMjYxYmYzNjkzMmY2ZTgzMGE3ZDZmZGEyMjY2MWY5MDE2MTM3ZjU",
+  "sha": "7a261bf36932f6e830a7d6fda22661f9016137f5",
+  "url": "https://api.github.com/repos/JoyElliot/grok-build-Chinese/git/tags/7a261bf36932f6e830a7d6fda22661f9016137f5",
+  "tagger": {
+    "name": "JoyLin",
+    "email": "72300219+JoyElliot@users.noreply.github.com",
+    "date": "2026-10-09T10:03:30Z"
+  },
+  "object": {
+    "sha": "3f5d07f8cb2e9be395131296a3efc4635713db7f",
+    "type": "commit",
+    "url": "https://api.github.com/repos/JoyElliot/grok-build-Chinese/git/commits/3f5d07f8cb2e9be395131296a3efc4635713db7f"
+  },
+  "tag": "release-v1.0.45",
+  "message": "发布 Grok Build 中文社区版 1.0.45\n",
+  "verification": {
+    "verified": false,
+    "reason": "unsigned",
+    "signature": null,
+    "payload": null,
+    "verified_at": null
+  }
+}

@@ -1,0 +1,4 @@
+[toolchain]
+channel = "1.94.0"
+profile = "minimal"
+# Host-only: do not inherit repository cross-compilation targets or components.

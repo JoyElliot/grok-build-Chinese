@@ -1,0 +1,36 @@
+{
+  "repository": "JoyElliot/grok-build-Chinese",
+  "commit": "3f5d07f8cb2e9be395131296a3efc4635713db7f",
+  "files": [
+    {
+      "path": "crates/codegen/xai-grok-update/src/community_release/package_protocol.rs",
+      "git_blob_sha1": "1bda919549c9a55a63bc19b1203f2fc0c6e6e289",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-update/src/community_release/package_protocol.rs"
+    },
+    {
+      "path": "crates/codegen/xai-grok-update/src/community_release.rs",
+      "git_blob_sha1": "2d6fd64fa86c47afa4e58c9ba2012a498506f60f",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-update/src/community_release.rs"
+    },
+    {
+      "path": ".github/scripts/verify-protocol-bridge.ps1",
+      "git_blob_sha1": "390ec48b3799a0bf056954a31d6581ffc7a7f230",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/.github/scripts/verify-protocol-bridge.ps1"
+    },
+    {
+      "path": "Cargo.lock",
+      "git_blob_sha1": "db7873afd45afdf9a96730dc5b514f41b295a475",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/Cargo.lock"
+    },
+    {
+      "path": "Cargo.toml",
+      "git_blob_sha1": "f9fd54ee919af62819f3ca099e3dcd6bdeb80cf1",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/Cargo.toml"
+    },
+    {
+      "path": "crates/codegen/xai-grok-product/src/lib.rs",
+      "git_blob_sha1": "2e93e867ef3ff903c1112af541f34f2ad2500971",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-product/src/lib.rs"
+    }
+  ]
+}
