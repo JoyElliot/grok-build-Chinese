@@ -6,6 +6,7 @@ on:
       - zh-dev
       - 'sync/**'
       - codex/free-account-localization-macos-smoke
+      - test/windows-msvc-acceptance-bundle
     paths-ignore:
       - community/announcements/**
       - community/display-translations/**
@@ -73,6 +74,7 @@ jobs:
         run: |
           python3 .github/scripts/tests/test_preview_workflow.py
           python3 .github/scripts/tests/test_windows_validation.py
+          python3 .github/scripts/tests/test_windows_acceptance_bundle.py
 
   zh-dev-priority-gate:
     name: 等待闲置 runner
@@ -797,6 +799,110 @@ jobs:
           - 完整 MSVC ZIP 仅内嵌一次；首次解包不需要网络，也没有版本检查副作用。
           - 本轮版本仅用于隔离迁移协议测试；正式发布仍由默认关闭的仓库策略控制。
           '@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: 准备单版本离线 Windows 验收下载包
+        id: acceptance_bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B .github/scripts/build-windows-acceptance-bundle.py `
+            --output "$env:RUNNER_TEMP/windows-acceptance" `
+            --native-archive "dist/$env:ARCHIVE_NAME" `
+            --embedded-gnu-archive "migration-dist/grok-zh-$env:GROK_VERSION-windows-x86_64-gnu.zip" `
+            --version $env:GROK_VERSION --commit $env:GITHUB_SHA --repository $env:GITHUB_REPOSITORY `
+            --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 验收包身份、内嵌原始 ZIP 或哈希检查失败。' }
+
+      - name: PowerShell 7 运行下载包验收脚本
+        id: acceptance_pwsh
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $shell = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $results = Join-Path $env:RUNNER_TEMP 'windows-acceptance-results/pwsh'
+          $console = Join-Path $env:RUNNER_TEMP 'windows-acceptance-console'
+          New-Item -ItemType Directory -Path $results,$console -Force | Out-Null
+          $bundle = Join-Path $env:RUNNER_TEMP 'windows-acceptance'
+          $savedPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            foreach ($tool in @('python', 'python3', 'gcc', 'cl', 'cargo', 'rustc')) {
+              if (Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue) { throw "验收 PATH 不应包含 $tool。" }
+            }
+            & $shell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File (Join-Path $bundle 'Run-WindowsAcceptance.ps1') `
+              -BundleDirectory $bundle -ResultsDirectory $results *> (Join-Path $console 'pwsh.log')
+            $code = $LASTEXITCODE
+            Get-Content -LiteralPath (Join-Path $console 'pwsh.log')
+            if ($code -ne 0) { throw "PowerShell 7 下载包验收失败：$code" }
+          } finally { $env:PATH = $savedPath }
+
+      - name: Windows PowerShell 5.1 运行下载包验收脚本
+        id: acceptance_windows_ps
+        if: ${{ always() && steps.acceptance_bundle.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $shell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+          $results = Join-Path $env:RUNNER_TEMP 'windows-acceptance-results/windows-ps51'
+          $console = Join-Path $env:RUNNER_TEMP 'windows-acceptance-console'
+          New-Item -ItemType Directory -Path $results,$console -Force | Out-Null
+          $bundle = Join-Path $env:RUNNER_TEMP 'windows-acceptance'
+          $savedPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            foreach ($tool in @('python', 'python3', 'gcc', 'cl', 'cargo', 'rustc')) {
+              if (Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue) { throw "验收 PATH 不应包含 $tool。" }
+            }
+            & $shell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File (Join-Path $bundle 'Run-WindowsAcceptance.ps1') `
+              -BundleDirectory $bundle -ResultsDirectory $results *> (Join-Path $console 'windows-ps51.log')
+            $code = $LASTEXITCODE
+            Get-Content -LiteralPath (Join-Path $console 'windows-ps51.log')
+            if ($code -ne 0) { throw "Windows PowerShell 5.1 下载包验收失败：$code" }
+          } finally { $env:PATH = $savedPath }
+
+      - name: 保留 Windows 验收诊断
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-acceptance-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/windows-acceptance-results/**/logs/**
+            ${{ runner.temp }}/windows-acceptance-results/**/RESULT.json
+            ${{ runner.temp }}/windows-acceptance-console/*.log
+          if-no-files-found: warn
+          compression-level: 9
+          retention-days: 14
+
+      - name: 上传双 PowerShell 验证通过的 Windows 验收下载包
+        id: acceptance_artifact
+        if: ${{ success() && steps.acceptance_pwsh.outcome == 'success' && steps.acceptance_windows_ps.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-msvc-acceptance-${{ env.GROK_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-acceptance
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: 在摘要中提供验收下载与边界
+        shell: pwsh
+        env:
+          ACCEPTANCE_URL: ${{ steps.acceptance_artifact.outputs.artifact-url }}
+          ACCEPTANCE_DIGEST: ${{ steps.acceptance_artifact.outputs.artifact-digest }}
+        run: |
+          @"
+          ## Windows 单版本离线验收下载
+
+          - 下载：[Windows 验收包]($env:ACCEPTANCE_URL)；GitHub 制品 SHA-256：``$env:ACCEPTANCE_DIGEST``。
+          - 包内包含本轮完全相同的原生 MSVC ZIP、内嵌 GNU ZIP、PowerShell 脚本、中文说明、来源及 SHA256SUMS。
+          - 下载包脚本已在 PowerShell 7 和 Windows PowerShell 5.1、无 Python/编译器 PATH 下通过。
+          - 验收覆盖单版本离线 CLI、隔离便携安装、迁移标记与重复启动；不代表 TUI 人工体验、登录、真实历史更新、降级或故障矩阵已通过。
+          - 仅隔离预览验收用途，不批准合并或正式 Release；请先阅读 README.zh-CN.md。
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
   linux-x64-gnu-preview:
     name: Linux x64 GNU 预览版

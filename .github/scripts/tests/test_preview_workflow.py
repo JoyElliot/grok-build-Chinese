@@ -503,7 +503,8 @@ class PreviewWorkflowTests(unittest.TestCase):
             self.assertFalse(step_runs(inputs[0], "cancelled"))
 
     def test_msvc_migration_product_and_tests_remain_isolated_and_unchanged(self):
-        migration = upload_steps(self.jobs["windows-msvc-migration-experiment"])
+        migration = [step for step in upload_steps(self.jobs["windows-msvc-migration-experiment"])
+                     if "name: migration-experiment-grok-zh-" in step]
         self.assertEqual(len(migration), 1)
         self.assertIn("retention-days: 14", migration[0])
         self.assertIn("name: migration-experiment-grok-zh-", migration[0])
