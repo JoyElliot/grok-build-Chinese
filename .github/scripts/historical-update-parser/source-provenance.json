@@ -31,6 +31,26 @@
       "path": "crates/codegen/xai-grok-product/src/lib.rs",
       "git_blob_sha1": "2e93e867ef3ff903c1112af541f34f2ad2500971",
       "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-product/src/lib.rs"
+    },
+    {
+      "path": "crates/codegen/xai-grok-update/src/auto_update.rs",
+      "git_blob_sha1": "ff5024f2778a79148cddb047a4363059a471b872",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-update/src/auto_update.rs"
+    },
+    {
+      "path": "crates/codegen/xai-grok-update/src/community_update_cancel.rs",
+      "git_blob_sha1": "e412e2d476a4e017a01132b1f314c06ddb31ddee",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-update/src/community_update_cancel.rs"
+    },
+    {
+      "path": "crates/codegen/xai-tty-utils/src/lib.rs",
+      "git_blob_sha1": "4fe44241a5cdcc874d34a0b41f86a2c5fd052485",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-tty-utils/src/lib.rs"
+    },
+    {
+      "path": "crates/codegen/xai-grok-tools/src/util/spawn.rs",
+      "git_blob_sha1": "12d0022e5cafa4e8f8c8d66bb9aeed5f04efe067",
+      "url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-tools/src/util/spawn.rs"
     }
   ]
 }

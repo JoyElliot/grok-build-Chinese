@@ -156,18 +156,35 @@ class TestBoundedCommands(unittest.TestCase):
             result=self.run_command()
         self.assertEqual(result['returncode'],0)
         self.assertEqual((self.root/'test.stdout.txt').read_bytes(),self.stdout)
+        self.assertEqual(result['timeout_seconds'],35)
+        self.process.wait.assert_called_once_with(timeout=35)
+    def test_observation_can_use_separate_network_timeout(self):
+        with patch.object(direct.subprocess, 'Popen', side_effect=self.launch):
+            result=direct.run_command(['grok-zh.exe','update','--check','--json'],self.root,self.env,'test',self.root,timeout_seconds=90)
+        self.assertEqual(result['timeout_seconds'],90)
+        self.process.wait.assert_called_once_with(timeout=90)
+    def test_install_command_can_report_only_on_stderr_without_weakening_version_checks(self):
+        self.stdout=b''
+        with patch.object(direct.subprocess, 'Popen', side_effect=self.launch):
+            with self.assertRaisesRegex(ValueError,'empty stdout'):
+                self.run_command()
+            result=direct.run_command(['grok-zh.exe','update','--version','1.0.45'],self.root,self.env,'test',self.root,require_stdout=False)
+        self.assertEqual(result['returncode'],0)
     def test_wrong_version_is_failure(self):
         self.stdout = b'grok-zh 1.0.45 (old)\n'
         with patch.object(direct.subprocess, 'Popen', side_effect=self.launch):
             with self.assertRaisesRegex(ValueError,'unexpected product version'):self.run_command()
-    def timeout_case(self, cleanup_side_effect=None, second_timeout=False):
+    def timeout_case(self, cleanup_side_effect=None, second_timeout=False, cleanup_returncode=1):
         error=subprocess.TimeoutExpired('grok-zh',35)
         self.stdout=b'partial'
         self.process.wait.side_effect=[error, error if second_timeout else 0]
         self.process.poll.side_effect=[None,None if second_timeout else 0]
-        cleanup=MagicMock(returncode=1,stdout=b'',stderr=b'cleanup failure')
+        cleanup=MagicMock(returncode=cleanup_returncode,stdout=b'',stderr=b'cleanup failure')
         with patch.object(direct.subprocess,'Popen',side_effect=self.launch), patch.object(direct.subprocess,'run',return_value=cleanup,side_effect=cleanup_side_effect):
-            with self.assertRaisesRegex(ValueError,'exceeded 35 seconds'):self.run_command()
+            unconfirmed = second_timeout or cleanup_side_effect is not None or cleanup_returncode != 0
+            expected_error = direct.UnconfirmedProcessTermination if unconfirmed else ValueError
+            expected_text = 'termination could not be confirmed' if unconfirmed else 'exceeded 35 seconds'
+            with self.assertRaisesRegex(expected_error,expected_text):self.run_command()
         self.process.kill.assert_called_once()
         record=json.loads((self.root/'test.cleanup.txt').read_text(encoding='utf-8'))
         self.assertEqual(record['root_termination_confirmed'],not second_timeout)
@@ -182,9 +199,20 @@ class TestBoundedCommands(unittest.TestCase):
     def test_nonzero_taskkill_still_kills_and_logs(self):
         record=self.timeout_case()
         self.assertEqual(record['returncode'],1)
+        self.assertFalse(record['tree_termination_confirmed'])
+    def test_successful_tree_cleanup_retains_bounded_timeout_error(self):
+        record=self.timeout_case(cleanup_returncode=0)
+        self.assertTrue(record['tree_termination_confirmed'])
     def test_second_wait_timeout_is_bounded(self):
         record=self.timeout_case(second_timeout=True)
         self.assertEqual(record['root_wait'],'timed_out')
+    def test_cleanup_log_failure_cannot_hide_unconfirmed_tree(self):
+        self.process.wait.side_effect=[subprocess.TimeoutExpired('grok-zh',35),0]
+        self.process.poll.side_effect=[None,0]
+        cleanup=MagicMock(returncode=1,stdout=b'',stderr=b'failed')
+        with patch.object(direct.subprocess,'Popen',side_effect=self.launch), patch.object(direct.subprocess,'run',return_value=cleanup), patch.object(Path,'write_text',side_effect=OSError('disk full')):
+            with self.assertRaises(direct.UnconfirmedProcessTermination):
+                self.run_command()
 
 
 if __name__ == '__main__':

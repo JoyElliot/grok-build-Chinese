@@ -2,26 +2,36 @@
 // Historical commit: 3f5d07f8cb2e9be395131296a3efc4635713db7f
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use anyhow::{Context, Result};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use futures::{Stream, StreamExt};
+use indicatif::ProgressBar;
+use tokio::io::AsyncWriteExt;
+use crate::community_update_cancel;
 #[path = "../historical/crates/codegen/xai-grok-product/src/lib.rs"]
 mod xai_grok_product;
 #[path = "../historical/crates/codegen/xai-grok-update/src/community_release/package_protocol.rs"]
 mod package_protocol;
 use package_protocol::{BUILD_INFO, PackageProtocol};
 
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L31-L35
+// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L28-L193
+pub(crate) const COMMUNITY_INSTALLER: &str = "community-github";
+
+const API_VERSION: &str = "2026-03-10";
 const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 128;
 const MAX_UNCOMPRESSED_BYTES: u64 = 768 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L41-L75
+const MAX_TAR_ZERO_PADDING_BYTES: u64 = 1024 * 1024;
+const DOWNLOAD_PROGRESS_TEMPLATE: &str =
+    "  下载更新 {bar:30.cyan/dim} {bytes}/{total_bytes} {percent}% ({bytes_per_sec}，剩余 {eta})";
+const DOWNLOAD_COMPLETED_TEMPLATE: &str =
+    "  下载更新 {bar:30.cyan/dim} {bytes}/{total_bytes} {percent}% {msg}";
 const ONE_CLICK_INSTALLER: &str = "一键安装.cmd";
 const COMMAND_SETUP_INSTALLER: &str = "[可选]替换原始启动方式.cmd";
 const WINDOWS_REQUIRED_PACKAGE_FILES: [&str; 15] = [
@@ -57,8 +67,28 @@ const WINDOWS_LEGACY_MANIFEST_FILES: [&str; 7] = [
 ];
 const WINDOWS_APPROVED_PACKAGE_DIRS: [&str; 3] =
     ["licenses", "licenses/ripgrep", "licenses/project"];
-
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L98-L107
+const MACOS_REQUIRED_PACKAGE_FILES: [&str; 9] = [
+    "grok-zh",
+    "BUILD-INFO.txt",
+    "INSTALL-MACOS.md",
+    "Install-GrokZh.sh",
+    "LICENSE-grok-build.txt",
+    "NOTICE-third-party.txt",
+    "SOURCE_REV",
+    "THIRD-PARTY-NOTICES.txt",
+    "THIRD-PARTY-NOTICES-xai-grok-tools.md",
+];
+const LINUX_REQUIRED_PACKAGE_FILES: [&str; 9] = [
+    "grok-zh",
+    "BUILD-INFO.txt",
+    "INSTALL-LINUX.md",
+    "Install-GrokZh.sh",
+    "LICENSE-grok-build.txt",
+    "NOTICE-third-party.txt",
+    "SOURCE_REV",
+    "THIRD-PARTY-NOTICES.txt",
+    "THIRD-PARTY-NOTICES-xai-grok-tools.md",
+];
 const INNER_MANIFEST: &str = "SHA256SUMS.txt";
 const LEGACY_BRIDGE_VERSION: (u64, u64, u64) = (1, 0, 8);
 
@@ -70,7 +100,21 @@ fn release_repo() -> &'static str {
     xai_grok_product::COMMUNITY_RELEASE_REPO
 }
 
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L124-L193
+fn releases_api(page: usize) -> String {
+    format!(
+        "https://api.github.com/repos/{}/releases?per_page=100&page={page}",
+        release_repo()
+    )
+}
+
+fn release_by_tag_api(version: &str) -> Result<String> {
+    let tag = release_tag_for_version(&canonical_release_version(version)?);
+    Ok(format!(
+        "https://api.github.com/repos/{}/releases/tags/{tag}",
+        release_repo()
+    ))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ApiRelease {
     tag_name: String,
@@ -142,7 +186,7 @@ fn current_community_platform() -> Result<CommunityPlatform> {
     }
 }
 
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L232-L250
+// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L232-L276
 fn parse_release_version(release: &ApiRelease) -> Option<Version> {
     if release.draft || !release.immutable {
         return None;
@@ -162,6 +206,32 @@ fn parse_release_version(release: &ApiRelease) -> Option<Version> {
     }
     Some(version)
 }
+
+fn select_latest_release<'a>(
+    releases: &'a [ApiRelease],
+    channel: &str,
+) -> Result<(&'a ApiRelease, Version)> {
+    if !matches!(channel, "stable" | "alpha") {
+        anyhow::bail!("unsupported community release channel: {channel}");
+    }
+    releases
+        .iter()
+        .filter_map(|release| {
+            let version = parse_release_version(release)?;
+            if channel == "stable" && !version.pre.is_empty() {
+                return None;
+            }
+            Some((release, version))
+        })
+        .max_by(|(_, a), (_, b)| a.cmp(b))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no immutable {channel} release is available in {}",
+                release_repo()
+            )
+        })
+}
+
 
 // Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L306-L338
 fn canonical_release_version(version: &str) -> Result<Version> {
@@ -198,7 +268,7 @@ fn release_asset_name_for(platform: CommunityPlatform, version: &str) -> Result<
     }
 }
 
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L344-L441
+// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L344-L474
 fn release_includes_macos_assets(version: &Version) -> bool {
     !is_legacy_release_version(version)
 }
@@ -298,7 +368,108 @@ fn select_asset_for_platform(
     })
 }
 
-// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L633-L1018
+fn select_asset(release: &ApiRelease, version: &str) -> Result<VerifiedAsset> {
+    select_asset_for_platform(release, version, current_community_platform()?)
+}
+
+fn select_latest_compatible_release<'a>(
+    releases: &'a [ApiRelease],
+    channel: &str,
+    platform: CommunityPlatform,
+) -> Result<(&'a ApiRelease, Version)> {
+    let mut compatible = releases
+        .iter()
+        .filter_map(|release| {
+            let version = parse_release_version(release)?;
+            if channel == "stable" && !version.pre.is_empty() {
+                return None;
+            }
+            select_asset_for_platform(release, &version.to_string(), platform)
+                .ok()
+                .map(|_| (release, version))
+        })
+        .collect::<Vec<_>>();
+    if !matches!(channel, "stable" | "alpha") {
+        anyhow::bail!("unsupported community release channel: {channel}");
+    }
+    compatible.sort_by(|(_, a), (_, b)| a.cmp(b));
+    compatible.pop().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no immutable {channel} release compatible with this platform is available in {}",
+            release_repo()
+        )
+    })
+}
+
+// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L552-L617
+async fn write_verified_download<B: AsRef<[u8]>>(
+    asset: &VerifiedAsset,
+    destination: &Path,
+    progress: &ProgressBar,
+    stream: impl Stream<Item = Result<B>>,
+) -> Result<()> {
+    let mut created_destination = false;
+    let result = async {
+        community_update_cancel::check()?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(destination)
+            .await
+            .with_context(|| format!("creating {}", destination.display()))?;
+        created_destination = true;
+        futures::pin_mut!(stream);
+        let transfer = async {
+            let mut hasher = Sha256::new();
+            let mut written = 0u64;
+            while let Some(chunk) = community_update_cancel::interruptible(stream.next()).await? {
+                let chunk = chunk?;
+                let chunk = chunk.as_ref();
+                written = written
+                    .checked_add(chunk.len() as u64)
+                    .ok_or_else(|| anyhow::anyhow!("release asset size overflow"))?;
+                if written > asset.size || written > MAX_ASSET_BYTES {
+                    anyhow::bail!("release asset exceeded its declared size");
+                }
+                hasher.update(chunk);
+                file.write_all(chunk).await?;
+                progress.set_position(written);
+            }
+            Ok::<_, anyhow::Error>((written, hasher))
+        }
+        .await;
+        // Tokio may still have a buffered filesystem write in flight. Drain it
+        // even on cancellation before closing and removing our partial file.
+        let flushed = file.flush().await;
+        if transfer.is_ok() {
+            file.sync_all().await?;
+        }
+        drop(file);
+        let (written, hasher) = transfer?;
+        flushed?;
+        community_update_cancel::check()?;
+
+        if written != asset.size {
+            anyhow::bail!("release asset was truncated");
+        }
+        let actual = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if actual != asset.sha256 {
+            anyhow::bail!("release asset SHA-256 does not match GitHub metadata");
+        }
+        Ok(())
+    }
+    .await;
+    if result.is_err() && created_destination {
+        let _ = tokio::fs::remove_file(destination).await;
+    }
+    result
+}
+
+// Verbatim crates/codegen/xai-grok-update/src/community_release.rs:L633-L1477
 fn normalized_package_name(name: &str) -> String {
     name.to_lowercase()
 }
@@ -686,6 +857,468 @@ fn extract_verified_windows_executable(
     result
 }
 
+fn normalized_unix_tar_name(raw: &[u8], package_root: &str) -> Result<Option<String>> {
+    if !raw.is_ascii() {
+        anyhow::bail!("community release tar path is not ASCII");
+    }
+    let raw = std::str::from_utf8(raw).context("community release tar path is not UTF-8")?;
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.contains('\\')
+        || raw.contains(':')
+        || raw.bytes().any(|byte| byte.is_ascii_control())
+    {
+        anyhow::bail!("community release tar contains an unsafe raw path: {raw}");
+    }
+    let name = raw.strip_prefix("./").unwrap_or(raw);
+    if name == package_root || name == format!("{package_root}/") {
+        return Ok(None);
+    }
+    let prefix = format!("{package_root}/");
+    let relative = name.strip_prefix(&prefix).ok_or_else(|| {
+        anyhow::anyhow!("community release tar path is outside the approved package root: {raw}")
+    })?;
+    if relative.is_empty()
+        || relative.contains('/')
+        || matches!(relative, "." | "..")
+        || relative.starts_with("./")
+    {
+        anyhow::bail!("community release tar contains a nested or unsafe path: {raw}");
+    }
+    Ok(Some(relative.to_string()))
+}
+
+fn hash_tar_entry<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    name: &str,
+    destination: Option<&Path>,
+) -> Result<String> {
+    let declared_size = entry.size();
+    if declared_size > MAX_ENTRY_BYTES {
+        anyhow::bail!("community release tar entry is too large: {name}");
+    }
+    let mut output = match destination {
+        Some(path) => {
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            Some(
+                options
+                    .open(path)
+                    .with_context(|| format!("creating extracted candidate {}", path.display()))?,
+            )
+        }
+        None => None,
+    };
+    let mut hasher = Sha256::new();
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = entry
+            .read(&mut buffer)
+            .with_context(|| format!("reading {name} from community release tar"))?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow::anyhow!("community release tar entry size overflow"))?;
+        if copied > declared_size || copied > MAX_ENTRY_BYTES {
+            anyhow::bail!("community release tar entry exceeded its declared size: {name}");
+        }
+        hasher.update(&buffer[..read]);
+        if let Some(output) = output.as_mut() {
+            output
+                .write_all(&buffer[..read])
+                .with_context(|| format!("writing extracted candidate {name}"))?;
+        }
+    }
+    if copied != declared_size {
+        anyhow::bail!("community release tar entry was truncated: {name}");
+    }
+    if let Some(mut output) = output {
+        output.flush()?;
+        output.sync_all()?;
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn extract_verified_unix_executable(
+    archive_path: &Path,
+    destination: &Path,
+    package_root: &str,
+    required_files: &[&str],
+    executable_files: &[&str],
+) -> Result<()> {
+    extract_unix_package(
+        archive_path,
+        destination,
+        package_root,
+        required_files,
+        executable_files,
+        None,
+    )
+}
+
+fn extract_unix_package(
+    archive_path: &Path,
+    destination: &Path,
+    package_root: &str,
+    required_files: &[&str],
+    executable_files: &[&str],
+    protocol: Option<&PackageProtocol>,
+) -> Result<()> {
+    if package_root.is_empty()
+        || !package_root.is_ascii()
+        || package_root
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+        || package_root.bytes().any(|byte| byte.is_ascii_control())
+        || matches!(package_root, "." | "..")
+    {
+        anyhow::bail!("community release contains an invalid package root name");
+    }
+    if std::fs::symlink_metadata(destination).is_ok() {
+        anyhow::bail!(
+            "refusing to overwrite an existing extraction target: {}",
+            destination.display()
+        );
+    }
+    let result = (|| {
+        let archive_file = File::open(archive_path).with_context(|| {
+            format!(
+                "opening community release tar.gz {}",
+                archive_path.display()
+            )
+        })?;
+        // The bufread single-member decoder stops exactly at the first gzip
+        // member. After validating the tar stream we inspect its underlying
+        // reader, so even an empty concatenated member is rejected.
+        let decoder = flate2::bufread::GzDecoder::new(BufReader::new(archive_file));
+        let mut archive = tar::Archive::new(decoder);
+        let mut entries = archive
+            .entries()
+            .context("opening the downloaded community release as tar")?
+            .raw(true);
+        let expected = expected_archive_names(required_files);
+        let approved_dirs = package_protocol::directories(required_files);
+        let mut seen = HashSet::new();
+        let mut seen_dirs = HashSet::new();
+        let mut hashes = HashMap::new();
+        let mut manifest = None;
+        let mut root_seen = false;
+        let mut count = 0usize;
+        let mut total_size = 0u64;
+
+        for entry_result in &mut entries {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("community release tar entry count overflow"))?;
+            if count > MAX_ARCHIVE_ENTRIES {
+                anyhow::bail!("community release tar contains too many entries");
+            }
+            let mut entry = entry_result.context("reading community release tar entry")?;
+            if entry.header().as_ustar().is_none() {
+                anyhow::bail!("community release tar must use the USTAR format");
+            }
+            let raw_path = entry.header().path_bytes();
+            let name = if protocol.is_some() {
+                let raw = std::str::from_utf8(raw_path.as_ref())
+                    .context("community tar path is not UTF-8")?;
+                let raw = raw.strip_prefix("./").unwrap_or(raw);
+                if raw.ends_with('/') && !entry.header().entry_type().is_dir() {
+                    anyhow::bail!("community tar regular file has a directory suffix");
+                }
+                let path = raw.strip_suffix('/').unwrap_or(raw);
+                if path == package_root {
+                    None
+                } else {
+                    let relative = path
+                        .strip_prefix(&format!("{package_root}/"))
+                        .context("community tar entry is outside its package root")?;
+                    if !package_protocol::safe_path(relative) {
+                        anyhow::bail!("community tar has an unsafe path");
+                    }
+                    Some(relative.to_string())
+                }
+            } else {
+                normalized_unix_tar_name(raw_path.as_ref(), package_root)?
+            };
+            let entry_type = entry.header().entry_type();
+            if name.is_none() {
+                let mode = entry
+                    .header()
+                    .mode()
+                    .context("reading mode for community release tar root")?;
+                if root_seen
+                    || !entry_type.is_dir()
+                    || entry.link_name_bytes().is_some()
+                    || entry.size() != 0
+                    || mode & 0o7777 != 0o755
+                {
+                    anyhow::bail!("community release tar contains an invalid root entry");
+                }
+                root_seen = true;
+                continue;
+            }
+            if !root_seen {
+                anyhow::bail!("community release tar file appears before its package root");
+            }
+            let name = name.expect("checked above");
+            if protocol.is_some() && entry_type.is_dir() {
+                if entry.size() != 0
+                    || entry.link_name_bytes().is_some()
+                    || entry.header().mode()? & 0o7777 != 0o755
+                    || !approved_dirs.contains(&name.to_lowercase())
+                    || !seen_dirs.insert(name.to_lowercase())
+                {
+                    anyhow::bail!("community tar contains an invalid or duplicate directory");
+                }
+                continue;
+            }
+            if !entry_type.is_file() || entry.link_name_bytes().is_some() {
+                anyhow::bail!("community release tar contains a non-regular entry: {name}");
+            }
+            if entry.size() > MAX_ENTRY_BYTES {
+                anyhow::bail!("community release tar entry is too large: {name}");
+            }
+            total_size = total_size
+                .checked_add(entry.size())
+                .ok_or_else(|| anyhow::anyhow!("community release tar size overflow"))?;
+            if total_size > MAX_UNCOMPRESSED_BYTES {
+                anyhow::bail!("community release tar exceeds the uncompressed size limit");
+            }
+            let mode = entry
+                .header()
+                .mode()
+                .with_context(|| format!("reading mode for tar entry {name}"))?;
+            let expected_mode = if executable_files.contains(&name.as_str()) {
+                0o755
+            } else {
+                0o644
+            };
+            if (protocol.is_none() && mode & 0o7777 != expected_mode)
+                || (protocol.is_some()
+                    && (!matches!(mode & 0o7777, 0o644 | 0o755)
+                        || (executable_files.contains(&name.as_str()) && mode & 0o7777 != 0o755)))
+            {
+                anyhow::bail!("community release tar entry has an unexpected mode: {name}");
+            }
+            let normalized = normalized_package_name(&name);
+            if !expected.contains(&normalized) || !seen.insert(normalized) {
+                anyhow::bail!("community release tar contains an extra or duplicate path: {name}");
+            }
+            if name == INNER_MANIFEST {
+                let manifest_size = entry.size();
+                if manifest_size > MAX_MANIFEST_BYTES {
+                    anyhow::bail!("community release SHA256SUMS.txt exceeds the size limit");
+                }
+                let mut bytes = Vec::with_capacity(manifest_size as usize);
+                entry
+                    .take(MAX_MANIFEST_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .context("reading community release SHA256SUMS.txt")?;
+                if bytes.len() as u64 != manifest_size {
+                    anyhow::bail!("community release SHA256SUMS.txt was truncated");
+                }
+                manifest = Some(bytes);
+            } else {
+                let executable = protocol.map(|p| p.executable.as_str()).unwrap_or("grok-zh");
+                let extracted = (name == executable).then_some(destination);
+                hashes.insert(name.clone(), hash_tar_entry(&mut entry, &name, extracted)?);
+            }
+        }
+        drop(entries);
+        let mut decoder = archive.into_inner();
+        // `tar::Archive::entries` consumes the first zero header and stops. A
+        // valid tar must contain a second 512-byte zero header; the remainder
+        // may only be bounded zero record padding.
+        let mut decoded_tail = [0u8; 8 * 1024];
+        let mut padding_bytes = 0u64;
+        loop {
+            let read = decoder
+                .read(&mut decoded_tail)
+                .context("validating the end of the community release gzip stream")?;
+            if read == 0 {
+                break;
+            }
+            padding_bytes = padding_bytes
+                .checked_add(read as u64)
+                .ok_or_else(|| anyhow::anyhow!("community release tar padding overflow"))?;
+            if padding_bytes > MAX_TAR_ZERO_PADDING_BYTES
+                || decoded_tail[..read].iter().any(|byte| *byte != 0)
+            {
+                anyhow::bail!("community release tar.gz contains trailing decoded data");
+            }
+        }
+        if padding_bytes < 512 {
+            anyhow::bail!("community release tar is missing its complete end marker");
+        }
+        let mut compressed_reader = decoder.into_inner();
+        let mut compressed_tail = [0u8; 1];
+        if compressed_reader
+            .read(&mut compressed_tail)
+            .context("validating the end of the community release gzip member")?
+            != 0
+        {
+            anyhow::bail!("community release tar.gz contains a concatenated or trailing stream");
+        }
+        if !root_seen {
+            anyhow::bail!("community release tar is missing its root directory entry");
+        }
+        if seen != expected {
+            anyhow::bail!(
+                "community release tar does not contain the exact approved package files"
+            );
+        }
+        let manifest_bytes = manifest
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("community release tar is missing SHA256SUMS.txt"))?;
+        let manifest = if let Some(protocol) = protocol {
+            let hashes = package_protocol::parse_manifest(manifest_bytes)?;
+            protocol.check_manifest(&hashes)?;
+            hashes
+        } else {
+            parse_inner_manifest(manifest_bytes, required_files)?
+        };
+        for (name, expected_hash) in manifest {
+            let actual = hashes
+                .get(&name)
+                .ok_or_else(|| anyhow::anyhow!("community release tar is missing {name}"))?;
+            if actual != &expected_hash {
+                anyhow::bail!("community release inner SHA-256 mismatch for {name}");
+            }
+        }
+        if !destination.is_file() {
+            anyhow::bail!("community release did not produce grok-zh");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o755))?;
+        }
+        #[cfg(unix)]
+        File::open(destination)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(destination);
+    }
+    result
+}
+
+fn expected_unix_package_root(
+    asset: &VerifiedAsset,
+    platform: CommunityPlatform,
+) -> Result<String> {
+    let expected_name = release_asset_name_for(platform, &asset.version)?;
+    if asset.name != expected_name {
+        anyhow::bail!("community release tar asset name does not match its version");
+    }
+    asset
+        .name
+        .strip_suffix(".tar.gz")
+        .filter(|root| !root.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("community release tar asset has an invalid name"))
+}
+
+fn extract_verified_macos_executable(
+    asset: &VerifiedAsset,
+    archive_path: &Path,
+    destination: &Path,
+) -> Result<()> {
+    let package_root = expected_unix_package_root(asset, CommunityPlatform::MacosAarch64)?;
+    extract_declared_or_legacy_unix(
+        asset,
+        "aarch64-apple-darwin",
+        archive_path,
+        destination,
+        &package_root,
+        &MACOS_REQUIRED_PACKAGE_FILES,
+        &["grok-zh", "Install-GrokZh.sh"],
+    )
+}
+
+fn extract_verified_linux_executable(
+    asset: &VerifiedAsset,
+    archive_path: &Path,
+    destination: &Path,
+) -> Result<()> {
+    let package_root = expected_unix_package_root(asset, CommunityPlatform::LinuxX86_64Gnu)?;
+    extract_declared_or_legacy_unix(
+        asset,
+        "x86_64-unknown-linux-gnu",
+        archive_path,
+        destination,
+        &package_root,
+        &LINUX_REQUIRED_PACKAGE_FILES,
+        &["grok-zh", "Install-GrokZh.sh"],
+    )
+}
+
+fn extract_declared_or_legacy_unix(
+    asset: &VerifiedAsset,
+    platform: &str,
+    archive_path: &Path,
+    destination: &Path,
+    root: &str,
+    legacy_files: &[&str],
+    executable_files: &[&str],
+) -> Result<()> {
+    let (build_info, manifest) = package_protocol::read_tar_metadata(archive_path, root)?;
+    if let Some(protocol) = PackageProtocol::parse(&build_info, &asset.version, platform)? {
+        let hashes = package_protocol::parse_manifest(&manifest)?;
+        protocol.check_manifest(&hashes)?;
+        let files: Vec<_> = hashes.keys().map(String::as_str).collect();
+        extract_unix_package(
+            archive_path,
+            destination,
+            root,
+            &files,
+            &[&protocol.executable, &protocol.installer],
+            Some(&protocol),
+        )
+    } else {
+        extract_verified_unix_executable(
+            archive_path,
+            destination,
+            root,
+            legacy_files,
+            executable_files,
+        )
+    }
+}
+
+pub(crate) fn extract_verified_executable(
+    asset: &VerifiedAsset,
+    archive_path: &Path,
+    destination: &Path,
+) -> Result<()> {
+    match asset.archive_kind {
+        CommunityArchiveKind::WindowsZip => {
+            extract_verified_windows_executable(asset, archive_path, destination)
+        }
+        CommunityArchiveKind::MacosTarGz => {
+            extract_verified_macos_executable(asset, archive_path, destination)
+        }
+        CommunityArchiveKind::LinuxTarGz => {
+            extract_verified_linux_executable(asset, archive_path, destination)
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "compatibility_tests.rs"]
 mod compatibility_tests;
+#[cfg(all(windows, test))]
+#[path = "historical_transaction.rs"]
+mod transaction;

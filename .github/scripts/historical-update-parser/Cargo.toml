@@ -6,8 +6,17 @@ publish = false
 
 [workspace]
 
+[features]
+default = ["community-build"]
+community-build = []
+
 [dependencies]
 anyhow = "=1.0.104"
+futures = "=0.3.32"
+indicatif = "=0.18.3"
+thiserror = "=2.0.18"
+tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "=0.1.44"
 flate2 = { version = "=1.1.5", default-features = false, features = ["zlib-rs"] }
 semver = "=1.0.28"
 serde = { version = "=1.0.228", features = ["derive"] }
@@ -15,6 +24,9 @@ serde_json = "=1.0.149"
 sha2 = { version = "=0.10.9", features = ["force-soft"] }
 tar = "=0.4.46"
 zip = { version = "=3.0.0", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.61.3", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

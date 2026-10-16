@@ -1,0 +1,242 @@
+{
+  "schema": 1,
+  "repository": "JoyElliot/grok-build-Chinese",
+  "scope": "Exact unchanged discovery, per-platform asset selection, and current Windows extraction source. Offline synthetic API metadata; pinned real native fixture required for current GNU-transport rejection. No network, activation, installer, or old published executable execution.",
+  "revisions": [
+    {
+      "name": "v1_0_8",
+      "commit": "dfcf92b37854f5b2c0dacc66a9e4195f3881dcae",
+      "files": [
+        {
+          "path": "sources/v1_0_8/community_release.rs",
+          "source_path": "crates/codegen/xai-grok-update/src/community_release.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/dfcf92b37854f5b2c0dacc66a9e4195f3881dcae/crates/codegen/xai-grok-update/src/community_release.rs",
+          "git_blob_sha1": "d914fae2c4475322197dafa8da85f989741d801b",
+          "sha256": "2d74dc09f6a562582c79d52a0498e1018c4bc4f940d013822f261055595f966b",
+          "bytes": 94427,
+          "compiled": true
+        },
+        {
+          "path": "sources/v1_0_8/product.rs",
+          "source_path": "crates/codegen/xai-grok-product/src/lib.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/dfcf92b37854f5b2c0dacc66a9e4195f3881dcae/crates/codegen/xai-grok-product/src/lib.rs",
+          "git_blob_sha1": "405d49706293d5c01ecd5fe03725cceadaf9dbf4",
+          "sha256": "9b0ee2087d37d4d179dbfac7993916b81afb399d8daee690c8e98a3744867f70",
+          "bytes": 3495,
+          "compiled": true
+        }
+      ],
+      "unchanged_ranges": [
+        [
+          26,
+          26
+        ],
+        [
+          27,
+          27
+        ],
+        [
+          93,
+          93
+        ],
+        [
+          99,
+          102
+        ],
+        [
+          118,
+          163
+        ],
+        [
+          223,
+          242
+        ],
+        [
+          300,
+          333
+        ],
+        [
+          338,
+          483
+        ],
+        [
+          488,
+          516
+        ]
+      ],
+      "platforms": [
+        "WindowsX86_64Gnu",
+        "MacosAarch64",
+        "LinuxX86_64Gnu"
+      ]
+    },
+    {
+      "name": "v1_0_45",
+      "commit": "3f5d07f8cb2e9be395131296a3efc4635713db7f",
+      "files": [
+        {
+          "path": "sources/v1_0_45/community_release.rs",
+          "source_path": "crates/codegen/xai-grok-update/src/community_release.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-update/src/community_release.rs",
+          "git_blob_sha1": "2d6fd64fa86c47afa4e58c9ba2012a498506f60f",
+          "sha256": "1581e133a102ed5fa1652299c196a428964af1ab4e9d4d38d39c8db6f4ce176d",
+          "bytes": 120101,
+          "compiled": true
+        },
+        {
+          "path": "sources/v1_0_45/product.rs",
+          "source_path": "crates/codegen/xai-grok-product/src/lib.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/3f5d07f8cb2e9be395131296a3efc4635713db7f/crates/codegen/xai-grok-product/src/lib.rs",
+          "git_blob_sha1": "2e93e867ef3ff903c1112af541f34f2ad2500971",
+          "sha256": "2034ede7c14d74c05263830237b14425c2efc399874e2c154f0caf5db7ced6f8",
+          "bytes": 4822,
+          "compiled": true
+        }
+      ],
+      "unchanged_ranges": [
+        [
+          31,
+          31
+        ],
+        [
+          99,
+          99
+        ],
+        [
+          105,
+          108
+        ],
+        [
+          124,
+          172
+        ],
+        [
+          232,
+          251
+        ],
+        [
+          306,
+          339
+        ],
+        [
+          344,
+          442
+        ],
+        [
+          447,
+          475
+        ]
+      ],
+      "platforms": [
+        "WindowsX86_64Gnu",
+        "MacosAarch64",
+        "LinuxX86_64Gnu"
+      ]
+    },
+    {
+      "name": "current_msvc",
+      "commit": "ddede0f98fbbef6349b5040b8390afb9f4d3a5cd",
+      "files": [
+        {
+          "path": "sources/current_msvc/community_release.rs",
+          "source_path": "crates/codegen/xai-grok-update/src/community_release.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/ddede0f98fbbef6349b5040b8390afb9f4d3a5cd/crates/codegen/xai-grok-update/src/community_release.rs",
+          "git_blob_sha1": "78231c980b68b6745359db9cc619170c5fbcf699",
+          "sha256": "bdd86bc272c81f9d930f33fd95cc4510df3c0f2972076db412c51e9ba3a7dbe5",
+          "bytes": 135785,
+          "compiled": true
+        },
+        {
+          "path": "sources/current_msvc/product.rs",
+          "source_path": "crates/codegen/xai-grok-product/src/lib.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/ddede0f98fbbef6349b5040b8390afb9f4d3a5cd/crates/codegen/xai-grok-product/src/lib.rs",
+          "git_blob_sha1": "2e93e867ef3ff903c1112af541f34f2ad2500971",
+          "sha256": "2034ede7c14d74c05263830237b14425c2efc399874e2c154f0caf5db7ced6f8",
+          "bytes": 4822,
+          "compiled": true
+        },
+        {
+          "path": "sources/current_msvc/embedded_runtime.rs",
+          "source_path": "crates/codegen/xai-grok-update/src/community_release/embedded_runtime.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/ddede0f98fbbef6349b5040b8390afb9f4d3a5cd/crates/codegen/xai-grok-update/src/community_release/embedded_runtime.rs",
+          "git_blob_sha1": "81acf557da7009dfc1856da14f73d901f87ff6d4",
+          "sha256": "33465020ee5a83683ece6e15012f16159c72b59d1dbc2fcfdb87b7a9f65510a5",
+          "bytes": 7242,
+          "compiled": true
+        },
+        {
+          "path": "sources/current_msvc/package_protocol.rs",
+          "source_path": "crates/codegen/xai-grok-update/src/community_release/package_protocol.rs",
+          "source_url": "https://github.com/JoyElliot/grok-build-Chinese/blob/ddede0f98fbbef6349b5040b8390afb9f4d3a5cd/crates/codegen/xai-grok-update/src/community_release/package_protocol.rs",
+          "git_blob_sha1": "cf843bb275223f9a129b20e24ec37df5b50041a0",
+          "sha256": "a6114ce813496ed64855e8afeb8d12ecd8bacc680254c1b1797b7f4f0b800309",
+          "bytes": 11212,
+          "compiled": true
+        }
+      ],
+      "unchanged_ranges": [
+        [
+          32,
+          32
+        ],
+        [
+          100,
+          100
+        ],
+        [
+          106,
+          109
+        ],
+        [
+          125,
+          194
+        ],
+        [
+          274,
+          293
+        ],
+        [
+          348,
+          391
+        ],
+        [
+          396,
+          532
+        ],
+        [
+          537,
+          597
+        ],
+        [
+          33,
+          36
+        ],
+        [
+          42,
+          76
+        ],
+        [
+          99,
+          99
+        ],
+        [
+          102,
+          105
+        ],
+        [
+          755,
+          1175
+        ]
+      ],
+      "platforms": [
+        "WindowsX86_64Gnu",
+        "WindowsX86_64Msvc",
+        "WindowsAarch64Msvc",
+        "MacosX86_64",
+        "MacosAarch64",
+        "LinuxX86_64Gnu",
+        "LinuxAarch64Gnu"
+      ]
+    }
+  ]
+}

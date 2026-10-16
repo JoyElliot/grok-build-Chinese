@@ -4,3 +4,5 @@
 /results/*
 !/results/.gitkeep
 /__pycache__/
+
+/runtime-isolation/

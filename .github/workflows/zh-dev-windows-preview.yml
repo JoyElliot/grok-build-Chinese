@@ -1277,7 +1277,7 @@ jobs:
     name: 真实历史 GNU 主程序直接替换为 MSVC
     if: ${{ github.repository == 'JoyElliot/grok-build-Chinese' && github.ref == 'refs/heads/test/windows-msvc-direct-replacement' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.direct_replacement_only)) }}
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       PYTHONUTF8: '1'
     permissions:
@@ -1295,6 +1295,10 @@ jobs:
         run: |
           python -B .github/scripts/tests/test_windows_direct_replacement.py
           if ($LASTEXITCODE -ne 0) { throw 'Direct replacement harness tests failed' }
+          python -B .github/scripts/tests/test_windows_update_check_observation.py
+          if ($LASTEXITCODE -ne 0) { throw 'Read-only update observation tests failed' }
+          python -B .github/scripts/tests/test_windows_legacy_update_baseline.py
+          if ($LASTEXITCODE -ne 0) { throw 'Genuine legacy updater baseline accounting tests failed' }
           python -B .github/scripts/tests/test_preview_workflow.py
           if ($LASTEXITCODE -ne 0) { throw 'Workflow dispatch gates failed' }
           python -B .github/scripts/tests/test_release_workflow.py
@@ -1317,8 +1321,29 @@ jobs:
         shell: pwsh
         run: |
           $env:GROK_DIRECT_NATIVE_EXE = Join-Path $env:RUNNER_TEMP 'direct-results/native/grok-zh-1.0.103-windows-x86_64-msvc/grok-zh.exe'
+          $env:GROK_DIRECT_NATIVE_ARCHIVE = Join-Path $env:RUNNER_TEMP 'direct-results/outer/grok-zh-1.0.103-windows-x86_64-msvc.zip'
+          $env:GROK_DIRECT_HISTORICAL_EXE = Join-Path $env:RUNNER_TEMP 'direct-results/historical/grok-zh-1.0.45-windows-x86_64-gnu/grok-zh.exe'
+          $env:GROK_DIRECT_HISTORICAL_ARCHIVE = Join-Path $env:RUNNER_TEMP 'direct-inputs/historical-gnu.zip'
           pwsh -NoProfile -File .github/scripts/historical-update-parser/Run-HistoricalParser.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Exact historical parser tests failed' }
+      - name: 验证真实 GNU 旧版联网重装同版基线
+        if: success() || failure()
+        shell: pwsh
+        run: |
+          if (!(Test-Path -LiteralPath "$env:RUNNER_TEMP/direct-results/RESULT.json")) { exit 0 }
+          $prior = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP/direct-results/RESULT.json" | ConvertFrom-Json
+          if ($prior.status -ne 'pass') { exit 0 }
+          python -B .github/scripts/windows-legacy-update-baseline.py --validated-root "$env:RUNNER_TEMP/direct-results" --archives "$env:RUNNER_TEMP/direct-inputs" --output "$env:RUNNER_TEMP/legacy-update-baseline"
+          if ($LASTEXITCODE -ne 0) { throw 'Genuine legacy network baseline failed or was unavailable; inspect its separate report' }
+      - name: 观察真实旧版与 MSVC 的只读更新发现
+        if: success() || failure()
+        shell: pwsh
+        run: |
+          if (!(Test-Path -LiteralPath "$env:RUNNER_TEMP/direct-results/RESULT.json")) { exit 0 }
+          $prior = Get-Content -Raw -LiteralPath "$env:RUNNER_TEMP/direct-results/RESULT.json" | ConvertFrom-Json
+          if ($prior.status -ne 'pass') { exit 0 }
+          python -B .github/scripts/windows-update-check-observation.py --validated-root "$env:RUNNER_TEMP/direct-results" --output "$env:RUNNER_TEMP/update-check-observation"
+          if ($LASTEXITCODE -ne 0) { throw 'Read-only observation isolation or integrity failed' }
       - name: 保留报告和命令输出，不上传程序包
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1328,8 +1353,14 @@ jobs:
             ${{ runner.temp }}/direct-inputs/provenance.json
             ${{ runner.temp }}/direct-results/RESULT.json
             ${{ runner.temp }}/direct-results/logs/*.txt
+            ${{ runner.temp }}/update-check-observation/OBSERVATION.json
+            ${{ runner.temp }}/update-check-observation/logs/*.txt
+            ${{ runner.temp }}/legacy-update-baseline/BASELINE.json
+            ${{ runner.temp }}/legacy-update-baseline/logs/*.txt
             .github/scripts/historical-update-parser/results/*.json
             .github/scripts/historical-update-parser/results/*.log
+            .github/scripts/historical-update-parser/results/cargo-test-build.jsonl
+            .github/scripts/historical-update-parser/results/historical-rust-tests.*.txt
             .github/scripts/historical-update-parser/results/resolved-Cargo.lock
           if-no-files-found: warn
           retention-days: 14

@@ -1,6 +1,6 @@
 # Exact historical Windows-update parser compatibility harness
 
-Status: PREPARED, NOT EXECUTED IN THE LOCAL ENVIRONMENT. Source provenance and native-fixture construction checks passed. Rust/Cargo are unavailable locally. Rust compilation, dependency-lock resolution, and all Rust assertions remain pending a Rust-equipped host. No production compatibility success is claimed.
+Status: The original 27-test parser/archive suite passed parent-verified Windows CI 38879857879. The newly added streamed-download/probe/activation transaction extension has NOT yet run. See TRANSACTION-COVERAGE.md for exact source coverage, seams, and remaining gaps.
 
 ## Scope and provenance
 
@@ -35,13 +35,13 @@ The isolated fixture keeps every native payload file unchanged. It changes only 
 - Human-readable `Target`: remains `x86_64-pc-windows-msvc`
 - `compatibility_transport`: explains the legacy selector and actual native payload
 
-It is prominently labeled an unpublished parser test fixture. It is not a product artifact, migration wrapper, release, or proposed installer package. No wrapper binary is introduced. No EXE is executed or installed by this harness. No artifact is uploaded by these scripts. Any surrounding workflow should keep generated fixtures out of uploaded product artifacts.
+It is prominently labeled an unpublished parser test fixture. It is not a product artifact, migration wrapper, release, or proposed installer package. No wrapper binary is introduced. The original parser-only tests do not execute EXEs. The transaction extension executes genuine historical/native --version probes and replaces only an isolated genuine-old-EXE copy, under a credential-free test environment. No artifact is uploaded by these scripts. Any surrounding workflow should keep generated fixtures out of uploaded product artifacts.
 
 The positive native test uses the full fixture, verifies its local outer SHA-256, calls the exact historical archive extraction function, and checks the isolated extracted EXE is byte-identical to the native payload. It never calls or launches the installer. Python is used only for snapshot provenance, fixture construction, and result accounting.
 
 ## Tests prepared
 
-There are 24 compatibility test functions (one is Windows-MSVC-only), plus the original product and package path tests pulled in with unchanged source.
+The original suite has 24 compatibility test functions (one is Windows-MSVC-only), plus original product/package tests. The extension adds nine Windows transaction tests and the four unchanged cancellation tests. See TRANSACTION-COVERAGE.md.
 
 Coverage includes a truthful extra runtime-target field; native-payload full archive extraction; synthetic inert archive extraction; negative protocol platform, version, schema, type, mode, manifest and entry-point names; malformed markers, UTF-8 and size limits; invalid/duplicate/missing manifest entries; malformed GitHub digest; incorrect asset name or URL; mutable/draft release, incorrect prerelease flag, duplicate/non-uploaded/zero-size assets; inner payload-hash mismatch with candidate cleanup; wrong root, extra file, and existing-destination protection.
 
@@ -49,15 +49,15 @@ A deliberate limitation test demonstrates that a syntactically valid but wrong 6
 
 ## Windows invocation
 
-Python 3.11 or newer is required for the standard-library TOML provenance checks. Set `GROK_DIRECT_NATIVE_EXE` to the extracted verified native `grok-zh.exe`, with its original package companion files in the same directory. Then run:
+Python 3.11 or newer is required for the standard-library TOML provenance checks. Set `GROK_DIRECT_NATIVE_EXE` to the extracted verified native `grok-zh.exe`, with its original package companion files in the same directory. Also provide `GROK_DIRECT_HISTORICAL_EXE`, `GROK_DIRECT_HISTORICAL_ARCHIVE`, and `GROK_DIRECT_NATIVE_ARCHIVE` as documented in TRANSACTION-COVERAGE.md. Then run:
 
 `pwsh -NoProfile -File .github/scripts/historical-update-parser/Run-HistoricalParser.ps1`
 
 Or pass `-NativeExe C:\path\to\grok-zh.exe` explicitly. The launcher changes into its own directory. Its own `rust-toolchain.toml` pins Rust 1.94.0 with a minimal, host-only profile; it does not inherit Linux cross-compilation targets from the application workspace. Only the small standalone parser crate is compiled. No full Grok rebuild, release workflow, branch operation, or dispatch occurs here.
 
-The launcher validates source provenance, generates the fixture, resolves dependencies from the historical lock seed, verifies that every resolved crate version/checksum exists in the historical lock, retains the resulting lock and Cargo metadata, then executes `cargo test --locked -- --nocapture`. Direct versions are pinned exactly: anyhow 1.0.104, flate2 1.1.5, semver 1.0.28, serde 1.0.228, serde_json 1.0.149, sha2 0.10.9, tar 0.4.46, zip 3.0.0, tempfile 3.27.0.
+The launcher validates source provenance, generates the fixture, resolves dependencies from the historical lock seed, verifies that every resolved crate version/checksum exists in the historical lock, retains the resulting lock and Cargo metadata, then builds using `cargo test --locked --no-run --message-format=json` and runs the test EXE directly under the isolated environment documented in TRANSACTION-COVERAGE.md. All direct dependency versions in Cargo.toml are pinned exactly from the historical lock, including the small async, progress, cancellation, and Windows helper dependencies used by the transaction extension.
 
-The checked-in seed contains the exact 126-record transitive dependency closure from the historical lock. Cargo may prune unused records after feature resolution. That resolution has NOT been verified locally. If Cargo resolves a version/checksum outside the historical lock, validation stops before tests. No test pass is reported unless the real native-payload test and Cargo test summaries are present and successful.
+The refreshed checked-in seed contains the exact 174-record transitive dependency closure from the historical lock for the parser and transaction helpers. Cargo may prune unused records after feature resolution. That resolution has NOT been verified locally. If Cargo resolves a version/checksum outside the historical lock, validation stops before tests. No test pass is reported unless the real native-payload test and Cargo test summaries are present and successful.
 
 Results are written under the harness's `results/` directory:
 - `source-provenance-check.json`: source checks from preparation
@@ -72,7 +72,7 @@ Generated ZIPs and test outputs are ignored by `.gitignore`. Do not publish or u
 
 A pass would establish that the pinned release-v1.0.45 parser accepts this precisely defined local GNU compatibility transport carrying unchanged native MSVC EXE bytes and verifies inner hashes. It would also show that unknown JSON fields can truthfully document actual runtime ABI without breaking this old parser. The parser does not itself understand or enforce that extension, inspect compiler provenance, or validate ABI; CI/build evidence supplies the runtime claim.
 
-A pass would NOT establish a complete live update chain, GitHub immutable-release eligibility/digest authenticity, production asset visibility, network/certificate/redirect policy, currently installed client version, Windows process termination/locking/activation, installer compatibility, rollback behavior, AV verdict, or current replacement binary self-update routing. The native replacement's updater must independently map its actual MSVC target to supported current policy. In this historical source, `current_community_platform` only accepts Windows GNU; compiling it for native Windows MSVC returns an error. The conditional Windows test makes that limitation explicit.
+A parser-only pass would NOT establish activation; the transaction extension separately exercises isolated Windows replacement and probes. Neither establishes a complete live update chain, live GitHub metadata authenticity or production asset visibility, network/certificate/redirect policy, a running old process locking its mapped EXE, installer compatibility, AV verdict, or execution of the installed native binary’s self-update command. The extension covers original update-lock contention, an explicit file-sharing model, and copy-failure rollback; those results must not be generalized to every Windows failure condition. The native replacement's updater must independently map its actual MSVC target to supported current policy. In this historical source, `current_community_platform` only accepts Windows GNU; compiling it for native Windows MSVC returns an error. The conditional Windows test makes that limitation explicit.
 
 ## v1.0.8 bridge limitation
 
@@ -80,6 +80,6 @@ The published `v1.0.8` release itself has two immutable GNU Windows assets: ZIP 
 
 That is different from what a client already running v1.0.8 requires when selecting a later modern release: `select_asset_for_platform` at lines 397-408 compares the complete uploaded asset list to `expected_release_asset_names`. Later versions require exactly six assets: Windows GNU ZIP + sidecar, macOS archive + sidecar, Linux GNU archive + sidecar. A release containing only the single GNU compatibility ZIP is rejected by that v1.0.8 selector before archive download. Adding an extra native-MSVC-named asset also changes the exact set and does not by itself solve this constraint.
 
-The older v1.0.5 clients ignore the modern `release-v` namespace and need the frozen plain `v1.0.8` bridge. The 1.0.45 parser's selected-platform-only trust policy is more permissive than the v1.0.8 exact-set rule. Therefore a 1.0.45 pass cannot be generalized to every older installed client or used to justify retiring bridge assets. The v1.0.8 source was inspected and hash-verified, not compiled or executed by this harness. No immutable release assets were modified.
+The older v1.0.5 clients ignore the modern `release-v` namespace and need the frozen plain `v1.0.8` bridge. The 1.0.45 parser's selected-platform-only trust policy is more permissive than the v1.0.8 exact-set rule. Therefore a 1.0.45 pass cannot be generalized to every older installed client or used to justify retiring bridge assets. The integrated selection matrix includes exact v1.0.8 selection source with synthetic metadata; its Windows compilation and execution are pending this extension run. It does not run a genuine v1.0.8 executable or prove live bridge availability. No immutable release assets were modified.
 
 Source: https://github.com/JoyElliot/grok-build-Chinese/blob/dfcf92b37854f5b2c0dacc66a9e4195f3881dcae/crates/codegen/xai-grok-update/src/community_release.rs#L397-L408

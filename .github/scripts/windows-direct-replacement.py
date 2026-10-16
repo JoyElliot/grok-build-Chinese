@@ -237,14 +237,18 @@ def isolated_environment(root):
     return env
 
 
-def run_command(command, cwd, env, label, output, expected_version=None):
+class UnconfirmedProcessTermination(RuntimeError):
+    """A bounded cleanup ended without proving the product process tree stopped."""
+
+
+def run_command(command, cwd, env, label, output, expected_version=None, timeout_seconds=35, require_stdout=True):
     started = time.monotonic()
     stdout_path, stderr_path = output / (label + '.stdout.txt'), output / (label + '.stderr.txt')
     # Direct file handles avoid pipe-reader threads and unbounded descendant pipe drains.
     with stdout_path.open('wb') as stdout_file, stderr_path.open('wb') as stderr_file:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout_file, stderr=stderr_file)
         try:
-            process.wait(timeout=35)
+            process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
             taskkill = str(Path(env['SystemRoot']) / 'System32/taskkill.exe')
             cleanup = {'tree_termination': 'attempted', 'returncode': None, 'error': None}
@@ -265,16 +269,26 @@ def run_command(command, cwd, env, label, output, expected_version=None):
                 except subprocess.TimeoutExpired:
                     cleanup['root_wait'] = 'timed_out'
                 cleanup['root_termination_confirmed'] = process.poll() is not None
-                (output / (label + '.cleanup.txt')).write_text(json.dumps(cleanup, indent=2) + '\n', encoding='utf-8')
-            raise ValueError(f'{label} exceeded 35 seconds (30 seconds plus modest 5-second margin)') from exc
+                cleanup['tree_termination_confirmed'] = cleanup['returncode'] == 0 and cleanup['error'] is None
+                cleanup_log_error = None
+                try:
+                    (output / (label + '.cleanup.txt')).write_text(json.dumps(cleanup, indent=2) + '\n', encoding='utf-8')
+                except OSError as error:
+                    cleanup_log_error = error
+            if not cleanup['root_termination_confirmed'] or not cleanup['tree_termination_confirmed']:
+                raise UnconfirmedProcessTermination(f'{label}: process tree termination could not be confirmed') from (cleanup_log_error or exc)
+            if cleanup_log_error is not None:
+                raise cleanup_log_error
+            raise ValueError(f'{label} exceeded {timeout_seconds} seconds') from exc
     elapsed = round(time.monotonic() - started, 3)
     stdout, stderr = stdout_path.read_bytes(), stderr_path.read_bytes()
     require(process.returncode == 0, f'{label} failed, exit={process.returncode}')
-    require(bool(stdout.strip()), f'{label} has empty stdout')
+    if require_stdout:
+        require(bool(stdout.strip()), f'{label} has empty stdout')
     if expected_version:
         text = stdout.decode('utf-8', errors='replace')
         require(bool(re.search(r'^grok-zh ' + re.escape(expected_version) + r'\s*\(', text, re.MULTILINE)), f'{label}: unexpected product version: {text[:200]}')
-    return {'label': label, 'arguments': command[1:], 'returncode': process.returncode, 'seconds': elapsed, 'timeout_seconds': 35, 'stdout_sha256': hashlib.sha256(stdout).hexdigest(), 'stderr_sha256': hashlib.sha256(stderr).hexdigest()}
+    return {'label': label, 'arguments': command[1:], 'returncode': process.returncode, 'seconds': elapsed, 'timeout_seconds': timeout_seconds, 'stdout_sha256': hashlib.sha256(stdout).hexdigest(), 'stderr_sha256': hashlib.sha256(stderr).hexdigest()}
 
 
 def validate(inputs, archives, output, static_only):
