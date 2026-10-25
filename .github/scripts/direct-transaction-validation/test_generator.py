@@ -56,6 +56,12 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn(b'windows_rename_no_replace(dest, &aside)', raw)
         self.assertNotIn(b'windows_activation_test_checkpoint', raw)
         generator.read('crates/codegen/xai-grok-update/src/auto_update.rs', True)
+    def test_regression_changes_invalidate_generated_build(self):
+        build=(BASE/'build.rs').read_text()
+        self.assertIn('cargo:rerun-if-changed=regressions', build)
+    def test_pinned_regression_sources_disable_checkout_line_conversion(self):
+        attributes=(generator.ROOT/'.gitattributes').read_text()
+        self.assertIn('.github/scripts/direct-transaction-validation/regressions/** -text', attributes.splitlines())
     def test_fault_injection_is_bounded_and_covers_live_image(self):
         source=(BASE/'atomic_activation_tests.rs').read_text()
         self.assertIn('child.0.kill().unwrap()', source)

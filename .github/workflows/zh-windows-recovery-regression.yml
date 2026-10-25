@@ -37,11 +37,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Check installer recovery with PowerShell 5.1
-        shell: pwsh
+        shell: cmd
         run: |
-          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -OutputFormat Text -File packaging/windows/tests/Test-Install-GrokZh.ps1 *> installer-ps51.log
-          if ($LASTEXITCODE -ne 0) { Get-Content installer-ps51.log; throw 'PowerShell 5.1 installer recovery regression failed.' }
-          Get-Content installer-ps51.log
+          "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -OutputFormat Text -File packaging/windows/tests/Test-Install-GrokZh.ps1 > installer-ps51.log 2>&1
+          set "TEST_EXIT=%ERRORLEVEL%"
+          type installer-ps51.log
+          exit /b %TEST_EXIT%
       - name: Check installer recovery with PowerShell 7
         shell: pwsh
         run: |

@@ -127,6 +127,110 @@ function Remove-PreviousCommunityInstall {
     } catch { return $Backup }
 }
 
+function Open-GrokInstallerLock {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    # A stable sibling lock survives both directory renames. Open the lock
+    # itself (not a reparse target), pin its parent, and never unlink the file:
+    # deleting an unlocked name could split contenders across different files.
+    if (!('GrokZh.InstallDirectoryLock' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace GrokZh {
+    public sealed class InstallDirectoryLock : IDisposable {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileInformation {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME AccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME WriteTime;
+            public uint VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string name, uint access, uint share,
+            IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation info);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint size, uint flags);
+        private SafeFileHandle parent;
+        private SafeFileHandle file;
+        private InstallDirectoryLock(SafeFileHandle parentHandle, SafeFileHandle fileHandle) {
+            parent = parentHandle; file = fileHandle;
+        }
+        private static string FinalPath(SafeFileHandle handle) {
+            StringBuilder path = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandle(handle, path, (uint)path.Capacity, 0);
+            if (length == 0 || length >= path.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error());
+            string result = path.ToString();
+            if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) result = @"\\" + result.Substring(8);
+            else if (result.StartsWith(@"\\?\", StringComparison.Ordinal)) result = result.Substring(4);
+            return result.TrimEnd('\\', '/');
+        }
+        private static void CheckHandle(SafeFileHandle handle, bool directory, string expected) {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            FileInformation info;
+            if (!GetFileInformationByHandle(handle, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if ((info.Attributes & 0x400) != 0 || ((info.Attributes & 0x10) != 0) != directory || (!directory && info.Links != 1))
+                throw new IOException("Installer lock path must not be a reparse point, hard link or unexpected file type.");
+            if (!String.Equals(FinalPath(handle), expected, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Installer lock requires a canonical path with no redirected or short-name components: " + expected);
+        }
+        public static InstallDirectoryLock Acquire(string installDirectory) {
+            string target = Path.GetFullPath(installDirectory).TrimEnd('\\', '/');
+            string leaf = Path.GetFileName(target);
+            if (String.IsNullOrWhiteSpace(leaf) || leaf.EndsWith(".", StringComparison.Ordinal) || leaf.EndsWith(" ", StringComparison.Ordinal) ||
+                leaf.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                System.Text.RegularExpressions.Regex.IsMatch(leaf, @"^(CON|PRN|AUX|NUL|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])(?:\..*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                throw new IOException("Installer target must use an unambiguous ordinary directory name.");
+            string parentPath = Path.GetDirectoryName(target);
+            SafeFileHandle parentHandle = null, fileHandle = null;
+            try {
+                // FILE_READ_ATTRIBUTES; share read/write but not delete; open
+                // the directory itself with BACKUP_SEMANTICS|OPEN_REPARSE_POINT.
+                parentHandle = CreateFile(parentPath, 0x80, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+                CheckHandle(parentHandle, true, parentPath.TrimEnd('\\', '/'));
+                string lockPath = Path.Combine(parentPath, Path.GetFileName(target) + ".install.lock");
+                // OPEN_ALWAYS + no sharing is an immediate exclusive lock.
+                fileHandle = CreateFile(lockPath, 0xC0000000, 0, IntPtr.Zero, 4, 0x00200080, IntPtr.Zero);
+                CheckHandle(fileHandle, false, lockPath);
+                // Existing target aliases must not manufacture another lock
+                // name for the same installation. No target handle survives
+                // this validation, so the subsequent rename stays possible.
+                if (Directory.Exists(target)) {
+                    using (SafeFileHandle targetHandle = CreateFile(target, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+                        CheckHandle(targetHandle, true, target);
+                    }
+                }
+                InstallDirectoryLock result = new InstallDirectoryLock(parentHandle, fileHandle);
+                parentHandle = null; fileHandle = null;
+                return result;
+            } finally {
+                if (fileHandle != null) fileHandle.Dispose();
+                if (parentHandle != null) parentHandle.Dispose();
+            }
+        }
+        public void Dispose() {
+            if (file != null) { file.Dispose(); file = null; }
+            if (parent != null) { parent.Dispose(); parent = null; }
+        }
+    }
+}
+'@
+    }
+    Assert-NoReparsePointInPath -Path $InstallDir -Label '安装锁目标'
+    try {
+        return [GrokZh.InstallDirectoryLock]::Acquire($InstallDir)
+    } catch {
+        throw "无法独占安装目录（可能有另一安装器正在运行，或路径不安全）：$InstallDir。未创建暂存目录或移动现有安装。$($_.Exception.Message)"
+    }
+}
+
 function Assert-NoRunningCommunityInstall {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
 
@@ -1523,6 +1627,34 @@ if (!$PSCmdlet.ShouldProcess($InstallDir, $operation)) {
 
 $parent = Split-Path -Parent $InstallDir
 New-Item -ItemType Directory -Path $parent -Force | Out-Null
+$installerLock = $null
+try {
+$installerLock = Open-GrokInstallerLock -InstallDir $InstallDir
+# Planning above is read-only so -WhatIf never creates a lock. Revalidate
+# mutable ownership, version and command choices after obtaining exclusivity:
+# another installer may have finished between planning and lock acquisition.
+Assert-NoReparsePointInPath -Path $InstallDir -Label '安装锁目标'
+if ((Test-Path -LiteralPath $InstallDir) -and
+    !(Test-Path -LiteralPath $installMarker -PathType Leaf) -and !$Force.IsPresent) {
+    throw "InstallDir 已存在，但不归本安装器管理：$InstallDir。"
+}
+if (Test-Path -LiteralPath $installMarker -PathType Leaf) {
+    $lockedMarker = Get-Content -LiteralPath $installMarker -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($lockedMarker.product -cne 'grok-build-zh' -or !(Test-SamePath $lockedMarker.install_dir $InstallDir)) {
+        throw '现有安装的归属记录与目标目录不一致。'
+    }
+    if ($packageVersion) {
+        $lockedVersion = Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')
+        if ((Compare-GrokInstallerVersion $lockedVersion $packageVersion) -gt 0 -and !$AllowDowngrade) {
+            throw "当前版本 $lockedVersion 高于安装包 $packageVersion；请明确确认 -AllowDowngrade。"
+        }
+    }
+    if (!$PSBoundParameters.ContainsKey('OverrideOfficialCommands') -and !$InteractiveCommandSetup.IsPresent) {
+        $provideOfficialNames = $requestedUninstallOfficial -or
+            ($null -ne $lockedMarker.PSObject.Properties['commands'] -and
+             @($lockedMarker.commands | Where-Object { $_ -in @('grok', 'agent') }).Count -gt 0)
+    }
+}
 $token = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $stage = "$InstallDir.stage.$PID-$token"
 $stageCreated = $false
@@ -1772,4 +1904,8 @@ if ($provideOfficialNames) {
     Write-Host '验证命令：grok --version; agent --help'
 } else {
     Write-Host '验证命令：grok-zh --version; agent-zh --help'
+}
+
+} finally {
+    if ($null -ne $installerLock) { $installerLock.Dispose() }
 }

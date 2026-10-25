@@ -60,7 +60,7 @@ if (!$Worker) {
         'stop-before-backup', 'stop-after-backup', 'stop-before-activate', 'stop-after-activate',
         'stop-first-before-activate', 'stop-first-after-activate',
         'throw-after-backup', 'throw-after-activate',
-        'stop-restore-failure', 'throw-restore-failure', 'blocked-running-process', 'success'
+        'stop-restore-failure', 'throw-restore-failure', 'blocked-running-process', 'stop-concurrent-installer', 'success'
     )
     foreach ($scenario in $cases) {
         $root = Join-Path ([IO.Path]::GetTempPath()) ('grok installer cancellation ' + [guid]::NewGuid().ToString('N'))
@@ -68,15 +68,18 @@ if (!$Worker) {
         try {
             New-Item -ItemType Directory -Path $root | Out-Null
             $quoted = @($PSCommandPath, $InstallerPath, $scenario, $root) | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }
-            $command = '& {0} -InstallerPath {1} -Worker -Case {2} -TestRoot {3}' -f $quoted
+            $invoke = '& {0} -InstallerPath {1} -Worker -Case {2} -TestRoot {3}' -f $quoted
+            $command = '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); try { ' + $invoke + ' } catch { [Console]::Error.WriteLine($_.ToString() + [Environment]::NewLine + $_.ScriptStackTrace); exit 1 }'
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
             $start = [Diagnostics.ProcessStartInfo]::new()
             $start.FileName = $engine
-            $start.Arguments = "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+            $start.Arguments = "-NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand $encoded"
             $start.UseShellExecute = $false
             $start.CreateNoWindow = $true
             $start.RedirectStandardOutput = $true
             $start.RedirectStandardError = $true
+            $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+            $start.StandardErrorEncoding = [Text.Encoding]::UTF8
             $process = [Diagnostics.Process]::Start($start)
             $stdout = $process.StandardOutput.ReadToEndAsync()
             $stderr = $process.StandardError.ReadToEndAsync()
@@ -129,6 +132,7 @@ $state = [hashtable]::Synchronized(@{
     Hit = [Threading.ManualResetEventSlim]::new($false)
     RestoreAttempted = $false
     BackupAttempted = $false
+    Trace = [Collections.Generic.List[string]]::new()
 })
 $runner = [PowerShell]::Create()
 $invocation = $null
@@ -139,7 +143,9 @@ try {
         param($Installer, $Package, $Install, $SharedHome, $State)
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
+        $State.Trace.Add('Runspace entered; case=' + $State.Case)
         function Wait-CancellationBoundary {
+            $State.Trace.Add('Cancellation boundary entered')
             $State.Hit.Set()
             # BeginStop interrupts a real running cmdlet. Throwing a synthetic
             # PipelineStoppedException would incorrectly exercise catch.
@@ -156,6 +162,7 @@ try {
         }
         function Move-Item {
             param([string]$LiteralPath, [string]$Destination)
+            $State.Trace.Add('Move-Item: ' + $LiteralPath + ' -> ' + $Destination)
             $backup = $LiteralPath -eq $State.Install -and $Destination.StartsWith($State.Install + '.previous.', [StringComparison]::OrdinalIgnoreCase)
             $activate = $Destination -eq $State.Install -and $LiteralPath.StartsWith($State.Install + '.stage.', [StringComparison]::OrdinalIgnoreCase)
             $restore = $Destination -eq $State.Install -and $LiteralPath.StartsWith($State.Install + '.previous.', [StringComparison]::OrdinalIgnoreCase)
@@ -164,7 +171,7 @@ try {
                 $State.RestoreAttempted = $true
                 if ($State.Case -in @('stop-restore-failure', 'throw-restore-failure')) { throw 'Injected backup restore failure.' }
             }
-            if ($backup -and $State.Case -eq 'stop-before-backup') { Wait-CancellationBoundary }
+            if ($backup -and $State.Case -in @('stop-before-backup', 'stop-concurrent-installer')) { Wait-CancellationBoundary }
             if ($activate -and $State.Case -in @('stop-before-activate', 'stop-first-before-activate')) { Wait-CancellationBoundary }
             Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
             if ($backup -and $State.Case -in @('stop-after-backup', 'stop-restore-failure')) { Wait-CancellationBoundary }
@@ -172,12 +179,32 @@ try {
             if ($activate -and $State.Case -in @('stop-after-activate', 'stop-first-after-activate')) { Wait-CancellationBoundary }
             if ($activate -and $State.Case -eq 'throw-after-activate') { throw 'Injected failure after activating new installation.' }
         }
-        & $Installer -PackageDir $Package -InstallDir $Install -GrokHome $SharedHome -NoPathUpdate -Confirm:$false
+        try {
+            & $Installer -PackageDir $Package -InstallDir $Install -GrokHome $SharedHome -NoPathUpdate -Confirm:$false
+        } catch {
+            $State.Trace.Add($_.ToString() + [Environment]::NewLine + $_.ScriptStackTrace)
+            throw
+        }
     }.ToString()).AddArgument($InstallerPath).AddArgument($package).AddArgument($install).AddArgument($sharedHome).AddArgument($state)
     $invocation = $runner.BeginInvoke()
     $isStop = $Case.StartsWith('stop-', [StringComparison]::Ordinal)
     if ($isStop) {
-        Assert-CancellationTest ($state.Hit.Wait(15000)) "Did not reach cancellation boundary: $Case. $($runner.Streams.Error | Out-String)"
+        Assert-CancellationTest ($state.Hit.Wait(15000)) "Did not reach cancellation boundary: $Case. State=$($runner.InvocationStateInfo.State). Trace=$($state.Trace -join [Environment]::NewLine). Errors=$($runner.Streams.Error | Out-String)"
+        if ($Case -eq 'stop-concurrent-installer') {
+            $activeBefore = Get-TreeSnapshot $install
+            $heldStage = @(Get-ChildItem -LiteralPath $TestRoot -Directory -Filter 'active.stage.*')
+            Assert-CancellationTest ($heldStage.Count -eq 1) 'First installer did not own exactly one stage.'
+            $stageBefore = Get-TreeSnapshot $heldStage[0].FullName
+            $competingError = $null
+            try {
+                & $InstallerPath -PackageDir $package -InstallDir $install.ToUpperInvariant() -GrokHome $sharedHome -NoPathUpdate -Confirm:$false
+            } catch { $competingError = $_.Exception.Message }
+            Assert-CancellationTest ($null -ne $competingError -and $competingError.Contains('无法独占安装目录')) 'Competing installer did not fail immediately on the stable lock.'
+            Assert-CancellationTest ((Get-TreeSnapshot $install) -ceq $activeBefore) 'Competing installer changed the active directory.'
+            Assert-CancellationTest ((Get-TreeSnapshot $heldStage[0].FullName) -ceq $stageBefore) 'Competing installer changed the first stage.'
+            Assert-CancellationTest (@(Get-ChildItem -LiteralPath $TestRoot -Directory -Filter 'active.stage.*').Count -eq 1) 'Competing installer created another stage.'
+            Assert-CancellationTest (@(Get-ChildItem -LiteralPath $TestRoot -Directory -Filter 'active.previous.*').Count -eq 0) 'Competing installer moved the active directory.'
+        }
         $stop = $runner.BeginStop($null, $null)
         Assert-CancellationTest ($stop.AsyncWaitHandle.WaitOne(10000)) "Pipeline did not stop in time: $Case"
         $runner.EndStop($stop)
@@ -219,6 +246,12 @@ try {
         }
     }
     Assert-CancellationTest ((Get-TreeSnapshot $sharedHome) -ceq $homeBefore) 'Installer modified shared user data.'
+    if ($Case -eq 'stop-concurrent-installer') {
+        & $InstallerPath -PackageDir $package -InstallDir $install -GrokHome $sharedHome -NoPathUpdate -Confirm:$false
+        Assert-CancellationTest ((Get-FileHash -LiteralPath (Join-Path $install 'grok-zh.exe') -Algorithm SHA256).Hash -ceq $newHash) 'Retry after pipeline stop could not acquire and commit under the same lock.'
+        Assert-CancellationTest (Test-Path -LiteralPath ($install + '.install.lock') -PathType Leaf) 'Stable lock file was deleted after release.'
+    }
+
 } finally {
     # The parent also enforces a hard process deadline if a regression hangs
     # Stop/Dispose. Do not issue another stop during the recovery being tested.

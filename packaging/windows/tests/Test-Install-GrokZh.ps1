@@ -66,7 +66,7 @@ function Invoke-InteractiveInstaller {
         'function Get-AuthenticodeSignature {' + ${function:Get-AuthenticodeSignature}.ToString() + "}`n" +
         ('& {0} -PackageDir {1} -InstallDir {2} -GrokHome {3} -NoPathUpdate -InteractiveCommandSetup -ScriptedCommandSetupAnswers {4} -ShowProgress' -f $arguments)
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
-    $startInfo.Arguments = "-NoLogo -NoProfile -EncodedCommand $encoded"
+    $startInfo.Arguments = "-NoLogo -NoProfile -OutputFormat Text -EncodedCommand $encoded"
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardInput = $true
@@ -667,6 +667,7 @@ $global:LASTEXITCODE = 0
         Assert-True ($nonAsciiBytes.Count -eq 0) "CMD 启动器内容必须保持 ASCII，避免旧版控制台乱码：$launcher"
     }
 
+    & (Join-Path $PSScriptRoot 'Test-Install-GrokZhLock.ps1')
     & (Join-Path $PSScriptRoot 'Test-Install-GrokZhCancellation.ps1')
     & (Join-Path $PSScriptRoot 'Test-Install-GrokZhRunningProcesses.ps1')
     Write-Host 'Windows 安装器测试通过。'

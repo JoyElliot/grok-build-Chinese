@@ -4,6 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=prepare.py");
     println!("cargo:rerun-if-changed=historical");
     println!("cargo:rerun-if-changed=historical-pins.json");
+    println!("cargo:rerun-if-changed=regressions");
     println!("cargo:rerun-if-changed=../../../crates/codegen/xai-grok-update/src");
     println!("cargo:rerun-if-changed=../../../crates/codegen/xai-grok-product/src/lib.rs");
     println!("cargo:rerun-if-changed=../../../crates/codegen/xai-tty-utils/src/lib.rs");
