@@ -3129,7 +3129,10 @@ fn windows_wide_path(path: &std::path::Path) -> io::Result<Vec<u16>> {
         }
     };
     if value.contains(&0) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains NUL",
+        ));
     }
     value.push(0);
     Ok(value)
@@ -3348,11 +3351,15 @@ fn windows_activation_test_checkpoint(phase: &str, dest: &std::path::Path) {
         std::env::var_os("GROK_TEST_ACTIVATION_MARKER").expect("checkpoint marker"),
     );
     let mut file = std::fs::File::create(&marker).expect("create checkpoint marker");
-    file.write_all(phase.as_bytes()).expect("write checkpoint marker");
+    file.write_all(phase.as_bytes())
+        .expect("write checkpoint marker");
     file.sync_all().expect("sync checkpoint marker");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !marker.with_extension("continue").exists() {
-        assert!(std::time::Instant::now() < deadline, "checkpoint timed out: {phase}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "checkpoint timed out: {phase}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }

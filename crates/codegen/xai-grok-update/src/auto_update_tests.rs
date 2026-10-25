@@ -3096,9 +3096,15 @@ async fn test_windows_atomic_replace_failure_keeps_public_entry_and_stage() {
     std::fs::write(&stage, b"replacement").unwrap();
     // The stage exists, so activation reaches backup creation. This exclusive
     // handle prevents opening it with DELETE for the single atomic rename.
-    let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&stage).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&stage)
+        .unwrap();
     let _lock = acquire_windows_update_lock(&dest).unwrap();
-    let error = windows_activate_staged_exe(&stage, &dest, &old).await.unwrap_err();
+    let error = windows_activate_staged_exe(&stage, &dest, &old)
+        .await
+        .unwrap_err();
     assert!(format!("{error:#}").contains("atomic executable replacement failed"));
     assert_eq!(std::fs::read(&dest).unwrap(), b"original");
     assert!(!old.exists(), "failure cleans only the newly created hard link");
@@ -3113,7 +3119,12 @@ fn test_windows_atomic_replace_rejects_nul_destination_without_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let stage = dir.path().join("stage.exe");
     std::fs::write(&stage, b"replacement").unwrap();
-    let invalid = dir.path().join(std::ffi::OsString::from_wide(&[b'x' as u16, 0, b'y' as u16]));
-    assert_eq!(windows_atomic_replace(&stage, &invalid).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    let invalid = dir
+        .path()
+        .join(std::ffi::OsString::from_wide(&[b'x' as u16, 0, b'y' as u16]));
+    assert_eq!(
+        windows_atomic_replace(&stage, &invalid).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
     assert_eq!(std::fs::read(&stage).unwrap(), b"replacement");
 }

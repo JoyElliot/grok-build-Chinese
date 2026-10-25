@@ -69,7 +69,7 @@ if (!$Worker) {
             New-Item -ItemType Directory -Path $root | Out-Null
             $quoted = @($PSCommandPath, $InstallerPath, $scenario, $root) | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }
             $invoke = '& {0} -InstallerPath {1} -Worker -Case {2} -TestRoot {3}' -f $quoted
-            $command = '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); try { ' + $invoke + ' } catch { [Console]::Error.WriteLine($_.ToString() + [Environment]::NewLine + $_.ScriptStackTrace); exit 1 }'
+            $command = '$ProgressPreference = ''SilentlyContinue''; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); try { ' + $invoke + ' } catch { [Console]::Error.WriteLine($_.ToString() + [Environment]::NewLine + $_.ScriptStackTrace); exit 1 }'
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
             $start = [Diagnostics.ProcessStartInfo]::new()
             $start.FileName = $engine
@@ -114,7 +114,7 @@ $homeBefore = Get-TreeSnapshot $sharedHome
 $isFresh = $Case.StartsWith('stop-first-', [StringComparison]::Ordinal)
 $oldSnapshot = $null
 if (!$isFresh) {
-    & $InstallerPath -PackageDir $package -InstallDir $install -GrokHome $sharedHome -NoPathUpdate -Confirm:$false
+    & $InstallerPath -PackageDir $package -InstallDir $install -GrokHome $sharedHome -NoPathUpdate -Confirm:$false 6>$null
     # Include historical recovery data, not only the main EXE, in the exact
     # byte-for-byte rollback assertion.
     $officialBackup = Join-Path $install 'official-backup'
@@ -143,6 +143,7 @@ try {
         param($Installer, $Package, $Install, $SharedHome, $State)
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
+        $ProgressPreference = 'SilentlyContinue'
         $State.Trace.Add('Runspace entered; case=' + $State.Case)
         function Wait-CancellationBoundary {
             $State.Trace.Add('Cancellation boundary entered')
@@ -166,6 +167,7 @@ try {
             $backup = $LiteralPath -eq $State.Install -and $Destination.StartsWith($State.Install + '.previous.', [StringComparison]::OrdinalIgnoreCase)
             $activate = $Destination -eq $State.Install -and $LiteralPath.StartsWith($State.Install + '.stage.', [StringComparison]::OrdinalIgnoreCase)
             $restore = $Destination -eq $State.Install -and $LiteralPath.StartsWith($State.Install + '.previous.', [StringComparison]::OrdinalIgnoreCase)
+            $State.Trace.Add('Expected install=' + $State.Install + '; backup=' + $backup + '; activate=' + $activate + '; restore=' + $restore)
             if ($backup) { $State.BackupAttempted = $true }
             if ($restore) {
                 $State.RestoreAttempted = $true
@@ -189,7 +191,12 @@ try {
     $invocation = $runner.BeginInvoke()
     $isStop = $Case.StartsWith('stop-', [StringComparison]::Ordinal)
     if ($isStop) {
-        Assert-CancellationTest ($state.Hit.Wait(15000)) "Did not reach cancellation boundary: $Case. State=$($runner.InvocationStateInfo.State). Trace=$($state.Trace -join [Environment]::NewLine). Errors=$($runner.Streams.Error | Out-String)"
+        if (!$state.Hit.Wait(15000)) {
+            # PSDataCollection enumeration blocks while the producer is live.
+            # Snapshot only on failure; never delay BeginStop to format logs.
+            $earlyErrors = $runner.Streams.Error.ReadAll() | Out-String
+            throw "Did not reach cancellation boundary: $Case. State=$($runner.InvocationStateInfo.State). Trace=$($state.Trace -join [Environment]::NewLine). Errors=$earlyErrors"
+        }
         if ($Case -eq 'stop-concurrent-installer') {
             $activeBefore = Get-TreeSnapshot $install
             $heldStage = @(Get-ChildItem -LiteralPath $TestRoot -Directory -Filter 'active.stage.*')
@@ -197,7 +204,7 @@ try {
             $stageBefore = Get-TreeSnapshot $heldStage[0].FullName
             $competingError = $null
             try {
-                & $InstallerPath -PackageDir $package -InstallDir $install.ToUpperInvariant() -GrokHome $sharedHome -NoPathUpdate -Confirm:$false
+                & $InstallerPath -PackageDir $package -InstallDir $install.ToUpperInvariant() -GrokHome $sharedHome -NoPathUpdate -Confirm:$false 6>$null
             } catch { $competingError = $_.Exception.Message }
             Assert-CancellationTest ($null -ne $competingError -and $competingError.Contains('无法独占安装目录')) 'Competing installer did not fail immediately on the stable lock.'
             Assert-CancellationTest ((Get-TreeSnapshot $install) -ceq $activeBefore) 'Competing installer changed the active directory.'
@@ -211,15 +218,18 @@ try {
     }
     Assert-CancellationTest ($invocation.AsyncWaitHandle.WaitOne(15000)) "Pipeline did not finish in time: $Case"
     $endedWithError = $false
-    try { $null = $runner.EndInvoke($invocation) } catch { $endedWithError = $true }
+    $endFailure = ''
+    try { $null = $runner.EndInvoke($invocation) } catch { $endedWithError = $true; $endFailure = $_.Exception.ToString() }
+    $errorText = $runner.Streams.Error.ReadAll() | Out-String
     $actualState = $runner.InvocationStateInfo.State.ToString()
     $expectedState = if ($isStop) { 'Stopped' } elseif ($Case -eq 'success') { 'Completed' } else { 'Failed' }
-    Assert-CancellationTest ($actualState -ceq $expectedState) "Expected real $expectedState pipeline, got $actualState. $($runner.Streams.Error | Out-String)"
+    Assert-CancellationTest ($actualState -ceq $expectedState) "Expected real $expectedState pipeline, got $actualState. Reason=$($runner.InvocationStateInfo.Reason). EndInvoke=$endFailure. Trace=$($state.Trace -join [Environment]::NewLine). Errors=$errorText"
     Assert-CancellationTest ($endedWithError -eq ($Case -ne 'success')) "Unexpected EndInvoke outcome: $Case"
 
     if ($Case -eq 'blocked-running-process') {
         Assert-CancellationTest (!$state.BackupAttempted) 'Running-process refusal happened after retiring the active installation.'
-        Assert-CancellationTest (($runner.Streams.Error | Out-String).Contains('PID 1234')) 'Running-process refusal omitted the blocking PID.'
+        $rejectionText = $errorText + $endFailure + [string]$runner.InvocationStateInfo.Reason
+        Assert-CancellationTest ($rejectionText.Contains('PID 1234')) 'Running-process refusal omitted the blocking PID.'
     }
 
     $stages = @(Get-ChildItem -LiteralPath $TestRoot -Directory -Filter 'active.stage.*')
@@ -247,7 +257,7 @@ try {
     }
     Assert-CancellationTest ((Get-TreeSnapshot $sharedHome) -ceq $homeBefore) 'Installer modified shared user data.'
     if ($Case -eq 'stop-concurrent-installer') {
-        & $InstallerPath -PackageDir $package -InstallDir $install -GrokHome $sharedHome -NoPathUpdate -Confirm:$false
+        & $InstallerPath -PackageDir $package -InstallDir $install -GrokHome $sharedHome -NoPathUpdate -Confirm:$false 6>$null
         Assert-CancellationTest ((Get-FileHash -LiteralPath (Join-Path $install 'grok-zh.exe') -Algorithm SHA256).Hash -ceq $newHash) 'Retry after pipeline stop could not acquire and commit under the same lock.'
         Assert-CancellationTest (Test-Path -LiteralPath ($install + '.install.lock') -PathType Leaf) 'Stable lock file was deleted after release.'
     }

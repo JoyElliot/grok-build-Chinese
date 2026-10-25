@@ -32,27 +32,30 @@ jobs:
     if: github.ref == 'refs/heads/test/windows-recovery-risks'
     runs-on: windows-2022
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: ps51
+            executable: '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe'
+          - engine: ps7
+            executable: 'C:\Program Files\PowerShell\7\pwsh.exe'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Check installer recovery with PowerShell 5.1
+      - name: Check installer recovery without nested PowerShell stream conversion
         shell: cmd
         run: |
-          "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -OutputFormat Text -File packaging/windows/tests/Test-Install-GrokZh.ps1 > installer-ps51.log 2>&1
+          "${{ matrix.executable }}" -NoLogo -NoProfile -OutputFormat Text -File packaging/windows/tests/Test-Install-GrokZh.ps1 > installer-${{ matrix.engine }}.log 2>&1
           set "TEST_EXIT=%ERRORLEVEL%"
-          type installer-ps51.log
+          type installer-${{ matrix.engine }}.log
           exit /b %TEST_EXIT%
-      - name: Check installer recovery with PowerShell 7
-        shell: pwsh
-        run: |
-          & ./packaging/windows/tests/Test-Install-GrokZh.ps1 *> installer-ps7.log
-          Get-Content installer-ps7.log
       - name: Upload installer recovery evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: windows-installer-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          name: windows-installer-recovery-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: installer-*.log
           if-no-files-found: error
           retention-days: 14
@@ -93,8 +96,13 @@ jobs:
       - name: Install pinned minimal Rust toolchain
         shell: pwsh
         run: |
-          rustup toolchain install 1.94.0 --profile minimal --target x86_64-pc-windows-msvc
+          rustup toolchain install 1.94.0 --profile minimal --component rustfmt --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+      - name: Check production Rust formatting
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Production formatting regression.' }
       - name: Compile only the independent transaction tests
         shell: pwsh
         run: |
