@@ -28,6 +28,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Verify actual runner entrypoint resolution on PowerShell 5.1 and 7
+        shell: pwsh
+        run: |
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File .github/scripts/transaction-acceptance/Test-RunnerEntrypoint.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 entrypoint regression failed.' }
+          & .github/scripts/transaction-acceptance/Test-RunnerEntrypoint.ps1
       - name: Download pinned original GNU and successful MSVC CI inputs
         shell: pwsh
         env:

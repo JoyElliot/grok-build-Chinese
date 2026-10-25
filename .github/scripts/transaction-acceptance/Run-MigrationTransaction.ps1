@@ -1,10 +1,29 @@
 ﻿[CmdletBinding()]
-param([string]$BundleDirectory = $PSScriptRoot)
+param([string]$BundleDirectory)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$stage = 'resolve bundle directory'
+trap {
+    Write-Host ("验收入口失败；阶段={0}；行={1}；错误={2}" -f $stage, $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message)
+    Write-Host $_.InvocationInfo.PositionMessage
+    Write-Host $_.ScriptStackTrace
+    break
+}
+function Resolve-BundleDirectory([string]$Requested, [string]$ScriptPath, [string]$FallbackScriptPath) {
+    if ([string]::IsNullOrWhiteSpace($Requested)) {
+        if ([string]::IsNullOrWhiteSpace($ScriptPath)) { $ScriptPath = $FallbackScriptPath }
+        if ([string]::IsNullOrWhiteSpace($ScriptPath)) { throw '无法确定脚本位置；请显式传入 -BundleDirectory。' }
+        $Requested = [IO.Path]::GetDirectoryName($ScriptPath)
+    }
+    if ([string]::IsNullOrWhiteSpace($Requested)) { throw '验收包目录不能为空。' }
+    return (Resolve-Path -LiteralPath $Requested -ErrorAction Stop).Path
+}
 if ($env:OS -ne 'Windows_NT') { throw '此验收必须在 Windows 原生运行。' }
-$bundle = (Resolve-Path -LiteralPath $BundleDirectory).Path
-$manifest = Get-Content -LiteralPath (Join-Path $bundle 'SHA256SUMS.json') -Raw | ConvertFrom-Json
+$bundle = Resolve-BundleDirectory $BundleDirectory $PSCommandPath $MyInvocation.MyCommand.Path
+Write-Host "验收包目录：$bundle"
+$stage = 'read bundle manifest'
+$manifest = Get-Content -LiteralPath (Join-Path $bundle 'SHA256SUMS.json') -Encoding UTF8 -Raw | ConvertFrom-Json
+$stage = 'verify required manifest entries'
 $required = @('bin/legacy-transaction.exe','bin/current-transaction.exe','inputs/historical-gnu.zip','inputs/native-msvc.zip','inputs/direct-msvc.zip')
 foreach ($name in $required) {
     if ($null -eq $manifest.PSObject.Properties[$name]) { throw "验收清单缺少必要项：$name" }
@@ -14,15 +33,18 @@ $archivePins = @{
     'native-msvc.zip' = 'de9e0ea609a8494ccde3024b0b9b6a669f12387d5a92b39e0d73e34d5ab770ff'
     'direct-msvc.zip' = 'ff7ee4339f578b290d2f7ec42236f75889701ae0badc92d462910cb962c10433'
 }
+$stage = 'verify pinned input archives'
 foreach ($name in $archivePins.Keys) {
     $path = Join-Path $bundle ('inputs/' + $name)
     if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $archivePins[$name]) { throw "固定产品归档 SHA-256 不符：$name" }
 }
+$stage = 'verify bundle manifest hashes'
 foreach ($entry in $manifest.PSObject.Properties) {
     if ($entry.Name -match '(^[\\/]|:|(^|[\\/])\.\.([\\/]|$))') { throw '验收清单包含不安全路径。' }
     $path = Join-Path $bundle $entry.Name
     if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.Value) { throw "验收文件 SHA-256 不匹配：$($entry.Name)" }
 }
+$stage = 'create isolated test directory'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('grok-migration-transaction-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $work
 $results = Join-Path $work 'results'; $null = New-Item -ItemType Directory -Path $results
@@ -94,6 +116,7 @@ function Run-Test([string]$Name,[string]$Arguments,[int]$TimeoutSeconds) {
     }
 }
 try {
+    $stage = 'extract pinned archives'
     foreach ($kind in @('historical-gnu','native-msvc')) {
         Expand-Archive -LiteralPath (Join-Path $bundle ('inputs/' + $kind + '.zip')) -DestinationPath (Join-Path $work $kind)
     }
@@ -106,7 +129,9 @@ try {
     $isolated['GROK_DIRECT_NATIVE_ARCHIVE'] = Join-Path $bundle 'inputs/native-msvc.zip'
     $isolated['GROK_DIRECT_DIRECT_ARCHIVE'] = Join-Path $bundle 'inputs/direct-msvc.zip'
     $isolated['GROK_TRANSACTION_RESULTS'] = $results
+    $stage = 'run legacy transactions'
     Run-Test 'legacy-transaction' 'community_release::transaction:: --test-threads=1 --nocapture' 480
+    $stage = 'run current transactions'
     Run-Test 'current-transaction' 'community_release::transaction:: --test-threads=1 --nocapture' 480
     $oldHash = '474918134a312ab5b2200e03092c5f34a99b5f2d3847057fe827e3ff193404ca'
     $newHash = 'd7e2e35c9a18ec7d9415ce155cb1677d040925f208aff53f5d29fb7a8ed1d1ce'
@@ -114,7 +139,7 @@ try {
         $cases = @('transaction','hash-rejection','truncation-rejection','real-version-rejection','lock-contention','sharing-lock','source-sharing-failure')
         if ($kind -eq 'current') { $cases += @('direct-reinstall','activation-rollback') }
         foreach ($case in $cases) {
-            $evidence = Get-Content -LiteralPath (Join-Path $results ($kind + '-' + $case + '.json')) -Raw | ConvertFrom-Json
+            $evidence = Get-Content -LiteralPath (Join-Path $results ($kind + '-' + $case + '.json')) -Encoding UTF8 -Raw | ConvertFrom-Json
             if ($evidence.status -cne 'PASSED') { throw "缺少成功的事务证据：$kind/$case" }
             if ($case -eq 'transaction') {
                 $expectedInitial = if ($kind -eq 'legacy') { $oldHash } else { $newHash }

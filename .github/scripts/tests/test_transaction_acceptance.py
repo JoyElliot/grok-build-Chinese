@@ -16,6 +16,12 @@ class TransactionAcceptance(unittest.TestCase):
   self.assertIn('WindowsPowerShell/v1.0/powershell.exe',s)
   self.assertIn("Join-Path $env:RUNNER_TEMP 'portable-migration-acceptance'",s)
   self.assertIn('path: transaction-evidence/',s)
+ def test_entrypoint_resolves_in_body(self):
+  s=(DIRECTORY/'Run-MigrationTransaction.ps1').read_text(encoding='utf-8-sig')
+  self.assertNotIn('param([string]$BundleDirectory = $PSScriptRoot)',s)
+  self.assertIn('Resolve-BundleDirectory $BundleDirectory $PSCommandPath $MyInvocation.MyCommand.Path',s)
+  self.assertIn('ScriptLineNumber',s)
+  self.assertTrue((DIRECTORY/'Test-RunnerEntrypoint.ps1').exists())
  def test_pinned_inputs(self):
   self.assertEqual(prepare.RUN,40156800532);self.assertEqual(prepare.ARTIFACT,12584849702)
   self.assertEqual(prepare.SOURCE,'0eb78dd950ad376ea8a1f1df3d2e8719f14c42e7')
@@ -32,6 +38,8 @@ class TransactionAcceptance(unittest.TestCase):
   self.assertIn('$killer.ExitCode -ne 0',s)
   self.assertIn("$evidence.status -cne 'PASSED'",s)
   self.assertIn("@('direct-reinstall','activation-rollback')",s)
+  self.assertIn("'real-version-rejection'",s)
+  self.assertIn('{ 7 } else { 9 }',s)
   self.assertIn('WaitForExit($TimeoutSeconds * 1000)',s)
   self.assertIn("'legacy-transaction' 'community_release::transaction:: --test-threads=1 --nocapture'",s)
   self.assertIn("'current-transaction' 'community_release::transaction:: --test-threads=1 --nocapture'",s)
