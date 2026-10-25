@@ -654,7 +654,8 @@ jobs:
           retention-days: 7
 
   # This complete path is inactive until the reviewed repository policy enables
-  # it. Embedded releases carry one GNU container; native-only releases must
+  # it. Direct releases carry GNU-transport and native MSVC archives.
+  # Embedded releases carry one GNU container; native-only releases must
   # authenticate and permanently retain the final immutable GNU container.
   windows-x64-msvc-validation:
     name: Windows x64 MSVC 正式 core/ui 与迁移验证
@@ -675,12 +676,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.release-plan.outputs.source_commit }}
-      - name: 验证发布策略及两种 PowerShell 迁移契约
+      - name: 验证 MSVC 发布策略
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           python -B .github/scripts/tests/test_windows_msvc_release.py
           if ($LASTEXITCODE -ne 0) { throw 'MSVC 发布策略回归失败。' }
+      - name: 验证直接 MSVC 包的安全与兼容契约
+        if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'direct' }}
+        shell: pwsh
+        run: |
+          python -B .github/scripts/tests/test_direct_msvc_package.py
+          if ($LASTEXITCODE -ne 0) { throw '直接 MSVC 包契约回归失败。' }
+      - name: 仅验证历史内嵌分发的 PowerShell 迁移契约
+        if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'embedded' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
           $gcc = 'C:\mingw64\bin\gcc.exe'
           python -B .github/scripts/build-windows-migration-bootstrap.py --output migration-fixture --version 1.0.99 --migration-tag migration-windows-x64-v1 --cc $gcc
           if ($LASTEXITCODE -ne 0) { throw '迁移 fixture 启动器构建失败。' }
@@ -698,6 +710,12 @@ jobs:
           release_build: 'false'
           phase: test
           validation-mode: release
+      - name: 验证历史 GNU 与当前 MSVC 更新器的直接包兼容性
+        if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'direct' }}
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path .github/scripts/direct-update-validation/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw '历史与当前更新器直接包兼容性验证失败。' }
 
   windows-x64-msvc-cross-build:
     name: Windows x64 MSVC 正式交叉构建
@@ -795,7 +813,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 直接 MSVC 产品验证失败。' }
           Copy-Item -LiteralPath "direct-dist/$env:GNU_ARCHIVE_NAME" -Destination dist
           Copy-Item -LiteralPath "direct-dist/$env:GNU_ARCHIVE_NAME.sha256" -Destination dist
-      - name: 上传原生来源输入和唯一公开 Windows x64 安装包
+      - name: 上传原生来源输入及策略要求的 Windows x64 安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ needs.release-plan.outputs.windows_artifact_name }}

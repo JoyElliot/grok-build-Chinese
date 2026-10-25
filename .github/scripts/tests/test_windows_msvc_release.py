@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -220,6 +221,36 @@ class WindowsMsvcReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(build.index("windows-msvc-release.py build-bridge"), build.index("Test-EmbeddedMigrationProduct.ps1"))
         self.assertLess(build.index("Test-EmbeddedMigrationProduct.ps1"), build.index("uses: actions/upload-artifact"))
 
+    def test_direct_release_never_executes_historical_wrapper(self):
+        embedded_guard = "if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'embedded' }}"
+        direct_guard = "if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'direct' }}"
+        wrappers = ("build-windows-migration-bootstrap.py --output", "Test-WindowsMigration.ps1",
+                    "Test-EmbeddedMigration.ps1", "Test-EmbeddedMigrationProduct.ps1",
+                    "windows-msvc-release.py build-bridge", "& ./migration-dist/grok-zh.exe")
+        wrapper_steps = []
+        for job, block in self.jobs.items():
+            for step in re.split(r"^      - ", block, flags=re.M)[1:]:
+                if any(marker in step for marker in wrappers):
+                    wrapper_steps.append((job, step))
+                    self.assertIn(embedded_guard, step, job)
+                    self.assertNotIn(direct_guard, step, job)
+        self.assertEqual(len(wrapper_steps), 2)  # Historical contracts and product only.
+        validation = self.jobs["windows-x64-msvc-validation"]
+        for marker in ("test_direct_msvc_package.py", "direct-update-validation/Cargo.toml"):
+            step = next(step for step in re.split(r"^      - ", validation, flags=re.M)[1:] if marker in step)
+            self.assertIn(direct_guard, step)
+            self.assertIn("if ($LASTEXITCODE -ne 0)", step)
+        product = self.jobs["windows-x64-msvc-release"]
+        step = next(step for step in re.split(r"^      - ", product, flags=re.M)[1:]
+                    if "windows-msvc-release.py build-direct" in step)
+        self.assertIn(direct_guard, step)
+        self.assertEqual(step.count("Test-DirectMsvcProduct.ps1 -ArtifactsDirectory"), 2)
+        self.assertIn('Copy-Item -LiteralPath "direct-dist/$env:GNU_ARCHIVE_NAME" -Destination dist', step)
+        self.assertLess(product.index("Test-DirectMsvcProduct.ps1"), product.index("uses: actions/upload-artifact"))
+        for gate in ("release-attestations", "release-publisher"):
+            self.assertIn("needs.windows-x64-msvc-validation.result == 'success'", self.jobs[gate])
+            self.assertIn("needs.windows-x64-msvc-release.result == 'success'", self.jobs[gate])
+
     def test_internal_native_payload_is_attested_but_not_a_second_public_archive(self):
         attest, publish = self.jobs["release-attestations"], self.jobs["release-publisher"]
         self.assertIn("outputs.windows_x64_distribution != 'native'", attest)
@@ -261,7 +292,7 @@ class WindowsMsvcReleaseEncodingTests(unittest.TestCase):
         result = unittest.TestResult()
         with patch.object(Path, "read_text", legacy_read_text):
             suite.run(result)
-        self.assertEqual(result.testsRun, 4)
+        self.assertEqual(result.testsRun, 5)
         self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
 
 
