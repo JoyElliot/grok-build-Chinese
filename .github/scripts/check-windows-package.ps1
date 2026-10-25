@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 & "$PSScriptRoot/tests/Test-Write-ReleaseNotes.ps1"
 & "$PSScriptRoot/tests/Test-ReleasePolicy.ps1"
 & "$PSScriptRoot/tests/Test-WindowsValidation.ps1"
-foreach ($test in @('test_release_workflow.py', 'test_windows_msvc_release.py', 'test_embedded_msvc_bundle.py', 'test_embedded_msvc_installer.py', 'test_windows_validation.py', 'test_package_protocol.py', 'test_windows_binary.py')) {
+foreach ($test in @('test_release_workflow.py', 'test_windows_msvc_release.py', 'test_direct_msvc_package.py', 'test_embedded_msvc_bundle.py', 'test_embedded_msvc_installer.py', 'test_windows_validation.py', 'test_package_protocol.py', 'test_windows_binary.py')) {
   & python -B "$PSScriptRoot/tests/$test"
   if ($LASTEXITCODE -ne 0) { throw "$test failed: $LASTEXITCODE" }
 }

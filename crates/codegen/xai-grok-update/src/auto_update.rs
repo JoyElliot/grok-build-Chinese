@@ -3086,13 +3086,71 @@ async fn sweep_stale_tmp_links(link_path: &std::path::Path, max_age: Duration) {
     }
 }
 
-/// If the copy then fails, the rename is rolled back to avoid a broken install. In that case `dest` is renamed to a
-/// unique `<dest>.old.{pid}-{seq}.old` sibling instead, so a locked leftover can never block the update. Still-locked
-/// ones survive until a later update runs after those processes exit.
+/// Stage and sync the new image before renaming the installed image aside.
+/// An activation failure restores that exact backup; locked leftovers use a
+/// unique `<dest>.old.{pid}-{seq}.old` sibling and are swept on a later update.
 #[cfg(windows)]
 async fn windows_replace_exe(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
     let _install_lock = acquire_windows_update_lock(dest)?;
     windows_replace_exe_locked(src, dest).await
+}
+
+/// Move within the installation directory without replacing an existing name.
+/// std::fs::rename uses MOVEFILE_REPLACE_EXISTING on Windows, which could
+/// silently clobber an unrelated file that raced into an aside/destination.
+#[cfg(windows)]
+fn windows_rename_no_replace(src: &std::path::Path, dest: &std::path::Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    let wide = |path: &std::path::Path| -> io::Result<Vec<u16>> {
+        // Match std filesystem support for long Windows paths, including a
+        // destination that does not yet exist. Canonicalization cannot be used
+        // here because activation and rollback intentionally create new names.
+        let absolute = std::path::absolute(path)?;
+        let raw: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+        let prefix = absolute.components().next();
+        use std::path::{Component, Prefix};
+        let mut value: Vec<u16> = match prefix {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) => raw,
+                Prefix::Disk(_) => "\\\\?\\".encode_utf16().chain(raw).collect(),
+                Prefix::UNC(_, _) => "\\\\?\\UNC\\"
+                    .encode_utf16()
+                    .chain(raw.into_iter().skip(2))
+                    .collect(),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unsupported Windows path prefix",
+                    ));
+                }
+            },
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Windows path is not absolute",
+                ));
+            }
+        };
+        if value.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path contains NUL",
+            ));
+        }
+        value.push(0);
+        Ok(value)
+    };
+    let src = wide(src)?;
+    let dest = wide(dest)?;
+    // MOVEFILE_WRITE_THROUGH, deliberately without REPLACE_EXISTING or COPY_ALLOWED.
+    if unsafe { MoveFileExW(src.as_ptr(), dest.as_ptr(), 0x8) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -3103,73 +3161,92 @@ async fn windows_replace_exe_locked(src: &std::path::Path, dest: &std::path::Pat
         .to_string_lossy();
     let old = dest.with_file_name(format!("{file_name}.old"));
 
-    sweep_old_exe_backups(&old).await;
-
-    match tokio::fs::copy(src, dest).await {
-        Ok(_) => return Ok(()),
-        // ERROR_SHARING_VIOLATION (32) / ERROR_ACCESS_DENIED (5): exe is locked by a running process
-        // Fall through to rename-and-replace
-        Err(e) if matches!(e.raw_os_error(), Some(32) | Some(5)) => {
-            tracing::debug!("exe locked, falling back to rename: {e}");
-        }
-        Err(e) => return Err(e.into()),
+    // Finish every fallible read/write before touching the installed image.
+    // create_new prevents collisions/symlink following, and a same-directory
+    // stage makes the final operation a rename, never a partially visible copy.
+    let mut input = tokio::fs::File::open(src)
+        .await
+        .context("opening replacement source")?;
+    let staged = unique_temp_sibling(dest, "staged.exe");
+    let mut output = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .await
+        .context("creating replacement stage")?;
+    let preparation: Result<()> = async {
+        tokio::io::copy(&mut input, &mut output).await?;
+        output.flush().await?;
+        output.sync_all().await?;
+        Ok(())
     }
+    .await;
+    drop(output);
+    drop(input);
+    if let Err(error) = preparation {
+        let _ = tokio::fs::remove_file(&staged).await;
+        return Err(error).context("preparing replacement without changing installed executable");
+    }
+    let result = windows_activate_staged_exe(&staged, dest, &old).await;
+    let _ = tokio::fs::remove_file(&staged).await;
+    result
+}
 
-    // A .old that survived the sweep is locked; renaming onto it would need to delete-replace it and fail, so divert to a guaranteed-free name
-    let old_is_free = matches!(
-        tokio::fs::symlink_metadata(&old).await,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
-    );
-    let mut aside = if old_is_free {
-        old.clone()
-    } else {
-        let diverted = unique_temp_sibling(&old, "old");
-        tracing::debug!(
-            "stale {} is locked; diverting aside to {}",
-            old.display(),
-            diverted.display()
-        );
-        diverted
-    };
-
-    // Move the locked file aside, then copy the new binary into place.
-    let mut rename_result = tokio::fs::rename(dest, &aside).await;
-    // Pid reuse can collide a diverted name with a dead updater's still-locked leftover, and a racer can occupy a just-checked-free .old
-    // A fresh unique sibling handles both (3 attempts total)
-    for _ in 0..2 {
-        match &rename_result {
-            Err(e) if matches!(e.raw_os_error(), Some(32) | Some(5)) => {
-                tracing::debug!(
-                    "rename aside to {} failed; retrying with a fresh name: {e}",
-                    aside.display()
-                );
-                aside = unique_temp_sibling(&old, "old");
-                rename_result = tokio::fs::rename(dest, &aside).await;
+/// Caller holds the installation lock and has fully written/synced the stage.
+#[cfg(windows)]
+async fn windows_activate_staged_exe(
+    staged: &std::path::Path,
+    dest: &std::path::Path,
+    old: &std::path::Path,
+) -> Result<()> {
+    match tokio::fs::symlink_metadata(dest).await {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            windows_rename_no_replace(staged, dest)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+            anyhow::bail!("replacement destination is not a regular file");
+        }
+        Ok(_) => {}
+    }
+    sweep_old_exe_backups(old).await;
+    let mut aside = old.to_path_buf();
+    let mut renamed = false;
+    for attempt in 0..3 {
+        match windows_rename_no_replace(dest, &aside) {
+            Ok(()) => {
+                renamed = true;
+                break;
             }
-            _ => break,
+            Err(error)
+                if attempt < 2 && matches!(error.raw_os_error(), Some(5 | 32 | 80 | 183)) =>
+            {
+                aside = unique_temp_sibling(old, "old");
+            }
+            Err(error) => {
+                return Err(error).context("moving installed executable to rollback backup");
+            }
         }
     }
-    rename_result.map_err(|e| {
-        anyhow::anyhow!(
-            "cannot rename locked executable {}: {e}\n\
-             Close all running grok sessions and retry.",
-            dest.display(),
-        )
-    })?;
-    match tokio::fs::copy(src, dest).await {
-        Ok(_) => {
-            sweep_old_exe_backups(&old).await;
+    if !renamed {
+        anyhow::bail!("could not reserve an executable rollback backup");
+    }
+    match windows_rename_no_replace(staged, dest) {
+        Ok(()) => {
+            sweep_old_exe_backups(old).await;
             Ok(())
         }
-        Err(e) => {
-            // Rollback: restore the old binary so the install isn't broken.
-            if let Err(rollback) = tokio::fs::rename(&aside, dest).await {
+        Err(error) => {
+            // Never overwrite a file another process created during activation.
+            // If that prevents rollback, retain the original and report its path.
+            if let Err(rollback) = windows_rename_no_replace(&aside, dest) {
                 anyhow::bail!(
-                    "install failed: {e}; rollback failed: {rollback}; previous executable retained at {}",
+                    "install failed: {error}; rollback failed: {rollback}; previous executable retained at {}",
                     aside.display()
                 );
             }
-            Err(e.into())
+            Err(error.into())
         }
     }
 }

@@ -48,7 +48,7 @@ def no_duplicates(pairs):
     return result
 
 
-def protocol_from_text(text, version, *, outer=False):
+def protocol_from_text(text, version, *, outer=False, direct=False):
     canonical_version(version)
     lines = text.replace("\r\n", "\n").splitlines()
     begin, end = "GROK-UPDATE-PROTOCOL-BEGIN", "GROK-UPDATE-PROTOCOL-END"
@@ -57,12 +57,16 @@ def protocol_from_text(text, version, *, outer=False):
     protocol = json.loads("\n".join(lines[lines.index(begin) + 1:lines.index(end)]), object_pairs_hook=no_duplicates)
     expected = dict(schema=1, version=version, platform=TARGET, mode="executable-only",
                     manifest="SHA256SUMS.txt", executable="grok-zh.exe", installer="Install-GrokZh.ps1")
-    if outer:
+    if direct:
+        expected["platform"] = "x86_64-pc-windows-gnu"
+        expected["direct_runtime"] = dict(schema=1, version=version, platform=TARGET)
+    elif outer:
         expected["platform"] = "x86_64-pc-windows-gnu"
         metadata = protocol.get("embedded_runtime")
         validate_runtime_metadata(metadata, version)
         expected["embedded_runtime"] = metadata
-    if protocol != expected or type(protocol.get("schema")) is not int:
+    if (protocol != expected or type(protocol.get("schema")) is not int or
+            (direct and type(protocol.get("direct_runtime", {}).get("schema")) is not int)):
         raise ValueError("native package protocol/version/target mismatch")
     if not re.search(r"^Target:[ \t]*" + expected["platform"] + r"[ \t]*$", text, re.M):
         raise ValueError("native package BUILD-INFO target mismatch")
@@ -107,12 +111,12 @@ def parse_manifest(text):
     return hashes
 
 
-def _validate_package_archive(archive, version, *, outer=False):
+def _validate_package_archive(archive, version, *, outer=False, direct=False):
     """Fully validate ZIP structure, metadata and every manifest digest."""
     canonical_version(version)
     if not 0 < Path(archive).stat().st_size <= MAX_ARCHIVE_BYTES:
         raise ValueError("native archive exceeds size limit")
-    root = f"grok-zh-{version}-windows-x86_64-" + ("gnu" if outer else "msvc")
+    root = f"grok-zh-{version}-windows-x86_64-" + ("gnu" if outer or direct else "msvc")
     with zipfile.ZipFile(archive) as zipped:
         if not 0 < len(zipped.infolist()) <= MAX_ENTRIES:
             raise ValueError("native archive entry limit exceeded")
@@ -155,7 +159,7 @@ def _validate_package_archive(archive, version, *, outer=False):
             if name not in files or files[name].file_size > 65536:
                 raise ValueError("missing or oversized native metadata")
         info = zipped.read(files["BUILD-INFO.txt"]).decode("utf-8-sig").replace("\r\n", "\n")
-        protocol = protocol_from_text(info, version, outer=outer)
+        protocol = protocol_from_text(info, version, outer=outer, direct=direct)
         hashes = parse_manifest(zipped.read(files["SHA256SUMS.txt"]).decode("utf-8-sig"))
         if set(files) != set(hashes) | {"SHA256SUMS.txt"}:
             raise ValueError("native manifest does not cover exact file set")

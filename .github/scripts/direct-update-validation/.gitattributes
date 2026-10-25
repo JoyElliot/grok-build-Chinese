@@ -1,0 +1,5 @@
+*.rs text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+
+/historical/** -text

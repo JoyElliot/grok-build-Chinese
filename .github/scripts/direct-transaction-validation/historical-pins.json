@@ -1,0 +1,11 @@
+{
+  "commit": "3f5d07f8cb2e9be395131296a3efc4635713db7f",
+  "git_blobs": {
+    "crates/codegen/xai-grok-update/src/auto_update.rs": "ff5024f2778a79148cddb047a4363059a471b872",
+    "crates/codegen/xai-grok-update/src/community_release.rs": "2d6fd64fa86c47afa4e58c9ba2012a498506f60f",
+    "crates/codegen/xai-grok-update/src/community_release/package_protocol.rs": "1bda919549c9a55a63bc19b1203f2fc0c6e6e289",
+    "crates/codegen/xai-grok-update/src/community_update_cancel.rs": "e412e2d476a4e017a01132b1f314c06ddb31ddee",
+    "crates/codegen/xai-grok-product/src/lib.rs": "2e93e867ef3ff903c1112af541f34f2ad2500971",
+    "crates/codegen/xai-tty-utils/src/lib.rs": "4fe44241a5cdcc874d34a0b41f86a2c5fd052485"
+  }
+}

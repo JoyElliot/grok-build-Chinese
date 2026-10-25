@@ -543,9 +543,9 @@ fn select_latest_compatible_release<'a>(
         anyhow::bail!("unsupported community release channel: {channel}");
     }
     if platform == CommunityPlatform::WindowsX86_64Msvc {
-        // GitHub metadata cannot prove that a GNU-named ZIP embeds MSVC.
+        // GitHub metadata cannot prove that a GNU-named ZIP carries MSVC.
         // Discover the newest potential container first; installation then
-        // requires its authenticated embedded_runtime protocol and inner ZIP.
+        // requires its authenticated direct_runtime or embedded_runtime protocol.
         // Never prefer an older native release over a newer wrapper, or hide
         // invalid metadata on the newest release by falling back a version.
         let selected = releases
@@ -1090,6 +1090,22 @@ fn extract_verified_windows_executable(
         if asset.target_platform == CommunityPlatform::WindowsX86_64Msvc
             && platform == CommunityPlatform::WindowsX86_64Gnu
         {
+            let root = asset.name.strip_suffix(".zip");
+            let info = package_protocol::read_zip_metadata(&mut archive, root, BUILD_INFO)?;
+            let protocol = PackageProtocol::parse(&info, &asset.version, platform.target_triple())?;
+            if protocol
+                .as_ref()
+                .is_some_and(|protocol| protocol.direct_runtime.is_some())
+            {
+                extract_windows_package(
+                    &asset.version,
+                    platform,
+                    &mut archive,
+                    destination,
+                    false,
+                )?;
+                return Ok(());
+            }
             return embedded_runtime::extract_msvc_executable(
                 &asset.version,
                 &mut archive,
@@ -1146,6 +1162,12 @@ fn extract_windows_package<R: Read + Seek>(
         }
         if !destination.is_file() {
             anyhow::bail!("community release did not produce its declared executable");
+        }
+        if protocol.direct_runtime.is_some() {
+            let mut executable = File::open(destination)?;
+            let size = executable.metadata()?.len();
+            embedded_runtime::validate_direct_executable(&mut executable, size)
+                .context("direct runtime executable is not a Windows x86_64 PE32+ image")?;
         }
         return Ok(protocol.embedded_runtime);
     }
@@ -1681,6 +1703,7 @@ mod tests {
     }
 
     include!("community_release/embedded_runtime_tests.rs");
+    include!("community_release/direct_runtime_tests.rs");
 
     #[test]
     fn sidecar_retirement_preserves_the_last_legacy_bridge() {
