@@ -157,7 +157,21 @@ fn open_verified(path: &Path, descriptor: &EmbeddedRuntime, version: &str) -> Re
 /// Validate the PE identity and complete header/table bounds without treating
 /// payload bytes as part of a truncated image. The actual compiler ABI remains
 /// authenticated by the package protocol, since GNU and MSVC share PE32+.
-fn validate_x64_pe<R: Read + Seek>(reader: &mut R, image_size: u64) -> Result<()> {
+/// Direct transport must not relabel a known embedded launcher as its runtime.
+pub(super) fn validate_direct_executable<R: Read + Seek>(reader: &mut R, size: u64) -> Result<()> {
+    validate_x64_pe(reader, size)?;
+    if size >= FOOTER_SIZE {
+        reader.seek(SeekFrom::Start(size - FOOTER_SIZE))?;
+        let mut magic = [0u8; 16];
+        reader.read_exact(&mut magic)?;
+        if &magic == MAGIC {
+            anyhow::bail!("direct MSVC runtime must not be an embedded launcher");
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_x64_pe<R: Read + Seek>(reader: &mut R, image_size: u64) -> Result<()> {
     if image_size < MIN_PE_PREFIX_SIZE {
         anyhow::bail!("Windows PE prefix is shorter than 256 bytes");
     }

@@ -29,7 +29,7 @@ runs:
           if ($LASTEXITCODE -ne 0) { throw '正式 MSVC 发布版本或策略无效。' }
           $policy = Get-Content -LiteralPath '.github/release-policy.json' -Raw | ConvertFrom-Json
           if (!$policy.windows_x64_msvc.enabled) { throw '正式 MSVC 发布策略尚未启用。' }
-        } elseif ($env:IS_RELEASE_BUILD -ne 'false' -or $env:REQUESTED_VERSION -cnotin @('1.0.99', '1.0.100', '1.0.101', '1.0.102', '1.0.103')) {
+        } elseif ($env:IS_RELEASE_BUILD -ne 'false' -or $env:REQUESTED_VERSION -cnotin @('1.0.99', '1.0.100', '1.0.101', '1.0.102', '1.0.103', '1.0.104')) {
           throw '当前仅允许隔离迁移试验版本。'
         }
         "GROK_VERSION=$env:REQUESTED_VERSION" | Out-File $env:GITHUB_ENV -Append -Encoding utf8

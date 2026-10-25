@@ -55,6 +55,13 @@ class WindowsMsvcReleaseTests(unittest.TestCase):
             self.assertNotEqual(plan["windows_public_archive_name"], plan["msvc_archive_name"])
             fetch.assert_not_called()
 
+    def test_direct_mode_keeps_legacy_primary_and_native_archive_without_network(self):
+        with patch.object(release, "fetch_bytes") as fetch:
+            plan = release.preflight(policy(distribution="direct"), VERSION, TAG, release.REPOSITORY)
+            self.assertEqual(plan["windows_x64_distribution"], "direct")
+            self.assertEqual(plan["windows_public_archive_name"], f"grok-zh-{VERSION}-windows-x86_64-gnu.zip")
+            fetch.assert_not_called()
+
     def test_checked_in_policy_is_valid_in_any_reviewed_state(self):
         checked = json.loads((ROOT / ".github/release-policy.json").read_text(encoding="utf-8"))
         pin = checked["windows_x64_msvc"].get("final_legacy_wrapper")
@@ -222,6 +229,8 @@ class WindowsMsvcReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("$attestationAssets = @($assets)", publish)
         self.assertIn("foreach ($assetPath in $attestationAssets)", publish)
         self.assertIn("$env:WINDOWS_X64_DISTRIBUTION -eq 'embedded'", publish)
+        self.assertIn("$env:WINDOWS_X64_DISTRIBUTION -eq 'direct' -and", publish)
+        self.assertIn("$env:MSVC_ARCHIVE_NAME }).Count -ne 1", publish)
         self.assertIn("(Split-Path $_ -Leaf) -cne $env:MSVC_ARCHIVE_NAME", publish)
         self.assertIn("$env:WINDOWS_PUBLIC_ARCHIVE_NAME }).Count -ne 1", publish)
         self.assertLess(publish.index("$expectedLocalNames"), publish.index("$attestationAssets ="))

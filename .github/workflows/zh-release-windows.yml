@@ -782,6 +782,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 实际产品迁移失败。' }
           Copy-Item -LiteralPath "migration-dist/$env:GNU_ARCHIVE_NAME" -Destination dist
           Copy-Item -LiteralPath "migration-dist/$env:GNU_ARCHIVE_NAME.sha256" -Destination dist
+      - name: 构建直接 MSVC GNU 兼容包并验证 EXE 替换
+        if: ${{ needs.release-plan.outputs.windows_x64_distribution == 'direct' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B .github/scripts/windows-msvc-release.py build-direct --version $env:GROK_VERSION --tag $env:RELEASE_TAG --repository $env:GITHUB_REPOSITORY --output direct-dist --payload-archive "dist/$env:ARCHIVE_NAME"
+          if ($LASTEXITCODE -ne 0) { throw '直接 MSVC GNU 兼容包构建失败。' }
+          & ./packaging/windows/tests/Test-DirectMsvcProduct.ps1 -ArtifactsDirectory "$PWD/direct-dist" -PackageDirectory "$PWD/dist/$env:PACKAGE_NAME"
+          if (!$?) { throw 'PowerShell 7 直接 MSVC 产品验证失败。' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/tests/Test-DirectMsvcProduct.ps1 -ArtifactsDirectory "$PWD/direct-dist" -PackageDirectory "$PWD/dist/$env:PACKAGE_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 直接 MSVC 产品验证失败。' }
+          Copy-Item -LiteralPath "direct-dist/$env:GNU_ARCHIVE_NAME" -Destination dist
+          Copy-Item -LiteralPath "direct-dist/$env:GNU_ARCHIVE_NAME.sha256" -Destination dist
       - name: 上传原生来源输入和唯一公开 Windows x64 安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -1357,7 +1370,14 @@ jobs:
             })
           }
           if (@($assets | Where-Object { (Split-Path $_ -Leaf) -ceq $env:WINDOWS_PUBLIC_ARCHIVE_NAME }).Count -ne 1) {
-            throw 'Windows x64 公开安装包必须精确为一个。'
+            throw 'Windows x64 主兼容安装包必须精确为一个。'
+          }
+          # Direct mode retains the native asset for older MSVC clients that
+          # do not understand direct_runtime. Old exact-set GNU clients stay
+          # on the preserved 1.0.45 bridge before selecting this release.
+          if ($env:WINDOWS_X64_DISTRIBUTION -eq 'direct' -and
+              @($assets | Where-Object { (Split-Path $_ -Leaf) -ceq $env:MSVC_ARCHIVE_NAME }).Count -ne 1) {
+            throw '直接迁移发布必须保留唯一原生 MSVC 包，兼容旧 MSVC 更新器。'
           }
           # Select public Release assets after all local hashes have been checked.
           # All sidecars remain internal build/attestation inputs. New platforms

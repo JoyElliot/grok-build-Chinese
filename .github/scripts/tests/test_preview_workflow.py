@@ -95,7 +95,7 @@ def condition(block):
     return field[1]
 
 
-def job_runs(block, results, event, ref):
+def job_runs(block, results, event, ref, direct=False):
     """Evaluate this workflow's restricted expressions, including implicit success()."""
     required = dependencies(block) if re.search(r"^    needs:", block, re.M) else set()
     expression = condition(block).replace("${{", "").replace("}}", "").strip()
@@ -103,6 +103,7 @@ def job_runs(block, results, event, ref):
         if any(results[dep] != "success" for dep in required):
             return False
     context = {
+        "inputs.direct_msvc_only": direct,
         "github.event_name": event,
         "github.ref": ref,
         "github.repository": "JoyElliot/grok-build-Chinese",
@@ -222,7 +223,7 @@ class PreviewWorkflowTests(unittest.TestCase):
         paths += list((ROOT / ".github/actions").rglob("action.yml"))
         paths += [path for path in (ROOT / ".github/scripts").rglob("*")
                   if path.is_file() and "tests" not in path.parts
-                  and "__pycache__" not in path.parts]
+                  and "__pycache__" not in path.parts and "target" not in path.parts]
         paths += list((ROOT / "docs").glob("*.md"))
         paths += list(ROOT.glob("README*"))
         obsolete = (
@@ -330,10 +331,23 @@ class PreviewWorkflowTests(unittest.TestCase):
                  ("workflow_dispatch", "refs/heads/sync/upstream-1.0.104"))
         for event, ref in cases:
             for name, block in self.jobs.items():
-                if name == "macos-consumer-smoke":
+                if name in ("macos-consumer-smoke", "direct-msvc-result"):
                     continue  # This intentionally has its existing special-branch condition.
                 with self.subTest(event=event, ref=ref, job=name):
                     self.assertTrue(job_runs(block, results, event, ref))
+
+    def test_direct_only_dispatch_excludes_unrelated_builds(self):
+        results = dict.fromkeys(self.jobs, "success")
+        expected = set(PREFLIGHT_JOBS) | {"windows-msvc-migration-test", "windows-msvc-cross-build",
+                                        "windows-msvc-migration-experiment", "direct-msvc-result"}
+        for name, block in self.jobs.items():
+            with self.subTest(job=name):
+                self.assertEqual(job_runs(block, results, "workflow_dispatch", "refs/heads/test/direct", True), name in expected)
+                self.assertEqual(job_runs(block, results, "push", "refs/heads/test/windows-msvc-direct-update"), name in expected)
+        gate = self.jobs["direct-msvc-result"]
+        self.assertIn('all(. == "success")', gate)
+        self.assertEqual(dependencies(gate), {"localization", "rust-format-preflight",
+                         "windows-msvc-migration-test", "windows-msvc-cross-build", "windows-msvc-migration-experiment"})
 
     def test_every_build_and_test_is_downstream_of_all_three_preflights(self):
         def ancestors(job):
@@ -504,11 +518,13 @@ class PreviewWorkflowTests(unittest.TestCase):
 
     def test_msvc_migration_product_and_tests_remain_isolated_and_unchanged(self):
         migration = upload_steps(self.jobs["windows-msvc-migration-experiment"])
-        self.assertEqual(len(migration), 1)
+        self.assertEqual(len(migration), 2)
         self.assertIn("retention-days: 14", migration[0])
         self.assertIn("name: migration-experiment-grok-zh-", migration[0])
-        self.assertEqual(self.jobs["windows-msvc-migration-experiment"].count("Test-EmbeddedMigrationProduct.ps1"), 2)
-        self.assertEqual(self.jobs["windows-msvc-migration-test"].count("Test-WindowsMigration.ps1"), 2)
+        self.assertEqual(self.jobs["windows-msvc-migration-experiment"].count("Test-DirectMsvcProduct.ps1 -ArtifactsDirectory"), 2)
+        self.assertNotIn("build-windows-embedded-bootstrap.py", self.jobs["windows-msvc-migration-experiment"])
+        self.assertIn("name: direct-msvc-grok-zh-", migration[1])
+        self.assertNotIn("Test-EmbeddedMigration.ps1", self.jobs["windows-msvc-migration-test"])
         self.assertIn("phase: test", self.jobs["windows-msvc-migration-test"])
         self.assertIn("msvc-build-input.py verify", self.jobs["windows-msvc-migration-experiment"])
 

@@ -188,10 +188,11 @@ class PreviewNativeValidationTests(unittest.TestCase):
             self.assertIn(f"runs-on: {runner}", jobs[job])
             self.assertNotIn("continue-on-error", jobs[job])
         experiment = jobs["windows-msvc-migration-experiment"]
-        self.assertEqual(experiment.count("Test-EmbeddedMigrationProduct.ps1"), 2)
+        self.assertEqual(experiment.count("Test-DirectMsvcProduct.ps1 -ArtifactsDirectory"), 2)
         self.assertEqual(experiment.count("Test-WindowsMigration.ps1"), 0)
-        self.assertEqual(jobs["windows-msvc-migration-test"].count("Test-WindowsMigration.ps1"), 2)
-        self.assertIn("--payload-package", experiment)
+        self.assertNotIn("Test-EmbeddedMigration.ps1", jobs["windows-msvc-migration-test"])
+        self.assertIn("test_direct_msvc_package.py", jobs["windows-msvc-migration-test"])
+        self.assertIn("--payload-archive", experiment)
         self.assertIn("phase: test", jobs["windows-msvc-migration-test"])
         release_jobs = job_blocks(WORKFLOW.read_text(encoding="utf-8"))
         for job in ("windows-x64-msvc-validation", "windows-x64-msvc-cross-build", "windows-x64-msvc-release"):
@@ -202,7 +203,7 @@ class PreviewNativeValidationTests(unittest.TestCase):
         self.assertIn("needs.windows-msvc-cross-build.outputs.artifact_name", experiment)
         self.assertIn("version: ${{ steps.build.outputs.version }}", cross)
         self.assertIn("GROK_VERSION: ${{ needs.windows-msvc-cross-build.outputs.version }}", experiment)
-        self.assertIn("build-windows-embedded-bootstrap.py --output migration-dist --version $env:GROK_VERSION", experiment)
+        self.assertIn("build-windows-direct-msvc.py --output direct-dist --version $env:GROK_VERSION", experiment)
         self.assertNotIn("grok-zh-1.0.99-windows", experiment)
         self.assertIn("msvc-build-input.py verify", experiment)
         self.assertIn("package-windows-msvc-x64.ps1", experiment)
@@ -228,7 +229,7 @@ class PreviewNativeValidationTests(unittest.TestCase):
         gate = jobs["multiplatform-result"]
         self.assertIn("rust-format-preflight", dependencies(gate))
         self.assertIn(
-            "if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
+            "if: ${{ !(inputs.direct_msvc_only || github.ref == 'refs/heads/test/windows-msvc-direct-update') && always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
             gate,
         )
         self.assertIn("FORMAT_RESULT: ${{ needs.rust-format-preflight.result }}", gate)

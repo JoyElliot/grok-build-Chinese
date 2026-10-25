@@ -3,7 +3,7 @@
   "legacy_bridge_tag": "release-v1.0.45",
   "windows_x64_msvc": {
     "enabled": false,
-    "distribution": "embedded",
+    "distribution": "direct",
     "final_legacy_wrapper": null
   }
 }

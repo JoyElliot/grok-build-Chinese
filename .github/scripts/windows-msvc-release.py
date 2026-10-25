@@ -1,6 +1,8 @@
-"""Plan the default-off single-package Windows x64 transition.
+"""Plan the default-off Windows x64 transition.
 
-Only checked-in policy can activate a distribution. Embedded mode publishes one
+Only checked-in policy can activate a distribution. Direct mode ships an unchanged
+native EXE with an explicit legacy transport descriptor, retaining the native
+archive for older MSVC clients. Embedded mode publishes one
 legacy-named container; its native archive is an internal build/provenance input.
 Native-only retirement requires an authenticated immutable final wrapper. This
 script never creates or changes releases, tags, or repository settings.
@@ -55,7 +57,7 @@ def plan_release(policy, version, tag, repository):
         "enabled": False, "distribution": "embedded", "final_legacy_wrapper": None})
     if (not isinstance(config, dict) or
             set(config) != {"enabled", "distribution", "final_legacy_wrapper"} or
-            type(config["enabled"]) is not bool or config["distribution"] not in ("embedded", "native")):
+            type(config["enabled"]) is not bool or config["distribution"] not in ("embedded", "direct", "native")):
         raise ValueError("windows_x64_msvc requires enabled, distribution and final_legacy_wrapper")
     enabled = config["enabled"]
     pin = config["final_legacy_wrapper"]
@@ -160,9 +162,20 @@ def build_bridge(policy, version, tag, repository, output, payload, archive, cc)
     return builder.build_compat_package(output, payload, version, release=True)
 
 
+def build_direct(policy, version, tag, repository, output, archive):
+    plan = preflight(policy, version, tag, repository)
+    if plan["windows_x64_distribution"] != "direct":
+        raise ValueError("direct distribution is not enabled")
+    spec = importlib.util.spec_from_file_location(
+        "direct_msvc_builder", ROOT / ".github/scripts/build-windows-direct-msvc.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    return builder.build_package(output, archive, version)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("plan", "preflight", "build-bridge"))
+    parser.add_argument("mode", choices=("plan", "preflight", "build-bridge", "build-direct"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--repository", required=True)
@@ -178,6 +191,10 @@ def main():
             parser.error("build-bridge requires --output, --payload-package and --payload-archive")
         build_bridge(policy, args.version, args.tag, args.repository,
                      args.output, args.payload_package, args.payload_archive, args.cc)
+    elif args.mode == "build-direct":
+        if args.output is None or args.payload_archive is None:
+            parser.error("build-direct requires --output and --payload-archive")
+        build_direct(policy, args.version, args.tag, args.repository, args.output, args.payload_archive)
     elif args.mode == "preflight":
         preflight(policy, args.version, args.tag, args.repository)
     print(json.dumps(plan))

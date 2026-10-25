@@ -2100,8 +2100,8 @@ async fn test_windows_replace_exe_locked_file_renames_aside() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn test_windows_replace_exe_rollback_on_copy_failure() {
-    // No stale .old: the aside IS grok.exe.old, so this pins the non-diverted rollback branch (rename .old back onto dest)
+async fn test_windows_replace_exe_source_lock_leaves_original_untouched() {
+    // Source failure must occur before any destination rename.
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_SHARE_READ: u32 = 0x00000001;
     const FILE_SHARE_DELETE: u32 = 0x00000004;
@@ -2118,7 +2118,7 @@ async fn test_windows_replace_exe_rollback_on_copy_failure() {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
         .open(&dest)
         .unwrap();
-    // Exclusive src lock: both copies fail with a sharing violation, so the rename runs and the second copy triggers the rollback
+    // Exclusive source lock must reject staging before touching the destination.
     let _src_lock = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(0)
@@ -2226,8 +2226,8 @@ async fn test_windows_replace_exe_locked_stale_old_does_not_block_update() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn test_windows_replace_exe_rollback_restores_from_diverted_aside() {
-    // Copy failure after a divert must roll dest back from the unique aside, not the hardcoded .old (which still holds the locked image)
+async fn test_windows_replace_exe_source_lock_preserves_existing_backup() {
+    // A source failure must preserve both the current image and a locked old backup.
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_SHARE_READ: u32 = 0x00000001;
     const FILE_SHARE_DELETE: u32 = 0x00000004;
@@ -2252,7 +2252,7 @@ async fn test_windows_replace_exe_rollback_restores_from_diverted_aside() {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
         .open(&dest)
         .unwrap();
-    // Exclusive src lock: both copies fail with a sharing violation, so the rename sequence runs and the second copy triggers the rollback
+    // Exclusive source lock rejects staging before any rename sequence.
     let _src_lock = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(0)
@@ -2959,4 +2959,125 @@ async fn community_cleanup_keeps_live_aliases_processes_fresh_files_and_unmanage
     }
     cleanup_community_targets_with(&downloads, &bin, |_| true).await;
     assert!(in_use.exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_replace_exe_missing_source_preserves_unlocked_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("grok.exe");
+    std::fs::write(&dest, b"original").unwrap();
+    assert!(
+        windows_replace_exe(&dir.path().join("missing.exe"), &dest)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| {
+        matches!(
+            entry.unwrap().file_name().to_str(),
+            Some("grok.exe" | "grok.exe.update.lock")
+        )
+    }));
+}
+
+#[cfg(windows)]
+#[test]
+fn test_windows_rename_no_replace_preserves_existing_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.exe");
+    let occupied = dir.path().join("occupied.exe");
+    std::fs::write(&source, b"new").unwrap();
+    std::fs::write(&occupied, b"unrelated").unwrap();
+    assert!(windows_rename_no_replace(&source, &occupied).is_err());
+    assert_eq!(std::fs::read(&occupied).unwrap(), b"unrelated");
+    assert_eq!(std::fs::read(&source).unwrap(), b"new");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_staged_activation_failure_rolls_back_both_aside_paths() {
+    use std::os::windows::fs::OpenOptionsExt;
+    for locked_old in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("grok.exe");
+        let old = dir.path().join("grok.exe.old");
+        std::fs::write(&dest, b"original").unwrap();
+        let old_lock = if locked_old {
+            std::fs::write(&old, b"previous").unwrap();
+            Some(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(1)
+                    .open(&old)
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        // Deterministic activation I/O failure, after the original was moved:
+        // a removed stage must restore the exact backup chosen for this attempt.
+        let _lock = acquire_windows_update_lock(&dest).unwrap();
+        let result =
+            windows_activate_staged_exe(&dir.path().join("missing-stage.exe"), &dest, &old).await;
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+        if locked_old {
+            assert_eq!(std::fs::read(&old).unwrap(), b"previous");
+        } else {
+            assert!(!old.exists());
+        }
+        assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("grok.exe.old.")
+        }));
+        drop(old_lock);
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_stage_cleanup_when_destination_cannot_be_renamed() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.exe");
+    let dest = dir.path().join("grok.exe");
+    std::fs::write(&source, b"new").unwrap();
+    std::fs::write(&dest, b"original").unwrap();
+    let _held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&dest)
+        .unwrap();
+    assert!(windows_replace_exe(&source, &dest).await.is_err());
+    assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with("staged.exe")
+    }));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_replace_exe_supports_long_installation_paths() {
+    use std::os::windows::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut nested = dir.path().to_path_buf();
+    while nested.as_os_str().encode_wide().count() < 300 {
+        nested.push("long-installation-directory-segment");
+    }
+    std::fs::create_dir_all(&nested).unwrap();
+    let source = nested.join("source.exe");
+    let dest = nested.join("grok.exe");
+    std::fs::write(&source, b"new executable").unwrap();
+    std::fs::write(&dest, b"original executable").unwrap();
+    windows_replace_exe(&source, &dest).await.unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), b"new executable");
+    assert!(!nested.join("grok.exe.old").exists());
 }

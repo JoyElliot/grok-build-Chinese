@@ -18,6 +18,29 @@ pub(super) struct PackageProtocol {
     pub installer: String,
     #[serde(default)]
     pub embedded_runtime: Option<EmbeddedRuntime>,
+    #[serde(default)]
+    pub direct_runtime: Option<DirectRuntime>,
+}
+
+/// Separates the legacy transport ABI from the executable ABI. Old GNU
+/// updaters ignore this extension and install the manifest-covered executable;
+/// MSVC updaters require it before accepting a GNU-named direct payload.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DirectRuntime {
+    schema: u32,
+    version: String,
+    platform: String,
+}
+
+impl DirectRuntime {
+    fn validate(&self, version: &str) -> Result<()> {
+        if self.schema != 1 || self.version != version || self.platform != "x86_64-pc-windows-msvc"
+        {
+            anyhow::bail!("unsupported or invalid direct MSVC runtime descriptor");
+        }
+        Ok(())
+    }
 }
 
 /// An explicit, authenticated opt-in carried only by the GNU wrapper package.
@@ -103,6 +126,12 @@ impl PackageProtocol {
             || protocol.executable.to_lowercase() == protocol.installer.to_lowercase()
         {
             anyhow::bail!("community package protocol has invalid or overlapping entry points");
+        }
+        if let Some(runtime) = &protocol.direct_runtime {
+            if platform != "x86_64-pc-windows-gnu" || protocol.embedded_runtime.is_some() {
+                anyhow::bail!("direct MSVC runtime requires an unambiguous GNU transport");
+            }
+            runtime.validate(version)?;
         }
         if let Some(runtime) = &protocol.embedded_runtime {
             if platform != "x86_64-pc-windows-gnu" {

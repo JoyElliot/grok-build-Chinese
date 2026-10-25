@@ -22,7 +22,8 @@ class WindowsValidationTests(unittest.TestCase):
         self.assertIn('timeout-minutes: 180', native)
         self.assertNotIn('matrix:', native)  # Share common dependency builds between core and ui.
         self.assertIn('phase: test', native)
-        self.assertEqual(native.count('Test-WindowsMigration.ps1'), 2)
+        self.assertNotIn('Test-EmbeddedMigration.ps1', native)
+        self.assertIn('test_direct_msvc_package.py', native)
         self.assertNotIn('continue-on-error', native)
         self.assertIn('python3 .github/scripts/tests/test_windows_validation.py', jobs['localization'])
 
@@ -162,7 +163,7 @@ class WindowsValidationTests(unittest.TestCase):
                 self.assertIn('if: always()', gate)
             else:
                 self.assertIn(
-                    "if: ${{ always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
+                    "if: ${{ !(inputs.direct_msvc_only || github.ref == 'refs/heads/test/windows-msvc-direct-update') && always() && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/sync/')) }}",
                     gate,
                 )
             self.assertIn('${{ toJSON(needs.*.result) }}', gate)
