@@ -22,6 +22,9 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.94.0
       CARGO_TERM_COLOR: never
+      # Optimize archive hashing/compression, but retain debug-only assertions and overflow checks.
+      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: 'true'
       RUSTFLAGS: -C target-feature=+crt-static
       PYTHONUTF8: '1'
     steps:
@@ -50,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path transaction-evidence | Out-Null
-          cargo test --locked --manifest-path .github/scripts/direct-transaction-validation/Cargo.toml --target x86_64-pc-windows-msvc --no-run --message-format=json 1> transaction-evidence/cargo-build.jsonl 2> transaction-evidence/cargo-build.log
+          cargo test --release --locked --manifest-path .github/scripts/direct-transaction-validation/Cargo.toml --target x86_64-pc-windows-msvc --no-run --message-format=json 1> transaction-evidence/cargo-build.jsonl 2> transaction-evidence/cargo-build.log
           if ($LASTEXITCODE -ne 0) { throw 'Transaction harness compilation failed.' }
           python .github/scripts/transaction-acceptance/prepare.py bundle transaction-inputs transaction-evidence/cargo-build.jsonl transaction-bundle
           if ($LASTEXITCODE -ne 0) { throw 'Portable bundle preparation failed.' }

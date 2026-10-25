@@ -10,8 +10,11 @@ async fn current_source_accepts_direct_transport_after_migration() {
 #[tokio::test]
 async fn current_source_activation_failure_restores_real_native_image() {
     let dir=tempfile::tempdir().unwrap();let (destination,before)=genuine_copy(dir.path());
-    let old=destination.with_file_name("grok-zh.exe.old");let _lock=acquire_windows_update_lock(&destination).unwrap();
+    let old=destination.with_file_name("grok-zh.exe.old");let lock=acquire_windows_update_lock(&destination).unwrap();
     let result=windows_activate_staged_exe(&dir.path().join("deliberately-missing-stage.exe"),&destination,&old).await;
+    // The original activation runs under the exclusive installation lock.
+    // Release it before the fixture snapshots all files, including .update.lock.
+    drop(lock);
     assert!(result.is_err());assert_rejection_unchanged(&destination,&before);assert!(!old.exists());
     assert!(community_version_output_matches(&smoke_test_binary(&destination).await.unwrap(),VERSION));
     result_file("activation-rollback",json!({"status":"PASSED","restored_sha256":NEW_HASH,"failure_injection":"missing stage passed to original activation helper, after backup move"}));

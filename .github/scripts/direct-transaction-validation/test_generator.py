@@ -29,6 +29,11 @@ class GeneratorTests(unittest.TestCase):
                     generator.read(path,True)
             finally:
                 generator.BASE=oldbase
+    def test_rollback_fixture_releases_lock_before_snapshot(self):
+        source=(BASE/'current_tests.rs').read_text()
+        case=source.split('async fn current_source_activation_failure_restores_real_native_image()',1)[1]
+        self.assertLess(case.index('windows_activate_staged_exe('),case.index('drop(lock);'))
+        self.assertLess(case.index('drop(lock);'),case.index('assert_rejection_unchanged('))
     def test_no_compiled_fixture_absolute_paths(self):
         for filename in ['transaction_tests.rs','current_tests.rs']:
             source=(BASE/filename).read_text()
