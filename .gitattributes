@@ -6,3 +6,6 @@ packaging/linux/*.sh text eol=lf
 community/announcements/**/*.json text eol=lf
 community/announcements/manifest.json text eol=lf
 community/display-translations/**/*.json text eol=lf
+
+# Hash-pinned pre-fix source slices must retain exact bytes on Windows.
+.github/scripts/direct-transaction-validation/regressions/** -text
