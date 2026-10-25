@@ -1,0 +1,135 @@
+name: Windows interruption and recovery regression
+
+on:
+  push:
+    branches:
+      - test/windows-recovery-risks
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-recovery-regression-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    if: github.ref == 'refs/heads/test/windows-recovery-risks'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check installer recovery with PowerShell 5.1
+        shell: pwsh
+        run: |
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File packaging/windows/tests/Test-Install-GrokZh.ps1 *> installer-ps51.log
+          if ($LASTEXITCODE -ne 0) { Get-Content installer-ps51.log; throw 'PowerShell 5.1 installer recovery regression failed.' }
+          Get-Content installer-ps51.log
+      - name: Check installer recovery with PowerShell 7
+        shell: pwsh
+        run: |
+          & ./packaging/windows/tests/Test-Install-GrokZh.ps1 *> installer-ps7.log
+          Get-Content installer-ps7.log
+      - name: Upload installer recovery evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-installer-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: installer-*.log
+          if-no-files-found: error
+          retention-days: 14
+  transaction:
+    if: github.ref == 'refs/heads/test/windows-recovery-risks'
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      RUSTUP_TOOLCHAIN: 1.94.0
+      CARGO_TERM_COLOR: never
+      # Optimize archive hashing/compression, but retain debug-only assertions and overflow checks.
+      CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: 'true'
+      RUSTFLAGS: -C target-feature=+crt-static
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify actual runner entrypoint resolution on PowerShell 5.1 and 7
+        shell: pwsh
+        run: |
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File .github/scripts/transaction-acceptance/Test-RunnerEntrypoint.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 entrypoint regression failed.' }
+          & .github/scripts/transaction-acceptance/Test-RunnerEntrypoint.ps1
+      - name: Run static regression checks
+        shell: pwsh
+        run: |
+          python -m unittest discover -s .github/scripts/tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Static regression checks failed.' }
+          python .github/scripts/direct-transaction-validation/test_generator.py
+          if ($LASTEXITCODE -ne 0) { throw 'Transaction source provenance checks failed.' }
+      - name: Download pinned original GNU and successful MSVC CI inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/transaction-acceptance/prepare.py download transaction-inputs
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned input preparation failed.' }
+      - name: Install pinned minimal Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+      - name: Compile only the independent transaction tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path transaction-evidence | Out-Null
+          cargo test --release --locked --manifest-path .github/scripts/direct-transaction-validation/Cargo.toml --target x86_64-pc-windows-msvc --no-run --message-format=json 1> transaction-evidence/cargo-build.jsonl 2> transaction-evidence/cargo-build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Transaction harness compilation failed.' }
+          python .github/scripts/transaction-acceptance/prepare.py bundle transaction-inputs transaction-evidence/cargo-build.jsonl transaction-bundle
+          if ($LASTEXITCODE -ne 0) { throw 'Portable bundle preparation failed.' }
+      - name: Test actual portable bundle away from checkout with PowerShell 5.1
+        shell: pwsh
+        run: |
+          $portable = Join-Path $env:RUNNER_TEMP 'portable-migration-acceptance'
+          Copy-Item -LiteralPath transaction-bundle -Destination $portable -Recurse
+          $runner = Join-Path $portable 'Run-MigrationTransaction.ps1'
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File $runner
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 transaction acceptance failed.' }
+      - name: Retest portable bundle with PowerShell 7
+        shell: pwsh
+        run: |
+          $runner = Join-Path $env:RUNNER_TEMP 'portable-migration-acceptance/Run-MigrationTransaction.ps1'
+          & $runner
+      - name: Collect isolated test evidence without profiles
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force transaction-evidence | Out-Null
+          $index = 0
+          Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'grok-migration-transaction-*' | ForEach-Object {
+            $logs = Join-Path $_.FullName 'results'
+            if (Test-Path -LiteralPath $logs) {
+              Copy-Item -LiteralPath $logs -Destination (Join-Path 'transaction-evidence' "run-$index") -Recurse
+              $index++
+            }
+          }
+      - name: Upload passed portable acceptance bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-updater-transaction-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: transaction-bundle/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload build and actual Windows transaction evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-updater-transaction-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: transaction-evidence/
+          if-no-files-found: error
+          retention-days: 14

@@ -5,7 +5,7 @@
 - legacy-transaction：固定 GNU 1.0.45 源码选择/下载流校验/提取/真实候选探测/Windows 事务，目标是完整真实 GNU 包副本，替换为真实 MSVC 1.0.104。
 - current-transaction：当前原始更新器源码，目标是真实 MSVC 包副本，分别经 native 包及 GNU 名称 direct 包显式同版本重装；不是两个不同未来版本的升级验证。
 
-历史底座复用 `3a1359d201957ccd0e33e24684dd4b291a71971b` 中 historical-update-parser 的逐字事务切片设计。完整历史输入逐项固定 Git blob，当前输入直接读取工作树原文件。构建时 prepare.py 重新生成原始完整社区发布模块、取消模块、产品常量和逐字提取的 auto_update 函数/事务段，并生成 source-provenance.json。历史 copy→rename→copy→rollback 没有替换成当前加固实现。当前源码使用当前自己的 stage→rename→rollback；两个测试 EXE 均使用当前固定 Rust 工具链及 x86_64-pc-windows-msvc 编译；历史 GNU 平台选择是显式 fixture，不是复现历史 GNU ABI。Cargo.lock 固定此测试构建依赖，但不声称复现旧发布程序的完整编译依赖或二进制。
+历史底座复用 `3a1359d201957ccd0e33e24684dd4b291a71971b` 中 historical-update-parser 的逐字事务切片设计。完整历史输入逐项固定 Git blob，当前输入直接读取工作树原文件。构建时 prepare.py 重新生成原始完整社区发布模块、取消模块、产品常量和逐字提取的 auto_update 函数/事务段，并生成 source-provenance.json。历史 copy→rename→copy→rollback 没有替换成当前加固实现。当前源码使用当前自己的 stage→hard-link backup→single POSIX rename replacement；两个测试 EXE 均使用当前固定 Rust 工具链及 x86_64-pc-windows-msvc 编译；历史 GNU 平台选择是显式 fixture，不是复现历史 GNU ABI。Cargo.lock 固定此测试构建依赖，但不声称复现旧发布程序的完整编译依赖或二进制。
 
 显式测试接缝：
 1. 内存中构造明确标记的未发布 Release 元数据，指定真实 archive 的固定 SHA-256 和字节数；未执行 GitHub 发现、分页、TLS、认证、HTTP 状态/响应头/重定向。
@@ -21,3 +21,11 @@
 构建命令：`cargo test --locked --no-run --manifest-path .github/scripts/direct-transaction-validation/Cargo.toml --message-format=json`。Windows 必须运行两个测试 EXE，非 Windows 的绿色结果不代表 Windows 事务测试执行。
 
 运行时所有输入来自环境，不依赖 CI 源码路径：GROK_DIRECT_HISTORICAL_EXE、GROK_DIRECT_NATIVE_EXE、GROK_DIRECT_NATIVE_ARCHIVE、GROK_DIRECT_DIRECT_ARCHIVE、GROK_TRANSACTION_RESULTS。测试 runner 必须先验证原始包/EXE 哈希并设置隔离 HOME/GROK_HOME/TEMP、清除凭据环境；不要对真实用户安装目录运行。测试只读取输入文件并在 TEMP 下创建自己的目录。
+
+## 中断与旧写入者回归
+
+当前测试新增真实运行中的复制测试 EXE（不是产品版本）进行原子 self-update、三个边界的 TerminateProcess 注入，以及锁定旧备份的组合；每次检查公共 EXE 入口完整且可直接启动，释放进程后可继续更新。候选仅追加 PE overlay 改变哈希，不伪装成新的产品版本。六个额外 Windows 边界单元测试由当前生产测试逐字提取。
+
+修复前 b3ca1daa 激活函数按固定 SHA-256 保存，生成器只插入首次改名成功后的测试 checkpoint，子进程强杀复现公共入口缺失。历史 GNU 延迟写入测试从候选验证之后进入原始历史锁/激活函数，以真实 GNU 1.0.45 文件覆盖真实 MSVC 1.0.104，证明短时锁不防止旧写入者晚到。它不声称自动更新会选择同版本 1.0.45，也不运行未修改的旧程序在线更新。这两项是负向风险复现，PASSED 不代表旧客户端已修复。
+
+预期历史 8 项、当前 20 项（包括两个无环境时不执行操作的子进程测试入口）全部运行、0 ignored。新证据文件明确区分 risk_reproduced、修复后入口保全、测试 EXE 与真实产品输入；不承诺断电/文件系统崩溃安全。迁移操作约束见 docs/WINDOWS-UPDATE-RECOVERY.md。

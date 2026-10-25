@@ -1,0 +1,7 @@
+{
+  "commit": "b3ca1daa",
+  "source": "crates/codegen/xai-grok-update/src/auto_update.rs",
+  "item": "windows_activate_staged_exe",
+  "sha256": "02a7a959e6558cf1a006c6c68162e6a181dcd4787e0aeaae6ef91a10dfe51b8e",
+  "purpose": "Negative process-kill reproduction, not fixed behavior. Generated test seam pauses immediately after successful dest-to-backup rename."
+}

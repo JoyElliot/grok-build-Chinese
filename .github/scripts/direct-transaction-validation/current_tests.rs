@@ -8,7 +8,7 @@ async fn current_source_accepts_direct_transport_after_migration() {
     result_file("direct-reinstall",json!({"status":"PASSED","version":VERSION,"same_version_only":true,"installed_sha256":NEW_HASH}));
 }
 #[tokio::test]
-async fn current_source_activation_failure_restores_real_native_image() {
+async fn current_source_activation_failure_preserves_real_native_image() {
     let dir=tempfile::tempdir().unwrap();let (destination,before)=genuine_copy(dir.path());
     let old=destination.with_file_name("grok-zh.exe.old");let lock=acquire_windows_update_lock(&destination).unwrap();
     let result=windows_activate_staged_exe(&dir.path().join("deliberately-missing-stage.exe"),&destination,&old).await;
@@ -17,5 +17,5 @@ async fn current_source_activation_failure_restores_real_native_image() {
     drop(lock);
     assert!(result.is_err());assert_rejection_unchanged(&destination,&before);assert!(!old.exists());
     assert!(community_version_output_matches(&smoke_test_binary(&destination).await.unwrap(),VERSION));
-    result_file("activation-rollback",json!({"status":"PASSED","restored_sha256":NEW_HASH,"failure_injection":"missing stage passed to original activation helper, after backup move"}));
+    result_file("activation-rollback",json!({"status":"PASSED","preserved_sha256":NEW_HASH,"failure_injection":"missing stage rejected before changing installed EXE","rollback_required":false}));
 }

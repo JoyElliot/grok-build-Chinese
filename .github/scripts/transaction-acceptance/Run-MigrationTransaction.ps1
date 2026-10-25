@@ -99,7 +99,7 @@ function Run-Test([string]$Name,[string]$Arguments,[int]$TimeoutSeconds) {
         if ($process.ExitCode -ne 0) { throw "$Name 失败，退出码 $($process.ExitCode)，详见日志。" }
         if ($output -notmatch 'test result: ok\. ([1-9][0-9]*) passed; 0 failed; 0 ignored;') { throw "$Name 未证明非零测试全部执行通过。" }
         $passed = [int]$Matches[1]
-        $expected = if ($Name -eq "legacy-transaction") { 7 } else { 9 }
+        $expected = if ($Name -eq "legacy-transaction") { 8 } else { 20 }
         if ($passed -ne $expected) { throw "$Name 实际测试数量不符：$passed，预期 $expected。" }
         Write-Host "$Name：$passed 项测试通过。"
     } catch {
@@ -137,10 +137,26 @@ try {
     $newHash = 'd7e2e35c9a18ec7d9415ce155cb1677d040925f208aff53f5d29fb7a8ed1d1ce'
     foreach ($kind in @('legacy','current')) {
         $cases = @('transaction','hash-rejection','truncation-rejection','real-version-rejection','lock-contention','sharing-lock','source-sharing-failure')
-        if ($kind -eq 'current') { $cases += @('direct-reinstall','activation-rollback') }
+        if ($kind -eq 'current') { $cases += @('direct-reinstall','activation-rollback','atomic-live-self-update','atomic-process-kill','pre-fix-process-kill') }
+        else { $cases += @('delayed-writer-overwrite') }
         foreach ($case in $cases) {
             $evidence = Get-Content -LiteralPath (Join-Path $results ($kind + '-' + $case + '.json')) -Encoding UTF8 -Raw | ConvertFrom-Json
             if ($evidence.status -cne 'PASSED') { throw "缺少成功的事务证据：$kind/$case" }
+            if ($case -eq 'delayed-writer-overwrite') {
+                if ($evidence.risk_reproduced -ne $true -or $evidence.initial_sha256 -cne $newHash -or $evidence.installed_sha256 -cne $oldHash -or $evidence.automatic_candidate_selection_tested -ne $false -or $evidence.whole_immutable_old_executable_update -ne $false) { throw '旧写入者风险复现证据不完整。' }
+            }
+            if ($case -eq 'pre-fix-process-kill') {
+                if ($evidence.risk_reproduced -ne $true -or $evidence.fixed_behavior -ne $false -or $evidence.active_exe_missing -ne $true -or $evidence.backup_preserved -ne $true) { throw '修复前强制终止负向证据不完整。' }
+            }
+            if ($case -eq 'atomic-live-self-update') {
+                if ($evidence.live_mapped_self_update -ne $true -or $evidence.public_entry_direct_launch -ne $true -or $evidence.locked_prior_backup_cases -ne 2 -or $evidence.power_loss_tested -ne $false) { throw '运行中映像原子替换证据不完整。' }
+            }
+            if ($case -eq 'atomic-process-kill') {
+                if (@($evidence.cases).Count -ne 6 -or $evidence.process_kill -cne 'TerminateProcess' -or $evidence.power_loss_tested -ne $false) { throw '原子替换终止注入证据不完整。' }
+                foreach ($entry in $evidence.cases) {
+                    if ($entry.entry_present_and_launchable -ne $true -or $entry.next_update_succeeded -ne $true) { throw '终止后入口或后续更新未通过。' }
+                }
+            }
             if ($case -eq 'transaction') {
                 $expectedInitial = if ($kind -eq 'legacy') { $oldHash } else { $newHash }
                 $expectedVersion = if ($kind -eq 'legacy') { '1.0.45' } else { '1.0.104' }
@@ -150,7 +166,8 @@ try {
             }
         }
     }
-    Write-Host '迁移事务验收通过：真实旧 GNU 文件 → 真实 MSVC 文件；历史源码更新事务与当前源码事务已执行。'
+    Write-Host '迁移及恢复回归通过：真实文件事务、运行中测试映像原子替换与强制终止注入已执行。'
+    Write-Host '包含旧 GNU 延迟写入覆盖风险和修复前入口缺失的负向复现；测试通过不表示历史旧更新器已修复。'
     Write-Host '网络传输为本地测试接缝；不是未修改旧 EXE 在线升级，也不是两个不同 MSVC 版本的连续升级。'
 } finally {
     Write-Host "隔离日志及临时测试文件保留于：$work"

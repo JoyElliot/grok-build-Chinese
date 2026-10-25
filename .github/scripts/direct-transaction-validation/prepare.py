@@ -17,6 +17,9 @@ report = {'historical_commit': PINS['commit'], 'sources': [], 'slices': [], 'sea
     'Current ExplicitVersion intent supplied by harness, not original CLI intent selection',
     'Both harnesses use current pinned toolchain / MSVC ABI, not historical GNU product ABI',
     'Current same-version reinstall only; no distinct future version claim',
+    'Current process-kill tests run copied harness EXEs, not product binaries; cfg(test) checkpoints bracket exact production replacement',
+    'Pre-fix b3ca1daa activation negative fixture is hash-verified; only a test checkpoint after first rename is inserted',
+    'Legacy delayed-writer negative case invokes exact historical activation with an explicit previously validated candidate fixture, not whole immutable old updater',
 ]}
 
 def read(path, historical=False):
@@ -93,8 +96,20 @@ def main():
             tx += exact_item(auto,name,mode)
         if not old:
             tx += exact_item(auto,'InstallIntent',mode,'enum',True)
-            for name in ['installed_community_version','community_windows_version_to_retain','activate_community_windows_candidate_locked','windows_rename_no_replace','windows_activate_staged_exe']:
+            for name in ['installed_community_version','community_windows_version_to_retain','activate_community_windows_candidate_locked','windows_wide_path','windows_rename_no_replace','windows_atomic_replace','windows_activate_staged_exe','windows_activation_test_checkpoint']:
                 tx += exact_item(auto,name,mode)
+        if not old:
+            original = (BASE/'regressions/pre-fix-activation-b3ca1daa.rs').read_bytes()
+            pin = json.loads((BASE/'regressions/pre-fix-activation-b3ca1daa.json').read_text())
+            if hashlib.sha256(original).hexdigest() != pin['sha256']:
+                raise RuntimeError('Pre-fix activation regression source changed')
+            anchor = b'                renamed = true;'
+            if original.count(anchor) != 1:
+                raise RuntimeError('Pre-fix activation checkpoint anchor changed')
+            instrumented = original.replace(anchor, anchor + b'\n                windows_activation_test_checkpoint("after-backup", dest);')
+            report['slices'].append({'mode':'pre-fix-negative', 'item':'windows_activate_staged_exe', 'commit':pin['commit'], 'sha256':pin['sha256'], 'seam':'checkpoint inserted after first rename'})
+            tx += b'\nmod pre_fix_activation { use super::*;\n' + instrumented
+            tx += b'\npub(super) async fn activate(stage: &Path, dest: &Path, old: &Path) -> Result<()> { windows_activate_staged_exe(stage, dest, old).await }\n}\n'
         tx += b'\n// Namespace wiring only; original detach implementation.\nmod xai_grok_tools { pub mod util {\n'
         tx += exact_item(tty,'detach_command',mode)+b'\n} }\n'
         tx += b'\n// TEST SEAMS: fixture asset + isolated destination + local response stream.\nasync fn isolated_transaction(asset: VerifiedAsset, destination: std::path::PathBuf, source: &Path, truncate_stream: bool) -> Result<String> {\nlet version = asset.version.clone();\n'
@@ -110,6 +125,22 @@ def main():
         tx += b'include!("../../transaction_tests.rs");\n'
         if not old:
             tx += b'include!("../../current_tests.rs");\n'
+            tx += b'include!("../../atomic_activation_tests.rs");\n'
+            unit_tests = read(src+'auto_update_tests.rs')
+            tx += b'\nmod atomic_unit_tests { use super::*;\n'
+            for name, asynchronous in [
+                ('test_windows_rename_no_replace_preserves_existing_names', False),
+                ('test_windows_missing_stage_preserves_destination_and_locked_backup', True),
+                ('test_windows_stage_cleanup_when_destination_cannot_be_renamed', True),
+                ('test_windows_replace_exe_supports_long_installation_paths', True),
+                ('test_windows_atomic_replace_failure_keeps_public_entry_and_stage', True),
+                ('test_windows_atomic_replace_rejects_nul_destination_without_mutation', False),
+            ]:
+                tx += b'\n#[tokio::test]\n' if asynchronous else b'\n#[test]\n'
+                tx += exact_item(unit_tests, name, mode)
+            tx += b'\n}\n'
+        else:
+            tx += b'include!("../../legacy_race_tests.rs");\n'
         write(mode+'/transaction.rs',tx)
     (BASE/'results').mkdir(exist_ok=True)
     (BASE/'results/source-provenance.json').write_text(json.dumps(report,indent=2)+'\n')

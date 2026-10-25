@@ -127,6 +127,53 @@ function Remove-PreviousCommunityInstall {
     } catch { return $Backup }
 }
 
+function Assert-NoRunningCommunityInstall {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    $installPath = Resolve-FullPath $InstallDir
+    $blocked = [Collections.Generic.List[string]]::new()
+    try {
+        # Read the running image path, never the version of the on-disk EXE:
+        # an old process may still be running after that EXE was replaced.
+        $processes = @(Get-Process -ErrorAction Stop | Where-Object { $_.ProcessName -like 'grok-zh*' })
+    } catch {
+        throw "无法检查正在运行的 grok-zh 进程，未切换安装目录。请退出旧会话后重试。$($_.Exception.Message)"
+    }
+    foreach ($process in $processes) {
+        try {
+            $imagePath = $null
+            try { $imagePath = $process.Path } catch { }
+            if ([string]::IsNullOrWhiteSpace($imagePath)) {
+                # A process exiting during enumeration is harmless. Any live
+                # candidate whose image cannot be read must fail closed.
+                $exited = $false
+                try { $exited = $process.HasExited } catch { }
+                if (!$exited) { $blocked.Add("PID $($process.Id)（无法读取运行映像路径）") }
+                continue
+            }
+            try {
+                $imagePath = Resolve-FullPath $imagePath
+                $relatedBackup = $imagePath.StartsWith($installPath + '.previous.', [StringComparison]::OrdinalIgnoreCase) -and
+                    $imagePath.Substring($installPath.Length) -match '^\.previous\.\d{8}-\d{6}-[a-f0-9]{8}[\\/]'
+                # A process in an exact historical sibling may have cached the
+                # original install destination before its directory was moved.
+                if ($relatedBackup -or (Test-PathsOverlap $installPath $imagePath)) {
+                    $blocked.Add("PID $($process.Id)（$imagePath）")
+                }
+            } catch {
+                $blocked.Add("PID $($process.Id)（无法确认运行映像路径）")
+            }
+        } finally {
+            if ($process -is [Diagnostics.Process]) { $process.Dispose() }
+        }
+    }
+    if ($blocked.Count -gt 0) {
+        throw "安装目录仍有运行中的 grok-zh，或存在无法确认路径的相关进程：$($blocked -join '；')。请自行退出这些会话后重试，并且安装期间不要重新启动旧版本。安装器不会强制结束进程。"
+    }
+    # This late preflight reduces legacy-writer risk, but cannot prevent a new
+    # process starting after the scan. Keep old sessions closed during install.
+}
+
 function Resolve-FullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1480,6 +1527,8 @@ $token = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $stage = "$InstallDir.stage.$PID-$token"
 $stageCreated = $false
 $previous = $null
+$activationStarted = $false
+$installationCommitted = $false
 $removedOfficial = @()
 
 try {
@@ -1577,42 +1626,63 @@ try {
     if (Test-Path -LiteralPath $InstallDir) {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $previous = "$InstallDir.previous.$stamp-$token"
+    }
+    # Finish all staged metadata before retiring the current entrypoint.
+    [ordered]@{
+        product = 'grok-build-zh'
+        version = $version
+        installed_at = (Get-Date).ToString('o')
+        install_dir = $InstallDir
+        commands = if ($provideOfficialNames) {
+            @('grok-zh', 'agent-zh', 'grok', 'agent')
+        } else {
+            @('grok-zh', 'agent-zh')
+        }
+        previous_install_backup = $previous
+        official_command_home = $GrokHome
+    } | ConvertTo-Json -Depth 4 | Set-Content `
+        -LiteralPath (Join-Path $stage '.grok-zh-install.json') -Encoding UTF8
+
+    Assert-NoRunningCommunityInstall -InstallDir $InstallDir
+    if ($previous) {
         Move-Item -LiteralPath $InstallDir -Destination $previous
     }
-
-    try {
-        [ordered]@{
-            product = 'grok-build-zh'
-            version = $version
-            installed_at = (Get-Date).ToString('o')
-            install_dir = $InstallDir
-            commands = if ($provideOfficialNames) {
-                @('grok-zh', 'agent-zh', 'grok', 'agent')
-            } else {
-                @('grok-zh', 'agent-zh')
-            }
-            previous_install_backup = $previous
-            official_command_home = $GrokHome
-        } | ConvertTo-Json -Depth 4 | Set-Content `
-            -LiteralPath (Join-Path $stage '.grok-zh-install.json') -Encoding UTF8
-
-        Move-Item -LiteralPath $stage -Destination $InstallDir
-        $stageCreated = $false
-        if ($packageVersion -and (Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')) -cne $packageVersion) {
-            throw '安装后版本检查失败，正在恢复原安装。'
-        }
-    } catch {
-        if (!$stageCreated -and (Test-Path -LiteralPath $InstallDir)) {
-            Move-Item -LiteralPath $InstallDir -Destination $stage
-            $stageCreated = $true
-        }
-        if ($previous -and !(Test-Path -LiteralPath $InstallDir) -and (Test-Path -LiteralPath $previous)) {
-            Move-Item -LiteralPath $previous -Destination $InstallDir
-        }
-        throw
+    $activationStarted = $true
+    Move-Item -LiteralPath $stage -Destination $InstallDir
+    $stageCreated = $false
+    if ($packageVersion -and (Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')) -cne $packageVersion) {
+        throw '安装后版本检查失败，正在恢复原安装。'
     }
+    $installationCommitted = $true
 } finally {
-    if ($stageCreated -and (Test-Path -LiteralPath $stage)) {
+    # Ctrl+C / PowerShell.Stop bypasses catch, but runs finally. Reconcile the
+    # actual directory state: cancellation can land after either rename and
+    # before the following assignment. Process termination/power loss cannot
+    # run finally and is not covered by this in-process recovery.
+    $canRemoveStage = $true
+    if (!$installationCommitted) {
+        try {
+            if ($activationStarted -and !(Test-Path -LiteralPath $stage) -and
+                (Test-Path -LiteralPath $InstallDir)) {
+                Move-Item -LiteralPath $InstallDir -Destination $stage
+                $stageCreated = $true
+            }
+            if ($previous -and (Test-Path -LiteralPath $previous)) {
+                if (Test-Path -LiteralPath $InstallDir) {
+                    throw "恢复目标已存在，未覆盖该目录：$InstallDir"
+                }
+                Move-Item -LiteralPath $previous -Destination $InstallDir
+            } elseif ($previous -and !(Test-Path -LiteralPath $InstallDir)) {
+                throw "找不到原安装或其备份：$previous"
+            }
+        } catch {
+            # A failed restore must not discard the staged replacement, which
+            # may be the only usable recovery copy. Never remove the backup.
+            $canRemoveStage = $false
+            Write-Warning "安装未完成，自动恢复失败：$($_.Exception.Message) 原安装备份：$previous；暂存目录：$stage。已保留恢复文件，请勿删除。"
+        }
+    }
+    if ($canRemoveStage -and $stageCreated -and (Test-Path -LiteralPath $stage)) {
         Remove-Item -LiteralPath $stage -Recurse -Force
     }
 }

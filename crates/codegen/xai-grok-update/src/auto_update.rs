@@ -3010,8 +3010,8 @@ impl LinkRollback {
                 link_path,
                 backup_path,
             } => {
-                // Route through `windows_replace_exe`
-                // Rollback then inherits the same ERROR_SHARING_VIOLATION rename-aside fallback as the forward path
+                // Rollback uses the same hard-link-backed atomic replacement as
+                // the forward path, without ever removing the installed name.
                 windows_replace_exe(backup_path, link_path)
                     .await
                     .with_context(|| {
@@ -3086,13 +3086,53 @@ async fn sweep_stale_tmp_links(link_path: &std::path::Path, max_age: Duration) {
     }
 }
 
-/// Stage and sync the new image before renaming the installed image aside.
-/// An activation failure restores that exact backup; locked leftovers use a
-/// unique `<dest>.old.{pid}-{seq}.old` sibling and are swept on a later update.
+/// Stage and sync the new image, retain a hard link to the installed image,
+/// then atomically replace its directory entry. Never remove the installed name
+/// before replacement, including on unsupported filesystems or sharing failures.
 #[cfg(windows)]
 async fn windows_replace_exe(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
     let _install_lock = acquire_windows_update_lock(dest)?;
     windows_replace_exe_locked(src, dest).await
+}
+
+/// Win32 extended-length absolute path, including a not-yet-existing name.
+#[cfg(windows)]
+fn windows_wide_path(path: &std::path::Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    // Match std filesystem support for long Windows paths, including a
+    // destination that does not yet exist. Canonicalization cannot be used
+    // here because activation and rollback intentionally create new names.
+    let absolute = std::path::absolute(path)?;
+    let raw: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    let prefix = absolute.components().next();
+    use std::path::{Component, Prefix};
+    let mut value: Vec<u16> = match prefix {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) => raw,
+            Prefix::Disk(_) => "\\\\?\\".encode_utf16().chain(raw).collect(),
+            Prefix::UNC(_, _) => "\\\\?\\UNC\\"
+                .encode_utf16()
+                .chain(raw.into_iter().skip(2))
+                .collect(),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported Windows path prefix",
+                ));
+            }
+        },
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows path is not absolute",
+            ));
+        }
+    };
+    if value.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"));
+    }
+    value.push(0);
+    Ok(value)
 }
 
 /// Move within the installation directory without replacing an existing name.
@@ -3100,52 +3140,12 @@ async fn windows_replace_exe(src: &std::path::Path, dest: &std::path::Path) -> R
 /// silently clobber an unrelated file that raced into an aside/destination.
 #[cfg(windows)]
 fn windows_rename_no_replace(src: &std::path::Path, dest: &std::path::Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
-    let wide = |path: &std::path::Path| -> io::Result<Vec<u16>> {
-        // Match std filesystem support for long Windows paths, including a
-        // destination that does not yet exist. Canonicalization cannot be used
-        // here because activation and rollback intentionally create new names.
-        let absolute = std::path::absolute(path)?;
-        let raw: Vec<u16> = absolute.as_os_str().encode_wide().collect();
-        let prefix = absolute.components().next();
-        use std::path::{Component, Prefix};
-        let mut value: Vec<u16> = match prefix {
-            Some(Component::Prefix(prefix)) => match prefix.kind() {
-                Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) => raw,
-                Prefix::Disk(_) => "\\\\?\\".encode_utf16().chain(raw).collect(),
-                Prefix::UNC(_, _) => "\\\\?\\UNC\\"
-                    .encode_utf16()
-                    .chain(raw.into_iter().skip(2))
-                    .collect(),
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "unsupported Windows path prefix",
-                    ));
-                }
-            },
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Windows path is not absolute",
-                ));
-            }
-        };
-        if value.contains(&0) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "path contains NUL",
-            ));
-        }
-        value.push(0);
-        Ok(value)
-    };
-    let src = wide(src)?;
-    let dest = wide(dest)?;
+    let src = windows_wide_path(src)?;
+    let dest = windows_wide_path(dest)?;
     // MOVEFILE_WRITE_THROUGH, deliberately without REPLACE_EXISTING or COPY_ALLOWED.
     if unsafe { MoveFileExW(src.as_ptr(), dest.as_ptr(), 0x8) } == 0 {
         return Err(io::Error::last_os_error());
@@ -3192,7 +3192,79 @@ async fn windows_replace_exe_locked(src: &std::path::Path, dest: &std::path::Pat
     result
 }
 
+/// One same-volume namespace replacement. FileRenameInfoEx/POSIX (Windows 10
+/// 1607+) keeps existing handles valid while subsequent opens see the new image.
+/// The caller must retain a hard link to an executing destination: removing the
+/// last name of an image-section-backed file is not the same as renaming it.
+/// No ReplaceFileW or rename-aside fallback: both can leave the public name absent.
+#[cfg(windows)]
+fn windows_atomic_replace(src: &std::path::Path, dest: &std::path::Path) -> io::Result<()> {
+    use std::ffi::c_void;
+    use std::mem::size_of;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileRenameInfo {
+        flags: u32,
+        root_directory: *mut c_void,
+        file_name_length: u32,
+        file_name: [u16; 1],
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut c_void,
+            class: i32,
+            information: *const c_void,
+            size: u32,
+        ) -> i32;
+    }
+    let name = windows_wide_path(dest)?;
+    let name_bytes = (name.len() - 1) * size_of::<u16>();
+    let size = size_of::<FileRenameInfo>() + name.len() * size_of::<u16>();
+    let size = u32::try_from(size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "rename path is too long"))?;
+    // usize storage supplies HANDLE alignment, unlike a Vec<u8>. The trailing
+    // variable-length name starts at FileName, not after the struct's padding.
+    let mut storage = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
+    let info = storage.as_mut_ptr().cast::<FileRenameInfo>();
+    // DELETE | FILE_READ_ATTRIBUTES; share read/write/delete. Open the stage
+    // itself so handle metadata can reject a substituted reparse point.
+    let source = std::fs::OpenOptions::new()
+        .access_mode(0x0001_0000 | 0x80)
+        .share_mode(0x1 | 0x2 | 0x4)
+        .custom_flags(0x0020_0000)
+        .open(src)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "replacement handle is not a regular non-reparse file",
+        ));
+    }
+    // SAFETY: storage is aligned and contains the complete initialized header
+    // and UTF-16 name. The owned file handle and storage outlive the synchronous
+    // call. Constants are FileRenameInfoEx and REPLACE_IF_EXISTS | POSIX_SEMANTICS.
+    unsafe {
+        (*info).flags = 0x1 | 0x2;
+        (*info).root_directory = std::ptr::null_mut();
+        (*info).file_name_length = name_bytes as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*info).file_name).cast::<u16>(),
+            name.len(),
+        );
+        if SetFileInformationByHandle(source.as_raw_handle(), 22, info.cast(), size) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Caller holds the installation lock and has fully written/synced the stage.
+/// Process termination leaves the installed entry pointing at the complete old
+/// or complete new file. This is NOT a power-loss/disk-durability guarantee.
 #[cfg(windows)]
 async fn windows_activate_staged_exe(
     staged: &std::path::Path,
@@ -3210,13 +3282,24 @@ async fn windows_activate_staged_exe(
         }
         Ok(_) => {}
     }
+    let stage_metadata = tokio::fs::symlink_metadata(staged)
+        .await
+        .context("checking replacement stage without changing installed executable")?;
+    if !stage_metadata.is_file() || stage_metadata.file_type().is_symlink() {
+        anyhow::bail!("replacement stage is not a regular file");
+    }
+    #[cfg(test)]
+    windows_activation_test_checkpoint("before-backup", dest);
     sweep_old_exe_backups(old).await;
     let mut aside = old.to_path_buf();
-    let mut renamed = false;
+    let mut linked = false;
     for attempt in 0..3 {
-        match windows_rename_no_replace(dest, &aside) {
+        // A copy would not retain the mapped image's file identity. A hard link
+        // preserves the executing image AND leaves the public name untouched.
+        // hard_link never replaces an occupied backup name.
+        match tokio::fs::hard_link(dest, &aside).await {
             Ok(()) => {
-                renamed = true;
+                linked = true;
                 break;
             }
             Err(error)
@@ -3225,35 +3308,59 @@ async fn windows_activate_staged_exe(
                 aside = unique_temp_sibling(old, "old");
             }
             Err(error) => {
-                return Err(error).context("moving installed executable to rollback backup");
-            }
-        }
-    }
-    if !renamed {
-        anyhow::bail!("could not reserve an executable rollback backup");
-    }
-    match windows_rename_no_replace(staged, dest) {
-        Ok(()) => {
-            sweep_old_exe_backups(old).await;
-            Ok(())
-        }
-        Err(error) => {
-            // Never overwrite a file another process created during activation.
-            // If that prevents rollback, retain the original and report its path.
-            if let Err(rollback) = windows_rename_no_replace(&aside, dest) {
-                anyhow::bail!(
-                    "install failed: {error}; rollback failed: {rollback}; previous executable retained at {}",
-                    aside.display()
+                return Err(error).context(
+                    "retaining installed executable without removing its name; a filesystem supporting hard links is required",
                 );
             }
-            Err(error.into())
         }
+    }
+    if !linked {
+        anyhow::bail!("could not reserve an executable hard-link backup");
+    }
+    #[cfg(test)]
+    windows_activation_test_checkpoint("after-backup", dest);
+    if let Err(error) = windows_atomic_replace(staged, dest) {
+        // The original name was never moved or deleted. No rollback is needed,
+        // and an unsupported OS/filesystem must fail closed, not use two renames.
+        let _ = tokio::fs::remove_file(&aside).await;
+        return Err(error).context(
+            "atomic executable replacement failed; installed executable was not removed (requires Windows 10 1607+ and filesystem POSIX rename support)",
+        );
+    }
+    #[cfg(test)]
+    windows_activation_test_checkpoint("after-replace", dest);
+    sweep_old_exe_backups(old).await;
+    Ok(())
+}
+
+/// Test-binary-only fault-injection rendezvous; never compiled into the product.
+/// The parent kills this child with TerminateProcess, not a panic/unwind. Every
+/// wait is bounded so a missing controller cannot hang the Windows CI worker.
+#[cfg(all(windows, test))]
+fn windows_activation_test_checkpoint(phase: &str, dest: &std::path::Path) {
+    use std::io::Write;
+    if std::env::var("GROK_TEST_ACTIVATION_PHASE").ok().as_deref() != Some(phase)
+        || std::env::var_os("GROK_TEST_ACTIVATION_DEST").as_deref() != Some(dest.as_os_str())
+    {
+        return;
+    }
+    let marker = std::path::PathBuf::from(
+        std::env::var_os("GROK_TEST_ACTIVATION_MARKER").expect("checkpoint marker"),
+    );
+    let mut file = std::fs::File::create(&marker).expect("create checkpoint marker");
+    file.write_all(phase.as_bytes()).expect("write checkpoint marker");
+    file.sync_all().expect("sync checkpoint marker");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !marker.with_extension("continue").exists() {
+        assert!(std::time::Instant::now() < deadline, "checkpoint timed out: {phase}");
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
 /// The `<exe>.old` prefix keeps the sweep away from `<exe>` itself, other executables' leftovers, and the `.rollback.bak`
-/// / `.tmp` sibling shapes. Rename preserves mtime, so a racer's seconds-old aside already looks days old and age cannot
-/// distinguish it. Deleting a racer's fresh unlocked aside is the same accepted race as in `tmp_download_path`.
+/// / `.tmp` sibling shapes. The caller holds the installation lock, including
+/// during backup creation and replacement, so cleanup cannot race a cooperative
+/// updater's live hard-link backup. Locked mapped images remain for a later pass.
 #[cfg(windows)]
 async fn sweep_old_exe_backups(old: &std::path::Path) {
     let _ = tokio::fs::remove_file(old).await;
