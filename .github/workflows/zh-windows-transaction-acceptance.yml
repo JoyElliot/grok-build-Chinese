@@ -1,0 +1,92 @@
+name: Windows isolated updater transaction acceptance
+
+on:
+  push:
+    branches:
+      - test/windows-msvc-transaction-acceptance
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-transaction-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  transaction:
+    if: github.ref == 'refs/heads/test/windows-msvc-transaction-acceptance'
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      RUSTUP_TOOLCHAIN: 1.94.0
+      CARGO_TERM_COLOR: never
+      RUSTFLAGS: -C target-feature=+crt-static
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download pinned original GNU and successful MSVC CI inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/transaction-acceptance/prepare.py download transaction-inputs
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned input preparation failed.' }
+      - name: Install pinned minimal Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+      - name: Compile only the independent transaction tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path transaction-evidence | Out-Null
+          cargo test --locked --manifest-path .github/scripts/direct-transaction-validation/Cargo.toml --target x86_64-pc-windows-msvc --no-run --message-format=json 1> transaction-evidence/cargo-build.jsonl 2> transaction-evidence/cargo-build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Transaction harness compilation failed.' }
+          python .github/scripts/transaction-acceptance/prepare.py bundle transaction-inputs transaction-evidence/cargo-build.jsonl transaction-bundle
+          if ($LASTEXITCODE -ne 0) { throw 'Portable bundle preparation failed.' }
+      - name: Test actual portable bundle away from checkout with PowerShell 5.1
+        shell: pwsh
+        run: |
+          $portable = Join-Path $env:RUNNER_TEMP 'portable-migration-acceptance'
+          Copy-Item -LiteralPath transaction-bundle -Destination $portable -Recurse
+          $runner = Join-Path $portable 'Run-MigrationTransaction.ps1'
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File $runner
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 transaction acceptance failed.' }
+      - name: Retest portable bundle with PowerShell 7
+        shell: pwsh
+        run: |
+          $runner = Join-Path $env:RUNNER_TEMP 'portable-migration-acceptance/Run-MigrationTransaction.ps1'
+          & $runner
+      - name: Collect isolated test evidence without profiles
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force transaction-evidence | Out-Null
+          $index = 0
+          Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'grok-migration-transaction-*' | ForEach-Object {
+            $logs = Join-Path $_.FullName 'results'
+            if (Test-Path -LiteralPath $logs) {
+              Copy-Item -LiteralPath $logs -Destination (Join-Path 'transaction-evidence' "run-$index") -Recurse
+              $index++
+            }
+          }
+      - name: Upload passed portable acceptance bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-updater-transaction-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: transaction-bundle/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload build and actual Windows transaction evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-updater-transaction-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: transaction-evidence/
+          if-no-files-found: error
+          retention-days: 14
