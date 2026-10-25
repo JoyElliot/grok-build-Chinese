@@ -38,6 +38,19 @@ class DirectMsvcPackageTests(unittest.TestCase):
         for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"):
             self.assertIn("$env:" + name, text)
 
+    def test_windows_smoke_compares_raw_persistent_path_and_exact_file_set(self):
+        text = (fixtures.builder.ROOT / "packaging/windows/tests/Test-DirectMsvcProduct.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("RegistryValueOptions]::DoNotExpandEnvironmentNames", text)
+        self.assertIn("$key.GetValueKind('Path')", text)
+        self.assertIn("$key.GetValueNames() -icontains 'Path'", text)
+        self.assertIn("$userPath = Get-RawUserPathSnapshot", text)
+        self.assertIn("if ((Get-RawUserPathSnapshot) -cne $userPath)", text)
+        self.assertNotIn("$userPath = [Environment]::GetEnvironmentVariable", text)
+        self.assertIn("Compare-Object -ReferenceObject $expectedNames -DifferenceObject $afterNames -CaseSensitive", text)
+        self.assertIn("-File -Recurse -Force", text)
+        self.assertIn("$_.SideIndicator", text)
+        self.assertIn("$_.InputObject.Substring", text)
+
     def test_exact_native_executable_and_legacy_transport(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -14,7 +14,23 @@ $names = @('GROK_HOME', 'GROK_DISABLE_AUTOUPDATER', 'GROK_TELEMETRY_ENABLED', 'G
 $old = @{}
 foreach ($name in $names) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $script:CleanupSafe = $true
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+function Get-RawUserPathSnapshot {
+    # GetEnvironmentVariable('Path', 'User') expands REG_EXPAND_SZ against
+    # the current process environment. Isolating USERPROFILE/LOCALAPPDATA must
+    # not look like a persistent user PATH change. Compare registry identity,
+    # value kind, and unexpanded bytes instead; never write the registry.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    try {
+        $exists = $null -ne $key -and $key.GetValueNames() -icontains 'Path'
+        $kind = $null; $value = $null
+        if ($exists) {
+            $kind = $key.GetValueKind('Path').ToString()
+            $value = $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        }
+        return ([ordered]@{ Exists = $exists; Kind = $kind; Value = $value } | ConvertTo-Json -Compress)
+    } finally { if ($null -ne $key) { $key.Dispose() } }
+}
+$userPath = Get-RawUserPathSnapshot
 function Run-Product([string]$Exe, [string]$Arguments) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Exe; $start.Arguments = $Arguments; $start.UseShellExecute = $false
@@ -65,7 +81,7 @@ try {
     # Boundary fixture only: no claim that a released GNU updater was run.
     [IO.File]::WriteAllText($program, 'previous executable boundary fixture', $utf8)
     $before = @{}
-    foreach ($file in Get-ChildItem -LiteralPath $installed -File -Recurse) {
+    foreach ($file in Get-ChildItem -LiteralPath $installed -File -Recurse -Force) {
         if ($file.FullName -ine $program) { $before[$file.FullName] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash }
     }
     $candidate = Join-Path $work 'verified.exe'
@@ -90,21 +106,38 @@ with zipfile.ZipFile(sys.argv[2]) as zipped, zipped.open(result['root'] + '/grok
     if ([IO.File]::ReadAllText($backup, $utf8) -cne 'previous executable boundary fixture') { throw '替换未保留原始备份。' }
     foreach ($arguments in @('--version', '--help', 'agent --help', 'update --help')) { $null = Run-Product $program $arguments }
     if ((Get-FileHash -LiteralPath $program -Algorithm SHA256).Hash -cne $expected) { throw '运行后 EXE 身份改变。' }
+    $afterNames = @(Get-ChildItem -LiteralPath $installed -File -Recurse -Force | ForEach-Object FullName)
+    $expectedNames = @($before.Keys) + @($program)
+    $fileChanges = @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $afterNames -CaseSensitive)
+    if ($fileChanges.Count -ne 0) {
+        $details = @($fileChanges | ForEach-Object {
+            "$($_.SideIndicator) $($_.InputObject.Substring($installed.Length + 1))"
+        }) -join '; '
+        throw "直接启动改动安装目录文件集合（原 $($expectedNames.Count)，现 $($afterNames.Count)；=> 新增，<= 缺失）：$details"
+    }
     foreach ($name in $before.Keys) {
         if ((Get-FileHash -LiteralPath $name -Algorithm SHA256).Hash -cne $before[$name]) { throw "EXE-only 替换改动伴随文件：$name" }
     }
-    if (@(Get-ChildItem -LiteralPath $installed -File -Recurse).Count -ne $before.Count + 1 -or
-        (Test-Path -LiteralPath (Join-Path $installed '.grok-zh-msvc')) -or
-        [IO.File]::ReadAllText((Join-Path $env:GROK_HOME 'preserve.txt'), $utf8) -cne 'retain' -or
-        [Environment]::GetEnvironmentVariable('Path', 'User') -cne $userPath) { throw '直接启动创建迁移运行时或改动用户设置。' }
+    if (Test-Path -LiteralPath (Join-Path $installed '.grok-zh-msvc')) {
+        throw '直接启动创建了不应存在的 .grok-zh-msvc 迁移运行时。'
+    }
+    if ([IO.File]::ReadAllText((Join-Path $env:GROK_HOME 'preserve.txt'), $utf8) -cne 'retain') {
+        throw '直接启动改动了隔离 GROK_HOME 中的保留文件。'
+    }
+    if ((Get-RawUserPathSnapshot) -cne $userPath) {
+        throw '直接启动改动了注册表用户 PATH 的存在性、值类型或未展开内容。'
+    }
     Write-Host "Direct MSVC boundary smoke passed: $version; native EXE identity, backup, unchanged companions, four CLI commands."
     Write-Host 'This isolated boundary fixture is not a released GNU updater online migration or real-machine AV acceptance.'
+} catch {
+    $script:CleanupSafe = $false
+    throw
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $old[$name], 'Process') }
     if ((Split-Path -Parent ([IO.Path]::GetFullPath($work))) -ine $parent -or !(Split-Path -Leaf $work).StartsWith('grok-direct-product-test-')) { throw '清理边界无效。' }
     if ($script:CleanupSafe -and (Test-Path -LiteralPath $work)) {
         Remove-Item -LiteralPath $work -Recurse -Force
     } elseif (Test-Path -LiteralPath $work) {
-        Write-Warning "未确认所有子进程退出；为避免删除运行中目录，保留：$work"
+        Write-Warning "验证失败或子进程状态不确定；保留隔离目录供检查：$work"
     }
 }
