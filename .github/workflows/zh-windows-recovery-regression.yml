@@ -44,6 +44,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Materialize exact pre-fix installer blob for negative reproduction
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $blob = gh api repos/JoyElliot/grok-build-Chinese/git/blobs/cb857d881b1c0350842b3c5aabaceaa909b0e1e8 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $blob.sha -cne 'cb857d881b1c0350842b3c5aabaceaa909b0e1e8' -or $blob.encoding -cne 'base64') { throw 'Pinned installer source retrieval failed.' }
+          [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'baseline-installer.ps1'), [Convert]::FromBase64String($blob.content))
+      - name: Reproduce pre-fix cancellation loss using unchanged pinned source
+        shell: cmd
+        run: |
+          "${{ matrix.executable }}" -NoLogo -NoProfile -OutputFormat Text -File packaging/windows/tests/Test-Install-GrokZhCancellationBaseline.ps1 -BaselineInstallerPath "%RUNNER_TEMP%\baseline-installer.ps1" -EvidencePath "%CD%\installer-baseline-${{ matrix.engine }}.json" > installer-baseline-${{ matrix.engine }}.log 2>&1
+          set "TEST_EXIT=%ERRORLEVEL%"
+          type installer-baseline-${{ matrix.engine }}.log
+          exit /b %TEST_EXIT%
       - name: Check installer recovery without nested PowerShell stream conversion
         shell: cmd
         run: |
@@ -51,12 +66,21 @@ jobs:
           set "TEST_EXIT=%ERRORLEVEL%"
           type installer-${{ matrix.engine }}.log
           exit /b %TEST_EXIT%
+      - name: Check online and repeated portable installer integration
+        shell: cmd
+        run: |
+          "${{ matrix.executable }}" -NoLogo -NoProfile -OutputFormat Text -File packaging/windows/tests/Test-Install-GrokZhOnline.ps1 > installer-online-${{ matrix.engine }}.log 2>&1
+          set "TEST_EXIT=%ERRORLEVEL%"
+          type installer-online-${{ matrix.engine }}.log
+          exit /b %TEST_EXIT%
       - name: Upload installer recovery evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-installer-recovery-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: installer-*.log
+          path: |
+            installer-*.log
+            installer-baseline-*.json
           if-no-files-found: error
           retention-days: 14
   transaction:

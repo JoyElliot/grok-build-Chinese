@@ -666,7 +666,7 @@ function Invoke-OnlinePackageInstaller {
     $buildInfo = ConvertFrom-OnlineUtf8 ([IO.File]::ReadAllBytes((Join-Path $Package 'BUILD-INFO.txt')))
     $protocol = Read-OnlinePackageProtocol $buildInfo $Version
     $installer = if ($protocol) { $protocol.installer } else { 'Install-GrokZh.ps1' }
-    $arguments = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    $arguments = @('-NoLogo', '-NoProfile', '-OutputFormat', 'Text', '-File',
         (Join-Path $Package $installer), '-PackageDir', $Package,
         '-InstallDir', $Directory, '-ShowProgress')
     if ($SharedHome) { $arguments += @('-GrokHome', $SharedHome) }
@@ -691,20 +691,68 @@ function Invoke-OnlinePackageInstaller {
     if ($LASTEXITCODE -ne 0) { throw "包内安装器返回错误（退出码 $LASTEXITCODE），请按上方中文提示处理。" }
 }
 
-function Assert-OnlinePortableRoot {
+function Assert-OnlinePortableLayout {
     param([string]$Root)
-    if (!(Test-Path -LiteralPath $Root)) { return }
-    $marker = Get-OnlineInstallMarker (Join-Path $Root 'app')
-    if ($null -eq $marker -or (Get-OnlineProperty $marker 'portable_layout') -ne 1 -or
-        (Get-OnlineProperty $marker 'portable_root') -ine $Root) { throw '现有目录不是受管便携版，请选择新目录。' }
     $children = @(Get-ChildItem -LiteralPath $Root -Force)
-    if ($children.Count -ne 3 -or @($children | Where-Object { $_.Name -cnotin @('启动.cmd', '使用说明.md', 'app') }).Count -gt 0) {
+    $allowed = @('启动.cmd', '使用说明.md', 'app', 'app.install.lock')
+    if ($children.Count -notin @(3, 4) -or @($children | Where-Object { $_.Name -cnotin $allowed }).Count -gt 0) {
         throw '便携目录包含额外文件，请先移出个人文件后再更新。'
     }
     foreach ($child in $children) { Assert-OnlinePathChain $child.FullName }
     if (!(Test-Path -LiteralPath (Join-Path $Root '启动.cmd') -PathType Leaf) -or
         !(Test-Path -LiteralPath (Join-Path $Root '使用说明.md') -PathType Leaf) -or
         !(Test-Path -LiteralPath (Join-Path $Root 'app') -PathType Container)) { throw '便携目录的入口、说明或程序目录类型不正确。' }
+    $lockPath = Join-Path $Root 'app.install.lock'
+    if (!(Test-Path -LiteralPath $lockPath)) { return }
+    # Current full installers retain this stable sibling lock. Older portable
+    # roots have only the three public entries. Recognize only the exact empty,
+    # single-link, idle ordinary file; never unlink a live installation's lock.
+    if (!('GrokZh.OnlinePortableLock' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace GrokZh {
+    public static class OnlinePortableLock {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileInformation {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime, AccessTime, WriteTime;
+            public uint VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string name, uint access, uint share,
+            IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation info);
+        public static void Validate(string path) {
+            // OPEN_EXISTING, exclusive read, OPEN_REPARSE_POINT: validate the
+            // opened file itself, not the target of a raced-in final symlink.
+            using (SafeFileHandle file = CreateFile(path, 0x80000000, 0, IntPtr.Zero, 3, 0x00200080, IntPtr.Zero)) {
+                if (file.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                FileInformation info;
+                if (!GetFileInformationByHandle(file, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                if ((info.Attributes & 0x410) != 0 || info.Links != 1 || info.SizeHigh != 0 || info.SizeLow != 0)
+                    throw new IOException("Portable installer lock must be an empty ordinary single-link file.");
+            }
+        }
+    }
+}
+'@
+    }
+    try { [GrokZh.OnlinePortableLock]::Validate($lockPath) }
+    catch { throw "便携安装锁不是可确认的空闲受管文件，请保留该目录并先检查：$lockPath。$($_.Exception.Message)" }
+}
+
+function Assert-OnlinePortableRoot {
+    param([string]$Root)
+    if (!(Test-Path -LiteralPath $Root)) { return }
+    $marker = Get-OnlineInstallMarker (Join-Path $Root 'app')
+    if ($null -eq $marker -or (Get-OnlineProperty $marker 'portable_layout') -ne 1 -or
+        (Get-OnlineProperty $marker 'portable_root') -ine $Root) { throw '现有目录不是受管便携版，请选择新目录。' }
+    Assert-OnlinePortableLayout $Root
 }
 
 function Get-OnlineChangelogBody {
@@ -774,11 +822,7 @@ function Remove-OnlinePreviousPortable {
         if ((Split-Path -Parent $resolved) -ine $parent -or
             (Split-Path -Leaf $resolved) -notmatch ('^' + [regex]::Escape($leaf) + '\.previous\.\d{8}-\d{6}-[a-f0-9]{8}$')) { return $Backup }
         Assert-OnlinePathChain $resolved
-        $children = @(Get-ChildItem -LiteralPath $resolved -Force)
-        if ($children.Count -ne 3 -or @($children | Where-Object { $_.Name -cnotin @('启动.cmd', '使用说明.md', 'app') }).Count -gt 0) { return $Backup }
-        if (!(Test-Path -LiteralPath (Join-Path $resolved '启动.cmd') -PathType Leaf) -or
-            !(Test-Path -LiteralPath (Join-Path $resolved '使用说明.md') -PathType Leaf) -or
-            !(Test-Path -LiteralPath (Join-Path $resolved 'app') -PathType Container)) { return $Backup }
+        Assert-OnlinePortableLayout $resolved
         $app = Join-Path $resolved 'app'
         $markerPath = Join-Path $app '.grok-zh-install.json'
         Assert-OnlinePathChain $markerPath

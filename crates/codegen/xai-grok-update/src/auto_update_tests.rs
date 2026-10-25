@@ -3054,7 +3054,10 @@ async fn test_windows_stage_cleanup_when_destination_cannot_be_renamed() {
     let mut permissions = std::fs::metadata(&dest).unwrap().permissions();
     permissions.set_readonly(false);
     std::fs::set_permissions(&dest, permissions).unwrap();
-    assert!(result.is_err(), "read-only destination must not be overridden");
+    assert!(
+        result.is_err(),
+        "read-only destination must not be overridden"
+    );
     assert_eq!(std::fs::read(&dest).unwrap(), b"original");
     assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
         entry
@@ -3107,7 +3110,10 @@ async fn test_windows_atomic_replace_failure_keeps_public_entry_and_stage() {
         .unwrap_err();
     assert!(format!("{error:#}").contains("atomic executable replacement failed"));
     assert_eq!(std::fs::read(&dest).unwrap(), b"original");
-    assert!(!old.exists(), "failure cleans only the newly created hard link");
+    assert!(
+        !old.exists(),
+        "failure cleans only the newly created hard link"
+    );
     drop(held);
     assert_eq!(std::fs::read(&stage).unwrap(), b"replacement");
 }
@@ -3119,9 +3125,11 @@ fn test_windows_atomic_replace_rejects_nul_destination_without_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let stage = dir.path().join("stage.exe");
     std::fs::write(&stage, b"replacement").unwrap();
-    let invalid = dir
-        .path()
-        .join(std::ffi::OsString::from_wide(&[b'x' as u16, 0, b'y' as u16]));
+    let invalid = dir.path().join(std::ffi::OsString::from_wide(&[
+        b'x' as u16,
+        0,
+        b'y' as u16,
+    ]));
     assert_eq!(
         windows_atomic_replace(&stage, &invalid).unwrap_err().kind(),
         io::ErrorKind::InvalidInput
