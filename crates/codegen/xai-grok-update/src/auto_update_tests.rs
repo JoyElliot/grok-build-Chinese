@@ -2064,8 +2064,9 @@ async fn test_windows_replace_exe_no_filename_returns_err() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn test_windows_replace_exe_locked_file_renames_aside() {
-    // Simulate a running .exe: blocks writes but allows rename.
+async fn test_windows_replace_exe_preserves_open_old_file_handle() {
+    // An open file handle, not a running image. Live mapped-image and process-kill
+    // cases run in direct-transaction-validation on Windows.
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_SHARE_READ: u32 = 0x00000001;
     const FILE_SHARE_DELETE: u32 = 0x00000004;
@@ -2996,7 +2997,7 @@ fn test_windows_rename_no_replace_preserves_existing_names() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn test_windows_staged_activation_failure_rolls_back_both_aside_paths() {
+async fn test_windows_missing_stage_preserves_destination_and_locked_backup() {
     use std::os::windows::fs::OpenOptionsExt;
     for locked_old in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -3015,8 +3016,8 @@ async fn test_windows_staged_activation_failure_rolls_back_both_aside_paths() {
         } else {
             None
         };
-        // Deterministic activation I/O failure, after the original was moved:
-        // a removed stage must restore the exact backup chosen for this attempt.
+        // Reject a missing stage before touching either installed name or backup.
+        // There is deliberately no rename-away/rollback interval anymore.
         let _lock = acquire_windows_update_lock(&dest).unwrap();
         let result =
             windows_activate_staged_exe(&dir.path().join("missing-stage.exe"), &dest, &old).await;
@@ -3041,18 +3042,22 @@ async fn test_windows_staged_activation_failure_rolls_back_both_aside_paths() {
 #[cfg(windows)]
 #[tokio::test]
 async fn test_windows_stage_cleanup_when_destination_cannot_be_renamed() {
-    use std::os::windows::fs::OpenOptionsExt;
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source.exe");
     let dest = dir.path().join("grok.exe");
     std::fs::write(&source, b"new").unwrap();
     std::fs::write(&dest, b"original").unwrap();
-    let _held = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(1)
-        .open(&dest)
-        .unwrap();
-    assert!(windows_replace_exe(&source, &dest).await.is_err());
+    let mut permissions = std::fs::metadata(&dest).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&dest, permissions).unwrap();
+    let result = windows_replace_exe(&source, &dest).await;
+    let mut permissions = std::fs::metadata(&dest).unwrap().permissions();
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&dest, permissions).unwrap();
+    assert!(
+        result.is_err(),
+        "read-only destination must not be overridden"
+    );
     assert_eq!(std::fs::read(&dest).unwrap(), b"original");
     assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| {
         entry
@@ -3080,4 +3085,54 @@ async fn test_windows_replace_exe_supports_long_installation_paths() {
     windows_replace_exe(&source, &dest).await.unwrap();
     assert_eq!(std::fs::read(&dest).unwrap(), b"new executable");
     assert!(!nested.join("grok.exe.old").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_windows_atomic_replace_failure_keeps_public_entry_and_stage() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("grok.exe");
+    let stage = dir.path().join("stage.exe");
+    let old = dir.path().join("grok.exe.old");
+    std::fs::write(&dest, b"original").unwrap();
+    std::fs::write(&stage, b"replacement").unwrap();
+    // The stage exists, so activation reaches backup creation. This exclusive
+    // handle prevents opening it with DELETE for the single atomic rename.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&stage)
+        .unwrap();
+    let _lock = acquire_windows_update_lock(&dest).unwrap();
+    let error = windows_activate_staged_exe(&stage, &dest, &old)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("atomic executable replacement failed"));
+    assert_eq!(std::fs::read(&dest).unwrap(), b"original");
+    assert!(
+        !old.exists(),
+        "failure cleans only the newly created hard link"
+    );
+    drop(held);
+    assert_eq!(std::fs::read(&stage).unwrap(), b"replacement");
+}
+
+#[cfg(windows)]
+#[test]
+fn test_windows_atomic_replace_rejects_nul_destination_without_mutation() {
+    use std::os::windows::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let stage = dir.path().join("stage.exe");
+    std::fs::write(&stage, b"replacement").unwrap();
+    let invalid = dir.path().join(std::ffi::OsString::from_wide(&[
+        b'x' as u16,
+        0,
+        b'y' as u16,
+    ]));
+    assert_eq!(
+        windows_atomic_replace(&stage, &invalid).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(std::fs::read(&stage).unwrap(), b"replacement");
 }

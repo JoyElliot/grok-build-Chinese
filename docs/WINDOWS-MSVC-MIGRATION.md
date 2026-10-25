@@ -1,5 +1,7 @@
 # Windows x64 GNU → MSVC 单包迁移
 
+> 当前状态：本分支的候选发布格式已改为 `distribution: direct` / `direct_runtime`，GNU 文件名归档内直接放置与原生包字节相同的 MSVC EXE，正式 `enabled` 开关仍关闭。当前恢复约束、驻留旧 GNU 写入者风险和验收边界见 [Windows 更新恢复与旧进程边界](WINDOWS-UPDATE-RECOVERY.md)。以下正文保留的是 `embedded_runtime` 历史设计及其回归说明，不代表当前 direct 路径仍有 wrapper、首次展开或独立 MSVC 子目录。
+
 ## 状态与公开包数量
 
 本分支实现单包方案，取代早期“轻量 GNU 入口下载固定 helper，再下载 MSVC 完整包”的试验设计。正式发布开关仍关闭：`.github/release-policy.json` 中 `windows_x64_msvc.enabled` 为 `false`。合入代码本身不切换用户渠道，也不创建标签或 Release。必须先通过本分支的 Windows PR CI 和真实历史客户端验收，再单独审核发布策略变更。

@@ -425,15 +425,68 @@ class Program {
     $portable = Join-Path $testRoot '便携版 空格'
     $script:TestTransport = New-TestTransport -Release $release -ZipBytes $zipBytes
     Invoke-GrokZhOnline -Mode Portable -PortableDir $portable -GrokHome $shared -NonInteractive
-    Assert-True (@(Get-ChildItem -LiteralPath $portable -Force).Count -eq 3) '新便携版顶层恰好三项'
+    Assert-True (@(Get-ChildItem -LiteralPath $portable -Force).Count -eq 4) '新便携版顶层保留三项入口及稳定安装锁'
     $portableMarker = Get-OnlineInstallMarker (Join-Path $portable 'app')
     Assert-True ($portableMarker.portable_root -ceq $portable) '便携归属记录使用最终目录'
     $script:TestTransport = New-TestTransport -Release $release -ZipBytes $zipBytes
     Invoke-GrokZhOnline -Mode Portable -PortableDir $portable -GrokHome $shared -NonInteractive -Repair
-    Assert-True (@(Get-ChildItem -LiteralPath $portable -Force).Count -eq 3) '更新后顶层仍为三项'
+    Assert-True (@(Get-ChildItem -LiteralPath $portable -Force).Count -eq 4) '再次更新后仍保留三项入口及稳定安装锁'
     $portableMarker = Get-OnlineInstallMarker (Join-Path $portable 'app')
     Assert-True (!$portableMarker.previous_portable_backup) '便携升级成功清除备份引用'
     Assert-True (@(Get-ChildItem -LiteralPath $testRoot -Directory -Filter '便携版 空格.previous.*').Count -eq 0) '便携升级成功删除旧目录'
+    $portableLock = Join-Path $portable 'app.install.lock'
+    Assert-True ((Get-Item -LiteralPath $portableLock).Length -eq 0) '真实完整安装器产生零字节便携安装锁'
+    Assert-OnlinePortableRoot $portable
+
+    # A historical three-entry layout must still upgrade with the real current
+    # package installer. Remove only this isolated test copy's lock to model it.
+    $legacyPortable = Join-Path $testRoot 'legacy-three-entry-portable'
+    Copy-Item -LiteralPath $portable -Destination $legacyPortable -Recurse
+    Remove-Item -LiteralPath (Join-Path $legacyPortable 'app.install.lock')
+    $legacyMarkerPath = Join-Path $legacyPortable 'app/.grok-zh-install.json'
+    $legacyMarker = [IO.File]::ReadAllText($legacyMarkerPath) | ConvertFrom-Json
+    $legacyMarker.install_dir = Join-Path $legacyPortable 'app'
+    $legacyMarker.portable_root = $legacyPortable
+    [IO.File]::WriteAllText($legacyMarkerPath, ($legacyMarker | ConvertTo-Json -Depth 6), $utf8)
+    Assert-OnlinePortableRoot $legacyPortable
+    Install-OnlinePortable -Package $package -Root $legacyPortable -SharedHome $shared -Version '1.0.13'
+    Assert-True (@(Get-ChildItem -LiteralPath $legacyPortable -Force).Count -eq 4) '旧三项布局可升级到带锁布局'
+    Assert-True (!(Get-OnlineInstallMarker (Join-Path $legacyPortable 'app')).previous_portable_backup) '旧三项布局升级可清理备份'
+
+    # An extra filename alone is not ownership proof. Both activation and old
+    # backup cleanup must refuse personal data, links or a held installer lock.
+    $invalidLockBackup = "$portable.previous.20000101-000000-0123abcd"
+    Copy-Item -LiteralPath $portable -Destination $invalidLockBackup -Recurse
+    $invalidLock = Join-Path $invalidLockBackup 'app.install.lock'
+    [IO.File]::WriteAllText($invalidLock, 'personal-lock-data', $utf8)
+    Assert-Throws { Assert-OnlinePortableLayout $invalidLockBackup } '非空同名锁不视为受管文件'
+    Assert-True ((Remove-OnlinePreviousPortable $invalidLockBackup $portable) -ceq $invalidLockBackup) '清理保留含非空锁的旧目录'
+    Assert-True ([IO.File]::ReadAllText($invalidLock) -ceq 'personal-lock-data') '非空锁中的个人内容不被删除'
+    [IO.File]::WriteAllText($invalidLock, '', $utf8)
+    $heldPortableLock = [IO.File]::Open($invalidLock, 'Open', 'ReadWrite', 'None')
+    try {
+        Assert-Throws { Assert-OnlinePortableLayout $invalidLockBackup } '占用锁拒绝更新'
+        Assert-True ((Remove-OnlinePreviousPortable $invalidLockBackup $portable) -ceq $invalidLockBackup) '占用锁保留旧目录'
+    } finally { $heldPortableLock.Dispose() }
+    [IO.File]::Delete($invalidLock)
+    $otherEmptyFile = Join-Path $testRoot 'unrelated-empty-lock.txt'
+    [IO.File]::WriteAllText($otherEmptyFile, '', $utf8)
+    New-Item -ItemType HardLink -Path $invalidLock -Target $otherEmptyFile | Out-Null
+    Assert-Throws { Assert-OnlinePortableLayout $invalidLockBackup } '硬链接锁不视为受管文件'
+    Assert-True ((Remove-OnlinePreviousPortable $invalidLockBackup $portable) -ceq $invalidLockBackup) '硬链接锁保留旧目录'
+    [IO.File]::Delete($invalidLock)
+    $junctionTarget = Join-Path $testRoot 'unrelated-lock-directory'
+    New-Item -ItemType Directory -Path $junctionTarget | Out-Null
+    [IO.File]::WriteAllText((Join-Path $junctionTarget 'keep.txt'), 'keep', $utf8)
+    New-Item -ItemType Junction -Path $invalidLock -Target $junctionTarget | Out-Null
+    try {
+        Assert-Throws { Assert-OnlinePortableLayout $invalidLockBackup } '重解析点锁不视为受管文件'
+        Assert-True ((Remove-OnlinePreviousPortable $invalidLockBackup $portable) -ceq $invalidLockBackup) '重解析点锁保留旧目录'
+    } finally { [IO.Directory]::Delete($invalidLock) }
+    Assert-True ([IO.File]::ReadAllText((Join-Path $junctionTarget 'keep.txt')) -ceq 'keep') '锁验证未修改重解析点目标'
+    [IO.File]::WriteAllText($invalidLock, '', $utf8)
+    Assert-True ($null -eq (Remove-OnlinePreviousPortable $invalidLockBackup $portable)) '空闲普通零字节锁可随已确认旧便携目录清理'
+
     # A lock left by the built-in updater is managed data, not a personal file.
     [IO.File]::WriteAllText((Join-Path $portable 'app\grok-zh.exe.update.lock'), '', $utf8)
     Install-OnlinePortable -Package $package -Root ($portable.ToUpperInvariant()) -SharedHome $shared -Version '1.0.13'

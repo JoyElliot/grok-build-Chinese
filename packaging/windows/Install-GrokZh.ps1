@@ -127,6 +127,157 @@ function Remove-PreviousCommunityInstall {
     } catch { return $Backup }
 }
 
+function Open-GrokInstallerLock {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    # A stable sibling lock survives both directory renames. Open the lock
+    # itself (not a reparse target), pin its parent, and never unlink the file:
+    # deleting an unlocked name could split contenders across different files.
+    if (!('GrokZh.InstallDirectoryLock' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace GrokZh {
+    public sealed class InstallDirectoryLock : IDisposable {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileInformation {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME AccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME WriteTime;
+            public uint VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string name, uint access, uint share,
+            IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation info);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint size, uint flags);
+        private SafeFileHandle parent;
+        private SafeFileHandle file;
+        private InstallDirectoryLock(SafeFileHandle parentHandle, SafeFileHandle fileHandle) {
+            parent = parentHandle; file = fileHandle;
+        }
+        private static string FinalPath(SafeFileHandle handle) {
+            StringBuilder path = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandle(handle, path, (uint)path.Capacity, 0);
+            if (length == 0 || length >= path.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error());
+            string result = path.ToString();
+            if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) result = @"\\" + result.Substring(8);
+            else if (result.StartsWith(@"\\?\", StringComparison.Ordinal)) result = result.Substring(4);
+            return result.TrimEnd('\\', '/');
+        }
+        private static void CheckHandle(SafeFileHandle handle, bool directory, string expected) {
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            FileInformation info;
+            if (!GetFileInformationByHandle(handle, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if ((info.Attributes & 0x400) != 0 || ((info.Attributes & 0x10) != 0) != directory || (!directory && info.Links != 1))
+                throw new IOException("Installer lock path must not be a reparse point, hard link or unexpected file type.");
+            if (!String.Equals(FinalPath(handle), expected, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Installer lock requires a canonical path with no redirected or short-name components: " + expected);
+        }
+        public static InstallDirectoryLock Acquire(string installDirectory) {
+            string target = Path.GetFullPath(installDirectory).TrimEnd('\\', '/');
+            string leaf = Path.GetFileName(target);
+            if (String.IsNullOrWhiteSpace(leaf) || leaf.EndsWith(".", StringComparison.Ordinal) || leaf.EndsWith(" ", StringComparison.Ordinal) ||
+                leaf.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                System.Text.RegularExpressions.Regex.IsMatch(leaf, @"^(CON|PRN|AUX|NUL|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])(?:\..*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                throw new IOException("Installer target must use an unambiguous ordinary directory name.");
+            string parentPath = Path.GetDirectoryName(target);
+            SafeFileHandle parentHandle = null, fileHandle = null;
+            try {
+                // FILE_READ_ATTRIBUTES; share read/write but not delete; open
+                // the directory itself with BACKUP_SEMANTICS|OPEN_REPARSE_POINT.
+                parentHandle = CreateFile(parentPath, 0x80, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+                CheckHandle(parentHandle, true, parentPath.TrimEnd('\\', '/'));
+                string lockPath = Path.Combine(parentPath, Path.GetFileName(target) + ".install.lock");
+                // OPEN_ALWAYS + no sharing is an immediate exclusive lock.
+                fileHandle = CreateFile(lockPath, 0xC0000000, 0, IntPtr.Zero, 4, 0x00200080, IntPtr.Zero);
+                CheckHandle(fileHandle, false, lockPath);
+                // Existing target aliases must not manufacture another lock
+                // name for the same installation. No target handle survives
+                // this validation, so the subsequent rename stays possible.
+                if (Directory.Exists(target)) {
+                    using (SafeFileHandle targetHandle = CreateFile(target, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+                        CheckHandle(targetHandle, true, target);
+                    }
+                }
+                InstallDirectoryLock result = new InstallDirectoryLock(parentHandle, fileHandle);
+                parentHandle = null; fileHandle = null;
+                return result;
+            } finally {
+                if (fileHandle != null) fileHandle.Dispose();
+                if (parentHandle != null) parentHandle.Dispose();
+            }
+        }
+        public void Dispose() {
+            if (file != null) { file.Dispose(); file = null; }
+            if (parent != null) { parent.Dispose(); parent = null; }
+        }
+    }
+}
+'@
+    }
+    Assert-NoReparsePointInPath -Path $InstallDir -Label '安装锁目标'
+    try {
+        return [GrokZh.InstallDirectoryLock]::Acquire($InstallDir)
+    } catch {
+        throw "无法独占安装目录（可能有另一安装器正在运行，或路径不安全）：$InstallDir。未创建暂存目录或移动现有安装。$($_.Exception.Message)"
+    }
+}
+
+function Assert-NoRunningCommunityInstall {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    $installPath = Resolve-FullPath $InstallDir
+    $blocked = [Collections.Generic.List[string]]::new()
+    try {
+        # Read the running image path, never the version of the on-disk EXE:
+        # an old process may still be running after that EXE was replaced.
+        $processes = @(Get-Process -ErrorAction Stop | Where-Object { $_.ProcessName -like 'grok-zh*' })
+    } catch {
+        throw "无法检查正在运行的 grok-zh 进程，未切换安装目录。请退出旧会话后重试。$($_.Exception.Message)"
+    }
+    foreach ($process in $processes) {
+        try {
+            $imagePath = $null
+            try { $imagePath = $process.Path } catch { }
+            if ([string]::IsNullOrWhiteSpace($imagePath)) {
+                # A process exiting during enumeration is harmless. Any live
+                # candidate whose image cannot be read must fail closed.
+                $exited = $false
+                try { $exited = $process.HasExited } catch { }
+                if (!$exited) { $blocked.Add("PID $($process.Id)（无法读取运行映像路径）") }
+                continue
+            }
+            try {
+                $imagePath = Resolve-FullPath $imagePath
+                $relatedBackup = $imagePath.StartsWith($installPath + '.previous.', [StringComparison]::OrdinalIgnoreCase) -and
+                    $imagePath.Substring($installPath.Length) -match '^\.previous\.\d{8}-\d{6}-[a-f0-9]{8}[\\/]'
+                # A process in an exact historical sibling may have cached the
+                # original install destination before its directory was moved.
+                if ($relatedBackup -or (Test-PathsOverlap $installPath $imagePath)) {
+                    $blocked.Add("PID $($process.Id)（$imagePath）")
+                }
+            } catch {
+                $blocked.Add("PID $($process.Id)（无法确认运行映像路径）")
+            }
+        } finally {
+            if ($process -is [Diagnostics.Process]) { $process.Dispose() }
+        }
+    }
+    if ($blocked.Count -gt 0) {
+        throw "安装目录仍有运行中的 grok-zh，或存在无法确认路径的相关进程：$($blocked -join '；')。请自行退出这些会话后重试，并且安装期间不要重新启动旧版本。安装器不会强制结束进程。"
+    }
+    # This late preflight reduces legacy-writer risk, but cannot prevent a new
+    # process starting after the scan. Keep old sessions closed during install.
+}
+
 function Resolve-FullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1476,10 +1627,40 @@ if (!$PSCmdlet.ShouldProcess($InstallDir, $operation)) {
 
 $parent = Split-Path -Parent $InstallDir
 New-Item -ItemType Directory -Path $parent -Force | Out-Null
+$installerLock = $null
+try {
+$installerLock = Open-GrokInstallerLock -InstallDir $InstallDir
+# Planning above is read-only so -WhatIf never creates a lock. Revalidate
+# mutable ownership, version and command choices after obtaining exclusivity:
+# another installer may have finished between planning and lock acquisition.
+Assert-NoReparsePointInPath -Path $InstallDir -Label '安装锁目标'
+if ((Test-Path -LiteralPath $InstallDir) -and
+    !(Test-Path -LiteralPath $installMarker -PathType Leaf) -and !$Force.IsPresent) {
+    throw "InstallDir 已存在，但不归本安装器管理：$InstallDir。"
+}
+if (Test-Path -LiteralPath $installMarker -PathType Leaf) {
+    $lockedMarker = Get-Content -LiteralPath $installMarker -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($lockedMarker.product -cne 'grok-build-zh' -or !(Test-SamePath $lockedMarker.install_dir $InstallDir)) {
+        throw '现有安装的归属记录与目标目录不一致。'
+    }
+    if ($packageVersion) {
+        $lockedVersion = Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')
+        if ((Compare-GrokInstallerVersion $lockedVersion $packageVersion) -gt 0 -and !$AllowDowngrade) {
+            throw "当前版本 $lockedVersion 高于安装包 $packageVersion；请明确确认 -AllowDowngrade。"
+        }
+    }
+    if (!$PSBoundParameters.ContainsKey('OverrideOfficialCommands') -and !$InteractiveCommandSetup.IsPresent) {
+        $provideOfficialNames = $requestedUninstallOfficial -or
+            ($null -ne $lockedMarker.PSObject.Properties['commands'] -and
+             @($lockedMarker.commands | Where-Object { $_ -in @('grok', 'agent') }).Count -gt 0)
+    }
+}
 $token = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $stage = "$InstallDir.stage.$PID-$token"
 $stageCreated = $false
 $previous = $null
+$activationStarted = $false
+$installationCommitted = $false
 $removedOfficial = @()
 
 try {
@@ -1577,42 +1758,63 @@ try {
     if (Test-Path -LiteralPath $InstallDir) {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $previous = "$InstallDir.previous.$stamp-$token"
+    }
+    # Finish all staged metadata before retiring the current entrypoint.
+    [ordered]@{
+        product = 'grok-build-zh'
+        version = $version
+        installed_at = (Get-Date).ToString('o')
+        install_dir = $InstallDir
+        commands = if ($provideOfficialNames) {
+            @('grok-zh', 'agent-zh', 'grok', 'agent')
+        } else {
+            @('grok-zh', 'agent-zh')
+        }
+        previous_install_backup = $previous
+        official_command_home = $GrokHome
+    } | ConvertTo-Json -Depth 4 | Set-Content `
+        -LiteralPath (Join-Path $stage '.grok-zh-install.json') -Encoding UTF8
+
+    Assert-NoRunningCommunityInstall -InstallDir $InstallDir
+    if ($previous) {
         Move-Item -LiteralPath $InstallDir -Destination $previous
     }
-
-    try {
-        [ordered]@{
-            product = 'grok-build-zh'
-            version = $version
-            installed_at = (Get-Date).ToString('o')
-            install_dir = $InstallDir
-            commands = if ($provideOfficialNames) {
-                @('grok-zh', 'agent-zh', 'grok', 'agent')
-            } else {
-                @('grok-zh', 'agent-zh')
-            }
-            previous_install_backup = $previous
-            official_command_home = $GrokHome
-        } | ConvertTo-Json -Depth 4 | Set-Content `
-            -LiteralPath (Join-Path $stage '.grok-zh-install.json') -Encoding UTF8
-
-        Move-Item -LiteralPath $stage -Destination $InstallDir
-        $stageCreated = $false
-        if ($packageVersion -and (Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')) -cne $packageVersion) {
-            throw '安装后版本检查失败，正在恢复原安装。'
-        }
-    } catch {
-        if (!$stageCreated -and (Test-Path -LiteralPath $InstallDir)) {
-            Move-Item -LiteralPath $InstallDir -Destination $stage
-            $stageCreated = $true
-        }
-        if ($previous -and !(Test-Path -LiteralPath $InstallDir) -and (Test-Path -LiteralPath $previous)) {
-            Move-Item -LiteralPath $previous -Destination $InstallDir
-        }
-        throw
+    $activationStarted = $true
+    Move-Item -LiteralPath $stage -Destination $InstallDir
+    $stageCreated = $false
+    if ($packageVersion -and (Get-GrokExecutableVersion (Join-Path $InstallDir 'grok-zh.exe')) -cne $packageVersion) {
+        throw '安装后版本检查失败，正在恢复原安装。'
     }
+    $installationCommitted = $true
 } finally {
-    if ($stageCreated -and (Test-Path -LiteralPath $stage)) {
+    # Ctrl+C / PowerShell.Stop bypasses catch, but runs finally. Reconcile the
+    # actual directory state: cancellation can land after either rename and
+    # before the following assignment. Process termination/power loss cannot
+    # run finally and is not covered by this in-process recovery.
+    $canRemoveStage = $true
+    if (!$installationCommitted) {
+        try {
+            if ($activationStarted -and !(Test-Path -LiteralPath $stage) -and
+                (Test-Path -LiteralPath $InstallDir)) {
+                Move-Item -LiteralPath $InstallDir -Destination $stage
+                $stageCreated = $true
+            }
+            if ($previous -and (Test-Path -LiteralPath $previous)) {
+                if (Test-Path -LiteralPath $InstallDir) {
+                    throw "恢复目标已存在，未覆盖该目录：$InstallDir"
+                }
+                Move-Item -LiteralPath $previous -Destination $InstallDir
+            } elseif ($previous -and !(Test-Path -LiteralPath $InstallDir)) {
+                throw "找不到原安装或其备份：$previous"
+            }
+        } catch {
+            # A failed restore must not discard the staged replacement, which
+            # may be the only usable recovery copy. Never remove the backup.
+            $canRemoveStage = $false
+            Write-Warning "安装未完成，自动恢复失败：$($_.Exception.Message) 原安装备份：$previous；暂存目录：$stage。已保留恢复文件，请勿删除。"
+        }
+    }
+    if ($canRemoveStage -and $stageCreated -and (Test-Path -LiteralPath $stage)) {
         Remove-Item -LiteralPath $stage -Recurse -Force
     }
 }
@@ -1702,4 +1904,8 @@ if ($provideOfficialNames) {
     Write-Host '验证命令：grok --version; agent --help'
 } else {
     Write-Host '验证命令：grok-zh --version; agent-zh --help'
+}
+
+} finally {
+    if ($null -ne $installerLock) { $installerLock.Dispose() }
 }
