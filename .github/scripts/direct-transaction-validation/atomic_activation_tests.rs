@@ -7,6 +7,11 @@ mod windows_atomic_activation_process_tests {
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
+    fn test_name(name: &str) -> String {
+        // module_path! includes the crate name; libtest's --exact names do not.
+        let module = module_path!().split_once("::").unwrap().1;
+        format!("{module}::{name}")
+    }
     struct BoundedChild(Child);
     impl Drop for BoundedChild {
         fn drop(&mut self) {
@@ -29,7 +34,6 @@ mod windows_atomic_activation_process_tests {
         }
     }
     struct Fixture {
-        _dir: tempfile::TempDir,
         dest: PathBuf,
         source: PathBuf,
         marker: PathBuf,
@@ -38,6 +42,8 @@ mod windows_atomic_activation_process_tests {
         original_hash: String,
         replacement_hash: String,
         _locked_old: Option<File>,
+        // Drop held handles before the directory attempts Windows cleanup.
+        _dir: tempfile::TempDir,
     }
     impl Fixture {
         fn new(locked_old: bool) -> Self {
@@ -69,7 +75,7 @@ mod windows_atomic_activation_process_tests {
         fn launch(&self, phase: &str, mode: &str) -> BoundedChild {
             let log = File::create(&self.log).unwrap();
             let mut child = BoundedChild(Command::new(&self.dest)
-                .args(["--exact", &format!("{}::activation_child", module_path!()), "--nocapture"])
+                .args(["--exact", &test_name("activation_child"), "--nocapture"])
                 .env("GROK_TEST_ACTIVATION_PHASE", phase)
                 .env("GROK_TEST_ACTIVATION_DEST", &self.dest)
                 .env("GROK_TEST_ACTIVATION_SOURCE", &self.source)
@@ -90,11 +96,16 @@ mod windows_atomic_activation_process_tests {
         }
         fn assert_launchable(&self, expected_hash: &str) {
             assert_eq!(path_hash(&self.dest), expected_hash);
+            let probe_marker = self.marker.with_extension("probe");
+            let _ = std::fs::remove_file(&probe_marker);
             let mut probe = BoundedChild(Command::new(&self.dest)
-                .args(["--exact", &format!("{}::entry_probe", module_path!())])
+                .args(["--exact", &test_name("entry_probe")])
+                .env("GROK_TEST_ENTRY_PROBE_MARKER", &probe_marker)
                 .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
                 .spawn().expect("public installed EXE must launch directly, without any repair helper"));
             assert!(wait_for_exit(&mut probe).success());
+            assert_eq!(std::fs::read(&probe_marker).unwrap(), b"entry-probe-ran",
+                "a zero-test libtest run must not masquerade as a launch probe");
         }
         fn assert_original_backup(&self) {
             assert!(std::fs::read_dir(self.dest.parent().unwrap()).unwrap().any(|entry| {
@@ -125,7 +136,11 @@ mod windows_atomic_activation_process_tests {
         });
     }
     #[test]
-    fn entry_probe() {}
+    fn entry_probe() {
+        if let Some(marker) = std::env::var_os("GROK_TEST_ENTRY_PROBE_MARKER") {
+            std::fs::write(marker, b"entry-probe-ran").unwrap();
+        }
+    }
 
     #[test]
     fn live_self_update_preserves_running_image_and_locked_backups() {
