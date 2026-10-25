@@ -3193,7 +3193,7 @@ async fn windows_replace_exe_locked(src: &std::path::Path, dest: &std::path::Pat
 }
 
 /// One same-volume namespace replacement. FileRenameInfoEx/POSIX (Windows 10
-/// 1607+) keeps existing handles valid while subsequent opens see the new image.
+/// 1709+) keeps existing handles valid while subsequent opens see the new image.
 /// The caller must retain a hard link to an executing destination: removing the
 /// last name of an image-section-backed file is not the same as renaming it.
 /// No ReplaceFileW or rename-aside fallback: both can leave the public name absent.
@@ -3324,7 +3324,7 @@ async fn windows_activate_staged_exe(
         // and an unsupported OS/filesystem must fail closed, not use two renames.
         let _ = tokio::fs::remove_file(&aside).await;
         return Err(error).context(
-            "atomic executable replacement failed; installed executable was not removed (requires Windows 10 1607+ and filesystem POSIX rename support)",
+            "atomic executable replacement failed; installed executable was not removed (requires Windows 10 1709+ and filesystem POSIX rename support)",
         );
     }
     #[cfg(test)]

@@ -15,6 +15,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  static:
+    if: github.ref == 'refs/heads/test/windows-recovery-risks'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run complete Python contracts and provenance checks
+        run: |
+          python -m unittest discover -s .github/scripts/tests -p 'test_*.py'
+          python .github/scripts/direct-transaction-validation/test_generator.py
+          python .github/scripts/direct-transaction-validation/prepare.py
   installer:
     if: github.ref == 'refs/heads/test/windows-recovery-risks'
     runs-on: windows-2022
@@ -67,8 +80,6 @@ jobs:
       - name: Run static regression checks
         shell: pwsh
         run: |
-          python -m unittest discover -s .github/scripts/tests -p 'test_*.py'
-          if ($LASTEXITCODE -ne 0) { throw 'Static regression checks failed.' }
           python .github/scripts/direct-transaction-validation/test_generator.py
           if ($LASTEXITCODE -ne 0) { throw 'Transaction source provenance checks failed.' }
       - name: Download pinned original GNU and successful MSVC CI inputs
