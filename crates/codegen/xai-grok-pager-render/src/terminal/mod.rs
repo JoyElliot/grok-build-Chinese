@@ -17,6 +17,7 @@ pub mod kitty_keyboard;
 pub mod overlay;
 pub mod pop_fence;
 pub(crate) mod probe;
+pub(crate) mod sixel;
 pub mod term_version;
 pub mod tmux;
 pub mod tmux_probe;

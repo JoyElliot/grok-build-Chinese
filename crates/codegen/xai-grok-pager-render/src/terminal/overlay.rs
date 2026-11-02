@@ -174,7 +174,12 @@ pub(crate) fn static_image_for_protocol(
         x: cell_x,
         y: cell_y,
     };
-    if current_owner() == Some(owner_id) && current_placement() == Some(placement) {
+    // Sixel pixels live in the text grid and the frame repaint erases them, so an unchanged
+    // placement must still re-emit; only Kitty's persistent layer may keep.
+    if protocol != GraphicsProtocol::Sixel
+        && current_owner() == Some(owner_id)
+        && current_placement() == Some(placement)
+    {
         // Prompt treats None as "clear ID 1". Empty Some keeps the pixels.
         return Some(Escapes::keep(owner_id, placement));
     }
@@ -246,12 +251,13 @@ pub fn volatile_centered(
     volatile_image(image_data, cols, rows, x, y)
 }
 
-/// Kitty deletes by id; iTerm2 has no delete, but ownership must still reset.
+/// Kitty deletes by id; iTerm2 and sixel have no delete, but ownership must still reset.
 /// Pixels are known-alive only while repainted every frame, so a later identical placement must re-emit or the keep path leaves a blank box.
 pub fn clear() -> Option<Escapes> {
     match prompt_preview_graphics_protocol() {
         GraphicsProtocol::Kitty => Some(clear_kitty()),
-        GraphicsProtocol::ITerm2 => Some(Escapes {
+        // The next frame's repaint overwrites the cells both protocols painted into.
+        GraphicsProtocol::ITerm2 | GraphicsProtocol::Sixel => Some(Escapes {
             bytes: String::new(),
             ownership: Ownership::Clear,
             placement: None,

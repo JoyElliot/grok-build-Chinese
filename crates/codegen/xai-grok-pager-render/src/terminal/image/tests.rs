@@ -11,8 +11,18 @@ fn protocol_matrix_matches_supported_terminals() {
         (TerminalName::Unknown, GraphicsProtocol::None),
     ] {
         assert_eq!(protocol_for_brand(brand, false), expected);
+        // ConPTY drops APC, so only sixel survives there.
         assert_eq!(protocol_for_brand(brand, true), GraphicsProtocol::None);
     }
+    assert_eq!(
+        protocol_for_brand(TerminalName::WindowsTerminal, true),
+        GraphicsProtocol::Sixel
+    );
+    assert_eq!(
+        protocol_for_brand(TerminalName::WindowsTerminal, false),
+        GraphicsProtocol::None,
+        "sixel is the Windows fallback, not a Linux/macOS brand default"
+    );
 }
 
 #[test]
@@ -84,6 +94,33 @@ fn iterm_overlay_escape_positions_then_restores_cursor() {
     assert!(escape.ends_with("\x1b8"));
     assert!(escape.contains("\x1b[4;3H"));
     assert!(escape.contains("\x1b]1337;File="));
+}
+
+#[test]
+fn sixel_overlay_encodes_and_restores_cursor() {
+    use image::{ImageBuffer, Rgb};
+    let buffer: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_pixel(4, 4, Rgb([10, 20, 30]));
+    let mut png = Vec::new();
+    buffer
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+
+    let escape =
+        build_overlay_image_escapes_for_protocol(GraphicsProtocol::Sixel, &png, 20, 10, 2, 3)
+            .unwrap();
+    assert!(escape.starts_with("\x1b7"));
+    assert!(escape.contains("\x1b[4;3H"));
+    assert!(escape.contains("\x1bPq"));
+    assert!(escape.ends_with("\x1b8"), "{escape:?}");
+}
+
+#[test]
+fn sixel_skips_scrollback_inline_media() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::Sixel);
+    let area = ratatui::layout::Rect::new(0, 0, 40, 20);
+    assert!(place_inline_image(&[0u8; 10], 100, 50, area, 20, 0, 2, true).is_none());
+    assert!(transmit_inline_image(&[0u8; 10], 2).is_none());
+    assert!(!scrollback_inline_overlay_active());
 }
 
 #[test]
