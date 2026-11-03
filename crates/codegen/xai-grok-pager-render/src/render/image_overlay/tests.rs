@@ -56,6 +56,65 @@ fn render_to_string(image: &PastedImage, area: Rect) -> (Option<ImageOverlayRend
     (render, rendered)
 }
 
+fn rgba_image(pixels: Vec<u8>) -> PastedImage {
+    let buffer = image::RgbaImage::from_raw(2, 1, pixels).unwrap();
+    let mut png = Vec::new();
+    buffer
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let mut image = sample_image(Some("/tmp/transparent.png"), false);
+    image.dimensions = Some((2, 1));
+    image.byte_len = png.len();
+    image.encoded_bytes = Some(png.into());
+    image.prepare_preview_blocking();
+    image
+}
+
+#[test]
+fn sixel_transparent_preview_does_not_show_loading_through_pixels() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::Sixel);
+    crate::terminal::overlay::reset_owner();
+    let image = rgba_image(vec![0, 0, 0, 0, 255, 255, 255, 255]);
+    let area = Rect::new(0, 0, 60, 20);
+    for _ in 0..2 {
+        let (render, text) = render_to_string(&image, area);
+        let escape = render.unwrap().escapes.unwrap();
+        assert!(escape.as_str().contains("\x1bP0;1q"));
+        assert!(!text.contains("Loading..."), "{text}");
+        assert!(!text.contains("Preview unavailable"), "{text}");
+        let _ = escape.commit();
+    }
+}
+
+#[test]
+fn sixel_fully_transparent_preview_falls_back_to_metadata() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::Sixel);
+    crate::terminal::overlay::reset_owner();
+    let image = rgba_image(vec![0; 8]);
+    for _ in 0..2 {
+        let (render, text) = render_to_string(&image, Rect::new(0, 0, 60, 20));
+        let render = render.unwrap();
+        assert!(render.escapes.is_none());
+        assert!(render.image_placement.is_none());
+        assert!(text.contains("Preview unavailable"), "{text}");
+        assert!(text.contains("Dimensions: 2 x 1"), "{text}");
+        assert!(text.contains("transparent.png"), "{text}");
+        assert!(!text.contains("Loading..."), "{text}");
+    }
+}
+
+#[test]
+fn sixel_decode_failure_falls_back_to_metadata() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::Sixel);
+    crate::terminal::overlay::reset_owner();
+    // 头部尺寸已通过预处理，但缺失像素数据，覆盖绘制阶段的解码失败路径。
+    let image = sample_image(Some("/tmp/broken.png"), true);
+    let (render, text) = render_to_string(&image, Rect::new(0, 0, 60, 20));
+    assert!(render.unwrap().escapes.is_none());
+    assert!(text.contains("Preview unavailable"), "{text}");
+    assert!(!text.contains("Loading..."), "{text}");
+}
+
 #[test]
 fn plan_covers_pixels_by_path_matrix() {
     for (protocol, path, pixels, expected_pixels, expected_path) in [

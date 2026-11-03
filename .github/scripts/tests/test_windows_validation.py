@@ -127,6 +127,9 @@ class WindowsValidationTests(unittest.TestCase):
             ('-p', 'xai-grok-pager', '--lib', 'zh_localization_'),
             ('-p', 'xai-grok-pager-minimal', '--lib', 'zh_localization_'),
             ('-p', 'xai-grok-pager', '--lib', 'free_usage_upsell_shows_three_options_with_exact_labels'),
+            ('-p', 'xai-grok-pager-render', '--lib', 'terminal::'),
+            ('-p', 'xai-grok-pager-render', '--lib', 'render::image_overlay::'),
+            ('-p', 'xai-grok-pager-render', '--lib', 'render::draw::'),
         }
         preview = {
             ('-p', 'xai-grok-shell', '--lib', 'hook_annotation_'),

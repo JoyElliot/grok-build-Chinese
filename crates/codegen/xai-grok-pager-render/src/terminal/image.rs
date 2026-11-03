@@ -338,7 +338,7 @@ pub fn prepare_overlay_image_bytes(image_data: &[u8]) -> Option<Vec<u8>> {
 
 /// Encode `image_data` as a sixel DCS string fitted to `cols` x `rows` cells.
 pub fn render_sixel_image(image_data: &[u8], cols: u16, rows: u16) -> Option<String> {
-    let (cell_w, cell_h) = cell_pixels();
+    let (cell_w, cell_h) = WINDOWS_TERMINAL_SIXEL_CELL_PIXELS;
     crate::terminal::sixel::sixel_for_image_bytes(
         image_data,
         u32::from(cols) * cell_w,
@@ -346,31 +346,10 @@ pub fn render_sixel_image(image_data: &[u8], cols: u16, rows: u16) -> Option<Str
     )
 }
 
-/// Pixel size of one cell, measured once from the terminal.
-/// Falls back to an 8x16 cell when the terminal reports no usable pixel geometry (tmux, ConHost, non-tty).
-fn cell_pixels() -> (u32, u32) {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        DEFAULT_CELL_PIXELS
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        static CELL: OnceLock<(u32, u32)> = OnceLock::new();
-        *CELL.get_or_init(|| {
-            crossterm::terminal::window_size()
-                .ok()
-                .and_then(|ws| {
-                    (ws.columns > 0 && ws.rows > 0 && ws.width > 0 && ws.height > 0).then(|| {
-                        (
-                            (u32::from(ws.width) / u32::from(ws.columns)).max(1),
-                            (u32::from(ws.height) / u32::from(ws.rows)).max(1),
-                        )
-                    })
-                })
-                .unwrap_or(DEFAULT_CELL_PIXELS)
-        })
-    }
-}
+/// 当前仅为 Windows Terminal 启用 Sixel；其默认仿真单元格固定为 10×20 虚拟像素，
+/// 与字体、DPI 和缩放后的物理像素无关。crossterm 0.28 在 Windows 上不支持像素查询。
+/// 对应 microsoft/terminal 的 SixelParser::CellSizeForLevel 与 CSI 16 t 响应。
+const WINDOWS_TERMINAL_SIXEL_CELL_PIXELS: (u32, u32) = (10, 20);
 
 /// Terminal scales to the cell rect (it knows HiDPI). `C=1` preserves the cursor, `z=1` draws above text, `q=2` suppresses replies.
 pub fn render_kitty_image(
@@ -613,9 +592,6 @@ pub fn place_inline_image(
 
 /// Fallback cell width/height ratio (typical monospace cell ~8×16 px), used when the terminal does not report its pixel size.
 const DEFAULT_CELL_ASPECT: f64 = 0.5;
-
-/// Fallback cell pixel size paired with [`DEFAULT_CELL_ASPECT`].
-const DEFAULT_CELL_PIXELS: (u32, u32) = (8, 16);
 
 /// Protocols fill the cell rect, so an assumed 1:2 cell stretches other fonts. Implausible reports (tmux, Windows, non-tty) use the default.
 /// Once per process: zoom scales both axes. Tests pin the fallback.

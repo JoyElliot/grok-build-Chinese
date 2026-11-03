@@ -557,6 +557,10 @@ fn render_and_present(
         render_fn(&mut frame, &mut link_spans)
     };
     terminal.set_frame_links(&link_spans);
+    // Sixel 透明像素保留旧内容，必须真实重写旧图像行，不能只清理当前文字 buffer。
+    if let Some((start, end)) = crate::terminal::overlay::take_sixel_rows() {
+        terminal.invalidate_rows(start..end);
+    }
     let has_changes = terminal.flush_with_links().unwrap_or(false);
     terminal.swap_buffers();
     let post_flush_wrote_cursor = post_flush_escapes.is_some();
@@ -742,6 +746,50 @@ mod tests {
             second.len(),
             String::from_utf8_lossy(&second),
         );
+    }
+
+    #[test]
+    fn sixel_frames_repaint_unchanged_cells_before_replacement_and_after_close() {
+        use crate::terminal::{image::GraphicsProtocol, image::set_protocol_for_test, overlay};
+        let _guard = set_protocol_for_test(GraphicsProtocol::Sixel);
+        overlay::reset_owner();
+        let _ = overlay::take_sixel_rows();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let (mut terminal, rx) = capturing_terminal();
+        let mut cursor = CursorState::new();
+        let ctx = TerminalContext::default();
+        for frame_number in 0..4 {
+            draw_frame_at_adopted_size(&mut terminal, &mut cursor, &ctx, |frame, _| {
+                if frame_number == 2 {
+                    // 布局变化在 render_fn 中重置所有权，也不能丢掉尚未清除的像素。
+                    overlay::reset_owner();
+                }
+                // 宽字符跨越图像左边界；关闭时也必须重写起始格。
+                frame
+                    .buffer_mut()
+                    .cell_mut((9, 5))
+                    .unwrap()
+                    .set_symbol("界");
+                let pixels = (frame_number < 2)
+                    .then(|| overlay::volatile_image(&png, 4, 2, 10, 5).unwrap().into());
+                (None, pixels)
+            });
+            let bytes: Vec<u8> = rx.try_iter().flat_map(|payload| payload.data).collect();
+            let text = String::from_utf8(bytes).unwrap();
+            if frame_number == 1 || frame_number == 2 {
+                let before_pixels = text.split("\x1bP0;1q").next().unwrap();
+                assert!(before_pixels.contains('界'), "{text:?}");
+                assert!(before_pixels.matches(' ').count() >= 150, "{text:?}");
+            }
+            assert_eq!(text.contains("\x1bP0;1q"), frame_number < 2);
+            if frame_number == 3 {
+                assert!(text.is_empty(), "关闭后的空闲帧不应持续重绘: {text:?}");
+            }
+        }
+        overlay::reset_owner();
     }
     /// Begin and End are emitted as a pair or not at all, decided by the terminal context.
     #[test]

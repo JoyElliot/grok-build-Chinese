@@ -1,7 +1,7 @@
 //! Sixel encoding for terminals whose graphics support is DCS-based.
 //!
-//! Windows Terminal passes DCS through ConPTY while it strips the APC sequences the
-//! Kitty and iTerm2 protocols rely on, so sixel is the only inline image path there.
+//! Windows Terminal 的图像适配使用 Sixel DCS；Kitty APC 与 iTerm2 OSC 1337
+//! 是不同协议，不能直接替代此路径。
 //!
 //! The encoder quantizes to a 6x6x6 colour cube (216 registers, inside the 256 sixel
 //! limit) and emits one colour pass per band of six rows, run-length encoded.
@@ -76,8 +76,9 @@ pub fn encode_sixel(rgba: &[u8], width: u32, height: u32) -> Option<String> {
     }
 
     let mut out = String::with_capacity(pixel_count / 2 + 64);
-    // `"1;1;w;h` is the raster attribute the terminal uses to size the image.
-    out.push_str(&format!("\x1bPq\"1;1;{width};{height}"));
+    // P2=1 保留透明像素下的终端内容；默认 P2=0 会用颜色寄存器 0 填满背景。
+    // `"1;1;w;h` 指定正方形虚拟像素及图像范围。
+    out.push_str(&format!("\x1bP0;1q\"1;1;{width};{height}"));
     for idx in &palette {
         let (r, g, b) = cube_rgb(*idx);
         // Palette values are percentages (0-100) in sixel.
@@ -181,7 +182,7 @@ mod tests {
     #[test]
     fn header_carries_raster_size_and_terminator() {
         let out = encode_sixel(&solid(3, 2, [255, 0, 0, 255]), 3, 2).unwrap();
-        assert!(out.starts_with("\x1bPq\"1;1;3;2"), "{out}");
+        assert!(out.starts_with("\x1bP0;1q\"1;1;3;2"), "{out}");
         assert!(out.ends_with("\x1b\\"), "{out}");
         assert!(out.contains("#"), "palette must be defined: {out}");
     }
@@ -199,6 +200,10 @@ mod tests {
         // One fully transparent pixel, then one opaque white pixel.
         let px = [0, 0, 0, 0, 255, 255, 255, 255];
         let out = encode_sixel(&px, 2, 1).unwrap();
+        assert!(
+            out.starts_with("\x1bP0;1q"),
+            "透明像素需要显式禁止背景填充: {out:?}"
+        );
         // Only the opaque column sets a bit, so its pass starts with an empty cell.
         assert!(out.contains("?@"), "first column must be blank: {out}");
     }

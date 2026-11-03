@@ -647,6 +647,20 @@ where
         self.reset_back_links();
     }
 
+    /// 强制重写指定行，包括文字未变的空格，以清除带外绘制的图像。
+    /// 按整行失效，避免区域左边界落在宽字符的续格而漏写其起始格。
+    pub fn invalidate_rows(&mut self, rows: std::ops::Range<u16>) {
+        let previous = front_back_mut(&mut self.buffers, self.current).1;
+        let area = previous.area;
+        for y in rows.start.max(area.y)..rows.end.min(area.bottom()) {
+            for x in area.x..area.right() {
+                if let Some(cell) = previous.cell_mut((x, y)) {
+                    cell.skip = true;
+                }
+            }
+        }
+    }
+
     /// Clears the inactive buffer and swaps it with the current buffer
     pub fn swap_buffers(&mut self) {
         front_back_mut(&mut self.buffers, self.current).1.reset();

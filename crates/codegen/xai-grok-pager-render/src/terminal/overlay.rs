@@ -14,6 +14,7 @@ static NEXT_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     static OWNER: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     static PLACEMENT: std::cell::Cell<Option<LastPlacement>> = const { std::cell::Cell::new(None) };
+    static SIXEL_ROWS: std::cell::Cell<Option<(u16, u16)>> = const { std::cell::Cell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,14 +37,22 @@ pub struct Escapes {
     bytes: String,
     ownership: Ownership,
     placement: Option<LastPlacement>,
+    sixel_rows: Option<(u16, u16)>,
 }
 
 impl Escapes {
-    fn paint(bytes: String, owner_id: u64, placement: LastPlacement) -> Self {
+    fn paint(
+        bytes: String,
+        owner_id: u64,
+        placement: LastPlacement,
+        protocol: GraphicsProtocol,
+    ) -> Self {
         Self {
             bytes,
             ownership: Ownership::Static(owner_id),
             placement: Some(placement),
+            sixel_rows: (protocol == GraphicsProtocol::Sixel)
+                .then_some((placement.y, placement.y.saturating_add(placement.rows))),
         }
     }
 
@@ -52,6 +61,7 @@ impl Escapes {
             bytes: String::new(),
             ownership: Ownership::Static(owner_id),
             placement: Some(placement),
+            sixel_rows: None,
         }
     }
 
@@ -65,6 +75,7 @@ impl Escapes {
 
     pub fn commit(self) -> String {
         commit(self.ownership, self.placement);
+        commit_sixel_rows(self.sixel_rows);
         self.bytes
     }
 }
@@ -74,6 +85,7 @@ pub struct PostFlush {
     bytes: String,
     ownership: Option<Ownership>,
     placement: Option<LastPlacement>,
+    sixel_rows: Option<(u16, u16)>,
 }
 
 impl PostFlush {
@@ -82,11 +94,13 @@ impl PostFlush {
             bytes,
             ownership: None,
             placement: None,
+            sixel_rows: None,
         }
     }
 
     pub fn append(&mut self, other: Self) {
         self.bytes.push_str(&other.bytes);
+        self.sixel_rows = merge_rows(self.sixel_rows, other.sixel_rows);
         if let Some(ownership) = other.ownership {
             self.ownership = Some(ownership);
             self.placement = other.placement;
@@ -106,6 +120,7 @@ impl PostFlush {
         if let Some(ownership) = self.ownership {
             commit(ownership, self.placement);
         }
+        commit_sixel_rows(self.sixel_rows);
         Ok(())
     }
 }
@@ -116,6 +131,7 @@ impl From<Escapes> for PostFlush {
             bytes: escapes.bytes,
             ownership: Some(escapes.ownership),
             placement: escapes.placement,
+            sixel_rows: escapes.sixel_rows,
         }
     }
 }
@@ -132,6 +148,23 @@ pub fn has_committed_owner() -> bool {
 pub fn reset_owner() {
     OWNER.with(|owner| owner.set(None));
     PLACEMENT.with(|placement| placement.set(None));
+    // 布局尺寸变化也会重置所有权，但未必清屏；旧 Sixel 损伤须保留至下一次实际重绘。
+}
+
+fn merge_rows(left: Option<(u16, u16)>, right: Option<(u16, u16)>) -> Option<(u16, u16)> {
+    match (left, right) {
+        (Some((a, b)), Some((c, d))) => Some((a.min(c), b.max(d))),
+        (left, right) => left.or(right),
+    }
+}
+
+fn commit_sixel_rows(rows: Option<(u16, u16)>) {
+    SIXEL_ROWS.with(|current| current.set(merge_rows(current.get(), rows)));
+}
+
+/// 仅在像素已提交后记录损伤；下一帧即使关闭、移动或回退，也先重写旧图所在行。
+pub(crate) fn take_sixel_rows() -> Option<(u16, u16)> {
+    SIXEL_ROWS.with(|rows| rows.take())
 }
 
 fn current_owner() -> Option<u64> {
@@ -185,7 +218,7 @@ pub(crate) fn static_image_for_protocol(
     }
     let bytes =
         build_overlay_image_escapes_for_protocol(protocol, image_data, cols, rows, cell_x, cell_y)?;
-    Some(Escapes::paint(bytes, owner_id, placement))
+    Some(Escapes::paint(bytes, owner_id, placement, protocol))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -215,18 +248,15 @@ pub fn volatile_image(
     cell_x: u16,
     cell_y: u16,
 ) -> Option<Escapes> {
-    let bytes = build_overlay_image_escapes_for_protocol(
-        detect_graphics_protocol(),
-        image_data,
-        cols,
-        rows,
-        cell_x,
-        cell_y,
-    )?;
+    let protocol = detect_graphics_protocol();
+    let bytes =
+        build_overlay_image_escapes_for_protocol(protocol, image_data, cols, rows, cell_x, cell_y)?;
     Some(Escapes {
         bytes,
         ownership: Ownership::Clear,
         placement: None,
+        sixel_rows: (protocol == GraphicsProtocol::Sixel)
+            .then_some((cell_y, cell_y.saturating_add(rows))),
     })
 }
 
@@ -261,6 +291,7 @@ pub fn clear() -> Option<Escapes> {
             bytes: String::new(),
             ownership: Ownership::Clear,
             placement: None,
+            sixel_rows: None,
         }),
         GraphicsProtocol::None => None,
     }
@@ -271,6 +302,7 @@ pub fn clear_kitty() -> Escapes {
         bytes: clear_kitty_image(KITTY_PLACEMENT_ID),
         ownership: Ownership::Clear,
         placement: None,
+        sixel_rows: None,
     }
 }
 
@@ -378,6 +410,26 @@ mod tests {
         assert!(clear.write_to(&mut FailingWriter).is_err());
         let next = static_image(&png(), 20, 10, 0, 0, 11).unwrap();
         assert!(next.as_str().is_empty());
+    }
+
+    #[test]
+    fn sixel_damage_is_recorded_only_after_commit_and_merges_placements() {
+        let _guard = set_protocol_for_test(GraphicsProtocol::Sixel);
+        reset_owner();
+        let _ = take_sixel_rows();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let first = volatile_image(&png, 4, 2, 1, 3).unwrap();
+        assert_eq!(take_sixel_rows(), None);
+        let mut post = PostFlush::from(first);
+        post.append(volatile_image(&png, 4, 2, 1, 8).unwrap().into());
+        post.write_to(&mut Vec::new()).unwrap();
+        reset_owner();
+        assert_eq!(take_sixel_rows(), Some((3, 10)));
+        assert_eq!(take_sixel_rows(), None);
+        reset_owner();
     }
 
     #[test]

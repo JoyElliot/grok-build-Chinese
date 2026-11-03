@@ -110,7 +110,9 @@ fn sixel_overlay_encodes_and_restores_cursor() {
             .unwrap();
     assert!(escape.starts_with("\x1b7"));
     assert!(escape.contains("\x1b[4;3H"));
-    assert!(escape.contains("\x1bPq"));
+    assert!(escape.contains("\x1bP0;1q"));
+    // 20×10 个 Windows Terminal 单元格应占满 200×200 虚拟像素。
+    assert!(escape.contains("\"1;1;200;200"), "{escape:?}");
     assert!(escape.ends_with("\x1b8"), "{escape:?}");
 }
 
