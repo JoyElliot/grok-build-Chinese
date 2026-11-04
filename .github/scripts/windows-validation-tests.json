@@ -85,6 +85,24 @@
         "xai-grok-pager",
         "--lib",
         "free_usage_upsell_shows_three_options_with_exact_labels"
+      ],
+      [
+        "-p",
+        "xai-grok-pager-render",
+        "--lib",
+        "terminal::"
+      ],
+      [
+        "-p",
+        "xai-grok-pager-render",
+        "--lib",
+        "render::image_overlay::"
+      ],
+      [
+        "-p",
+        "xai-grok-pager-render",
+        "--lib",
+        "render::draw::"
       ]
     ]
   },
@@ -188,6 +206,24 @@
         "xai-grok-pager",
         "--lib",
         "localization_regression_slash_snapshot_uses_canonical_metadata_only"
+      ],
+      [
+        "-p",
+        "xai-grok-pager-render",
+        "--lib",
+        "terminal::"
+      ],
+      [
+        "-p",
+        "xai-grok-pager-render",
+        "--lib",
+        "render::image_overlay::"
+      ],
+      [
+        "-p",
+        "xai-grok-pager-render",
+        "--lib",
+        "render::draw::"
       ]
     ]
   }

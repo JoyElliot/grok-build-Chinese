@@ -1,4 +1,4 @@
-//! Terminal inline image rendering (Kitty / iTerm2 protocols).
+//! Terminal inline image rendering (Kitty / iTerm2 / sixel protocols).
 //!
 //! Provides escape-sequence helpers for rendering images inside the existing preview overlay.
 //! The text-fallback path in [`crate::render::image_overlay`] remains the primary preview.
@@ -7,6 +7,7 @@
 //! # Supported protocols
 //!
 //! - **Kitty graphics protocol**: used by Kitty, Ghostty, WezTerm, Warp
+//! - **Sixel**: the only path on Windows, where ConPTY passes DCS but strips APC (see [`protocol_for_brand`])
 //! - **iTerm2 inline images**: helpers exist but are currently gated off in [`protocol_for_brand()`] (see there for why).
 //!   The text fallback is used for iTerm2 instead.
 //!
@@ -30,6 +31,8 @@ use super::{TerminalName, terminal_context};
 pub enum GraphicsProtocol {
     /// Kitty graphics protocol (also used by Ghostty, WezTerm).
     Kitty,
+    /// Sixel DCS graphics. Survives ConPTY, so it is the Windows path.
+    Sixel,
     /// iTerm2 inline images protocol.
     ITerm2,
     /// No graphics protocol available; the text fallback is used instead.
@@ -78,7 +81,12 @@ pub fn detect_graphics_protocol() -> GraphicsProtocol {
         if ctx.graphics_protocol_skip_reason().is_some() {
             return GraphicsProtocol::None;
         }
-        protocol_for_brand(ctx.brand, cfg!(target_os = "windows"))
+        if cfg!(target_os = "windows") {
+            // `env_brand` on purpose: the native-Windows `Unknown -> WindowsTerminal` refinement
+            // must not hand bare ConHost/DefTerm DCS it cannot draw.
+            return protocol_for_brand(ctx.env_brand, true);
+        }
+        protocol_for_brand(ctx.brand, false)
     })
 }
 
@@ -138,12 +146,17 @@ impl Drop for TestProtocolGuard {
     }
 }
 
-/// Returns `None` on Windows because ConPTY strips the Kitty/iTerm2 APC escape sequences before they reach the host terminal.
+/// Returns `None` for Kitty/iTerm2 on Windows because ConPTY strips their APC escape sequences before they reach the host terminal.
+/// Sixel uses DCS, which ConPTY forwards, so Windows Terminal gets that path instead.
+/// Windows Terminal has supported sixel since 1.22 and reports no version in the environment, so the brand is the whole gate.
 ///
 /// Parameterised by `is_windows` so unit tests can exercise both paths on any OS.
 pub fn protocol_for_brand(brand: TerminalName, is_windows: bool) -> GraphicsProtocol {
     if is_windows {
-        return GraphicsProtocol::None;
+        return match brand {
+            TerminalName::WindowsTerminal => GraphicsProtocol::Sixel,
+            _ => GraphicsProtocol::None,
+        };
     }
     match brand {
         TerminalName::Kitty => GraphicsProtocol::Kitty,
@@ -317,10 +330,26 @@ fn convert_via_sips(image_data: &[u8]) -> Option<Vec<u8>> {
 pub fn prepare_overlay_image_bytes(image_data: &[u8]) -> Option<Vec<u8>> {
     match detect_graphics_protocol() {
         GraphicsProtocol::Kitty => prepare_kitty_overlay_image_bytes(image_data),
-        GraphicsProtocol::ITerm2 => Some(image_data.to_vec()),
+        // Sixel decodes at draw time and iTerm2 takes the original bytes.
+        GraphicsProtocol::Sixel | GraphicsProtocol::ITerm2 => Some(image_data.to_vec()),
         GraphicsProtocol::None => None,
     }
 }
+
+/// Encode `image_data` as a sixel DCS string fitted to `cols` x `rows` cells.
+pub fn render_sixel_image(image_data: &[u8], cols: u16, rows: u16) -> Option<String> {
+    let (cell_w, cell_h) = WINDOWS_TERMINAL_SIXEL_CELL_PIXELS;
+    crate::terminal::sixel::sixel_for_image_bytes(
+        image_data,
+        u32::from(cols) * cell_w,
+        u32::from(rows) * cell_h,
+    )
+}
+
+/// 当前仅为 Windows Terminal 启用 Sixel；其默认仿真单元格固定为 10×20 虚拟像素，
+/// 与字体、DPI 和缩放后的物理像素无关。crossterm 0.28 在 Windows 上不支持像素查询。
+/// 对应 microsoft/terminal 的 SixelParser::CellSizeForLevel 与 CSI 16 t 响应。
+const WINDOWS_TERMINAL_SIXEL_CELL_PIXELS: (u32, u32) = (10, 20);
 
 /// Terminal scales to the cell rect (it knows HiDPI). `C=1` preserves the cursor, `z=1` draws above text, `q=2` suppresses replies.
 pub fn render_kitty_image(
@@ -461,12 +490,18 @@ pub(super) fn build_overlay_image_escapes_for_protocol(
                 image_data, format, cols, rows, 1, // above text (modal overlays)
             ));
         }
-        GraphicsProtocol::ITerm2 => {
-            // Unlike Kitty (`C=1`), OSC 1337 advances the cursor past the image, so save/restore it (DECSC/DECRC) around the write
-            // These escapes are written post-flush, after ratatui parked the caret for the frame
+        GraphicsProtocol::ITerm2 | GraphicsProtocol::Sixel => {
+            // Neither protocol has Kitty's `C=1` cursor hold, so both advance the cursor past the
+            // image: save/restore it (DECSC/DECRC) around the write. These escapes are written
+            // post-flush, after ratatui parked the caret for the frame.
+            let payload = match protocol {
+                // No delete primitive exists; the frame repaint erases sixel pixels.
+                GraphicsProtocol::Sixel => render_sixel_image(image_data, cols, rows)?,
+                _ => render_iterm2_image(image_data, cols, rows),
+            };
             esc.push_str("\x1b7");
             esc.push_str(&format!("\x1b[{};{}H", cell_y + 1, cell_x + 1));
-            esc.push_str(&render_iterm2_image(image_data, cols, rows));
+            esc.push_str(&payload);
             esc.push_str("\x1b8");
         }
         GraphicsProtocol::None => unreachable!(),
@@ -476,6 +511,7 @@ pub(super) fn build_overlay_image_escapes_for_protocol(
 
 /// Kitty: uploads with the given `image_id`.
 /// iTerm2: no-op; the data is sent with each placement instead.
+/// Sixel: `None`; it has no upload or crop model, so scrollback inline media keeps the text affordance.
 pub fn transmit_inline_image(image_data: &[u8], image_id: u32) -> Option<String> {
     match detect_graphics_protocol() {
         GraphicsProtocol::Kitty => {
@@ -483,7 +519,7 @@ pub fn transmit_inline_image(image_data: &[u8], image_id: u32) -> Option<String>
             Some(transmit_kitty_image(image_data, format, image_id))
         }
         GraphicsProtocol::ITerm2 => Some(String::new()),
-        GraphicsProtocol::None => None,
+        GraphicsProtocol::Sixel | GraphicsProtocol::None => None,
     }
 }
 
@@ -547,6 +583,8 @@ pub fn place_inline_image(
                 esc.push_str(&render_iterm2_image(image_data, fit_cols, area.height));
             }
         }
+        // Sixel has no id-based placement or source cropping; scrollback media keeps the text affordance.
+        GraphicsProtocol::Sixel => return None,
         GraphicsProtocol::None => unreachable!(),
     }
     Some(esc)

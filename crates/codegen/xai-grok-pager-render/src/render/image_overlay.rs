@@ -214,7 +214,21 @@ fn render_image_overlay_inner_with_labels(
         inner
     };
 
-    if !plan.show_pixels {
+    // 绘制前先确认像素编码成功。透明内容不能透出「加载中」，编码失败则显示元数据。
+    let escapes = geometry.image_placement.and_then(|placement| {
+        let (bytes, _) = image.preview.prepared()?;
+        overlay::static_image_for_protocol(
+            protocol,
+            bytes,
+            placement.cols,
+            placement.rows,
+            placement.x,
+            placement.y,
+            image.preview.identity(),
+        )
+    });
+    let encoding_failed = plan.show_pixels && escapes.is_none();
+    if !plan.show_pixels || encoding_failed {
         let mut lines = Vec::new();
         lines.push(Line::from(format!(
             "{} {}",
@@ -224,7 +238,7 @@ fn render_image_overlay_inner_with_labels(
         if let Some((w, h)) = image.preview_dimensions() {
             lines.push(Line::from(format!("{} {} x {}", labels.dimensions, w, h)));
         }
-        let status = if image.preview.is_failed() {
+        let status = if image.preview.is_failed() || encoding_failed {
             Some(labels.preview_unavailable)
         } else if image.preview.is_pending() && protocol.supports_images() {
             Some(labels.preview_pending)
@@ -268,32 +282,6 @@ fn render_image_overlay_inner_with_labels(
         });
     }
 
-    if image_inner.width > 0 && image_inner.height > 0 {
-        use crate::render::SafeBuf;
-        let loading = labels.loading;
-        let lw = UnicodeWidthStr::width(loading) as u16;
-        let lx = image_inner.x + image_inner.width.saturating_sub(lw) / 2;
-        let ly = image_inner.y + image_inner.height / 2;
-        buf.set_span_safe(
-            lx,
-            ly,
-            &Span::styled(loading, Style::default().fg(text_fg).bg(bg)),
-            lw,
-        );
-    }
-
-    let escapes = geometry.image_placement.and_then(|placement| {
-        let (bytes, _) = image.preview.prepared()?;
-        overlay::static_image_for_protocol(
-            protocol,
-            bytes,
-            placement.cols,
-            placement.rows,
-            placement.x,
-            placement.y,
-            image.preview.identity(),
-        )
-    });
     Some(ImageOverlayRender {
         #[cfg(test)]
         image_placement: geometry.image_placement,
